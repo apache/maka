@@ -21,6 +21,40 @@ use super::*;
 use maka_agent_facts::executor::Output;
 use runtime::{Pipe, string};
 
+pub(super) async fn proxy(
+    config: &NativeCommand,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<maka_process::Command, Error> {
+    let mut start = runtime::command(config, cwd).await?;
+    start.args(["app-server", "daemon", "start"]);
+    let mut observed = start
+        .observe(Some(30_000), cancellation.clone())
+        .map_err(runtime::process_error)?;
+    let drain = async { while observed.events.recv().await.is_some() {} };
+    let (captured, ()) = tokio::join!(observed.completion, drain);
+    let captured = captured.map_err(runtime::process_error)?;
+    match captured.outcome {
+        maka_process::ProcessOutcome::Exited(status) if status.success() => {}
+        maka_process::ProcessOutcome::Interrupted {
+            reason: maka_process::Termination::Cancelled,
+            ..
+        } => return Err(Error::Cancelled),
+        _ => {
+            return Err(Error::Provider(
+                "Codex managed daemon start failed; a CLI with daemon/proxy support is required"
+                    .into(),
+            ));
+        }
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let mut proxy = runtime::command(config, cwd).await?;
+    proxy.args(["app-server", "proxy"]);
+    Ok(proxy)
+}
+
 pub(super) async fn execute(
     mut io: Pipe,
     request: &Value,
@@ -29,7 +63,7 @@ pub(super) async fn execute(
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
 ) -> (Result<Outcome, Error>, Pipe) {
-    let mut active = None;
+    let mut custody = Custody::Preparing;
     let result = run(
         &mut io,
         request,
@@ -37,21 +71,44 @@ pub(super) async fn execute(
         journal,
         output.as_ref(),
         &bridge,
-        &mut active,
+        &mut custody,
     )
     .await;
     bridge.close_admission();
-    if let Some((thread, turn)) = active
-        && result.is_err()
-    {
-        // Cancellation controls are best effort; physical custody is settled by the outer owner.
-        io.control(
-            "turn/interrupt",
-            serde_json::json!({"threadId":thread,"turnId":turn}),
-        )
-        .await;
-    }
+    let result = match custody {
+        Custody::Active { thread, turn } => {
+            // Proxy exit cannot settle daemon work. Interrupt only our turn and await its terminal.
+            io.cancellation = CancellationToken::new();
+            io.failed = CancellationToken::new();
+            io.control(
+                "turn/interrupt",
+                serde_json::json!({"threadId":thread,"turnId":turn}),
+            )
+            .await;
+            let drained = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if terminal(&io.next().await?, &thread, &turn) {
+                        return Ok::<_, Error>(());
+                    }
+                }
+            })
+            .await;
+            match drained {
+                Ok(Ok(())) => result,
+                _ => Err(Error::CleanupUnconfirmed),
+            }
+        }
+        // A partially delivered turn/start without an acknowledgement must never be replayed.
+        Custody::Submitted => Err(Error::Unknown),
+        Custody::Preparing | Custody::Settled => result,
+    };
     (result, io)
+}
+enum Custody {
+    Preparing,
+    Submitted,
+    Active { thread: String, turn: String },
+    Settled,
 }
 async fn run(
     io: &mut Pipe,
@@ -60,12 +117,12 @@ async fn run(
     journal: &mut journal::Journal,
     output: &dyn OutputSink,
     bridge: &mcp::Bridge,
-    active: &mut Option<(String, String)>,
+    custody: &mut Custody,
 ) -> Result<Outcome, Error> {
     io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     io.notify("initialized", serde_json::json!({})).await?;
     let resume = journal.native_session();
-    let mut params = serde_json::json!({"cwd":request["cwd"],"approvalPolicy":"never","sandbox":"danger-full-access","config":{"mcp_servers":{"maka":{"url":bridge.url,"bearer_token_env_var":"MAKA_NATIVE_MCP_TOKEN","enabled":true}}}});
+    let mut params = serde_json::json!({"cwd":request["cwd"],"approvalPolicy":"never","sandbox":"danger-full-access","config":{"mcp_servers":{"maka":{"url":bridge.url,"http_headers":{"Authorization":format!("Bearer {}",bridge.bearer())},"enabled":true}}}});
     for (source, target) in [
         ("model", "model"),
         ("instructions", "developerInstructions"),
@@ -118,9 +175,18 @@ async fn run(
     if let Some(effort) = request.get("effort") {
         params["effort"] = effort.clone();
     }
+    if io.cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let cancellation = std::mem::replace(&mut io.cancellation, CancellationToken::new());
+    let failed = std::mem::replace(&mut io.failed, CancellationToken::new());
+    *custody = Custody::Submitted;
     let (started, buffered) = io.request("turn/start", params).await?;
     let turn = string(&started, "/turn/id")?.to_owned();
-    *active = Some((thread.clone(), turn.clone()));
+    *custody = Custody::Active {
+        thread: thread.clone(),
+        turn: turn.clone(),
+    };
     let mut state = Turn {
         thread,
         turn,
@@ -128,12 +194,23 @@ async fn run(
         delta_items: std::collections::BTreeSet::new(),
     };
     for event in buffered {
+        if terminal(&event, &state.thread, &state.turn) {
+            *custody = Custody::Settled;
+        }
         if let Some(outcome) = state.event(event, output).await? {
             return Ok(outcome);
         }
     }
     loop {
-        let event = io.next().await?;
+        let event = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(Error::Cancelled),
+            () = failed.cancelled() => return Err(Error::Unknown),
+            event = io.next() => event?,
+        };
+        if terminal(&event, &state.thread, &state.turn) {
+            *custody = Custody::Settled;
+        }
         if event.get("method").is_some() && event.get("id").is_some() {
             return io.unsupported(event).await;
         }
@@ -141,6 +218,15 @@ async fn run(
             return Ok(outcome);
         }
     }
+}
+fn terminal(event: &Value, thread: &str, turn: &str) -> bool {
+    event["method"] == "turn/completed"
+        && event["params"]["threadId"] == thread
+        && event["params"]["turn"]["id"] == turn
+        && matches!(
+            event["params"]["turn"]["status"].as_str(),
+            Some("completed" | "failed" | "interrupted")
+        )
 }
 struct Turn {
     thread: String,

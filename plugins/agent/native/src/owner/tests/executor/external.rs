@@ -117,7 +117,18 @@ async fn native_external_eof_exit_zero_malformed_and_unrelated_turn_never_comple
                 "failed"
             );
             assert!(listener.accept().now_or_never().is_none());
-            f.app.shutdown().await.unwrap();
+            if message == "malformed" {
+                f.app.shutdown().await.unwrap();
+            } else {
+                assert!(
+                    f.app
+                        .shutdown_if_idle()
+                        .await
+                        .unwrap_err()
+                        .contains("cleanup_unconfirmed"),
+                    "proxy exit cannot prove a shared daemon turn has stopped"
+                );
+            }
             f.config.shutdown().await.unwrap();
         }
     })
@@ -135,7 +146,15 @@ async fn native_external_stop_never_relabels_cancelled_turn_as_completed() {
                 .mutation(
                     2,
                     "send",
-                    input_runtime(&session, runtime, "wait"),
+                    input_runtime(
+                        &session,
+                        runtime,
+                        if runtime == "codex" {
+                            "wait-cancel-terminal"
+                        } else {
+                            "wait"
+                        },
+                    ),
                     Uuid::new_v4(),
                 )
                 .await
@@ -152,6 +171,16 @@ async fn native_external_stop_never_relabels_cancelled_turn_as_completed() {
             )
             .await
             .unwrap();
+            if runtime == "codex" {
+                packet(&mut control, "interrupt_requested").await;
+                assert_eq!(
+                    super::external_support::record_runtime(&f, &session, runtime).await["running"],
+                    accepted["invocationId"],
+                    "an interrupt request or proxy lifetime cannot settle a daemon turn"
+                );
+                assert!(!f.owner.runs.lock().await.controls.is_empty());
+                release(&mut control).await;
+            }
             f.drained().await;
             let observed = work(&f, &session, &accepted).await;
             assert_eq!(

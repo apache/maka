@@ -49,6 +49,8 @@
 
 在 `agent.external.runtimes`（Agent 实例的 `external` 配置）中逐项启用 CLI，例如 `{ "runtimes": { "codex": true } }`。仅支持 `antigravity`、`codex`、`claude`。配置省略或为 `null`、以及未选中的运行时都不会启动外部进程。`external.commands` 可分别覆盖 CLI 可执行文件、参数和环境。安装和登录请使用原生 CLI；Maka 不再分发 agent SDK、不代装 CLI、不迁移凭据。
 
+Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
+
 内置 `external` executor 直接使用 agy ACP、Codex app-server 和 Claude Code 交互式 PTY。agy 与 Claude 使用 `--dangerously-skip-permissions`，Codex 使用 `never` 审批和完全访问 sandbox。Claude 包括模型发现都不使用 `-p`/`--print`，不做静默执行回退；不支持的初始化或原生能力明确报错。CLI 保留 Maka 沙箱之外的原生工具和权限；Host 工具仍遵守 Maka 捕获的授权、原始回执和清理规则。
 
 例如：

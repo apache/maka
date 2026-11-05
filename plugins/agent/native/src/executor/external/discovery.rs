@@ -41,18 +41,30 @@ pub(super) async fn query(
         } else if runtime == NativeRuntime::Claude {
             serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unsupported"},"models":{"kind":"unsupported","detail":"Claude interactive CLI does not expose model discovery"}})
         } else {
-            let mut command = runtime::command(config, cwd).await?;
-            if runtime == NativeRuntime::Codex {
-                command.arg("app-server");
-            } else {
-                command.arg("acp").arg("--dangerously-skip-permissions");
+            let discovery = async {
+                let mut command = runtime::command(config, cwd).await?;
+                if runtime == NativeRuntime::Codex {
+                    command = codex::proxy(config, cwd, cancellation.clone()).await?;
+                } else {
+                    command.arg("acp").arg("--dangerously-skip-permissions");
+                }
+                runtime::pipe(
+                    command,
+                    if runtime == NativeRuntime::Codex {
+                        runtime::Transport::WebSocket
+                    } else {
+                        runtime::Transport::JsonLines
+                    },
+                    None,
+                    cancellation.clone(),
+                    |mut io| async move {
+                        let result = probe(&mut io, runtime, cwd).await;
+                        (result, io)
+                    },
+                )
+                .await
             }
-            let discovery =
-                runtime::pipe(command, None, cancellation.clone(), |mut io| async move {
-                    let result = probe(&mut io, runtime, cwd).await;
-                    (result, io)
-                })
-                .await;
+            .await;
             match discovery {
                 Ok(value) => value,
                 Err(Error::Cancelled) => return Err(Error::Cancelled),

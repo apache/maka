@@ -7488,6 +7488,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "tracing",
  "tracing-subscriber",

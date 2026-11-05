@@ -38,9 +38,11 @@ Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
 
 服务工具通过 `target: { kind: "import", name: "files" }` 选择导入服务，通过 `target: { kind: "export", name: "agent" }` 选择当前 Agent 自身的 API。自身 export 不增加导入或启动依赖，发布成功后才可调用。两种目标共用 Host 准入、操作回执和可选的 `confirmation` 审批。Maka 通过这条路径开放 Session 浏览、历史、创建、分叉、元数据、归档／删除、消息、队列和执行控制；schema 直接来自已有的 [Agent 契约](../api/src/contract.rs)。
 
-内置 `external` executor 通过 `maka_process` 直接启动 `agy acp`、`codex app-server` 或真正的 Claude Code 交互式 PTY。在 `external.runtimes` 中逐项启用，并选择必填的原生 ID：`antigravity`、`codex`、`claude`。`external.commands` 可覆盖普通可执行文件、参数和环境设置。请通过原生 CLI 安装及登录；发现接口不安装软件，也不编造认证或模型能力。Claude 仅提供原生默认模型选项，不启动 print 模式辅助进程。
+Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
 
-每次 invocation 只有一个进程、journal 和 Host bridge 所有者。agy 每次 new/load 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 在 PTY 中使用 `--dangerously-skip-permissions`、提前持久化的 UUID 和位置参数交互提示。请预先完成原生初始化和绕过权限警告确认；不支持的初始化、提问或计划 UI 会显式失败。当前不支持 Claude 图片提交。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
+内置 `external` executor 通过 `maka_process` 直接接入 `agy acp`、Codex 共享 app-server daemon 或真正的 Claude Code 交互式 PTY。在 `external.runtimes` 中逐项启用，并选择必填的原生 ID：`antigravity`、`codex`、`claude`。`external.commands` 可覆盖普通可执行文件、参数和环境设置；Codex 已有 daemon 保留它启动时的环境，覆盖不会改写运行中的共享服务。请通过原生 CLI 安装及登录；发现接口不安装软件，也不编造认证或模型能力。Claude 仅提供原生默认模型选项，不启动 print 模式辅助进程。
+
+每次 invocation 只有一个 journal 和 Host bridge 所有者；agy/Claude 拥有本轮进程，Codex 只拥有本轮代理连接。agy 每次 new/load 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 在 PTY 中使用 `--dangerously-skip-permissions`、提前持久化的 UUID 和位置参数交互提示。请预先完成原生初始化和绕过权限警告确认；不支持的初始化、提问或计划 UI 会显式失败。当前不支持 Claude 图片提交。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
 
 原生身份、历史水位和 CAS fence 有意保留历史物理 namespace `maka.agent.oar`、deployment/instance 前缀及 conversation/runtime 键哈希。已有 running 记录继续按 unknown 阻断。旧公开 executor `oar` 不再可用，队列中的旧准入不能被解释为新的 external 调用。
 
@@ -50,7 +52,7 @@ Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
 
 桥接的 Files `Read` 只接受 Session 附件和归档结果资源，包括有界的 `page.next` 分页；拒绝工作区文件、任务资源和图片输出。较大的 Host 结果仍可通过相同的归档资源路径读取。此桥接不开放 CUA、Session 元数据／归档／删除、Graph／Swarm、Goal 和定时执行工具，也不自动转发第三方 MCP 配置。
 
-Host 工具使用本地带鉴权 HTTP MCP endpoint，每次 invocation 生成新凭据。Codex 使用 `bearer_token_env_var`；Claude 读取私有临时 MCP 配置文件。凭据不出现在 argv 或日志中，关闭准入后立即失效。agy 原生数据库可能保留已过期的 endpoint 凭据。agy 1.5.0 虽未声明 `mcpCapabilities.http`，实际支持带鉴权 HTTP MCP；直接 executor 提交 endpoint，不按缺失声明错误拒绝。
+Host 工具使用本地带鉴权 HTTP MCP endpoint，每次 invocation 生成新凭据。Codex 使用 thread 级 MCP `http_headers`；Claude 读取私有临时 MCP 配置文件。凭据不出现在 argv 或日志中，关闭准入后立即失效。Codex 与 agy 的原生会话配置可能保留已过期的 endpoint 凭据。agy 1.5.0 虽未声明 `mcpCapabilities.http`，实际支持带鉴权 HTTP MCP；直接 executor 提交 endpoint，不按缺失声明错误拒绝。
 
 启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。其他全局和项目指令文件放在后面。指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
 

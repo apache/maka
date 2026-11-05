@@ -18,8 +18,13 @@
  */
 
 use super::*;
+use futures_util::{SinkExt, StreamExt};
 use std::{future::Future, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{Message, protocol::WebSocketConfig},
+};
 
 const MAX_LINE: usize = 8 * 1024 * 1024;
 pub(super) fn validate_command(
@@ -213,11 +218,21 @@ pub(super) async fn execute(
             if runtime == NativeRuntime::Antigravity {
                 plan.arg("acp").arg("--dangerously-skip-permissions");
             } else {
-                plan.arg("app-server");
-                plan.env("MAKA_NATIVE_MCP_TOKEN", bridge.bearer());
+                plan = match codex::proxy(config, cwd, cancellation.clone()).await {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        bridge.close().await?;
+                        return Err(error);
+                    }
+                };
             }
             pipe(
                 plan,
+                if runtime == NativeRuntime::Codex {
+                    Transport::WebSocket
+                } else {
+                    Transport::JsonLines
+                },
                 Some(bridge.clone()),
                 cancellation.clone(),
                 |io| async move {
@@ -251,25 +266,167 @@ pub(super) async fn execute(
     result
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Transport {
+    JsonLines,
+    WebSocket,
+}
+enum Wire {
+    Lines {
+        input: maka_process::pipe::Input,
+        reader: BufReader<maka_process::pipe::Output>,
+        buffer: Vec<u8>,
+    },
+    WebSocket(
+        Box<
+            WebSocketStream<tokio::io::Join<maka_process::pipe::Output, maka_process::pipe::Input>>,
+        >,
+    ),
+}
+impl Wire {
+    async fn open(
+        input: maka_process::pipe::Input,
+        output: maka_process::pipe::Output,
+        transport: Transport,
+    ) -> Result<Self, Error> {
+        match transport {
+            Transport::JsonLines => Ok(Self::Lines {
+                input,
+                reader: BufReader::new(output),
+                buffer: Vec::new(),
+            }),
+            Transport::WebSocket => {
+                let config = WebSocketConfig::default()
+                    .max_message_size(Some(MAX_LINE))
+                    .max_frame_size(Some(MAX_LINE));
+                let (socket, _) = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    tokio_tungstenite::client_async_with_config(
+                        "ws://localhost/",
+                        tokio::io::join(output, input),
+                        Some(config),
+                    ),
+                )
+                .await
+                .map_err(|_| Error::Provider("Codex daemon handshake timed out".into()))?
+                .map_err(|_| Error::Provider("Codex daemon WebSocket handshake failed".into()))?;
+                Ok(Self::WebSocket(Box::new(socket)))
+            }
+        }
+    }
+    async fn send(&mut self, value: Value) -> Result<(), Error> {
+        let mut text = serde_json::to_string(&value).map_err(|e| Error::Invalid(e.to_string()))?;
+        match self {
+            Self::Lines { input, .. } => {
+                text.push('\n');
+                input
+                    .write_all(text.as_bytes())
+                    .await
+                    .map_err(|e| Error::Provider(e.to_string()))
+            }
+            Self::WebSocket(socket) => socket
+                .send(Message::Text(text.into()))
+                .await
+                .map_err(|_| Error::Unknown),
+        }
+    }
+    async fn next(&mut self) -> Result<(Value, usize), Error> {
+        match self {
+            Self::Lines { reader, buffer, .. } => loop {
+                let available = reader
+                    .fill_buf()
+                    .await
+                    .map_err(|e| Error::Provider(e.to_string()))?;
+                if available.is_empty() {
+                    return Err(Error::Unknown);
+                }
+                let count = available
+                    .iter()
+                    .position(|b| *b == b'\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(available.len());
+                if buffer.len() + count > MAX_LINE {
+                    return Err(Error::Invalid("Native protocol line exceeds 8 MiB".into()));
+                }
+                let complete = available[count - 1] == b'\n';
+                buffer.extend_from_slice(&available[..count]);
+                reader.consume(count);
+                if complete {
+                    let size = buffer.len();
+                    let parsed = serde_json::from_slice(buffer)
+                        .map_err(|_| Error::Invalid("Malformed native JSON-RPC line".into()));
+                    buffer.clear();
+                    return parsed.map(|value| (value, size));
+                }
+            },
+            Self::WebSocket(socket) => loop {
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        return serde_json::from_str(&text)
+                            .map(|value| (value, text.len()))
+                            .map_err(|_| {
+                                Error::Invalid("Malformed Codex daemon JSON-RPC message".into())
+                            });
+                    }
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                    _ => return Err(Error::Unknown),
+                }
+            },
+        }
+    }
+    async fn drain(&mut self) -> Result<(), Error> {
+        match self {
+            Self::Lines { input, reader, .. } => {
+                let _ = input.shutdown().await;
+                let mut bytes = [0u8; 8192];
+                loop {
+                    if reader
+                        .read(&mut bytes)
+                        .await
+                        .map_err(|_| Error::CleanupUnconfirmed)?
+                        == 0
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            Self::WebSocket(socket) => {
+                // Closing this client retires only the proxy connection, never the shared daemon.
+                let _ = socket.as_mut().close(None).await;
+                let _ = socket.get_mut().writer_mut().shutdown().await;
+                let mut bytes = [0u8; 8192];
+                loop {
+                    if socket
+                        .get_mut()
+                        .reader_mut()
+                        .read(&mut bytes)
+                        .await
+                        .map_err(|_| Error::CleanupUnconfirmed)?
+                        == 0
+                    {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
 pub(super) struct Pipe {
-    pub input: maka_process::pipe::Input,
-    reader: BufReader<maka_process::pipe::Output>,
-    buffer: Vec<u8>,
+    wire: Wire,
     next_id: u64,
     line_bytes: usize,
-    cancellation: CancellationToken,
+    pub cancellation: CancellationToken,
     exited: CancellationToken,
-    failed: CancellationToken,
+    pub failed: CancellationToken,
     exit_deadline: Option<tokio::time::Instant>,
 }
 impl Pipe {
     pub async fn send(&mut self, value: Value) -> Result<(), Error> {
-        let mut bytes = serde_json::to_vec(&value).map_err(|e| Error::Invalid(e.to_string()))?;
-        bytes.push(b'\n');
         tokio::select! {
             biased;
             () = self.cancellation.cancelled() => Err(Error::Cancelled),
-            result = self.input.write_all(&bytes) => result.map_err(|e| Error::Provider(e.to_string())),
+            result = self.wire.send(value) => result,
         }
     }
     pub async fn notify(&mut self, method: &str, params: Value) -> Result<(), Error> {
@@ -277,34 +434,9 @@ impl Pipe {
             .await
     }
     async fn line(&mut self) -> Result<Value, Error> {
-        loop {
-            let available = self
-                .reader
-                .fill_buf()
-                .await
-                .map_err(|e| Error::Provider(e.to_string()))?;
-            if available.is_empty() {
-                return Err(Error::Unknown);
-            }
-            let count = available
-                .iter()
-                .position(|b| *b == b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(available.len());
-            if self.buffer.len() + count > MAX_LINE {
-                return Err(Error::Invalid("Native protocol line exceeds 8 MiB".into()));
-            }
-            let complete = available[count - 1] == b'\n';
-            self.buffer.extend_from_slice(&available[..count]);
-            self.reader.consume(count);
-            if complete {
-                self.line_bytes = self.buffer.len();
-                let parsed = serde_json::from_slice(&self.buffer)
-                    .map_err(|_| Error::Invalid("Malformed native JSON-RPC line".into()));
-                self.buffer.clear();
-                return parsed;
-            }
-        }
+        let (value, size) = self.wire.next().await?;
+        self.line_bytes = size;
+        Ok(value)
     }
     pub async fn next(&mut self) -> Result<Value, Error> {
         loop {
@@ -338,9 +470,7 @@ impl Pipe {
         if method == "turn/interrupt" {
             value["id"] = self.next_id.into();
         }
-        let mut bytes = serde_json::to_vec(&value).expect("native control is JSON");
-        bytes.push(b'\n');
-        let _ = tokio::time::timeout(Duration::from_secs(1), self.input.write_all(&bytes)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.wire.send(value)).await;
     }
     pub async fn request(
         &mut self,
@@ -392,24 +522,13 @@ impl Pipe {
         ))
     }
     async fn drain(&mut self) -> Result<(), Error> {
-        let _ = self.input.shutdown().await;
-        let mut bytes = [0u8; 8192];
-        loop {
-            if self
-                .reader
-                .read(&mut bytes)
-                .await
-                .map_err(|_| Error::CleanupUnconfirmed)?
-                == 0
-            {
-                return Ok(());
-            }
-        }
+        self.wire.drain().await
     }
 }
 
 pub(super) async fn pipe<T, F, Fut>(
     command: maka_process::Command,
+    transport: Transport,
     bridge: Option<Arc<mcp::Bridge>>,
     cancellation: CancellationToken,
     protocol: F,
@@ -450,31 +569,35 @@ where
         result
     };
     let business = async {
-        let io = Pipe {
-            input: process.stdin,
-            reader: BufReader::new(process.stdout),
-            buffer: Vec::new(),
-            next_id: 0,
-            line_bytes: 0,
-            cancellation,
-            exited: exited.clone(),
-            failed: bridge
-                .as_ref()
-                .map_or_else(CancellationToken::new, |bridge| bridge.failed.clone()),
-            exit_deadline: None,
+        let opened = Wire::open(process.stdin, process.stdout, transport).await;
+        let (result, io) = match opened {
+            Ok(wire) => {
+                let io = Pipe {
+                    wire,
+                    next_id: 0,
+                    line_bytes: 0,
+                    cancellation,
+                    exited: exited.clone(),
+                    failed: bridge
+                        .as_ref()
+                        .map_or_else(CancellationToken::new, |bridge| bridge.failed.clone()),
+                    exit_deadline: None,
+                };
+                let (result, io) = protocol(io).await;
+                (result, Some(io))
+            }
+            Err(error) => (Err(error), None),
         };
-        let (result, mut io) = protocol(io).await;
         let host = match &bridge {
             Some(bridge) => bridge.close().await,
             None => Ok(()),
         };
         settle.cancel();
-        // A fixed drain deadline starts at settlement, independent of chatty output.
-        let drain = tokio::time::timeout(Duration::from_secs(6), io.drain())
-            .await
-            .map_err(|_| Error::CleanupUnconfirmed)
-            .and_then(|v| v);
-        drain?;
+        if let Some(mut io) = io {
+            tokio::time::timeout(Duration::from_secs(6), io.drain())
+                .await
+                .map_err(|_| Error::CleanupUnconfirmed)??;
+        }
         host?;
         result
     };
