@@ -103,6 +103,20 @@ impl Library {
     }
 }
 impl Owner {
+    pub(super) fn skill_tool_names(
+        &self,
+        session: &str,
+        basis: &MessageBasis,
+        editing: Option<maka_agent_facts::execution::EditingTools>,
+    ) -> Result<Vec<String>, String> {
+        match &basis.executor {
+            Some(executor) if executor.selection.executor == "external" => {
+                Ok(self.external_tools(session, basis)?.catalog.names())
+            }
+            Some(_) => Ok(Vec::new()),
+            None => Ok(self.selected_tools(session, basis, false, editing)?.names()),
+        }
+    }
     pub(crate) async fn skill_candidates(
         &self,
         input: SkillCandidatesRead,
@@ -112,27 +126,34 @@ impl Owner {
         let Some(library) = &self.skills else {
             return Ok(SkillCandidates::default());
         };
-        let BackendPreference::Model {
-            connection_id,
-            model_id,
-            thinking_level,
-        } = input.backend
-        else {
-            return Ok(SkillCandidates::default());
-        };
-        let editing = match crate::model::candidate_editing_tools(
-            &self.configuration,
-            &self.catalog,
-            maka_agent_facts::configuration::ModelSelection {
+        let (editing, executor) = match input.backend {
+            BackendPreference::Model {
                 connection_id,
                 model_id,
-            },
-            thinking_level,
-        )
-        .await
-        {
-            Ok(editing) => editing,
-            Err(_) => return Ok(SkillCandidates::default()),
+                thinking_level,
+            } => {
+                match crate::model::candidate_editing_tools(
+                    &self.configuration,
+                    &self.catalog,
+                    maka_agent_facts::configuration::ModelSelection {
+                        connection_id,
+                        model_id,
+                    },
+                    thinking_level,
+                )
+                .await
+                {
+                    Ok(editing) => (Some(editing), None),
+                    Err(_) => return Ok(SkillCandidates::default()),
+                }
+            }
+            BackendPreference::Executor { selection } if selection.executor == "external" => {
+                match self.executors.select(selection) {
+                    Ok(backend) => (None, Some(backend.accepted)),
+                    Err(_) => return Ok(SkillCandidates::default()),
+                }
+            }
+            BackendPreference::Executor { .. } => return Ok(SkillCandidates::default()),
         };
         workspace::validate(
             &self.workspace_roots,
@@ -150,10 +171,13 @@ impl Owner {
             None => None,
         };
         // This read-only basis selects tool names; it never renders or admits model work.
-        let selected_catalog = self
-            .mcp_projects
-            .available(&session.configuration.workspace)
-            .await?;
+        let selected_catalog = if executor.is_some() {
+            self.mcp_projects.base.clone()
+        } else {
+            self.mcp_projects
+                .available(&session.configuration.workspace)
+                .await?
+        };
         let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
             mcp_catalog: Some(selected_catalog),
@@ -169,7 +193,7 @@ impl Owner {
             internal_bindings: Arc::default(),
             behavior: None,
             model: None,
-            executor: None,
+            executor,
             workspace: session.configuration.workspace.clone(),
             binding: session.configuration.binding,
             fingerprint: String::new(),
@@ -177,9 +201,7 @@ impl Owner {
         };
         let input = serde_json::to_value(SkillToolRequest {
             workspace: Some(session.configuration.workspace),
-            tools: self
-                .selected_tools(&input.session_id, &basis, false, Some(editing))?
-                .names(),
+            tools: self.skill_tool_names(&input.session_id, &basis, editing)?,
             input: maka_skills_api::contract::ModelSearch {
                 query: input.query,
                 limit: None,

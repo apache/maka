@@ -26,7 +26,7 @@ publish.workspace = true
 maka-agent-facts.workspace = true
 maka-process.workspace = true
 maka-network.workspace = true
-rmcp = { version = "=3.7.0", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["process", "io-util"] }
@@ -35,7 +35,7 @@ reqwest.workspace = true
 futures-util.workspace = true
 which = "8.0.6"
 sse-stream = "0.3.0"
-# rmcp 3.7 exposes the previous SSE event type in its transport contract.
+# rmcp exposes the previous SSE event type in its transport contract.
 rmcp-sse = { package = "sse-stream", version = "0.2.6" }
 
 [dev-dependencies]

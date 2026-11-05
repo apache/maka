@@ -111,7 +111,7 @@ impl SessionStore {
     pub async fn commit_pending_steering(
         &self,
         invocation: &Invocation,
-    ) -> Result<usize, CommitError> {
+    ) -> Result<Vec<maka_agent_facts::message::RootSourceMessage>, CommitError> {
         self.check_session(&invocation.session_id)
             .map_err(commit_error)?;
         self.scoped()

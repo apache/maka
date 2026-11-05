@@ -71,7 +71,6 @@ fn required(target: Target) -> impl Iterator<Item = &'static str> {
         target.executable(),
         target.desktop_executable(),
         target.python_worker(),
-        target.oar_worker(),
     ]
     .into_iter()
     .chain(target.desktop_members().iter().copied())
@@ -395,10 +394,6 @@ fn validate_package(directory: &Path, target: Target, version: &str) -> Result<(
     )?;
     target.validate_binary(
         &mut regular_file(&directory.join(target.python_worker()))?,
-        false,
-    )?;
-    target.validate_binary(
-        &mut regular_file(&directory.join(target.oar_worker()))?,
         false,
     )?;
     if let Some(service) = target.service_executable() {

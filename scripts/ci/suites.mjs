@@ -41,10 +41,7 @@ export const productInputs = [
   'scripts/plugins',
   'scripts/rust/product.mjs',
 ];
-const oarInputs = [
-  'plugins/agent/oar-executor',
-  'plugins/agent/native/tests/support/oar-worker.mjs',
-  'scripts/oar',
+const distributionInputs = [
   'scripts/asf-source-release.mjs',
   'scripts/rust/build-v8.mjs',
   'scripts/rust/cargo.mjs',
@@ -61,7 +58,7 @@ const oarInputs = [
   'scripts/rust/licenses',
 ];
 const embeddedInputs = [
-  'products/maka/terminal-shell/tests/support/external-agent-worker.mjs',
+  'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
   'platform/computer-use/skills',
@@ -76,7 +73,8 @@ export const suites = {
     profile: 'ci',
     extraInputs: [
       ...embeddedInputs,
-      ...oarInputs,
+      'plugins/agent/native/tests/support',
+      ...distributionInputs,
       'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
     ],
     affectedFilter: true,
@@ -114,7 +112,7 @@ export const suites = {
   'native-build': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: [...embeddedInputs, ...oarInputs, 'scripts/rust/build-cli.mjs'],
+    extraInputs: [...embeddedInputs, ...distributionInputs, 'scripts/rust/build-cli.mjs'],
   },
   contracts: {
     workspace: 'root',
@@ -124,7 +122,7 @@ export const suites = {
   product: {
     workspace: 'root',
     packages: ['maka-ui-build', 'maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: [...productInputs, ...oarInputs],
+    extraInputs: [...productInputs, ...distributionInputs],
   },
   termina: {
     workspace: 'termina',

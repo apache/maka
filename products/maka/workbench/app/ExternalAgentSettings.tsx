@@ -157,7 +157,7 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
             </Text>
             <Text style={textStyle}>
               {tr(
-                'This agent uses its own permissions, tools and accounts. It can read and write files, run commands and access the network outside the Maka sandbox.',
+                'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.',
               )}
             </Text>
             <Text style={mutedStyle}>{tr('Other Maka permissions stay unchanged.')}</Text>
@@ -205,7 +205,7 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
             </Button>
           </View>
         </If>
-        <If when={!owner.confirmation() && !owner.plan()}>
+        <If when={!owner.confirmation()}>
           <Each of={owner.runtimes()} key={(runtime) => runtime.id}>
             {(runtime) => (
               <View style={{ gap: 6, paddingVertical: 8 }}>
@@ -277,149 +277,16 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
                         </If>
                       </If>
                     </If>
-                    <If
-                      when={
-                        owner.status(runtime().id)?.installation.kind === 'not_found' &&
-                        owner.status(runtime().id)?.canInstall
-                      }
-                    >
-                      <Each of={owner.status(runtime().id)!.installLines} key={(line) => line.line}>
-                        {(line) => (
-                          <Button
-                            disabled={owner.disabled()}
-                            selected={owner.lines()[runtime().id] === line().line}
-                            accessibilityLabel={tr('Select {name} installation line {line}', {
-                              name: runtime().name,
-                              line: line().line,
-                            })}
-                            onPress={inputAction(owner.chooseLine, {
-                              ...owner.action(),
-                              runtime: runtime().id,
-                              line: line().line,
-                            })}
-                            style={{
-                              ...buttonStyle,
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 8,
-                            }}
-                            hoverStyle={controlHoverStyle()}
-                            focusStyle={controlFocusStyle()}
-                            disabledStyle={controlDisabledStyle}
-                          >
-                            <ChoiceIndicator
-                              kind="radio"
-                              checked={owner.lines()[runtime().id] === line().line}
-                              disabled={owner.disabled()}
-                            />
-                            <Text style={mutedStyle}>{line().description}</Text>
-                          </Button>
-                        )}
-                      </Each>
-                      <Button
-                        disabled={
-                          owner.disabled() ||
-                          (owner.status(runtime().id)!.installLines.length > 0 &&
-                            !owner.lines()[runtime().id])
-                        }
-                        accessibilityLabel={tr('View installation plan for {name}', {
-                          name: runtime().name,
-                        })}
-                        onPress={inputAction(owner.viewPlan, {
-                          ...owner.action(),
-                          runtime: runtime().id,
-                          ...(owner.lines()[runtime().id] === undefined
-                            ? {}
-                            : { line: owner.lines()[runtime().id] }),
-                        })}
-                        style={buttonStyle}
-                        hoverStyle={controlHoverStyle()}
-                        focusStyle={controlFocusStyle()}
-                        disabledStyle={controlDisabledStyle}
-                      >
-                        <Text style={mutedStyle}>{tr('View installation plan')}</Text>
-                      </Button>
+                    <If when={owner.status(runtime().id)?.installation.kind === 'not_found'}>
+                      <Text style={mutedStyle}>
+                        {tr('Install and sign in using the native CLI, then Refresh.')}
+                      </Text>
                     </If>
                   </View>
                 </If>
               </View>
             )}
           </Each>
-        </If>
-        <If when={owner.plan()}>
-          <View style={{ ...fieldBoxStyle(), padding: 12, gap: 10 }}>
-            <Text style={textStyle}>
-              {tr(
-                owner.plan()!.kind === 'plan'
-                  ? 'Installation plan for {name}'
-                  : 'Installation options for {name}',
-                { name: owner.plan()!.name },
-              )}
-            </Text>
-            <If when={owner.plan()!.kind === 'unsupported'}>
-              <Text style={mutedStyle}>
-                {tr('Automatic installation is not supported in Maka.')}
-              </Text>
-              <Button
-                accessibilityLabel={tr('Show {name} details', { name: owner.plan()!.name })}
-                onPress={inputAction(owner.toggleDetails, {
-                  ...owner.action(),
-                  runtime: owner.plan()!.runtime,
-                })}
-                style={buttonStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-              >
-                <Text style={mutedStyle}>{tr('Details')}</Text>
-              </Button>
-              <If when={owner.details() === owner.plan()!.runtime}>
-                <Text style={mutedStyle}>
-                  {owner.plan()!.kind === 'unsupported'
-                    ? (owner.plan() as { detail: string }).detail
-                    : ''}
-                </Text>
-              </If>
-            </If>
-            <If when={owner.plan()!.kind === 'plan' || owner.details() === owner.plan()!.runtime}>
-              <Each of={owner.plan()!.steps} key={(step) => step}>
-                {(step) => <Text style={textStyle}>{step()}</Text>}
-              </Each>
-              <If when={owner.plan()!.source}>
-                <Text style={mutedStyle}>
-                  {tr('Installation source: {source}', { source: owner.plan()!.source })}
-                </Text>
-              </If>
-            </If>
-            <If when={owner.plan()!.kind === 'plan'}>
-              <Text style={mutedStyle}>
-                {tr(
-                  'Network access: yes. Elevated privileges: no. Installation changes files on this machine.',
-                )}
-              </Text>
-              <Button
-                disabled={owner.disabled()}
-                accessibilityLabel={tr('Install {name}', { name: owner.plan()!.name })}
-                onPress={inputAction(owner.install, owner.action())}
-                style={buttonStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={textStyle}>{tr('Install')}</Text>
-              </Button>
-            </If>
-            <Button
-              disabled={owner.disabled()}
-              accessibilityLabel={tr('Cancel external agent installation')}
-              onPress={inputAction(owner.cancel, owner.action())}
-              style={buttonStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text style={textStyle}>{tr('Cancel')}</Text>
-            </Button>
-          </View>
         </If>
       </View>
     </Scroll>

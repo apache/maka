@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { Bounds, CaretEvent, InputRef, ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -830,11 +830,36 @@ export function createComposerCompletion(options: Options) {
 }
 
 export type ComposerCompletionState = ReturnType<typeof createComposerCompletion>;
+export type ComposerCompletionRow = Pick<
+  Row,
+  'action' | 'detail' | 'disabled' | 'icon' | 'id' | 'title'
+>;
+export type ComposerCompletionView = Pick<
+  ComposerCompletionState,
+  | 'accept'
+  | 'acceptSelected'
+  | 'anchor'
+  | 'close'
+  | 'dismiss'
+  | 'empty'
+  | 'index'
+  | 'list'
+  | 'query'
+  | 'queryComposition'
+  | 'queryInput'
+  | 'queryPlaceholder'
+  | 'querySelection'
+  | 'title'
+> & {
+  error(): string;
+  loading(): boolean;
+  opened(): Pick<Read, 'explicit' | 'serial' | 'source'> | null;
+  queryComposing(): boolean;
+  rows(): readonly ComposerCompletionRow[];
+};
 
-export function ComposerCompletion(props: { state: ComposerCompletionState }) {
+export function ComposerCompletion(props: { state: ComposerCompletionView }) {
   const state = props.state;
-  const byId = computed(() => new Map(state.rows().map((row) => [row.id, row])));
-  const ids = computed(() => state.rows().map((row) => row.id));
   return (
     <If when={state.opened() !== null}>
       <Overlay
@@ -897,7 +922,8 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
         </If>
         <If when={!state.queryComposing()}>
           <List
-            each={ids()}
+            each={state.rows()}
+            keyExtractor={(row) => row.id}
             ref={state.list}
             estimatedItemSize={52}
             style={{
@@ -915,47 +941,36 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
               )
             }
           >
-            {(id) => (
-              <Each of={[byId().get(id())]} key={(row) => row?.action.read ?? -1}>
-                {(value) => {
-                  const row = value();
-                  if (!row) return <View />;
-                  return (
-                    <Button
-                      accessibilityLabel={row.title}
-                      disabled={row.disabled}
-                      onPress={inputAction(state.accept, row.action)}
-                      style={{
-                        height: 52,
-                        borderRadius: 8,
-                        paddingHorizontal: 10,
-                        gap: 10,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        backgroundColor:
-                          state.rows()[state.index()]?.id === row.id ? C.raised : C.surface,
-                      }}
-                      hoverStyle={{ backgroundColor: C.raised }}
-                      focusStyle={{ backgroundColor: C.line }}
-                      disabledStyle={{ opacity: 0.5 }}
-                    >
-                      <Icon name={row.icon} color={C.secondary} />
-                      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                        <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                          {row.title}
-                        </Text>
-                        <If when={row.detail}>
-                          <Text
-                            style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}
-                          >
-                            {row.detail}
-                          </Text>
-                        </If>
-                      </View>
-                    </Button>
-                  );
+            {(row, index) => (
+              <Button
+                accessibilityLabel={row().title}
+                disabled={row().disabled}
+                onPress={inputAction(state.accept, row().action)}
+                style={{
+                  height: 52,
+                  borderRadius: 8,
+                  paddingHorizontal: 10,
+                  gap: 10,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: state.index() === index() ? C.raised : C.surface,
                 }}
-              </Each>
+                hoverStyle={{ backgroundColor: C.raised }}
+                focusStyle={{ backgroundColor: C.line }}
+                disabledStyle={{ opacity: 0.5 }}
+              >
+                <Icon name={row().icon} color={C.secondary} />
+                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+                    {row().title}
+                  </Text>
+                  <If when={row().detail}>
+                    <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
+                      {row().detail}
+                    </Text>
+                  </If>
+                </View>
+              </Button>
             )}
           </List>
         </If>

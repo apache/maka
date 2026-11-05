@@ -20,6 +20,11 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const externalAgentMessages = {
+  'Install and sign in using the native CLI, then Refresh.': [
+    'Install and sign in using the native CLI, then Refresh.',
+    '请通过原生 CLI 安装并登录，然后刷新。',
+    '請透過原生 CLI 安裝並登入，然後重新整理。',
+  ],
   'External agents': ['External agents', '外部 Agent', '外部 Agent'],
   'External agent runtimes': [
     'External agent runtimes',
@@ -81,58 +86,10 @@ export const externalAgentMessages = {
     '请使用 Agent 原生登录方式登录，然后刷新。Maka 不管理这些凭据。',
     '請使用 Agent 原生登入方式登入，然後重新整理。Maka 不管理這些憑證。',
   ],
-  'Select {name} installation line {line}': [
-    'Select {name} installation line {line}',
-    '选择 {name} 安装版本线 {line}',
-    '選擇 {name} 安裝版本線 {line}',
-  ],
-  'View installation plan for {name}': [
-    'View installation plan for {name}',
-    '查看 {name} 的安装计划',
-    '檢視 {name} 的安裝計畫',
-  ],
-  'View installation plan': ['View installation plan', '查看安装计划', '檢視安裝計畫'],
-  'Installation plan for {name}': [
-    'Installation plan for {name}',
-    '{name} 的安装计划',
-    '{name} 的安裝計畫',
-  ],
-  'Installation source: {source}': [
-    'Installation source: {source}',
-    '安装来源：{source}',
-    '安裝來源：{source}',
-  ],
-  'Network access: yes. Elevated privileges: no. Installation changes files on this machine.': [
-    'Network access: yes. Elevated privileges: no. Installation changes files on this machine.',
-    '网络访问：是。提升权限：否。安装会修改本机文件。',
-    '網路存取：是。提升權限：否。安裝會修改本機檔案。',
-  ],
-  'Install {name}': ['Install {name}', '安装 {name}', '安裝 {name}'],
-  Install: ['Install', '安装', '安裝'],
-  'Cancel external agent installation': [
-    'Cancel external agent installation',
-    '取消安装外部 Agent',
-    '取消安裝外部 Agent',
-  ],
-  'Invalid external agent installation plan.': [
-    'Invalid external agent installation plan.',
-    '外部 Agent 安装计划无效。',
-    '外部 Agent 安裝計畫無效。',
-  ],
   'No external agent configuration targets are bound.': [
     'No external agent configuration targets are bound.',
     '未绑定外部 Agent 配置目标。',
     '未繫結外部 Agent 設定目標。',
-  ],
-  'External agent installation failed. Refresh to check its status.': [
-    'External agent installation failed. Refresh to check its status.',
-    '外部 Agent 安装失败。请刷新以检查状态。',
-    '外部 Agent 安裝失敗。請重新整理以檢查狀態。',
-  ],
-  'External agent installation returned an unknown result. Refresh to check its status.': [
-    'External agent installation returned an unknown result. Refresh to check its status.',
-    '外部 Agent 安装返回未知结果。请刷新以检查状态。',
-    '外部 Agent 安裝傳回未知結果。請重新整理以檢查狀態。',
   ],
   'This agent belongs to another deployment and cannot be configured here.': [
     'This agent belongs to another deployment and cannot be configured here.',
@@ -171,11 +128,11 @@ export const externalAgentMessages = {
     '显示外部 Agent 错误详情',
     '顯示外部 Agent 錯誤詳細資訊',
   ],
-  'This agent uses its own permissions, tools and accounts. It can read and write files, run commands and access the network outside the Maka sandbox.':
+  'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.':
     [
-      'This agent uses its own permissions, tools and accounts. It can read and write files, run commands and access the network outside the Maka sandbox.',
-      '此 Agent 使用自身权限、工具和账号，可在 Maka 沙箱之外读写文件、运行命令和访问网络。',
-      '此 Agent 使用自身權限、工具和帳號，可在 Maka 沙箱之外讀寫檔案、執行命令和存取網路。',
+      'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.',
+      '此 Agent 使用原生完全访问模式，可在 Maka 沙箱之外读写文件、运行命令和访问网络。',
+      '此 Agent 使用原生完整存取模式，可在 Maka 沙箱之外讀寫檔案、執行命令及存取網路。',
     ],
   'Other Maka permissions stay unchanged.': [
     'Other Maka permissions stay unchanged.',
@@ -186,16 +143,6 @@ export const externalAgentMessages = {
     'I understand and accept these permissions',
     '我理解并接受这些权限',
     '我理解並接受這些權限',
-  ],
-  'Automatic installation is not supported in Maka.': [
-    'Automatic installation is not supported in Maka.',
-    '暂不支持在 Maka 中自动安装。',
-    '暫不支援在 Maka 中自動安裝。',
-  ],
-  'Installation options for {name}': [
-    'Installation options for {name}',
-    '{name} 的安装方式',
-    '{name} 的安裝方式',
   ],
   'Could not check external agents. Open details or refresh.': [
     'Could not check external agents. Open details or refresh.',

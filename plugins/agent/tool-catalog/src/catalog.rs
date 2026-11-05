@@ -192,6 +192,14 @@ impl ToolCatalog {
         self.clone()
     }
 
+    /// Describe a narrower embedding boundary without changing the registered identity.
+    pub fn with_description(mut self, name: &str, description: &str) -> Self {
+        if let Some(entry) = Arc::make_mut(&mut self.entries).get_mut(name) {
+            Arc::make_mut(&mut Arc::make_mut(entry).definition).description = description.into();
+        }
+        self
+    }
+
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.entries.values().map(|entry| entry.definition.as_ref())
     }

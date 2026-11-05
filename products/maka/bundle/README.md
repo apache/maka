@@ -45,31 +45,33 @@ The default installation exposes `ModelList`, backed by the Agent’s source-awa
 
 The sidebar conversation menu opens **Child conversations** in a separate, window-sized dialog. Disclosure arrows load direct children across workspaces, including archived conversations; titles open the requested conversation. The outline uses immutable `parentSessionId` creation ancestry, not fork-source history. Deep trees scroll horizontally and long branches page through the existing session directory.
 
-### OAR execution
+### Native external execution
 
-OAR is an explicit Agent installation choice: set `agent.oar` to `{}` in an authored installation (or set the Agent instance's `oar` configuration through a deployment override). Leaving it absent or `null` disables OAR. The shipped `maka-oar-worker` is resolved beside the Maka executable; `executable` and `args` select a development worker when needed.
+Enable individual CLIs in `agent.external.runtimes` (the Agent instance’s `external` configuration), for example `{ "runtimes": { "codex": true } }`. The only runtime IDs are `antigravity`, `codex` and `claude`. Omitted or `null` configuration and unselected runtimes do not launch external processes. `external.commands` can override each CLI’s executable, arguments and environment. Install and sign in through the native CLI; Maka does not bundle an agent SDK, install or migrate credentials.
 
-Development builds may use the official Deno template. Release builds require Maka's controlled denort/V8 and never fall back to the official template. The release notice gate compares the actual runtime notice document with the reviewed document for that exact target; missing review records or changed content fail the build.
+The built-in `external` executor directly uses agy ACP, the shared Codex managed app-server daemon and Claude Code’s interactive PTY. Codex requires native `app-server daemon start` / `app-server proxy` support: existing daemons are reused, missing daemons are started idempotently, and Maka never stops or restarts the shared server. Each invocation connects independently and cancels only its own turn, awaiting a correlated terminal; it does not create a private app-server. agy and Claude launch with `--dangerously-skip-permissions`; Codex uses `never` approval and full-access sandbox settings. Claude never uses `-p`/`--print`, including discovery, and there is no silent execution fallback. Unsupported setup or native capabilities fail explicitly. These CLIs retain native tools and permissions outside the Maka sandbox; Host tools retain Maka’s captured authorization, receipt and cleanup rules.
 
-Enabling OAR accepts the selected external agent's own default permissions and native tools. It does not change Code Mode, Computer Use, ordinary plugins or native-model tool ceilings. An external executor cannot satisfy a session's explicitly narrowed Host tool list. Follow-up inputs during an external turn stay in Maka's editable queue; Stop waits for OAR disposal and worker exit. Unconfirmed cleanup is reported as such and never authorizes automatic prompt replay.
-
-For example, a `backend` value can select:
+For example:
 
 ```json
 {
   "kind": "executor",
   "selection": {
-    "executor": "oar",
-    "settings": { "runtime": "codex", "model": "gpt-6-astra", "thinkingLevel": "high" }
+    "executor": "external",
+    "settings": { "runtime": "codex", "model": "gpt-6-luna", "thinkingLevel": "high" }
   }
 }
 ```
 
-Installed models and effort strings come from the pinned OAR runtime, not Settings connections. Installation is never implicit: trusted application callers can use the Agent's `oarSetup` mutation with `{ "runtime": "codex", "action": { "kind": "probe" } }`, then explicit `plan` or `install` actions with an optional `line`. These only delegate OAR's own installation APIs; unsupported operations remain unsupported. There is no separate registry installer, credential migration or automatic OAR update.
+Model and effort metadata comes from native protocols, not Settings connections. Claude exposes its configured native default; no headless discovery helper is launched. External discovery failures do not discard native-model choices. Catalog reads and individual-model checks share one bounded cache; Refresh invalidates it. Discovery uses the Agent’s first configured workspace root.
 
-When switching execution sources, Maka supplies only the missing canonical readable history before the new turn, bounded to a 64 KiB / 128-fragment recent window. Gaps and partial fragments are explicitly marked. This is context, not a replay of tool requests or a lossless copy of private provider state; thinking and historical attachment payloads are excluded. Consecutive turns on the same OAR runtime resume its original native session without duplicating already-delivered history. Runtime model discovery currently uses the Agent's first configured workspace root, rather than a per-conversation directory.
+A native session ID and its running fence are persisted before submitting the prompt. Consecutive invocations resume that exact session; switching sources supplies only missing canonical readable history (up to 8 MiB of readable text / 64 MiB of encoded source), with explicit gaps and no historical tool replay, thinking or attachment payload replay. The executor reads only the current `maka.agent.external` journal format. Storage and configuration migration is an offline operation, not an activation-time compatibility path.
 
-Uploads are read from Maka-owned immutable material: UTF-8 text/JSON and PNG/JPEG/GIF/WebP images are supported; other media are explicitly refused. Historical attachments are not silently replayed when a native agent session resumes.
+Follow-ups are durably admitted through Maka’s editable queue. Active Codex and Claude turns accept steering by default; on Unix, Antigravity soft-interrupts and resumes the same native conversation in a new Host invocation after the original operations and process settle. Explicit `delivery: "queue"` never interrupts. Stop closes Host-tool admission, requests cancellation, drains original admitted operations, then confirms native process and output settlement. Silence, a Stop hook, EOF or exit code zero does not prove success. Claude’s current-turn JSONL completion record is checked together with API error markers. Unconfirmed cleanup never authorizes automatic prompt replay.
+
+Current uploads support UTF-8 text/JSON and PNG/JPEG/GIF/WebP images where the native model supports them. Claude’s interactive PTY pastes immutable image paths and waits for native image acknowledgements; Antigravity receives ordered paths and media types.
+
+MCP addresses and private configuration paths remain stable across invocations within a Host activation. Definitions are immutable within each invocation and can refresh after settlement. Setup runs once; unchanged instructions are not repeated, while changes or removal are delivered explicitly before the next task. Each invocation still has fresh credentials, its own permissions and original operation receipts. Host restart rebinds the local endpoint without repeating completed bootstrap. Windows launch commands must use a native `.exe` or explicit `node.exe` plus CLI-script arguments; `.cmd`/`.bat` shims are not supported.
 
 ## Run and develop
 

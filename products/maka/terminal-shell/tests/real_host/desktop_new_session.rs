@@ -20,9 +20,10 @@
 use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
-    AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, Focusable, Keystroke,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
-    TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, ExternalPaths,
+    FileDropEvent, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PlatformInput, TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point,
+    px, size,
 };
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -376,6 +377,58 @@ impl Desktop {
             self.copy_input().filter(|copied| copied == text)
         })
         .await;
+    }
+
+    async fn expect_editor_text(&self, expected: &str) {
+        self.until(
+            &format!("the native editor did not contain {expected:?}"),
+            || {
+                self.app
+                    .update(|cx| {
+                        self.window.update(cx, |view, window, cx| {
+                            view.text_for_range(0..u32::MAX as usize, &mut None, window, cx)
+                        })
+                    })
+                    .unwrap()
+                    .filter(|text| text == expected)
+            },
+        )
+        .await;
+    }
+
+    fn drop_paths(&self, paths: Vec<std::path::PathBuf>, position: gpui::Point<gpui::Pixels>) {
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.pump();
+        self.app.update(|cx| {
+            cx.update_window(self.window.into(), |_, window, cx| {
+                window.dispatch_event(
+                    PlatformInput::FileDrop(FileDropEvent::Entered {
+                        position,
+                        paths: ExternalPaths(paths.into()),
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+            self.window.update(cx, |_, _, cx| cx.notify()).unwrap();
+            cx.update_window(self.window.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                for event in [
+                    FileDropEvent::Pending { position },
+                    FileDropEvent::Submit { position },
+                ] {
+                    window.dispatch_event(PlatformInput::FileDrop(event), cx);
+                }
+            })
+            .unwrap();
+        });
     }
 
     async fn new_draft(&self) {
@@ -969,6 +1022,42 @@ async fn desktop_retries_a_failed_turn_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
+    let mut fixture = Fixture::configured(Options {
+        code_mode: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the goal").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.press("Process group").await;
+    let group = desktop.control("Process group").await;
+    let nested = desktop.control("Toggle tool GetGoal").await;
+    assert_eq!(nested.left() - group.left(), px(32.));
+    assert!(desktop.controls("Toggle tool exec").is_empty());
+    desktop.artifact("script-tools");
+    answer.finish().await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    fixture.idle(&desktop.client, session).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
@@ -1221,11 +1310,80 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_new_draft_shows_a_staged_image() {
+async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     let fixture = images_fixture().await;
-    let (path, _) = image_file(&fixture);
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
+    let directory = fixture.directory.path().join("未命名文件夹 2");
+    std::fs::create_dir(&directory).unwrap();
+    for (pending, blur) in [(false, false), (false, true), (true, true)] {
+        if pending {
+            desktop.new_draft().await;
+            desktop.type_text("查看 ").await;
+            desktop.key("right", false);
+            assert!(desktop.app.update(|cx| {
+                desktop
+                    .window
+                    .update(cx, |view, _, _| {
+                        AppView::paste(
+                            view,
+                            nsh_core::PasteEvent::new(format!("'{}'", directory.display())),
+                        )
+                    })
+                    .unwrap()
+            }));
+            desktop
+                .expect_editor_text(&format!("查看 {}", directory.display()))
+                .await;
+        }
+        let original = "前😀待替换 后";
+        desktop.type_text(original).await;
+        desktop.app.update(|cx| {
+            desktop
+                .window
+                .update(cx, |view, window, cx| {
+                    view.set_selected_text_range(3..6, window, cx);
+                })
+                .unwrap();
+        });
+        if blur {
+            desktop.key("tab", false);
+            desktop
+                .until("Tab did not leave the composer input", || {
+                    desktop.platform.text_input_target().is_none().then_some(())
+                })
+                .await;
+        }
+        let composer = desktop.control("Focus message composer").await;
+        let position = if blur {
+            point(
+                composer.center().x,
+                (composer.top() - px(120.)).max(px(64.)),
+            )
+        } else {
+            composer.center()
+        };
+        desktop.platform.set_active(false).unwrap();
+        desktop
+            .until("the source file-manager window was not simulated", || {
+                desktop.app.update(|cx| {
+                    desktop
+                        .window
+                        .update(cx, |_, window, _| {
+                            (!window.is_window_active()).then_some(())
+                        })
+                        .unwrap()
+                })
+            })
+            .await;
+        desktop.drop_paths(vec![directory.clone()], position);
+        let expected = format!("前😀{} 后", directory.display());
+        desktop.expect_editor_text(&expected).await;
+        assert_eq!(desktop.sessions().await.len(), 1);
+        desktop.key("z", true);
+        desktop.expect_editor_text(original).await;
+    }
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    let (path, _) = image_file(&fixture);
     desktop.attach(&path).await;
     let name = path.file_name().unwrap().to_str().unwrap();
     let remove = desktop.control(&format!("Remove attachment {name}")).await;

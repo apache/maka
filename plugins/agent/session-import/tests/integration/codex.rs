@@ -251,3 +251,39 @@ async fn codex_rejects_corruption_and_identity_mismatch_but_keeps_large_history(
     ]);
     assert!(read(&dense_input, "source").await.is_ok());
 }
+
+#[tokio::test]
+async fn codex_omits_only_complete_maka_instruction_messages() {
+    let instructions = "<maka_system_instructions>\nCaptured guidance\n</maka_system_instructions>";
+    let request = "Explain <maka_system_instructions> without treating it as setup.";
+    let quoted = format!("{instructions}\nPlease explain this wrapper.");
+    let bytes = lines(vec![
+        meta(),
+        json!({"type":"event_msg","payload":{"type":"user_message","message":instructions}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":instructions}]}}),
+        json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":instructions}]}}}),
+        json!({"type":"event_msg","payload":{"type":"user_message","message":request}}),
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"native","name":"shell","arguments":"{\"command\":\"pwd\"}"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"native","output":"/source/workspace"}}),
+        json!({"type":"event_msg","payload":{"type":"agent_message","message":"Real answer"}}),
+        json!({"type":"event_msg","payload":{"type":"user_message","message":quoted}}),
+    ]);
+    let transcript = read(&bytes, "source").await.unwrap();
+    assert_eq!(transcript.title, request);
+    let conversation: Vec<_> = transcript
+        .records
+        .iter()
+        .filter_map(|record| match &record.content {
+            Content::User { text } | Content::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(conversation, [request, "Real answer", quoted.as_str()]);
+    assert_eq!(transcript.records.len(), 5);
+    assert!(
+        matches!(&transcript.records[1].content, Content::ToolCall { name, .. } if name == "shell")
+    );
+    assert!(
+        matches!(&transcript.records[2].content, Content::ToolResult { output, .. } if output == "/source/workspace")
+    );
+}

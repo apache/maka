@@ -56,6 +56,8 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       await writeFile(join(root, 'packages/cli', name), 'package documentation');
     await mkdir(join(root, 'build/app'), { recursive: true });
     await writeFile(join(root, 'build/app/main.js'), 'stale generated application');
+    await writeFile(join(root, 'build/unused-worker'), 'stale worker');
+    await writeFile(join(root, 'build/unused-worker.exe'), 'stale worker');
     for (const name of [
       'maka',
       'maka.exe',
@@ -65,8 +67,6 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       'maka-service.exe',
       'maka-python-worker',
       'maka-python-worker.exe',
-      'maka-oar-worker',
-      'maka-oar-worker.exe',
     ])
       await writeFile(join(root, 'build', name), name + ' bytes');
     // Exercise the actual external validator call without executing foreign-target
@@ -91,9 +91,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, shell], {encoding:'utf8'}), /^-rwx/);
       assert.equal(files.includes('package/bin/maka-service.exe'), windows);
       assert.ok(files.includes('package/bin/' + (windows ? 'maka-python-worker.exe' : 'maka-python-worker')));
-      const oar = 'package/bin/' + (windows ? 'maka-oar-worker.exe' : 'maka-oar-worker');
-      assert.equal(execFileSync('tar', ['-xOf', archive, oar], {encoding:'utf8'}), oar.split('/').pop() + ' bytes');
-      if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, oar], {encoding:'utf8'}), /^-rwx/);
+      assert.ok(!files.some((file) => file.includes('unused-worker')));
       assert.equal(files.some((file) => file.startsWith('package/bin/Maka.app/')), macos);
       assert.ok(!files.some((file) => file.includes('/app/')));
       assert.equal(files.includes('package/bin/maka-desktop-shell'), !macos && !windows);

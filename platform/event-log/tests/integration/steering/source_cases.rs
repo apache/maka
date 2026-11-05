@@ -291,8 +291,16 @@ async fn edited_and_promoted_resource_sources_are_atomic_and_survive_restart_and
     );
     sql.execute_batch("DROP TRIGGER refuse_source_consumption")
         .unwrap();
-    assert_eq!(log.commit_pending_steering(&owner).await.unwrap(), 2);
-    assert_eq!(log.commit_pending_steering(&owner).await.unwrap(), 0);
+    assert_eq!(
+        log.commit_pending_steering(&owner).await.unwrap(),
+        vec![second.source.clone(), expected.clone()]
+    );
+    assert!(
+        log.commit_pending_steering(&owner)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(log.pending_messages("session").await.unwrap().is_empty());
     for source in [&expected, &second.source] {
         assert_eq!(

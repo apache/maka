@@ -51,6 +51,8 @@ struct HeaderOutcome<'a> {
     model_projection: &'a RawValue,
     #[serde(default)]
     artifacts: Vec<ArtifactEvidence>,
+    #[serde(default)]
+    is_error: bool,
 }
 
 pub(super) fn decode(header: &str, offset: usize, body: &[u8]) -> Result<RuntimeEvent, StoreError> {
@@ -70,6 +72,7 @@ pub(super) fn decode(header: &str, offset: usize, body: &[u8]) -> Result<Runtime
         raw,
         model_projection,
         artifacts,
+        is_error,
     } = outcome;
     let placeholder = model_projection.get();
     if kind != "tool_settled"
@@ -96,6 +99,7 @@ pub(super) fn decode(header: &str, offset: usize, body: &[u8]) -> Result<Runtime
                 raw,
                 model_projection,
                 artifacts,
+                is_error,
             },
         },
     })
@@ -115,7 +119,7 @@ mod tests {
             "invocation":{"session_id":"s","turn_id":"t","run_id":"r","invocation_id":"i"},
             "fact":{"kind":"tool_settled","operation_id":"call","unknown":{"a":[1,true,null]},
                 "outcome":{"kind":"succeeded","raw":{"bytes":0,"digest":"sha256:empty"},
-                    "model_projection":value}}
+                    "model_projection":value,"is_error":true}}
         }))
         .unwrap()
     }

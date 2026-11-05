@@ -109,10 +109,10 @@ export const configurations = {
           $ref: '#/$defs/AgentServiceExecutor',
         },
       },
-      oar: {
+      external: {
         anyOf: [
           {
-            $ref: '#/$defs/AgentOarConfiguration',
+            $ref: '#/$defs/AgentExternalConfiguration',
           },
           {
             type: 'null',
@@ -348,27 +348,87 @@ export const configurations = {
         additionalProperties: false,
         required: ['import'],
       },
-      AgentOarConfiguration: {
-        description: "Explicit opt-in to OAR's own default permissions and native agent tools.",
+      AgentExternalConfiguration: {
+        description: "Explicit opt-in to the three CLIs' native full-access tools and permissions.",
         type: 'object',
         properties: {
-          enabled: {
-            type: 'boolean',
-            default: true,
-          },
           runtimes: {
-            description:
-              'Each runtime requires explicit opt-in, even when the legacy gate is enabled.',
-            type: 'object',
-            additionalProperties: {
-              type: 'boolean',
+            $ref: '#/$defs/AgentNativeRuntimeSwitches',
+            default: {
+              antigravity: false,
+              codex: false,
+              claude: false,
             },
+          },
+          commands: {
+            $ref: '#/$defs/AgentNativeCommands',
             default: {},
           },
+        },
+        additionalProperties: false,
+      },
+      AgentNativeRuntimeSwitches: {
+        type: 'object',
+        properties: {
+          antigravity: {
+            type: 'boolean',
+            default: false,
+          },
+          codex: {
+            type: 'boolean',
+            default: false,
+          },
+          claude: {
+            type: 'boolean',
+            default: false,
+          },
+        },
+        additionalProperties: false,
+      },
+      AgentNativeCommands: {
+        type: 'object',
+        properties: {
+          antigravity: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+          codex: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+          claude: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+        },
+        additionalProperties: false,
+      },
+      AgentNativeCommand: {
+        description:
+          'Ordinary launch overrides. Authentication remains in the native CLI login store.',
+        type: 'object',
+        properties: {
           executable: {
-            description: 'Absent selects the worker shipped beside the Maka executable.',
-            type: ['string', 'null'],
-            default: null,
+            type: 'string',
+            minLength: 1,
           },
           args: {
             type: 'array',
@@ -377,8 +437,16 @@ export const configurations = {
             },
             default: [],
           },
+          env: {
+            type: 'object',
+            additionalProperties: {
+              type: 'string',
+            },
+            default: {},
+          },
         },
         additionalProperties: false,
+        required: ['executable'],
       },
       AgentWorkspacePermissions: {
         type: 'object',
@@ -822,10 +890,10 @@ export const configurations = {
             },
             description: 'Explicit service backends; discovery does not authorize execution.',
           },
-          oar: {
+          external: {
             anyOf: [
               {
-                $ref: '#/$defs/AgentOarConfiguration',
+                $ref: '#/$defs/AgentExternalConfiguration',
               },
               {
                 type: 'null',
@@ -1060,27 +1128,86 @@ export const configurations = {
         },
         required: ['import'],
       },
-      AgentOarConfiguration: {
+      AgentExternalConfiguration: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          enabled: {
-            type: 'boolean',
-            default: true,
-          },
           runtimes: {
-            type: 'object',
-            additionalProperties: {
-              type: 'boolean',
+            $ref: '#/$defs/AgentNativeRuntimeSwitches',
+            default: {
+              antigravity: false,
+              codex: false,
+              claude: false,
             },
-            description:
-              'Each runtime requires explicit opt-in, even when the legacy gate is enabled.',
+          },
+          commands: {
+            $ref: '#/$defs/AgentNativeCommands',
             default: {},
           },
+        },
+        description: "Explicit opt-in to the three CLIs' native full-access tools and permissions.",
+      },
+      AgentNativeRuntimeSwitches: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          antigravity: {
+            type: 'boolean',
+            default: false,
+          },
+          codex: {
+            type: 'boolean',
+            default: false,
+          },
+          claude: {
+            type: 'boolean',
+            default: false,
+          },
+        },
+      },
+      AgentNativeCommands: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          antigravity: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+          codex: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+          claude: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentNativeCommand',
+              },
+              {
+                type: 'null',
+              },
+            ],
+          },
+        },
+      },
+      AgentNativeCommand: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
           executable: {
-            type: ['string', 'null'],
-            description: 'Absent selects the worker shipped beside the Maka executable.',
-            default: null,
+            type: 'string',
+            minLength: 1,
           },
           args: {
             type: 'array',
@@ -1089,8 +1216,17 @@ export const configurations = {
             },
             default: [],
           },
+          env: {
+            type: 'object',
+            additionalProperties: {
+              type: 'string',
+            },
+            default: {},
+          },
         },
-        description: "Explicit opt-in to OAR's own default permissions and native agent tools.",
+        required: ['executable'],
+        description:
+          'Ordinary launch overrides. Authentication remains in the native CLI login store.',
       },
       AgentWorkspacePermissions: {
         type: 'object',

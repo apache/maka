@@ -114,7 +114,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer" | "oarSetup"
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")

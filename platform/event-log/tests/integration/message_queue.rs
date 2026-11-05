@@ -430,7 +430,7 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
     .unwrap();
     assert!(log.append(&omitted_receipt).await.is_err());
     assert_eq!(log.message_queue("session").await.unwrap(), promoted);
-    assert_eq!(log.commit_pending_steering(&second).await.unwrap(), 1);
+    assert_eq!(log.commit_pending_steering(&second).await.unwrap().len(), 1);
     assert!(matches!(
         log.edit_message_queue(
             "session",

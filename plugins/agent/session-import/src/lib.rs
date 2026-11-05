@@ -26,6 +26,7 @@ pub mod codex;
 mod jsonl;
 pub mod opencode;
 pub mod source;
+mod synthetic;
 mod transcript;
 
 pub use transcript::{Error, Fingerprint, Transcript};

@@ -249,17 +249,11 @@ impl Owner {
                                 .workspace,
                         ),
                         parent,
-                        if basis.executor.is_some() {
-                            vec![]
-                        } else {
-                            self.selected_tools(
-                                &input.session_id,
-                                &basis,
-                                false,
-                                basis.model.as_ref().and_then(|model| model.editing_tools),
-                            )?
-                            .names()
-                        },
+                        self.skill_tool_names(
+                            &input.session_id,
+                            &basis,
+                            basis.model.as_ref().and_then(|model| model.editing_tools),
+                        )?,
                     )
                     .await?
                 {
@@ -286,7 +280,12 @@ impl Owner {
                 )
                 .map_err(|_| "agent_message_basis_invalid")?;
                 if control.compacting
-                    || control.basis.executor.is_some()
+                    || control.basis.executor.as_ref().is_some_and(|executor| {
+                        !matches!(
+                            self.executors.active_delivery(executor),
+                            crate::executor::ActiveDelivery::Steer
+                        )
+                    })
                     || !basis.same_execution(&control.basis)
                 {
                     return rejected(QueueRejection::ExecutionChanged);

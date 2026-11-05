@@ -974,14 +974,13 @@ impl Handler for Agent {
                     encode(sent)
                 }
                 "externalAgents" => {
-                    let input: maka_agent_api::oar::ExternalAgentsRead = decode(input)?;
+                    let input: maka_agent_api::external::ExternalAgentsRead = decode(input)?;
                     encode(
                         owner
                             .external_agents(input.inspect, context.scope())
                             .await?,
                     )
                 }
-                "oarSetup" => encode(owner.oar_setup(decode(input)?, context).await?),
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;

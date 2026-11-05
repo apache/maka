@@ -29,39 +29,6 @@ import { readPreviewRelease } from './publish-cli.mjs';
 
 const run = promisify(execFile);
 
-/** Probe the standalone worker with no Node/npm or agent installation on PATH. */
-export async function verifyOarWorker(binary) {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-oar-verification-'));
-  try {
-    const standalone = join(directory, basename(binary));
-    await copyFile(resolve(binary), standalone);
-    const stdout = await new Promise((resolveOutput, reject) => {
-      const child = execFile(
-        standalone,
-        [],
-        {
-          cwd: directory,
-          env: { ...process.env, PATH: '', HOME: directory, USERPROFILE: directory },
-          timeout: 15_000,
-          maxBuffer: 1024 * 1024,
-          encoding: 'utf8',
-          windowsHide: true,
-        },
-        (error, stdout) => (error ? reject(error) : resolveOutput(stdout)),
-      );
-      child.stdin.write(
-        JSON.stringify({ kind: 'setup', action: 'probe', runtime: 'codex', cwd: directory }) + '\n',
-      );
-      child.stdin.on('error', reject);
-    });
-    const result = JSON.parse(stdout);
-    if (result.kind !== 'setup' || typeof result.value?.installation?.kind !== 'string')
-      throw new Error('Packaged OAR worker failed its installation probe');
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
 /** Exercise the actual packaged launcher and this machine's native component. */
 export async function verifyRelease(directory) {
   const packages = await readPreviewRelease(directory);
@@ -110,14 +77,6 @@ export async function verifyRelease(directory) {
     );
     if (desktop.stdout.trim() !== 'maka-desktop-shell ' + native.source.version)
       throw new Error('Installed desktop shell reports another source version');
-    await verifyOarWorker(
-      join(
-        installed,
-        native.name,
-        'bin',
-        process.platform === 'win32' ? 'maka-oar-worker.exe' : 'maka-oar-worker',
-      ),
-    );
     const terminal = await run(process.execPath, [command, 'terminal-shell', '--version'], options);
     if (!terminal.stdout.trim().endsWith(' ' + native.source.version))
       throw new Error('Installed terminal shell reports another source version');

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { effect } from 'nsh';
+import { effect, platform } from 'nsh';
+import { Window } from 'nsh/desktop';
 import type { InputRef } from 'nsh';
 import { keymap } from 'nsh';
 import type {
@@ -52,6 +53,7 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
   dismiss(): void;
 }) {
   let focused: Owner | null = null;
+  let dropped: { target: Target<Owner>; text: string } | null = null;
   const capture = (owner: Owner | null): Target<Owner> | null => {
     if (
       !owner ||
@@ -66,17 +68,19 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
       ? { owner, node, text: owner.draft(), selection: { ...options.selection() } }
       : null;
   };
+  const unchanged = (target: Target<Owner>) => {
+    const current = capture(target.owner);
+    return (
+      current !== null &&
+      current.node === target.node &&
+      current.text === target.text &&
+      current.selection.start === target.selection.start &&
+      current.selection.end === target.selection.end
+    );
+  };
   const insert = (target: Target<Owner>, text: string) => {
     if (!text) return;
-    const current = capture(target.owner);
-    if (
-      !current ||
-      focused !== target.owner ||
-      current.node !== target.node ||
-      current.text !== target.text ||
-      current.selection.start !== target.selection.start ||
-      current.selection.end !== target.selection.end
-    ) {
+    if (focused !== target.owner || !unchanged(target)) {
       if (options.owner() === target.owner) {
         const reason = new UiError('The input changed. Paste again.');
         if ('sessionId' in target.owner) target.owner.attachments.notify(reason);
@@ -119,32 +123,62 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
     );
     return () => unbind.forEach((remove) => remove());
   });
+  const paths = (
+    target: Target<Owner>,
+    uris: string[],
+    onText = (text: string) => insert(target, text),
+  ) => {
+    try {
+      if ('sessionId' in target.owner) {
+        target.owner.attachments.clearNotice();
+        target.owner.attachments.dropFiles(uris, onText);
+      } else target.owner.dropFiles(uris, onText);
+    } catch (reason) {
+      report(target.owner, reason);
+    }
+  };
   const drop = (owner: Owner, event: { uris: string[] }) => {
     const target = capture(owner);
     if (!target) return;
     options.dismiss();
-    try {
-      if ('sessionId' in owner) {
-        owner.attachments.clearNotice();
-        owner.attachments.dropFiles(event.uris, (text) => insert(target, text));
-      } else owner.selectFiles(event.uris);
-    } catch (reason) {
-      report(owner, reason);
+    if (platform.isTerminal) {
+      paths(target, event.uris);
+      return;
     }
+    Window.orderFront();
+    paths(target, event.uris, (text) => {
+      if (!unchanged(target)) {
+        insert(target, text);
+        return;
+      }
+      dropped = { target, text };
+      // A fresh focus receipt is needed even if the background field kept focus.
+      target.node.blur();
+      target.node.focus();
+    });
   };
   return {
     drop,
     paste(owner: Owner, event: { text: string; uris: string[]; files: unknown[] }) {
       if ('sessionId' in owner) owner.attachments.clearNotice();
       if (event.uris.length) {
-        drop(owner, event);
+        const target = capture(owner);
+        if (target) {
+          options.dismiss();
+          paths(target, event.uris);
+        }
       } else if (!event.text && !event.files.length) {
         const target = capture(owner);
         if (target) clipboard(target);
       }
     },
     focus(owner: Owner) {
-      if (options.owner() === owner) focused = owner;
+      if (options.owner() !== owner) return;
+      focused = owner;
+      const drop = dropped;
+      dropped = null;
+      if (drop?.target.owner !== owner) return;
+      insert(drop.target, drop.text);
     },
     blur(owner: Owner) {
       if (focused === owner) focused = null;

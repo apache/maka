@@ -87,7 +87,8 @@ async fn cold_empty_boundary_reads_progress_while_the_original_writer_is_held() 
         assert_eq!(
             log.commit_pending_steering(&queue::invocation("turn"))
                 .await
-                .unwrap(),
+                .unwrap()
+                .len(),
             0
         );
     })
@@ -108,7 +109,13 @@ async fn real_steering_still_commits_once_through_the_original_writer_and_reopen
         .unwrap();
     let invocation = queue::invocation("turn");
     queue::append(&log, &invocation, queue::opening()).await;
-    assert_eq!(log.commit_pending_steering(&invocation).await.unwrap(), 0);
+    assert_eq!(
+        log.commit_pending_steering(&invocation)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
     let pending = queue::admission(&invocation, "steering", MessageDisposition::Steering);
     log.admit_message(pending.clone()).await.unwrap();
     let (release, writer) = hold_writer(&log).await;
@@ -123,7 +130,7 @@ async fn real_steering_still_commits_once_through_the_original_writer_and_reopen
     );
     assert!(futures_util::poll!(delivery.as_mut()).is_pending());
     release.send(()).unwrap();
-    assert_eq!(delivery.await.unwrap(), 1);
+    assert_eq!(delivery.await.unwrap(), vec![pending.source.clone()]);
     writer.await.unwrap().unwrap();
     let proof = log
         .steering_message("session", "steering")
@@ -138,7 +145,13 @@ async fn real_steering_still_commits_once_through_the_original_writer_and_reopen
     assert_eq!(message.as_ref(), &pending.source.message);
     assert_eq!(source.as_ref(), &pending.source);
     assert!(log.pending_messages("session").await.unwrap().is_empty());
-    assert_eq!(log.commit_pending_steering(&invocation).await.unwrap(), 0);
+    assert_eq!(
+        log.commit_pending_steering(&invocation)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
     let reopened = EventLog::open(&path).await.unwrap();
     let persisted = reopened

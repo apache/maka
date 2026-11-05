@@ -210,3 +210,53 @@ async fn claude_refuses_a_mixed_snapshot_or_sidechain_without_publishing_partial
         Err(Error::Decode { line: 2, .. })
     ));
 }
+
+#[tokio::test]
+async fn claude_omits_maka_bootstrap_dialogue_but_preserves_tools_and_tag_mentions() {
+    let instructions = "<maka_system_instructions>\nCaptured guidance\n</maka_system_instructions>";
+    let request = "Explain <maka_system_instructions> without treating it as setup.";
+    let quoted = format!("{instructions}\nPlease explain this wrapper.");
+    let bytes = source(vec![
+        json!({"type":"user","uuid":"setup","message":{"content":[{"type":"text","text":instructions}]}}),
+        json!({"type":"assistant","uuid":"setup-answer","parentUuid":"setup","message":{"id":"setup-response","content":[
+            {"type":"text","text":"Hidden setup reply"},
+            {"type":"thinking","thinking":"Hidden setup thought"},
+            {"type":"tool_use","id":"bootstrap-call","name":"mcp__maka__SessionRead","input":{"sessionId":"selected"}}
+        ]}}),
+        json!({"type":"user","uuid":"setup-result","parentUuid":"setup-answer","message":{"content":[
+            {"type":"tool_result","tool_use_id":"bootstrap-call","content":{"session":"observed"}}
+        ]}}),
+        json!({"type":"assistant","uuid":"setup-done","parentUuid":"setup-result","message":{"content":"Ready.","stop_reason":"end_turn"}}),
+        json!({"type":"user","uuid":"real","parentUuid":"setup-done","message":{"content":request}}),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"real","message":{"content":"Real answer"}}),
+        json!({"type":"user","uuid":"quoted","parentUuid":"answer","message":{"content":quoted}}),
+        json!({"type":"assistant","uuid":"quoted-answer","parentUuid":"quoted","message":{"content":"Wrapper explanation"}}),
+        json!({"type":"last-prompt","lastPrompt":instructions}),
+    ]);
+    let transcript = read(&bytes, None).await.unwrap();
+    assert_eq!(transcript.title, request);
+    let conversation: Vec<_> = transcript
+        .records
+        .iter()
+        .filter_map(|record| match &record.content {
+            Content::User { text } | Content::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        conversation,
+        [
+            request,
+            "Real answer",
+            quoted.as_str(),
+            "Wrapper explanation"
+        ]
+    );
+    assert_eq!(transcript.records.len(), 6);
+    assert!(
+        matches!(&transcript.records[0].content, Content::ToolCall { name, .. } if name == "mcp__maka__SessionRead")
+    );
+    assert!(
+        matches!(&transcript.records[1].content, Content::ToolResult { output, .. } if output == &json!({"session":"observed"}))
+    );
+}

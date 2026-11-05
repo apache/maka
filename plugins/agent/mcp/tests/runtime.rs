@@ -18,7 +18,7 @@
  */
 
 use maka_agent_facts::{
-    event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent},
+    event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent, ToolOutcome},
     tool_call::ToolCallIdentity,
     tools::{ToolError, ToolJournal},
 };
@@ -82,6 +82,12 @@ async fn journal(connection: Connection, name: &str, input: Value) -> Value {
         )
         .await
         .unwrap();
+    let settled = log.prefix(16, usize::MAX).await.unwrap().events;
+    assert!(settled.iter().any(|stored| matches!(
+        &stored.event.fact,
+        Fact::ToolSettled { outcome: ToolOutcome::Succeeded { is_error, .. }, .. }
+            if *is_error == (result["isError"] == true)
+    )));
     Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
     result
 }

@@ -136,53 +136,13 @@ export async function cargoLicenseRecord(root, pkg, supplements, provenance) {
   };
 }
 
-/** Each reviewed document covers one actual runtime graph, V8 build and toolchain. */
-export async function runtimeNoticeRecord(
-  root,
-  { version, target, supplements, actual, requireActual = true },
-) {
-  const key = `deno-runtime@${version}/${target}`;
-  const reviewed = supplements[key];
-  if (reviewed?.length !== 1 || !reviewed[0].file)
-    throw new Error(
-      `Deno ${version} runtime third-party notices have not been reviewed for ${target}; add one full local document as ${key}`,
-    );
-  const texts = await supplementTexts(root, reviewed);
-  const prefix = `Controlled Deno runtime ${version}\nTarget: ${target}\n`;
-  if (!texts[0].content.startsWith(prefix))
-    throw new Error(`Reviewed runtime notice version/target mismatch: ${key}`);
-  if (requireActual && !actual)
-    throw new Error(`Actual built runtime notices are required for ${target}`);
-  if (actual && (await readFile(actual, 'utf8')) !== texts[0].content)
-    throw new Error(`Built runtime notices differ from reviewed content: ${key}`);
-  return {
-    id: `runtime:deno@${version}/${target}`,
-    component: `Deno ${version} compiled runtime for ${target} (including third-party dependencies)`,
-    license: 'See individual runtime dependency notices',
-    files: [],
-    texts,
-  };
-}
-
 /** Resolve installed components and licensing facts, independently of the reviewed snapshot. */
 async function components(
   root,
-  {
-    bundleInputs,
-    oarBundleInputs,
-    oarRuntimeNotices,
-    target,
-    env = process.env,
-    run: metadataCommand = run,
-  },
-  scope = {
-    cargoTargets: target ? [target] : distributionTargets,
-    runtimeTargets: target ? [target] : distributionTargets,
-    requireRuntimeBuild: Boolean(target),
-  },
+  { bundleInputs, target, env = process.env, run: metadataCommand = run },
+  scope = { cargoTargets: target ? [target] : distributionTargets },
 ) {
   if (!bundleInputs) throw new Error('The current product bundle input manifest is required');
-  if (!oarBundleInputs) throw new Error('The current OAR bundle input manifest is required');
   const records = new Map();
   function add(record) {
     const digest = hash(
@@ -214,20 +174,6 @@ async function components(
   const require = createRequire(join(dependencyRoot, 'package.json'));
   const modules = await realpath(join(dependencyRoot, 'node_modules'));
   const lock = JSON.parse(await readFile(join(dependencyRoot, 'package-lock.json'), 'utf8'));
-  const deno = JSON.parse(
-    await readFile(join(dependencyRoot, 'node_modules/deno/package.json'), 'utf8'),
-  );
-  for (const triple of scope.runtimeTargets) {
-    add(
-      await runtimeNoticeRecord(root, {
-        version: deno.version,
-        target: triple,
-        supplements,
-        actual: scope.requireRuntimeBuild ? oarRuntimeNotices : undefined,
-        requireActual: scope.requireRuntimeBuild,
-      }),
-    );
-  }
   const directory = join(root, 'third-party/playwright');
   const playwright = JSON.parse(await readFile(join(directory, 'upstream.json'), 'utf8'));
   const playwrightFiles = [];
@@ -287,8 +233,6 @@ async function components(
   // Ajv standalone validators embed compiler-generated code without importing it.
   for (const input of [
     require.resolve('ajv/dist/standalone/index.js'),
-    require.resolve('deno/package.json'),
-    ...Object.keys(JSON.parse(await readFile(oarBundleInputs, 'utf8')).inputs),
     ...JSON.parse(await readFile(bundleInputs, 'utf8')),
   ]) {
     if (!input.includes('node_modules')) continue;
@@ -337,36 +281,20 @@ async function verifyCoverage(root, options, manifest, scope) {
   return join(root, documentPath);
 }
 
-/** Release verification always requires the actual built runtime for an explicit target. */
+/** Verify the actual distribution dependency closure for the selected target. */
 export async function verifyNotices(root, options) {
   const manifest = JSON.parse(await readFile(join(root, manifestPath), 'utf8'));
   return verifyCoverage(root, options, manifest);
 }
 
-/** PR coverage checks reviewed inputs, not an assertion about any newly built runtime. */
+/** PR coverage always checks all distribution Cargo platforms. */
 export async function verifyReviewedNotices(root, options) {
-  if (options.target || options.oarRuntimeNotices)
+  if (options.target)
     throw new Error(
-      'Reviewed coverage does not accept build inputs; use check for release verification',
+      'Reviewed coverage does not accept a target; use check for release verification',
     );
   const manifest = JSON.parse(await readFile(join(root, manifestPath), 'utf8'));
-  const supplements = JSON.parse(
-    await readFile(join(root, 'scripts/rust/notices-sources.json'), 'utf8'),
-  );
-  const runtimeKeys = [
-    ...Object.keys(supplements).filter((key) => key.startsWith('deno-runtime@')),
-    ...Object.keys(manifest.components).filter((key) => key.startsWith('runtime:deno@')),
-  ];
-  const targets = [...new Set(runtimeKeys.map((key) => key.slice(key.indexOf('/') + 1)))].sort();
-  if (!targets.length) throw new Error('No reviewed runtime targets in the notice snapshot');
-  for (const target of targets)
-    if (!distributionTargets.includes(target))
-      throw new Error('Unsupported reviewed runtime target: ' + target);
-  return verifyCoverage(root, options, manifest, {
-    cargoTargets: distributionTargets,
-    runtimeTargets: targets,
-    requireRuntimeBuild: false,
-  });
+  return verifyCoverage(root, options, manifest, { cargoTargets: distributionTargets });
 }
 
 /** Render license records without asserting that they are a reviewed release snapshot. */
@@ -437,8 +365,6 @@ export async function renderNoticeRecords(root, records) {
 export async function generateNotices(root, options) {
   const records = await components(root, options, {
     cargoTargets: distributionTargets,
-    runtimeTargets: options.target ? [options.target] : distributionTargets,
-    requireRuntimeBuild: Boolean(options.target),
   });
   const { content, texts } = await renderNoticeRecords(root, records);
   await writeFile(join(root, documentPath), content);
@@ -465,12 +391,9 @@ async function withProduct(root, action, options) {
       MAKA_UI_BUNDLER: await uiCompiler(root),
       MAKA_UI_BUNDLE_DIR: '',
     });
-    const oar = join(stage, 'oar');
-    run(process.execPath, ['scripts/oar/build.mjs', '--bundle-only', '--output', oar], root);
     return await action(root, {
       ...options,
       bundleInputs: join(product, 'bundle-inputs.json'),
-      oarBundleInputs: join(oar, 'bundle-inputs.json'),
     });
   } finally {
     await rm(stage, { recursive: true, force: true });
@@ -480,14 +403,10 @@ async function withProduct(root, action, options) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { target: { type: 'string' }, 'oar-runtime-notices': { type: 'string' } },
+    options: { target: { type: 'string' } },
   });
   if (positionals.length !== 1 || !['check', 'check-reviewed', 'generate'].includes(positionals[0]))
-    throw new Error(
-      'Usage: notices.mjs <check|check-reviewed|generate> [--target TRIPLE --oar-runtime-notices FILE]',
-    );
-  if (Boolean(values.target) !== Boolean(values['oar-runtime-notices']))
-    throw new Error('--target and --oar-runtime-notices must be supplied together');
+    throw new Error('Usage: notices.mjs <check|check-reviewed|generate> [--target TRIPLE]');
   if (positionals[0] === 'check-reviewed' && values.target)
     throw new Error('check-reviewed does not accept build inputs; use check');
   const action = {
@@ -498,9 +417,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   console.log(
     await withProduct(repository, action, {
       target: values.target,
-      oarRuntimeNotices: values['oar-runtime-notices']
-        ? resolve(values['oar-runtime-notices'])
-        : undefined,
     }),
   );
 }

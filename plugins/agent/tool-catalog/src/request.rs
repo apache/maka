@@ -79,10 +79,8 @@ impl ToolCatalog {
         Arc::make_mut(&mut self.request_bindings).push(Group { names, binding });
         Ok(self)
     }
-    pub(crate) async fn bind_native_request(
-        &mut self,
-        request: BindingRequest,
-    ) -> Result<(), ToolError> {
+    /// Apply request projections before publishing or invoking the catalog.
+    pub async fn bind_request(&mut self, request: BindingRequest) -> Result<(), ToolError> {
         for group in self.request_bindings.iter() {
             let selected: BTreeSet<_> = group
                 .names
@@ -264,7 +262,7 @@ mod tests {
             cancellation: tokio_util::sync::CancellationToken::new(),
         };
         // This fixture's binder has no external asynchronous work.
-        let mut future = std::pin::pin!(catalog.bind_native_request(request));
+        let mut future = std::pin::pin!(catalog.bind_request(request));
         match future
             .as_mut()
             .poll(&mut Context::from_waker(Waker::noop()))

@@ -152,6 +152,7 @@ pub struct Fixture {
 pub struct Options {
     pub images: bool,
     pub session_tools: bool,
+    pub code_mode: bool,
 }
 
 impl Fixture {
@@ -190,6 +191,7 @@ impl Fixture {
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
             options.images,
+            options.code_mode,
         )
         .await;
         let store = Arc::new(RootStore::open(owner).await.unwrap());
@@ -398,7 +400,12 @@ impl Fixture {
         assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
-pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
+pub(crate) async fn configure(
+    owner: Arc<RootOwner>,
+    base: &str,
+    vision: bool,
+    code_mode: bool,
+) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
         maka_config::ConfigurationStore::for_root(owner)
@@ -406,7 +413,10 @@ pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -
             .unwrap(),
     );
     let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"openai-compatible"});
-    let overrides = json!({"fixture-model":{"contextWindow":200000,"vision":vision},"fixture-model-alt":{"contextWindow":200000,"vision":vision}});
+    let mut overrides = json!({"fixture-model":{"contextWindow":200000,"vision":vision},"fixture-model-alt":{"contextWindow":200000,"vision":vision}});
+    if code_mode {
+        overrides["fixture-model"]["codeMode"] = json!(true);
+    }
     let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
     let CatalogMutationResult::Committed {connection:Some(connection),..} = config.create_connection(serde_json::from_value(json!({
         "expectedCatalogRevision":0,"connection":{"slug":"nsh-fixture","name":"NSH fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":enabled_models,"modelOverrides":overrides}
@@ -775,9 +785,6 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
-    pub fn oar_setup(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "oarSetup", "mutation")
-    }
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }

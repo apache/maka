@@ -16,6 +16,7 @@
 # working notes are not source-release inputs.
 /.claude export-ignore
 /.maka-shots export-ignore
+/docs/_pr export-ignore
 
 # Preserve verbatim whitespace in the pinned NSH source snapshot.
 /third-party/nsh/.gitattributes whitespace=-blank-at-eof

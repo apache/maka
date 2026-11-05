@@ -86,6 +86,7 @@ pub async fn read(file: &PinnedFile, expected_session_id: &str) -> Result<Transc
                     records: Records::default(),
                     turn: None,
                     calls: BTreeMap::new(),
+                    bootstrap: false,
                 };
                 let observed = jsonl::scan(reader, length, |line| {
                     let row: Row<'_> = line.decode()?;
@@ -173,7 +174,8 @@ impl Metadata {
             (1, row.summary.as_ref()),
         ] {
             if priority >= self.priority
-                && let Some(text) = text.filter(|text| !text.trim().is_empty())
+                && let Some(text) = text
+                    .filter(|text| !text.trim().is_empty() && !crate::synthetic::instructions(text))
             {
                 self.title = Some(title(text));
                 self.priority = priority;
@@ -223,6 +225,7 @@ struct Converter {
     records: Records,
     turn: Option<String>,
     calls: BTreeMap<String, Call>,
+    bootstrap: bool,
 }
 impl Converter {
     fn accept(&mut self, row: &Row<'_>, line: &jsonl::Line<'_>) -> Result<(), Error> {
@@ -282,12 +285,17 @@ impl Converter {
                         }
                     }
                 } else {
+                    if message.content.instructions() {
+                        self.bootstrap = true;
+                        return Ok(());
+                    }
                     let text = message.content.user_text();
                     if !text.is_empty() {
                         let content =
                             if row.is_meta || row.is_compact_summary || wire::synthetic(&text) {
                                 Content::Note { text }
                             } else {
+                                self.bootstrap = false;
                                 self.turn = Some(source.clone());
                                 Content::User { text }
                             };
@@ -313,7 +321,9 @@ impl Converter {
                             text: "Source reported an API error".into(),
                         },
                     )?;
-                } else if let Some(stop) = stop {
+                } else if !self.bootstrap
+                    && let Some(stop) = stop
+                {
                     let text = match stop {
                         StopReason::EndTurn | StopReason::StopSequence => {
                             Some("Source turn completed")
@@ -384,7 +394,7 @@ impl Converter {
                 }
             }
         }
-        if !text.is_empty() || !thinking.is_empty() {
+        if !self.bootstrap && (!text.is_empty() || !thinking.is_empty()) {
             self.append(
                 source,
                 line,

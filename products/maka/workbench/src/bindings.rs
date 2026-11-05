@@ -359,11 +359,18 @@ impl ApplicationHost {
     ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        let snapshots = uploads::stage_files(owner.clone(), files).await?;
-        Ok(snapshots
-            .into_iter()
-            .map(|file| uploads::staged_file(owner.clone(), file))
-            .collect())
+        Ok(uploads::stage_files(owner, files, false).await?.files())
+    }
+    /// Interpret a path drop before a session exists, preserving directory paths as text.
+    pub async fn stage_dropped_files(
+        this: Instance<Self>,
+        files: Vec<String>,
+    ) -> Result<Instance<uploads::StagedClipboard>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        Ok(Instance::new(
+            uploads::stage_files(owner, files, true).await?,
+        ))
     }
     /// Capture an explicit clipboard paste before a session exists.
     pub async fn stage_clipboard(

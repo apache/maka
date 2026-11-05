@@ -29,6 +29,21 @@ pub(crate) fn resolve(items: &[String]) -> Result<Vec<PathBuf>, String> {
     items.iter().map(|item| normalize(item)).collect()
 }
 
+pub(crate) fn pasted_directories(items: &[String]) -> Result<Option<String>, String> {
+    let paths = resolve(items)?;
+    if !paths.iter().any(|path| path.is_dir()) {
+        return Ok(None);
+    }
+    paths
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| "The pasted path is not valid Unicode".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|paths| Some(paths.join("\n")))
+}
+
 fn drive_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
@@ -124,6 +139,25 @@ fn windows_path(value: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_directories_preserve_path_order_and_leave_file_lists_for_upload() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().to_str().unwrap().to_owned();
+        let file = root.path().join("notes.txt").to_str().unwrap().to_owned();
+        std::fs::write(&file, b"notes").unwrap();
+        let uri = url::Url::from_file_path(root.path()).unwrap().into();
+        for selected in [directory.clone(), uri] {
+            assert_eq!(pasted_directories(&[selected]), Ok(Some(directory.clone())));
+        }
+        assert_eq!(
+            pasted_directories(&[file.clone(), directory.clone()]),
+            Ok(Some(format!("{file}\n{directory}")))
+        );
+        for selected in [file, root.path().join("missing.txt").display().to_string()] {
+            assert_eq!(pasted_directories(&[selected]), Ok(None));
+        }
+    }
 
     #[test]
     fn native_file_paths_preserve_selected_bytes_through_uri_and_wsl_normalization() {

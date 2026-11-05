@@ -71,6 +71,8 @@ async function main(action) {
       Buffer.concat([
         ...selectedManifests.map((manifest) => readFileSync(manifest)),
         readFileSync('.cargo/config.toml'),
+        readFileSync('.github/actions/ci-setup/action.yml'),
+        readFileSync('.github/actions/ci-cache/action.yml'),
       ]),
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;

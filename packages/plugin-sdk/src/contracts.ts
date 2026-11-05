@@ -4528,26 +4528,9 @@ export const contracts = {
                   models: {
                     $ref: '#/$defs/AgentExternalModels',
                   },
-                  canInstall: {
-                    type: 'boolean',
-                  },
-                  installLines: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/AgentExternalInstallLine',
-                    },
-                  },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'name',
-                  'installation',
-                  'authentication',
-                  'models',
-                  'canInstall',
-                  'installLines',
-                ],
+                required: ['id', 'name', 'installation', 'authentication', 'models'],
               },
               AgentExternalInstallation: {
                 oneOf: [
@@ -4761,19 +4744,6 @@ export const contracts = {
                     required: ['kind', 'detail'],
                   },
                 ],
-              },
-              AgentExternalInstallLine: {
-                type: 'object',
-                properties: {
-                  line: {
-                    type: 'string',
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['line', 'description'],
               },
             },
           },
@@ -7441,6 +7411,9 @@ export const contracts = {
                       type: 'string',
                     },
                   },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
                   presentation: {
                     description:
                       'Opaque display contract captured at dispatch; no execution authority.',
@@ -7477,12 +7450,19 @@ export const contracts = {
                 additionalProperties: false,
                 required: [
                   'ancestorToolUseIds',
+                  'origin',
                   'position',
                   'name',
                   'title',
                   'pending',
                   'dispatched',
                 ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -7520,7 +7500,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {
@@ -14293,89 +14274,6 @@ export const contracts = {
                 required: ['query', 'offset'],
               },
             },
-          },
-          resources: {},
-        },
-        oarSetup: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentOarSetup',
-            description:
-              "Only OAR's declared installation operations; not an agent registry or login shim.",
-            type: 'object',
-            properties: {
-              runtime: {
-                type: 'string',
-                minLength: 1,
-              },
-              action: {
-                $ref: '#/$defs/AgentOarSetupAction',
-              },
-            },
-            additionalProperties: false,
-            required: ['runtime', 'action'],
-            $defs: {
-              AgentOarSetupAction: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'probe',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      line: {
-                        type: ['string', 'null'],
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'install',
-                      },
-                      line: {
-                        type: ['string', 'null'],
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                ],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentOarSetupResult',
-            type: 'object',
-            properties: {
-              runtime: {
-                type: 'string',
-              },
-              result: {
-                description:
-                  "The pinned OAR version's native result, including unsupported capabilities.",
-              },
-            },
-            additionalProperties: false,
-            required: ['runtime', 'result'],
           },
           resources: {},
         },
@@ -22104,7 +22002,7 @@ export const contracts = {
                   },
                   {
                     description:
-                      'Steer an active native model turn; external executors queue the next turn.',
+                      'Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.',
                     type: 'string',
                     const: 'steer',
                   },
@@ -23820,6 +23718,9 @@ export const contracts = {
                       type: 'string',
                     },
                   },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
                   presentation: {
                     description:
                       'Opaque display contract captured at dispatch; no execution authority.',
@@ -23856,12 +23757,19 @@ export const contracts = {
                 additionalProperties: false,
                 required: [
                   'ancestorToolUseIds',
+                  'origin',
                   'position',
                   'name',
                   'title',
                   'pending',
                   'dispatched',
                 ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -23899,7 +23807,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {

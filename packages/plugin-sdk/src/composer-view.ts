@@ -269,6 +269,7 @@ export interface ComposerViewInput<Element = unknown> {
     files(): { id: string; name: string; bytes: number; imageUri: string | null }[];
     picking(): boolean;
     selectFiles(files: string[]): void;
+    dropFiles(uris: string[], onText: (text: string) => void): void;
     pasteClipboard(onText: (text: string) => void): void;
     reportError(reason: unknown): void;
     removeFile(id: string): void;

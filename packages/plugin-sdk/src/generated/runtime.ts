@@ -92,9 +92,6 @@ export type RuntimeProtocol =
   | AgentExecutors
   | AgentExternalAgentsRead
   | AgentExternalAgents
-  | AgentOarSetup
-  | AgentOarSetupAction
-  | AgentOarSetupResult
   | ExecutorExecute
   | AgentExecutorSetup
   | ExecutorSetupAction
@@ -991,18 +988,6 @@ export type AgentExternalModels =
   | {
       kind: 'error';
       detail: string;
-    };
-export type AgentOarSetupAction =
-  | {
-      kind: 'probe';
-    }
-  | {
-      kind: 'plan';
-      line?: string | null;
-    }
-  | {
-      kind: 'install';
-      line?: string | null;
     };
 export type Language = 'en' | 'zh-CN' | 'zh-TW';
 export type ExecutorSetupAction =
@@ -4393,6 +4378,11 @@ export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
  * Tool body JSON contributes string values, never its keys.
  */
 export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
+/**
+ * Who made a call: a model step, a script the model wrote, a tool's own work
+ * through the Host SDK, or a foreign record.
+ */
+export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
 export type AgentHistoryPage = {
   kind: 'ready';
   through: number;
@@ -5376,7 +5366,7 @@ export interface AgentConfiguration {
    * Explicit service backends; discovery does not authorize execution.
    */
   executors?: AgentServiceExecutor[];
-  oar?: AgentOarConfiguration | null;
+  external?: AgentExternalConfiguration | null;
   /**
    * Explicit Library import for immutable skill input preparation and metadata.
    * This does not select model tools or confer a service grant.
@@ -5445,21 +5435,31 @@ export interface ExecutorSetupBinding {
   member?: number;
 }
 /**
- * Explicit opt-in to OAR's own default permissions and native agent tools.
+ * Explicit opt-in to the three CLIs' native full-access tools and permissions.
  */
-export interface AgentOarConfiguration {
-  enabled?: boolean;
-  /**
-   * Each runtime requires explicit opt-in, even when the legacy gate is enabled.
-   */
-  runtimes?: {
-    [k: string]: boolean | undefined;
-  };
-  /**
-   * Absent selects the worker shipped beside the Maka executable.
-   */
-  executable?: string | null;
+export interface AgentExternalConfiguration {
+  runtimes?: AgentNativeRuntimeSwitches;
+  commands?: AgentNativeCommands;
+}
+export interface AgentNativeRuntimeSwitches {
+  antigravity?: boolean;
+  codex?: boolean;
+  claude?: boolean;
+}
+export interface AgentNativeCommands {
+  antigravity?: AgentNativeCommand | null;
+  codex?: AgentNativeCommand | null;
+  claude?: AgentNativeCommand | null;
+}
+/**
+ * Ordinary launch overrides. Authentication remains in the native CLI login store.
+ */
+export interface AgentNativeCommand {
+  executable: string;
   args?: string[];
+  env?: {
+    [k: string]: string | undefined;
+  };
 }
 export interface AgentWorkspacePermissions {
   access: AgentWorkspaceAccess;
@@ -5708,28 +5708,6 @@ export interface AgentExternalRuntime {
   installation: AgentExternalInstallation;
   authentication: AgentExternalAuthentication;
   models: AgentExternalModels;
-  canInstall: boolean;
-  installLines: AgentExternalInstallLine[];
-}
-export interface AgentExternalInstallLine {
-  line: string;
-  description: string;
-}
-/**
- * Only OAR's declared installation operations; not an agent registry or login shim.
- */
-export interface AgentOarSetup {
-  runtime: string;
-  action: AgentOarSetupAction;
-}
-export interface AgentOarSetupResult {
-  runtime: string;
-  /**
-   * The pinned OAR version's native result, including unsupported capabilities.
-   */
-  result: {
-    [k: string]: unknown | undefined;
-  };
 }
 /**
  * Observations and text; immutable attachments travel in the actual request resources.
@@ -8890,6 +8868,7 @@ export interface HistoryToolCall {
    * Recorded ancestors in this Turn, nearest first; display references only.
    */
   ancestorToolUseIds: string[];
+  origin: HistoryToolCallOrigin;
   /**
    * Opaque display contract captured at dispatch; no execution authority.
    */
@@ -8910,7 +8889,7 @@ export interface HistoryToolResult {
   settlement: ToolSettlement | null;
   position: HistoryRowPosition;
   /**
-   * Does not distinguish failed from unknown effects.
+   * A failed or unknown effect, or a returned result that reports failure.
    */
   isError: boolean;
   /**

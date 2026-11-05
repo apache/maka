@@ -122,7 +122,7 @@ pub struct Configuration {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executors: Vec<crate::executor::ServiceExecutor>,
     #[serde(default)]
-    pub oar: Option<crate::executor::OarConfiguration>,
+    pub external: Option<crate::executor::ExternalConfiguration>,
     /// Explicit Library import for immutable skill input preparation and metadata.
     /// This does not select model tools or confer a service grant.
     #[serde(default)]
@@ -627,7 +627,7 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
-    /// Steer an active native model turn; external executors queue the next turn.
+    /// Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.
     #[default]
     Steer,
     Queue,
@@ -1905,8 +1905,7 @@ pub fn contract() -> Contract {
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
-                ("externalAgents".into(),method::<crate::oar::ExternalAgentsRead, crate::oar::ExternalAgents>(MethodMode::Query)),
-                ("oarSetup".into(),method::<crate::oar::Setup, crate::oar::SetupResult>(MethodMode::Mutation)),
+                ("externalAgents".into(),method::<crate::external::ExternalAgentsRead, crate::external::ExternalAgents>(MethodMode::Query)),
                 (
                     "executorSetup".into(),
                     Method {
@@ -2018,7 +2017,7 @@ mod tests {
         let send = jsonschema::validator_for(&methods["send"].input).unwrap();
         for backend in [
             json!({"kind":"model","connectionId":"connection","modelId":"model","thinkingLevel":"high"}),
-            json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"native-model","thinkingLevel":"vendor-deep"}}}),
+            json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"native-model","thinkingLevel":"vendor-deep"}}}),
         ] {
             let value = json!({"sessionId":"session","message":"hello","backend":backend});
             assert!(send.is_valid(&value));

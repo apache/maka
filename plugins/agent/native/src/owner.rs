@@ -31,6 +31,7 @@ mod compaction;
 mod computer_apps;
 mod context;
 mod execution;
+mod external_setup;
 mod files;
 mod fork;
 mod goal;
@@ -40,7 +41,6 @@ mod interactions;
 mod lifecycle;
 mod models;
 mod notifications;
-mod oar_setup;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -235,6 +235,8 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
+    host_tools: Vec<String>,
+    resource_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -391,7 +393,7 @@ impl Owner {
         let executors = crate::executor::Executors::capture(
             &context,
             &settings.executors,
-            settings.oar.as_ref(),
+            settings.external.as_ref(),
         )?;
         let configuration = Arc::new(
             ConfigurationStore::for_root(root)
@@ -413,9 +415,16 @@ impl Owner {
             workers: workers.clone(),
             services: context.services(),
         });
-        if settings.recall {
-            additional.extend(recall.tools());
-        }
+        let recall_tools = if settings.recall {
+            recall.tools()
+        } else {
+            vec![]
+        };
+        let internal_host_tools = recall_tools
+            .iter()
+            .map(|tool| tool.definition.name.clone())
+            .collect::<Vec<_>>();
+        additional.extend(recall_tools);
         let scheduler = Arc::new(scheduler::Scheduler::new(
             persistence.store().clone(),
             prefix.clone(),
@@ -532,6 +541,8 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
+            host_tools,
+            resource_reads,
             executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -619,6 +630,8 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
+            host_tools: host_tools.into_iter().chain(internal_host_tools).collect(),
+            resource_reads,
             editing_tools,
             skills,
             executors,
@@ -1148,6 +1161,28 @@ impl Owner {
         };
         Ok(selected)
     }
+    fn external_tools(
+        &self,
+        session: &str,
+        basis: &MessageBasis,
+    ) -> Result<crate::executor::external::HostTools, String> {
+        let selected = self.selected_tools(session, basis, false, None)?;
+        let excluded = selected
+            .names()
+            .into_iter()
+            .filter(|name| !self.host_tools.contains(name))
+            .collect::<Vec<_>>();
+        let mut catalog =
+            selected.excluding(&excluded.iter().map(String::as_str).collect::<Vec<_>>());
+        for name in &self.resource_reads {
+            catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
+        }
+        Ok(crate::executor::external::HostTools {
+            catalog,
+            resource_reads: self.resource_reads.clone(),
+        })
+    }
+
     pub async fn send(
         self: &Arc<Self>,
         input: Send,
@@ -1210,19 +1245,39 @@ impl Owner {
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
+        let mut interruption = None;
         if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
             let control = admission.state().await.controls.get(&id).cloned();
-            if let Some(control) = control.filter(|control| control.basis.executor.is_none()) {
-                return self
-                    .steer_message(
-                        text,
-                        attachments,
-                        &control.invocation,
-                        &control.basis,
-                        operation,
-                        parent,
-                    )
-                    .await;
+            if let Some(control) = control {
+                match control
+                    .basis
+                    .executor
+                    .as_ref()
+                    .map_or(crate::executor::ActiveDelivery::Steer, |executor| {
+                        self.executors.active_delivery(executor)
+                    }) {
+                    crate::executor::ActiveDelivery::Steer => {
+                        return self
+                            .steer_message(
+                                text,
+                                attachments,
+                                &control.invocation,
+                                &control.basis,
+                                operation,
+                                parent,
+                            )
+                            .await;
+                    }
+                    crate::executor::ActiveDelivery::InterruptResume => {
+                        interruption = Some(control)
+                    }
+                    crate::executor::ActiveDelivery::InterruptUnsupported => {
+                        return Err(
+                            "agent_executor_soft_interrupt_unsupported; use delivery=queue".into(),
+                        );
+                    }
+                    crate::executor::ActiveDelivery::Queue => {}
+                }
             }
             if let Some(parked) = parked {
                 let mut basis: MessageBasis =
@@ -1255,7 +1310,21 @@ impl Owner {
                 return Ok(result);
             }
         }
-        let mut selection = selection.or_else(|| session.configuration.backend.clone());
+        let mut selection = selection
+            .or_else(|| {
+                interruption
+                    .as_ref()
+                    .map(|control| BackendPreference::Executor {
+                        selection: control
+                            .basis
+                            .executor
+                            .as_ref()
+                            .expect("interrupt-resume requires an external executor")
+                            .selection
+                            .clone(),
+                    })
+            })
+            .or_else(|| session.configuration.backend.clone());
         self.use_bot_model(parent, &mut selection).await;
         let Some(selection) = selection else {
             return Ok(SendResult::Rejected {
@@ -1303,6 +1372,7 @@ impl Owner {
                 if self
                     .admitted_tools(&id, &session.configuration.tools)
                     .is_some()
+                    && selection.executor != "external"
                 {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());
                 }
@@ -1320,6 +1390,9 @@ impl Owner {
         )
         .await?;
         let external = executor.is_some();
+        let host_bridge = executor
+            .as_ref()
+            .is_some_and(|executor| executor.selection.executor == "external");
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -1384,12 +1457,12 @@ impl Owner {
             tool_discovery: !external && self.settings.tool_discovery,
             allowed_tools: self.admitted_tools(&id, &session.configuration.tools),
             background: None,
-            internal_tools: if external {
+            internal_tools: if external && !host_bridge {
                 Arc::default()
             } else {
                 selected_catalog.definitions.clone()
             },
-            internal_bindings: if external {
+            internal_bindings: if external && !host_bridge {
                 Arc::default()
             } else {
                 selected_catalog.bindings.clone()
@@ -1408,7 +1481,7 @@ impl Owner {
             workspace: session.configuration.workspace.clone(),
             binding: session.configuration.binding,
             fingerprint: operation.fingerprint.clone(),
-            tools: if external {
+            tools: if external && !host_bridge {
                 Arc::default()
             } else {
                 self.tool_basis.clone()
@@ -1432,17 +1505,11 @@ impl Owner {
                 language,
                 Some(session.configuration.workspace.clone()),
                 parent,
-                if basis.executor.is_some() {
-                    vec![]
-                } else {
-                    self.selected_tools(
-                        &id,
-                        &basis,
-                        false,
-                        basis.model.as_ref().and_then(|model| model.editing_tools),
-                    )?
-                    .names()
-                },
+                self.skill_tool_names(
+                    &id,
+                    &basis,
+                    basis.model.as_ref().and_then(|model| model.editing_tools),
+                )?,
             )
             .await?
         {
@@ -1512,6 +1579,20 @@ impl Owner {
                     .await
                 {
                     Ok(receipt) => {
+                        if let Some(control) = &interruption {
+                            self.store
+                                .session(&id)
+                                .await
+                                .map_err(|error| error.to_string())?
+                                .close_run_interactions(
+                                    &control.invocation,
+                                    maka_agent_facts::interaction::ClosureReason::Steered,
+                                    now(),
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            control.cancellation.cancel();
+                        }
                         return Ok(SendResult::Queued {
                             session_id: id,
                             message_id: delivered.message.message_id,

@@ -83,11 +83,12 @@ pub(crate) async fn validate(
                     call.origin,
                     maka_agent_facts::tool_call::ToolOrigin::HostSdk { .. }
                 ) => {}
-        Fact::ModelRequested { .. } | Fact::ToolDispatched { .. } | Fact::MessageSteered { .. }
-            if started =>
-        {
+        Fact::MessageSteered { .. } if started && completed => {
+            return Err(invalid("steering outside the active executor"));
+        }
+        Fact::ModelRequested { .. } | Fact::ToolDispatched { .. } if started => {
             return Err(invalid(
-                "external executor cannot dispatch native model, tool, or steering effects",
+                "external executor cannot dispatch native model or tool effects",
             ));
         }
         Fact::InvocationEnded {

@@ -64,7 +64,10 @@ impl Engine {
             .iter()
             .any(|source| source.message.origin.is_some())
         {
-            request.content = attributed_content(&input.source_messages, request.language);
+            request.content = maka_agent_facts::message::attributed_content(
+                &input.source_messages,
+                request.language,
+            );
         }
         let admitted = input
             .binding
@@ -156,34 +159,6 @@ impl Engine {
             )
             .await
     }
-}
-
-// Only the executor-facing copy is labelled; canonical content and digests stay raw.
-fn attributed_content(
-    sources: &[RootSourceMessage],
-    language: maka_agent_facts::language::Language,
-) -> maka_agent_facts::input::MessageInput {
-    let contents = sources
-        .iter()
-        .map(|source| {
-            let mut content = source.message.content.clone();
-            let header = source
-                .message
-                .origin
-                .as_ref()
-                .map_or_else(String::new, |origin| origin.prompt_header(language));
-            let offset = header.encode_utf16().count() as u64;
-            content.text.insert_str(0, &header);
-            if let Some(display) = &mut content.display_text {
-                display.insert_str(0, &header);
-            }
-            for reference in content.inline_references.iter_mut().flatten() {
-                reference.start = reference.start.saturating_add(offset);
-            }
-            content
-        })
-        .collect::<Vec<_>>();
-    maka_agent_facts::message::aggregate(contents.iter())
 }
 
 fn outcome(result: &Result<Outcome, Error>, cancellation: &CancellationToken) -> InvocationOutcome {
