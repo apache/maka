@@ -199,15 +199,27 @@ export class InitiativeStore {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
       // A new cycle is where an unconfirmed recovery is retried, so its old bound ends here.
       delete s.recovery;
+      // A retried submission is the same logical cycle: keep the identity the Host may
+      // already know instead of presenting it as a second investigation.
+      const retried = s.retry;
+      delete s.retry;
       s.active = {
-        id: randomUUID(),
-        startedAt: Date.now(),
+        id: retried?.id ?? randomUUID(),
+        startedAt: retried?.startedAt ?? Date.now(),
         phase:
           s.pendingDraft?.phase ??
           (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
       };
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
+    });
+  }
+  /** Remember the cycle whose submission the Host proved absent, so the retry keeps the
+   * same activation identity instead of arriving as a second investigation. */
+  retry(id: string) {
+    return this.update((s) => {
+      if (s?.active?.id !== id) return;
+      s.retry = { id, startedAt: s.active.startedAt ?? Date.now() };
     });
   }
   reported(id: string) {

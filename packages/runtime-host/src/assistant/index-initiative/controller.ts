@@ -209,6 +209,9 @@ export class InitiativeController {
     const sessionId =
       pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
     const abandon = () => {
+      // The retry is the same cycle, not a new investigation of the same conversation.
+      const id = this.store.get()?.active?.id;
+      if (id) this.store.retry(id);
       this.store.update((s) => {
         delete s.recovery;
       });
