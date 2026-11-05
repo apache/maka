@@ -100,112 +100,15 @@ unknown/cleanup/persistence fences remain. Those preserve data/authority or
 recoverable delivery; they are not small native payload/count limits.
 
 
-## In-flight input and agy model-surface findings
+## Current input behavior
 
-Codex steering uses the native `turn/steer` acknowledgement for the captured
-active turn; Claude uses ordinary Enter in the original PTY. The controlled
-Host regressions hold the original execution open, deliver corrected UTF-8
-text and an immutable PNG without replacing that execution, preserve the
-original message receipt, and retain the upload until physical settlement.
-They also exercise obsolete Host-question closure, wrong-turn acknowledgements,
-and native completion arriving before a rejected steering acknowledgement.
-Native events stay in the Pipe across acknowledgement errors or cancellation.
-Claude's intermediate durations cannot settle an invocation before all submitted
-inputs have native user-row confirmation and a following assistant response.
+Captured Maka instructions are separate ordinary messages, not native system-prompt overrides.
+Codex uses native turn steering; Claude uses ordinary Enter in its original PTY.
+On Unix, agy defaults to soft interruption followed by a new invocation on the same
+native conversation. Explicit queue remains non-interrupting; unconfirmed interruption
+does not permit replay. See the [runtime guide](../../../plugins/agent/native/README.md)
+for protocol and platform limits.
 
-These are wire/PTY fixture regressions, not an additional paid CLI live run.
-The earlier real two-turn image/resume result above does not prove the
-same-PTY busy-input ordering or second-message image numbering. The input
-adapter observes the actual image labels rather than assuming a reset.
-
-A metadata-only comparison of agy 1.5.0 found 13 CLI model/effort entries:
-Gemini 4 Argon, Gemini 3.8 Flash, Claude Opus 5.5, Claude Sonnet 5.5, and
-GPT-OSS 120B. Its ACP model selector exposes only the two Gemini families;
-the legacy ACP model list has their six effort variants. Selecting the
-CLI's Claude/GPT IDs through ACP returns `Unknown model ID`.
-No inference about remaining quota follows from these directory observations.
-
-The Magpie source examined was revision `6abacd4`. Its
-`internal/agent/agy.go` and `internal/cli/agy_exec_unix.go` configure agy
-as a Gemini API client of the Magpie gateway and exec the real CLI.
-Magpie's Antigravity provider separately owns OAuth and Google internal-RPC
-model discovery/generation; it is not a native agy ACP integration or proof
-that ACP can execute all CLI models. Maka does not adopt that independent
-authentication path or modify the user's agy profile. The advertised ACP
-`_meta.antigravity.tier` extension remains unspecified here.
-
-
-## Stream-json integration and ordinary instruction messages
-
-The current agy route is native `--print= --input-format stream-json
---output-format stream-json`, not ACP. Its model catalog comes from
-`agy models`, preserving the native model/effort IDs; directory membership
-is not a claim about quota. Each invocation owns a private
-`--add-dir/.agents/plugins/maka` plugin with the authenticated Host MCP
-configuration. Native identity is committed before Host admission and the
-first bootstrap message; MCP loads lazily, and the actual task follows
-bootstrap completion plus the captured catalog confirmation. The user's
-home, login and global settings are not rewritten.
-
-All three adapters keep native system prompts unchanged. Maka instructions
-are one separate ordinary user message wrapped in
-`<maka_system_instructions>`, not a prefix in the actual task. Codex uses
-native `thread/inject_items`; a real metadata-only daemon/proxy probe
-acknowledged that exact method without starting a model turn. Claude uses
-a separate ordinary PTY submission and confirms its JSONL result before the
-actual task; its acknowledgement is not user-visible task output.
-
-A real agy CLI driven by a local fake Gemini service accepted its native
-`read_file` tool's `Path` argument and put PNG `inlineData` into the next
-model request. The decoded SHA-256 exactly matched the uploaded PNG.
-This proves byte delivery into native model context, not real-model visual
-understanding. Maka passes only ordered image paths/media types, with no
-tool-specific reminders; the original upload identity and material lifetime
-remain owned through physical settlement.
-
-The held-request native probe showed that `queuedMessages:
-"send-immediately"` does not enable active-turn mutation in print mode.
-Focused static analysis of agy 1.5.0
-(`e61679b8ba54abae9a56534208e21f65e1dede6e4eb0144dbd64535f42d07724`)
-agrees: `runStreamInput` calls `handleStreamMessage` synchronously,
-which calls `runStreamTurn` and emits its final result before returning
-to the receive loop. JSON decoding can read ahead in its own goroutine;
-that is not concurrent model dispatch. `control_request` and
-`control_response` return unsupported; other unknown events are warned
-and ignored. Maka therefore retains later-invocation queue semantics for agy,
-rather than claiming unsupported native steering.
-
-Evidence provenance: REA 6.8.0 Go metadata Evidence
-`ev_1226ad2ec11cac39ea93d6894be98eddf8d8951134c48c8a7c296d473ab04a40`
-identifies the shipped artifact. The focused call/branch findings above
-come from independent Go function/type tables and ARM64 disassembly,
-not from that metadata Evidence and not from recovered original source.
-The relevant shipped locations are `streaminput.go:136`
-(`0x102e667d0`), `:181` (`0x102e66c60`), and `:219`
-(`0x102e672f0`); the final emitter interface slot was independently
-resolved from type metadata. Ghidra's unsupported Go 1.28 RTTI and startup
-timeouts do not invalidate those separate observations, but do limit
-automated decompilation claims. No upstream implementation source is copied.
-
-
-### Final checks for this continuation
-
-- `native_external`: 33 passed, 1 opt-in paid live test ignored. This
-  includes original identity/resume, ordinary instructions in all three
-  adapters, Host effects/receipts, cancellation, images, history and the
-  four live-invocation steering regressions.
-- The subsequent bootstrap-observation correction passed the three-runtime
-  initial/resume case again, including persisted native ToolStart/ToolResult
-  during agy bootstrap while keeping acknowledgement text out of the answer.
-  The agy image-lifetime regression and four parser/path/result unit tests
-  also passed against the final adapter.
-- EventLog steering/executor unit tests: 4 + 3 passed. Integration steering,
-  interrupt and queue cases: 3 + 1 + 3 passed. The exact returned source
-  sequence preserves the existing queue ordering and edited source/receipt.
-- Engine's production merged/steered sender-origin replay test passed.
-- SDK generation/check, native-library Clippy with `-D warnings`,
-  changed-file rustfmt, Biome and `git diff --check` passed.
-- Metadata-only real agy startups echoed full Gemini, Claude and GPT-OSS
-  model/effort IDs unchanged and exited zero without any User/model turn.
-- No new paid three-provider live matrix was run. Earlier ACP paid-live
-  evidence is historical and does not validate this replacement stream route.
+The earlier real-CLI results above predate the agy stream-json replacement.
+Current stream/MCP/image and SIGINT/resume behavior was additionally checked against
+the real CLI with local model fixtures, without a new paid provider matrix.

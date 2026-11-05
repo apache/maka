@@ -81,6 +81,17 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                             _ => None,
                         }
                     }).collect();
+                    let global: Vec<_> = observed.iter().filter_map(|output| match output {
+                        maka_agent_facts::executor::Output::ToolStart {tool_call_id,name,input} if name == "call_mcp_tool" => {
+                            assert_eq!(input["ServerName"], "maka", "only the private maka_maka wrapper is suppressed");
+                            Some(tool_call_id)
+                        }
+                        _ => None,
+                    }).collect();
+                    assert_eq!(global.len(), 1);
+                    assert!(observed.iter().any(|output| matches!(output,
+                        maka_agent_facts::executor::Output::ToolResult {tool_call_id,is_error:true,..} if tool_call_id == global[0]
+                    )), "DONE plus tool_info.error is still a failed native tool");
                     let starts: Vec<_> = observed.iter().filter_map(|output| match output {
                         maka_agent_facts::executor::Output::ToolStart { tool_call_id, name, .. } if name == "bootstrap-native" => Some(tool_call_id),
                         _ => None

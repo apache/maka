@@ -87,6 +87,17 @@ impl Child {
     pub(crate) fn interrupt(&mut self) -> io::Result<bool> {
         self.group.interrupt()
     }
+    /// Send SIGINT only while this unreaped child pins its original process group.
+    pub fn interrupt_group(&mut self) -> io::Result<bool> {
+        if self.group.reaped() {
+            return Ok(false);
+        }
+        match rustix::process::kill_process_group(self.group.pid(), rustix::process::Signal::INT) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         let status = self.group.wait().await?;
         #[cfg(target_os = "linux")]

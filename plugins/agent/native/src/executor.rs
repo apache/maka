@@ -72,6 +72,12 @@ struct ServiceBackend {
 }
 #[derive(Default)]
 pub(crate) struct Executors(BTreeMap<String, Backend>);
+pub(super) enum ActiveDelivery {
+    Steer,
+    InterruptResume,
+    InterruptUnsupported,
+    Queue,
+}
 impl Executors {
     pub fn capture(
         context: &NativeContext,
@@ -152,14 +158,19 @@ impl Executors {
         }
         Ok(Self(result))
     }
-    pub fn supports_steering(&self, accepted: &Accepted) -> bool {
-        self.restore(accepted).is_ok_and(|backend| {
-            matches!(backend.implementation, Implementation::External(_))
-                && matches!(
-                    accepted.selection.settings.runtime.as_deref(),
-                    Some("codex" | "claude")
-                )
-        })
+    pub fn active_delivery(&self, accepted: &Accepted) -> ActiveDelivery {
+        let Ok(backend) = self.restore(accepted) else {
+            return ActiveDelivery::Queue;
+        };
+        if !matches!(backend.implementation, Implementation::External(_)) {
+            return ActiveDelivery::Queue;
+        }
+        match accepted.selection.settings.runtime.as_deref() {
+            Some("codex" | "claude") => ActiveDelivery::Steer,
+            Some("antigravity") if cfg!(unix) => ActiveDelivery::InterruptResume,
+            Some("antigravity") => ActiveDelivery::InterruptUnsupported,
+            _ => ActiveDelivery::Queue,
+        }
     }
     pub fn contains(&self, executor: &str) -> bool {
         self.0.contains_key(executor)

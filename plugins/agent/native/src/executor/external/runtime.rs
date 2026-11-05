@@ -30,6 +30,7 @@ use tokio_tungstenite::{
 // Keep a finite buffer for malformed/unterminated native output, with room beyond that workload.
 pub(super) const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) fn instruction_message(text: &str) -> String {
     format!("<maka_system_instructions>\n{text}\n</maka_system_instructions>")
 }
@@ -439,6 +440,7 @@ pub(super) struct Pipe {
     parsing: Option<BoxFuture<'static, Result<Value, Error>>>,
     events: std::collections::VecDeque<(Value, usize)>,
     pub cancellation: CancellationToken,
+    pub interrupt: Option<tokio::sync::oneshot::Sender<()>>,
     exited: CancellationToken,
     pub failed: CancellationToken,
     exit_deadline: Option<tokio::time::Instant>,
@@ -585,6 +587,52 @@ where
     F: FnOnce(Pipe) -> Fut,
     Fut: Future<Output = (Result<T, Error>, Pipe)>,
 {
+    pipe_owned(command, transport, bridge, cancellation, None, protocol).await
+}
+
+#[cfg(unix)]
+pub(super) async fn interruptible_pipe<T, F, Fut>(
+    command: maka_process::Command,
+    transport: Transport,
+    bridge: Option<Arc<mcp::Bridge>>,
+    cancellation: CancellationToken,
+    protocol: F,
+) -> Result<T, Error>
+where
+    F: FnOnce(Pipe) -> Fut,
+    Fut: Future<Output = (Result<T, Error>, Pipe)>,
+{
+    let interrupt = tokio::sync::oneshot::channel();
+    pipe_owned(
+        command,
+        transport,
+        bridge,
+        cancellation,
+        Some(interrupt),
+        protocol,
+    )
+    .await
+}
+
+async fn pipe_owned<T, F, Fut>(
+    command: maka_process::Command,
+    transport: Transport,
+    bridge: Option<Arc<mcp::Bridge>>,
+    cancellation: CancellationToken,
+    interrupt: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+    protocol: F,
+) -> Result<T, Error>
+where
+    F: FnOnce(Pipe) -> Fut,
+    Fut: Future<Output = (Result<T, Error>, Pipe)>,
+{
+    let (interrupt_send, mut interrupt_receive) = match interrupt {
+        Some((send, receive)) => (Some(send), Some(receive)),
+        None => (None, None),
+    };
     let mut process = match maka_process::pipe::spawn(command).await {
         Ok(process) => process,
         Err(error) => {
@@ -599,16 +647,52 @@ where
     let settle = CancellationToken::new();
     let lifecycle = async {
         let result = async {
-        let status = tokio::select! { result = process.child.wait() => result, () = settle.cancelled() => {
-            match tokio::time::timeout(Duration::from_millis(500), process.child.wait()).await {
-                Ok(status) => status,
-                Err(_) => {
-                    process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
-                    tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?
+            loop {
+                tokio::select! {
+                    biased;
+                    status = process.child.wait() => {
+                        status.map_err(|_| Error::CleanupUnconfirmed)?;
+                        return Ok(());
+                    }
+                    request = async {
+                        match interrupt_receive.as_mut() {
+                            Some(receive) => receive.await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        interrupt_receive = None;
+                        if request.is_err() { continue; }
+                        if let Some(bridge) = &bridge { bridge.close_admission(); }
+                        #[cfg(unix)]
+                        let signalled = process.child.interrupt_group();
+                        #[cfg(not(unix))]
+                        let signalled: std::io::Result<bool> = Err(std::io::Error::other("native SIGINT unavailable"));
+                        if signalled.is_ok()
+                            && let Ok(Ok(_)) = tokio::time::timeout(INTERRUPT_TIMEOUT, process.child.wait()).await
+                        {
+                            return Ok(());
+                        }
+                        // Force is cleanup only: even a reaped tree cannot prove native interruption.
+                        process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
+                        tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await
+                            .map_err(|_| Error::CleanupUnconfirmed)?
+                            .map_err(|_| Error::CleanupUnconfirmed)?;
+                        return Err(Error::CleanupUnconfirmed);
+                    }
+                    () = settle.cancelled() => {
+                        match tokio::time::timeout(Duration::from_millis(500), process.child.wait()).await {
+                            Ok(status) => { status.map_err(|_| Error::CleanupUnconfirmed)?; }
+                            Err(_) => {
+                                process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
+                                tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await
+                                    .map_err(|_| Error::CleanupUnconfirmed)?
+                                    .map_err(|_| Error::CleanupUnconfirmed)?;
+                            }
+                        }
+                        return Ok(());
+                    }
                 }
             }
-        }};
-        status.map_err(|_| Error::CleanupUnconfirmed)
         }.await;
         if let Some(bridge) = &bridge {
             bridge.close_admission();
@@ -627,6 +711,7 @@ where
                     parsing: None,
                     events: Default::default(),
                     cancellation,
+                    interrupt: interrupt_send,
                     exited: exited.clone(),
                     failed: bridge
                         .as_ref()

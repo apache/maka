@@ -232,3 +232,165 @@ async fn native_external_steering_closes_obsolete_host_question_without_answerin
     .await
     .unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_external_agy_defaults_to_interrupt_resume_after_original_physical_settlement() {
+    use super::external_support::record_runtime;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("agy default interruption").await;
+        let first = f.mutation(2,"send",input_runtime(&session,"antigravity","soft-interrupt"),Uuid::new_v4()).await.unwrap();
+        let mut original = BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut original,"opened").await;
+        let native = record_runtime(&f,&session,"antigravity").await["nativeSession"].clone();
+        release(&mut original).await;
+        packet(&mut original,"output").await;
+        let operation = Uuid::new_v4();
+        let input = json!({"sessionId":session,"message":"Only the correction."});
+        let next = f.mutation(2,"send",input.clone(),operation).await.unwrap();
+        assert_eq!(next["kind"],"queued");
+        packet(&mut original,"interrupt_requested").await;
+        assert_eq!(f.mutation(2,"send",input,operation).await.unwrap(),next);
+        assert!(listener.accept().now_or_never().is_none());
+        release(&mut original).await;
+        packet(&mut original,"terminal").await;
+        assert_eq!(record_runtime(&f,&session,"antigravity").await["running"],first["invocationId"]);
+        assert!(listener.accept().now_or_never().is_none(),"native terminal alone cannot start the successor");
+        release(&mut original).await;
+        let mut resumed = BufReader::new(listener.accept().await.unwrap().0);
+        let opened = packet(&mut resumed,"opened").await;
+        assert_eq!(opened["request"]["resume"],native);
+        assert!(opened["request"]["message"].as_str().unwrap().contains("Only the correction."));
+        assert_eq!(work(&f,&session,&first).await["execution"]["state"],"cancelled");
+        release(&mut resumed).await;
+        packet(&mut resumed,"output").await;
+        release(&mut resumed).await;
+        packet(&mut resumed,"terminal").await;
+        release(&mut resumed).await;
+        f.drained().await;
+        let result=f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":next["messageId"]}})).await.unwrap();
+        assert_eq!(result["execution"]["state"],"completed","{result}");
+        assert_ne!(result["execution"]["invocationId"],first["invocationId"]);
+        assert_eq!(record_runtime(&f,&session,"antigravity").await["nativeSession"],native);
+        assert!(listener.accept().now_or_never().is_none(),"original receipt cannot replay a correction");
+        f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_external_agy_explicit_queue_does_not_interrupt_the_active_turn() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener)=setup("http://127.0.0.1:9/v1").await;
+        let session=f.create("agy explicit queue").await;
+        let first=f.mutation(2,"send",input_runtime(&session,"antigravity","complete"),Uuid::new_v4()).await.unwrap();
+        let mut control=BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut control,"opened").await;release(&mut control).await;packet(&mut control,"output").await;
+        let mut input=input_runtime(&session,"antigravity","Queued explicitly.");
+        input["delivery"]="queue".into();
+        let queued=f.mutation(2,"send",input,Uuid::new_v4()).await.unwrap();
+        assert_eq!(queued["kind"],"queued");
+        release(&mut control).await;packet(&mut control,"terminal").await;release(&mut control).await;
+        let mut control=BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut control,"opened").await;
+        assert_eq!(work(&f,&session,&first).await["execution"]["state"],"completed");
+        release(&mut control).await;packet(&mut control,"output").await;release(&mut control).await;packet(&mut control,"terminal").await;release(&mut control).await;
+        f.drained().await;
+        let result=f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
+        assert_eq!(result["execution"]["state"],"completed");
+        f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_external_agy_unacknowledged_interrupt_cannot_resume_or_clear_its_fence() {
+    use super::external_support::record_runtime;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("agy unconfirmed native interruption").await;
+        let first = f
+            .mutation(
+                2,
+                "send",
+                input_runtime(&session, "antigravity", "soft-interrupt-unconfirmed"),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        let mut control = BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut control, "opened").await;
+        release(&mut control).await;
+        packet(&mut control, "output").await;
+        f.mutation(
+            2,
+            "send",
+            json!({"sessionId":session,"message":"Must not replay after unknown interruption."}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        packet(&mut control, "interrupt_requested").await;
+        release(&mut control).await;
+        packet(&mut control, "terminal").await;
+        release(&mut control).await;
+        f.drained().await;
+        assert_eq!(
+            record_runtime(&f, &session, "antigravity").await["running"],
+            first["invocationId"]
+        );
+        assert!(listener.accept().now_or_never().is_none());
+        assert_ne!(
+            work(&f, &session, &first).await["execution"]["state"],
+            "completed"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn native_external_agy_rejects_reduced_native_permission_before_user_submission() {
+    use super::external_support::configured;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .antigravity
+                .as_mut()
+                .unwrap()
+                .env
+                .insert("MAKA_NATIVE_FIXTURE_LOW_PERMISSION".into(), "1".into());
+        })
+        .await;
+        let session = f.create("agy applied native permission").await;
+        let first = f
+            .mutation(
+                2,
+                "send",
+                input_runtime(&session, "antigravity", "must not submit"),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        f.drained().await;
+        assert_eq!(
+            work(&f, &session, &first).await["execution"]["state"],
+            "failed"
+        );
+        assert!(
+            listener.accept().now_or_never().is_none(),
+            "native task must not start without full-permission acknowledgement"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

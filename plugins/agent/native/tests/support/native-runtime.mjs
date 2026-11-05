@@ -310,6 +310,23 @@ async function cancel() {
   }
   if (!activePlan?.expectCancel) terminal(true);
 }
+if (agy)
+  process.on('SIGINT', async () => {
+    if (interrupted) return;
+    interrupted = true;
+    const held =
+      request?.message === 'soft-interrupt' || request?.message === 'soft-interrupt-unconfirmed';
+    if (held) {
+      trace('interrupt_requested');
+      await gate.next();
+    }
+    if (request?.message !== 'soft-interrupt-unconfirmed') terminal(true);
+    if (held) {
+      trace('terminal');
+      await gate.next();
+    }
+    process.exit(1);
+  });
 async function loadTools() {
   await mcp('initialize', {
     protocolVersion: '2025-03-26',
@@ -399,6 +416,10 @@ async function prompt() {
     });
   else output('committed output');
   trace('output');
+  if (agy && request.message.startsWith('soft-interrupt')) {
+    await new Promise(() => {});
+    return;
+  }
   if (request.message === 'wait' || request.message === 'wait-cancel-terminal') return;
   await gate.next();
   if (request.message === 'crash' || request.message === 'exit0')
@@ -624,6 +645,9 @@ if (claude) {
     conversation_id: thread,
     init: {
       model: opened.model,
+      permission_mode: process.env.MAKA_NATIVE_FIXTURE_LOW_PERMISSION
+        ? 'request-review'
+        : 'always-proceed',
       cwd: process.cwd(),
       tools: ['read_file', 'run_command', 'call_mcp_tool'],
     },
@@ -659,6 +683,30 @@ if (claude) {
                 tool_info: { name: 'bootstrap-native', parameters: {} },
               },
             });
+          }
+        }
+        if (process.env.MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL) {
+          for (const serverName of ['maka_maka', 'maka']) {
+            const index = agyStep++;
+            for (const state of ['ACTIVE', 'DONE']) {
+              send({
+                event: 'step_update',
+                step_update: {
+                  conversation_id: thread,
+                  step_index: index,
+                  state,
+                  step_type: 'tool',
+                  tool_name: 'call_mcp_tool',
+                  tool_info: {
+                    name: 'call_mcp_tool',
+                    parameters: { ServerName: serverName, ToolName: 'probe', Arguments: {} },
+                    ...(serverName === 'maka' && state === 'DONE'
+                      ? { error: { type: 'TOOL_ERROR', message: 'native global tool failure' } }
+                      : {}),
+                  },
+                },
+              });
+            }
           }
         }
         output('instructions acknowledged');

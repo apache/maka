@@ -1245,25 +1245,39 @@ impl Owner {
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
+        let mut interruption = None;
         if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
             let control = admission.state().await.controls.get(&id).cloned();
-            if let Some(control) = control.filter(|control| {
-                control
+            if let Some(control) = control {
+                match control
                     .basis
                     .executor
                     .as_ref()
-                    .is_none_or(|executor| self.executors.supports_steering(executor))
-            }) {
-                return self
-                    .steer_message(
-                        text,
-                        attachments,
-                        &control.invocation,
-                        &control.basis,
-                        operation,
-                        parent,
-                    )
-                    .await;
+                    .map_or(crate::executor::ActiveDelivery::Steer, |executor| {
+                        self.executors.active_delivery(executor)
+                    }) {
+                    crate::executor::ActiveDelivery::Steer => {
+                        return self
+                            .steer_message(
+                                text,
+                                attachments,
+                                &control.invocation,
+                                &control.basis,
+                                operation,
+                                parent,
+                            )
+                            .await;
+                    }
+                    crate::executor::ActiveDelivery::InterruptResume => {
+                        interruption = Some(control)
+                    }
+                    crate::executor::ActiveDelivery::InterruptUnsupported => {
+                        return Err(
+                            "agent_executor_soft_interrupt_unsupported; use delivery=queue".into(),
+                        );
+                    }
+                    crate::executor::ActiveDelivery::Queue => {}
+                }
             }
             if let Some(parked) = parked {
                 let mut basis: MessageBasis =
@@ -1296,7 +1310,18 @@ impl Owner {
                 return Ok(result);
             }
         }
-        let mut selection = selection.or_else(|| session.configuration.backend.clone());
+        let mut selection = match &interruption {
+            Some(control) => Some(BackendPreference::Executor {
+                selection: control
+                    .basis
+                    .executor
+                    .as_ref()
+                    .expect("interrupt-resume requires an external executor")
+                    .selection
+                    .clone(),
+            }),
+            None => selection.or_else(|| session.configuration.backend.clone()),
+        };
         self.use_bot_model(parent, &mut selection).await;
         let Some(selection) = selection else {
             return Ok(SendResult::Rejected {
@@ -1561,6 +1586,20 @@ impl Owner {
                     .await
                 {
                     Ok(receipt) => {
+                        if let Some(control) = &interruption {
+                            self.store
+                                .session(&id)
+                                .await
+                                .map_err(|error| error.to_string())?
+                                .close_run_interactions(
+                                    &control.invocation,
+                                    maka_agent_facts::interaction::ClosureReason::Steered,
+                                    now(),
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            control.cancellation.cancel();
+                        }
                         return Ok(SendResult::Queued {
                             session_id: id,
                             message_id: delivered.message.message_id,

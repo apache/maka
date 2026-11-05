@@ -19,6 +19,10 @@
 
 use super::*;
 use maka_agent_facts::executor::Output;
+#[cfg(unix)]
+use runtime::interruptible_pipe as native_pipe;
+#[cfg(not(unix))]
+use runtime::pipe as native_pipe;
 use runtime::{Pipe, string};
 
 #[expect(
@@ -155,7 +159,7 @@ async fn prepare(
         plan.arg("--effort").arg(effort);
     }
     let host = bridge.clone();
-    let result = runtime::pipe(
+    let result = native_pipe(
         plan,
         runtime::Transport::JsonLines,
         Some(bridge.clone()),
@@ -190,6 +194,15 @@ async fn converse(
             "agy did not emit its native init event".into(),
         ));
     }
+    if init
+        .pointer("/init/permission_mode")
+        .and_then(Value::as_str)
+        != Some("always-proceed")
+    {
+        return Err(Error::Invalid(
+            "agy did not confirm always-proceed permission mode".into(),
+        ));
+    }
     let session = string(&init, "/conversation_id")?.to_owned();
     if let Some(model) = request
         .get("model")
@@ -203,26 +216,74 @@ async fn converse(
     }
     journal.opened(storage, session.clone()).await?;
     bridge.admit()?;
-    let instructions = request.get("instructions").and_then(Value::as_str);
-    let bootstrap = runtime::instruction_message(instructions.unwrap_or(
-        "Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet."
-    ));
-    *submitted = true;
-    io.send(user_message(&bootstrap)).await?;
-    let mut cursor = TurnCursor::default();
-    let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
-    if !matches!(bootstrap, Outcome::Completed { .. }) {
-        return Ok(bootstrap);
+    let interrupt = io.interrupt.take();
+    let stop = io.cancellation.clone();
+    if interrupt.is_some() {
+        // Root Stop requests native interruption; it must not cancel the stream reader.
+        io.cancellation = CancellationToken::new();
     }
-    if !bridge.listed.is_cancelled() {
-        return Ok(Outcome::Failed {
-            message: "agy did not confirm the captured Host MCP tool catalog".into(),
-            code: Some("native_mcp_setup_failed".into()),
-            recoverable: false,
-        });
+    let work = async {
+        if stop.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let instructions = request.get("instructions").and_then(Value::as_str);
+        let bootstrap = runtime::instruction_message(instructions.unwrap_or(
+            "Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet."
+        ));
+        *submitted = true;
+        io.send(user_message(&bootstrap)).await?;
+        let mut cursor = TurnCursor::default();
+        let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
+        if !matches!(bootstrap, Outcome::Completed { .. }) {
+            return Ok(bootstrap);
+        }
+        if stop.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if !bridge.listed.is_cancelled() {
+            return Ok(Outcome::Failed {
+                message: "agy did not confirm the captured Host MCP tool catalog".into(),
+                code: Some("native_mcp_setup_failed".into()),
+                recoverable: false,
+            });
+        }
+        io.send(user_message(&native_prompt(request)?)).await?;
+        observe(io, &session, &mut cursor, output, true).await
+    };
+    tokio::pin!(work);
+    let soft = interrupt.is_some();
+    let result = if let Some(interrupt) = interrupt {
+        tokio::select! {
+            biased;
+            result = &mut work => result,
+            () = stop.cancelled() => {
+                bridge.close_admission();
+                // A closed receiver means the child owner already finished. Its
+                // physical result is still checked by pipe; native terminal is required here.
+                let _ = interrupt.send(());
+                tokio::time::timeout(runtime::INTERRUPT_TIMEOUT, &mut work).await
+                    .map_err(|_| Error::CleanupUnconfirmed)?
+            }
+        }
+    } else {
+        work.await
+    };
+    if soft {
+        match result {
+            Ok(outcome) => Ok(outcome),
+            Err(
+                error @ (Error::Cancelled
+                | Error::Unknown
+                | Error::CleanupUnconfirmed
+                | Error::Persistence(_)),
+            ) => Err(error),
+            // A later Root Stop during physical cleanup cannot settle malformed
+            // or uncorrelated observations either.
+            _ => Err(Error::Unknown),
+        }
+    } else {
+        result
     }
-    io.send(user_message(&native_prompt(request)?)).await?;
-    observe(io, &session, &mut cursor, output, true).await
 }
 
 fn native_prompt(request: &Value) -> Result<String, Error> {
@@ -331,25 +392,30 @@ async fn observe(
     }
 }
 fn terminal(result: &Value) -> Result<Outcome, Error> {
-    let status = string(result, "/status")?;
+    let status = string(result, "/status").map_err(|_| Error::Unknown)?;
     let reason = match result.get("finished_reason") {
         None => None,
-        Some(Value::String(reason)) => Some(reason.as_str()),
-        _ => {
-            return Err(Error::Invalid(
-                "agy returned an invalid terminal reason".into(),
-            ));
+        Some(Value::String(reason))
+            if matches!(reason.as_str(), "interrupted" | "error" | "print_timeout") =>
+        {
+            Some(reason.as_str())
         }
+        _ => return Err(Error::Unknown),
     };
     match (status, reason) {
         ("SUCCESS", None) => {
             let text = result
                 .get("response")
                 .and_then(Value::as_str)
-                .ok_or_else(|| Error::Invalid("agy terminal has no response".into()))?;
+                .ok_or(Error::Unknown)?;
             Ok(Outcome::Completed { text: text.into() })
         }
-        ("SUCCESS" | "ERROR", _) => Ok(Outcome::Failed {
+        ("ERROR", Some("interrupted")) | ("CANCELED" | "INTERRUPTED", _) => {
+            Ok(Outcome::Cancelled {
+                reason: Some("native_interrupted".into()),
+            })
+        }
+        ("SUCCESS" | "ERROR" | "INVALID", _) => Ok(Outcome::Failed {
             message: result
                 .get("error")
                 .and_then(Value::as_str)
@@ -358,9 +424,8 @@ fn terminal(result: &Value) -> Result<Outcome, Error> {
             code: Some("native_turn_failed".into()),
             recoverable: false,
         }),
-        _ => Err(Error::Invalid(
-            "agy returned an unknown terminal status".into(),
-        )),
+        // RUNNING and WAITING do not prove that native work has settled.
+        _ => Err(Error::Unknown),
     }
 }
 async fn emit_tool(
@@ -377,7 +442,7 @@ async fn emit_tool(
         && step
             .pointer("/tool_info/parameters/ServerName")
             .and_then(Value::as_str)
-            == Some("maka")
+            == Some("maka_maka")
     {
         return Ok(());
     }
@@ -400,7 +465,10 @@ async fn emit_tool(
             .emit(Output::ToolResult {
                 tool_call_id,
                 text: serde_json::to_string(&step["tool_info"]).expect("native tool info is JSON"),
-                is_error: state == "ERROR",
+                is_error: state == "ERROR"
+                    || step
+                        .pointer("/tool_info/error")
+                        .is_some_and(|error| !error.is_null()),
             })
             .await?;
     }

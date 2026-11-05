@@ -627,7 +627,7 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
-    /// Steer an active model, native Codex or Claude turn; other executors queue the next turn.
+    /// Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.
     #[default]
     Steer,
     Queue,
