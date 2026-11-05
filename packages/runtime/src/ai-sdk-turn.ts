@@ -1460,7 +1460,12 @@ export class AiSdkTurn {
                 this.runId,
               ),
             );
-          return effectiveProjectionCheckpoint
+          // Whether currentTurnMessages already covers the whole request is
+          // decided by whether a checkpoint shaped it at all, not by whether
+          // it survived the currency check: on the drop path it is still
+          // materialized over the prior content events plus this turn, so
+          // prepending priorReplay.messages would duplicate the prior turns.
+          return projectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
