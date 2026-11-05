@@ -207,9 +207,16 @@ export async function fixture(options: any = {}) {
             currentPrompt = `${prompt}\n${decision.feedback}`;
           }
         }
-      })().finally(() => {
-        w.status = w.endStatus ?? 'idle';
-      });
+      })().then(
+        () => {
+          w.status = w.endStatus ?? 'idle';
+        },
+        (error) => {
+          // A runtime failure is terminal/blocked, not a successful idle execution.
+          w.status = w.endStatus ?? 'blocked';
+          throw error;
+        },
+      );
       void w.task.catch(() => {});
       return { disposition: queued ? 'followup' : 'turn_started', turnId };
     },

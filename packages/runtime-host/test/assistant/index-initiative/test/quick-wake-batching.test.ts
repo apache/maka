@@ -157,11 +157,11 @@ for (const capacity of [5500, 1000000]) {
     });
     const seen: string[] = [];
     const followup = f.agent.followup;
-    f.agent.followup = async (text: string) => {
+    f.agent.followup = async (text, options) => {
       assert.ok(estimatePluginLlmInputTokens('', text) <= Math.floor(capacity * 0.75));
       decodeMessageContent({ text });
       seen.push(...f.q.state().active.eventWake.ids);
-      return followup(text);
+      return followup(text, options);
     };
     for (let i = 0; seen.length < ids.length && i < 1001; i++) {
       await f.q.dispatch();
@@ -205,9 +205,9 @@ test('old oversized captures recover on a fresh worker and retain the remaining 
   const sessions: any[] = [{ id: 'poisoned', labels: ['assistant-quick-discovery:owner'] }];
   const recovered = { ...f.agent, sessionId: 'recovered' };
   const followup = recovered.followup;
-  recovered.followup = async (text: string) => {
+  recovered.followup = async (text, options) => {
     assert.notEqual(f.q.state().active.messageId, 'old-message');
-    return followup(text);
+    return followup(text, options);
   };
   const poisoned = {
     ...f.agent,

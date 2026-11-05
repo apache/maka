@@ -40,16 +40,23 @@ async function setup() {
   const delivered = new Map<string, any>(),
     prompts: string[] = [];
   const sessions: any[] = [];
+  const admitted = new Set<string>();
   const agent = {
     sessionId: 'worker',
-    snapshot: async () => ({ agent: { status: 'idle' } }),
-    followup: async (text: string) => {
+    snapshot: async () => ({
+      agent: { status: fail ? 'blocked' : 'idle' },
+      pendingInteractions: 0,
+    }),
+    followup: async (text: string, options: { messageId: string }) => {
+      admitted.add(options.messageId);
       calls++;
       assert.equal(notebookRefreshes, calls, 'refresh receipts before every quick wake');
       prompts.push(text);
       return { disposition: 'turn_started' };
     },
-    messageExecution: async () => ({ state: 'owned' }),
+    messageExecution: async (messageId: string) => ({
+      state: admitted.has(messageId) ? 'owned' : 'not_admitted',
+    }),
     whenIdle: async () => {
       if (fail) throw Error('network failure');
     },
