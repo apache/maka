@@ -69,3 +69,61 @@ pub fn configuration(
         ..EngineConfig::new(bootstrap_bundle())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{
+        Size,
+        element::Instance,
+        platform::{Environment, Os, Renderer},
+        prelude::px,
+    };
+
+    #[nsh_core::element::class]
+    struct CompletionHost;
+
+    #[nsh_core::element::class]
+    impl CompletionHost {
+        #[getter]
+        pub fn system_locale(&self) -> String {
+            "en".into()
+        }
+    }
+
+    #[test]
+    fn recycled_completion_cells_refresh_labels_and_press_actions() {
+        let mut registry = nsh_core::element::Registry::ui_set("maka/host");
+        registry.value("host", || Instance::new(CompletionHost));
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(480.0), px(200.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                renderer: Renderer::Native,
+                ..Environment::default()
+            },
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+
+        app.wait_for("role:button[skill-00]").unwrap();
+        app.scroll("label:Skills", px(900.0)).unwrap();
+        app.wait_for("text:/Description of skill-15/").unwrap();
+        app.press("role:button[skill-15]").unwrap();
+        app.wait_for("text:/1:skill:skill-15/").unwrap();
+
+        app.press("id:refresh").unwrap();
+        app.press("role:button[skill-15]").unwrap();
+        app.wait_for("text:/2:skill:skill-15/").unwrap();
+    }
+}

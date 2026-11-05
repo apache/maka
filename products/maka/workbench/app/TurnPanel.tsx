@@ -29,7 +29,14 @@ import { senderSession, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  Disclosure,
+  disclosureContentInset,
+  disclosureTitleStyle,
+} from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
@@ -277,7 +284,7 @@ function ActivityLog(props: {
         if (alive) error.set(errorText(reason));
       });
   return (
-    <View style={{ height: bodyHeight(), paddingLeft: 16 }}>
+    <View style={{ height: bodyHeight(), paddingLeft: disclosureContentInset(0) }}>
       <If when={initial()}>
         <List
           accessibilityLabel={tr('Turn activity')}

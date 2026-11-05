@@ -26,7 +26,7 @@ import {
   replayStartCursor,
   updateHistoryMetadata,
 } from '../app/history.ts';
-import { orderProcessRows } from '../app/processGroups.ts';
+import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
 
 const user = (text, turnId, sequence) => ({
   key: String(sequence),
@@ -243,4 +243,36 @@ test('a message the Host wrote keeps its origin so the Bot Chat can tell it from
   assert.deepEqual(wake.origin, { kind: 'bot_worker', sessionId: 'ma_worker' });
   const [typed] = mergeChunks([], [chunk(null)], false, 1);
   assert.equal(typed.origin, undefined);
+});
+
+test('a script is shown as the tools it ran, and as itself only when it fails', () => {
+  const tool = (toolUseId, sequence, ancestorToolUseIds, result, origin = 'code_mode') => {
+    const position = { sourceSequence: sequence, itemIndex: 0 };
+    return {
+      messageId: toolUseId,
+      role: 'tool_call',
+      field: 'body',
+      turnId: 'turn',
+      position,
+      tool: { toolUseId, call: { position, ancestorToolUseIds, origin }, result },
+    };
+  };
+  const group = (...rows) =>
+    projectProcessGroups({ rows, toolActivity: [], activeTurnId: null }).entries[0];
+  const read = tool('read', 2, ['cell', 'exec']);
+  const fetch = tool('fetch', 1, [], { isError: false }, 'provider');
+  const http = tool('http', 2, ['fetch'], { isError: false }, 'host_sdk');
+  assert.deepEqual(
+    group(fetch, http).toolIds,
+    ['fetch', 'http'],
+    "a tool's own work does not replace it",
+  );
+  const running = group(tool('exec', 1, []), read);
+  const returned = group(tool('exec', 1, [], { isError: false }), read);
+  const failed = group(tool('exec', 1, [], { isError: true }), read);
+  assert.deepEqual(running.toolIds, ['read']);
+  assert.deepEqual(returned.toolIds, ['read']);
+  assert.deepEqual(failed.toolIds, ['exec', 'read']);
+  assert.equal(failed.key, running.key, 'showing the script keeps the group open');
+  assert.deepEqual(group(tool('exec', 1, [], { isError: false })).toolIds, ['exec']);
 });

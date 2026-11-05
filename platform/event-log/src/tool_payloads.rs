@@ -42,6 +42,7 @@ pub(crate) fn verify_binding(event: &RuntimeEvent, bytes: Option<i64>) -> Result
                     raw,
                     model_projection,
                     artifacts,
+                    ..
                 },
             ..
         } => {

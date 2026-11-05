@@ -453,6 +453,8 @@ fn abort(error: CellAbort) -> ToolError {
 
 fn project(observation: Observation, max_tokens: usize) -> ToolSuccess {
     let raw = serde_json::to_value(&observation).expect("typed cell observation");
+    let failed =
+        matches!(&observation, Observation::Completed { result, .. } if result["ok"] == false);
     let (content, summary) = match observation {
         Observation::Running { cell_id, content } => {
             (content, json!({"state":"running","cell_id":cell_id}))
@@ -481,7 +483,7 @@ fn project(observation: Observation, max_tokens: usize) -> ToolSuccess {
             CellOutput::Media { content, detail } => ToolContent::Media { content, detail },
         });
     }
-    ToolSuccess::content(ToolOutput::Json(raw), parts)
+    ToolSuccess::content(ToolOutput::Json(raw), parts).reporting_error(failed)
 }
 
 fn clip(text: &str, remaining: &mut usize) -> String {

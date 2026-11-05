@@ -28,7 +28,7 @@ The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the bas
 - One region has one focus. An element earns its place by changing what the user does next.
 - With accent and decoration removed, the primary task, current selection and next step must still read.
 - Assistant messages stay quiet and free of avatars. Language and continuity carry the product's character.
-- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion. Expanded activity groups indent their members one 16-point step.
+- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion. Expanded activity groups use the shared disclosure content inset for their members (32 points on desktop), matching tool details and thinking.
 
 ## Surfaces and lines
 

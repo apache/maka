@@ -39,6 +39,68 @@ async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn directory_path_paste_remains_text_in_an_existing_composer() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let directory = fixture.directory.path().join("未命名文件夹 2");
+    std::fs::create_dir(&directory).unwrap();
+    let expected = format!("查看 {}", directory.display());
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
+    view.handle_event(Event::Paste("查看 ".into()));
+    commit_native_events(&mut view).await;
+    view.handle_event(Event::Paste(format!("'{}'", directory.display())));
+    wait_view_state(&mut view, |view, _| {
+        view.surface()
+            .input_context()
+            .is_some_and(|input| input.text.as_deref() == Some(expected.as_str()))
+    })
+    .await;
+    let draft = stored_draft(&client, &fixture.session, |draft| draft.text == expected).await;
+    assert!(draft.attachments.is_empty());
+    drop(view);
+    bindings.close().await.unwrap();
+    let bindings = maka_workbench::bindings::Bindings::new(
+        fixture.client().await,
+        tokio::runtime::Handle::current(),
+    );
+    let mut view = AppView::new(nsh_platform_tui::AppOptions {
+        size: (120, 36),
+        ..Default::default()
+    });
+    let source = format!(
+        r#"
+import {{ mount, signal, Text }} from 'nsh';
+import {{ host }} from 'maka/host';
+const result = signal('Selecting file');
+host.stageFiles([{}]).then(
+  () => result.set('Unexpected directory upload'),
+  error => result.set(String(error).includes('selected path is not an absolute regular file')
+    ? 'Directory rejected' : 'Unexpected failure'),
+);
+mount(() => Text({{ get children() {{ return result(); }} }}));
+"#,
+        json!(directory.to_str().unwrap())
+    );
+    let mut config =
+        maka_workbench::configuration(bindings.registry(None), tokio::runtime::Handle::current());
+    let mut capabilities = nsh_engine::Capabilities::all();
+    capabilities.host = vec!["*".into()];
+    config.context = config.context.with(bindings.reload());
+    config.app = nsh_engine::Bundle::source(source)
+        .with_policy(nsh_engine::Policy {
+            declared: Some(capabilities),
+            ..nsh_engine::Policy::development()
+        })
+        .into();
+    view.load_with_config(config).unwrap();
+    wait_view(&mut view, |screen| screen.contains("Directory rejected")).await;
+    drop(view);
+    bindings.close().await.unwrap();
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_changes() {
     let mut fixture = Fixture::configured(support::Options {
         images: true,

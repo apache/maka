@@ -186,6 +186,7 @@ export function createHost(application: UiHost) {
     systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
       nativeHost.systemPermissionAction(sessionId, requestId, action),
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
+    stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
     setRecentWorkspace: (path: string, workspace: unknown) =>
       nativeHost.setRecentWorkspace(path, workspace),

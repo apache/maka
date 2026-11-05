@@ -34,6 +34,7 @@ import {
   bodyTextStyle,
   secondaryTextStyle,
   Disclosure,
+  disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
 } from './ui';
@@ -205,7 +206,7 @@ export function MessageRow({
               <If when={expanded()}>
                 <View
                   style={{
-                    paddingLeft: platform.isTerminal ? 24 : 32,
+                    paddingLeft: disclosureContentInset(24),
                     paddingVertical: 4,
                     gap: 8,
                   }}
@@ -419,7 +420,7 @@ export function MessageRow({
                         <If when={expanded()}>
                           <View
                             style={{
-                              paddingLeft: platform.isTerminal ? 24 : 32,
+                              paddingLeft: disclosureContentInset(24),
                               paddingVertical: 4,
                             }}
                           >
