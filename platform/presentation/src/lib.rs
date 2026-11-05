@@ -245,12 +245,21 @@ impl InvocationView {
                                 },
                             );
                         }
-                        messages.extend(
-                            self.executor
-                                .as_mut()
-                                .ok_or(ProjectionError::Invalid("executor output without start"))?
-                                .observe(event, ts, output)?,
-                        );
+                        let emitted = self
+                            .executor
+                            .as_mut()
+                            .ok_or(ProjectionError::Invalid("executor output without start"))?
+                            .observe(event, ts, output)?;
+                        if let maka_agent_facts::executor::Output::MessageEnd { message_id } =
+                            output
+                            && emitted.is_empty()
+                        {
+                            self.executor_orders.remove(&executor_message_id(
+                                &event.invocation.invocation_id,
+                                message_id,
+                            ));
+                        }
+                        messages.extend(emitted);
                     }
                     Fact::ExecutorCompleted { message_id } => {
                         messages.extend(
@@ -476,6 +485,9 @@ impl InvocationView {
             if let Some(order) = self.executor_orders.remove(&row.message.id) {
                 row.order = order;
             }
+        }
+        if matches!(self.state, State::Ended) {
+            self.executor_orders.clear();
         }
         Ok(rows)
     }

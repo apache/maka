@@ -4026,7 +4026,6 @@ export type AgentDeliveryFact =
     }
   | {
       kind: 'executor_started';
-      messageId: string;
     }
   | {
       kind: 'executor_message_started';

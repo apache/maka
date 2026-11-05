@@ -420,24 +420,23 @@ impl Coordinator {
                 if matches!(
                     event.event.fact,
                     maka_agent_facts::event::Fact::ExecutorCompleted { .. }
+                        | maka_agent_facts::event::Fact::InvocationEnded { .. }
                 ) {
-                    // Rebuild the selected final message from this accepted Turn only.
-                    // Normal observation already has these bounded fragments in memory.
-                    projection.observation.through_sequence = event.sequence;
-                    while projection.after < event.sequence {
+                    // Rebuild the selected final message from prior events in this Turn, then
+                    // observe the target event itself so callers get the full 16 KiB record.
+                    let fence = execution.observation.through_sequence;
+                    let before = event.sequence.saturating_sub(1);
+                    projection.observation.through_sequence = before;
+                    while projection.after < before {
                         let page = self
                             .commands
-                            .events(intent.request.operation(), projection.after, event.sequence)
+                            .events(intent.request.operation(), projection.after, before)
                             .await?;
                         projection
                             .apply_page(page, self.commands.as_ref(), &intent.request.operation())
                             .await?;
                     }
-                    return Ok(projection
-                        .recent
-                        .iter()
-                        .find(|record| record.record_id == id)
-                        .cloned());
+                    projection.observation.through_sequence = fence;
                 }
                 return projection
                     .observe(event, self.commands.as_ref(), &intent.request.operation())
@@ -613,4 +612,392 @@ fn render(text: &mut String, record: &Record, language: Language) -> Result<(), 
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GraphId, Mode, schedule::CommittedUpdate};
+    use maka_agent_facts::{
+        event::{Fact, Invocation, InvocationOutcome, RuntimeEvent, StoredEvent},
+        executor::Output,
+    };
+    use maka_agent_ports::execution::{
+        Activity, ArtifactChunk, Configure, Configured, CopyAttachment, CreateChild, CreateRoot,
+        Enqueue, EventPage, MessageReceipt, MessageResult, MessageState, Observation,
+        OfferInteraction, ReadArtifact, Receipt, RemovalReceipt, RemoveSession, RemovedSession,
+        Resume, RevisionDisposition, SessionCapabilities, SessionMessage, SessionOperation,
+        WorkspacePatch,
+    };
+    use maka_capabilities::authorization::SessionBoundary;
+
+    struct NoopStore;
+    impl Store for NoopStore {
+        fn control(&self, _: &str, _: &GraphId) -> BoxFuture<'_, Result<Control, Error>> {
+            unimplemented!()
+        }
+        fn updates(
+            &self,
+            _: &GraphId,
+            _: u64,
+            _: u64,
+        ) -> BoxFuture<'_, Result<Vec<CommittedUpdate>, Error>> {
+            unimplemented!()
+        }
+        fn commit_update(
+            &self,
+            _: Update,
+            _: u64,
+            _: u64,
+        ) -> BoxFuture<'_, Result<CommittedUpdate, Error>> {
+            unimplemented!()
+        }
+        fn intent(&self, _: &GraphId, _: &WorkId) -> BoxFuture<'_, Result<Option<Intent>, Error>> {
+            unimplemented!()
+        }
+        fn commit_intent(&self, _: Intent) -> BoxFuture<'_, Result<Intent, Error>> {
+            unimplemented!()
+        }
+        fn commit_wake(&self, _: Wake) -> BoxFuture<'_, Result<Wake, Error>> {
+            unimplemented!()
+        }
+    }
+
+    struct NoopOperators;
+    impl Operators for NoopOperators {
+        fn active(&self) -> BoxFuture<'_, Result<bool, Error>> {
+            unimplemented!()
+        }
+        fn provision(
+            &self,
+            _: &Epoch,
+            _: &OperatorId,
+            _: &Target,
+        ) -> BoxFuture<'_, Result<ChildSession, Error>> {
+            unimplemented!()
+        }
+    }
+
+    struct ReplayCommands(Vec<(u64, RuntimeEvent)>);
+    impl Commands for ReplayCommands {
+        fn event(
+            &self,
+            _: SessionOperation,
+            event_id: String,
+            through: u64,
+        ) -> BoxFuture<'_, Result<Option<StoredEvent>, CommandError>> {
+            let found = self
+                .0
+                .iter()
+                .find(|(sequence, event)| event.id == event_id && *sequence <= through)
+                .map(|(sequence, event)| StoredEvent {
+                    sequence: *sequence,
+                    event: event.clone(),
+                });
+            Box::pin(async move { Ok(found) })
+        }
+        fn events(
+            &self,
+            _: SessionOperation,
+            after: u64,
+            through: u64,
+        ) -> BoxFuture<'_, Result<EventPage, CommandError>> {
+            let events = self
+                .0
+                .iter()
+                .filter(|(sequence, _)| *sequence > after && *sequence <= through)
+                .map(|(sequence, event)| StoredEvent {
+                    sequence: *sequence,
+                    event: event.clone(),
+                })
+                .collect();
+            Box::pin(async move {
+                Ok(EventPage {
+                    events,
+                    through_sequence: through,
+                    next_after: None,
+                })
+            })
+        }
+        fn remove_session(
+            &self,
+            _: RemoveSession,
+        ) -> BoxFuture<'_, Result<RemovedSession, CommandError>> {
+            unimplemented!()
+        }
+        fn removal_receipt(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<Option<RemovalReceipt>, CommandError>> {
+            unimplemented!()
+        }
+        fn preview_removal(&self, _: String) -> BoxFuture<'_, Result<u64, CommandError>> {
+            unimplemented!()
+        }
+        fn copy_attachment(
+            &self,
+            _: Arc<dyn Commands>,
+            _: CopyAttachment,
+        ) -> BoxFuture<'_, Result<maka_agent_facts::attachment::AttachmentRef, CommandError>>
+        {
+            unimplemented!()
+        }
+        fn input(
+            &self,
+            _: Invocation,
+        ) -> BoxFuture<'_, Result<Option<maka_agent_facts::input::MessageInput>, CommandError>>
+        {
+            unimplemented!()
+        }
+        fn resume(&self, _: Resume) -> BoxFuture<'_, Result<Invocation, CommandError>> {
+            unimplemented!()
+        }
+        fn configure(&self, _: Configure) -> BoxFuture<'_, Result<Configured, CommandError>> {
+            unimplemented!()
+        }
+        fn read_message(
+            &self,
+            _: SessionMessage,
+        ) -> BoxFuture<'_, Result<Option<MessageState>, CommandError>> {
+            unimplemented!()
+        }
+        fn enqueue(&self, _: Enqueue) -> BoxFuture<'_, Result<MessageReceipt, CommandError>> {
+            unimplemented!()
+        }
+        fn message(&self, _: SessionOperation) -> BoxFuture<'_, MessageResult> {
+            unimplemented!()
+        }
+        fn retract(&self, _: SessionOperation) -> BoxFuture<'_, MessageResult> {
+            unimplemented!()
+        }
+        fn offer_interaction(
+            &self,
+            _: OfferInteraction,
+        ) -> BoxFuture<'_, Result<maka_agent_facts::interaction::InteractionRecord, CommandError>>
+        {
+            unimplemented!()
+        }
+        fn interaction(
+            &self,
+            _: String,
+        ) -> BoxFuture<
+            '_,
+            Result<Option<maka_agent_facts::interaction::InteractionRecord>, CommandError>,
+        > {
+            unimplemented!()
+        }
+        fn wait_interaction(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<maka_agent_facts::interaction::InteractionOutcome, CommandError>>
+        {
+            unimplemented!()
+        }
+        fn close_interaction(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<maka_agent_facts::interaction::InteractionRecord, CommandError>>
+        {
+            unimplemented!()
+        }
+        fn session(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<maka_agent_ports::session::View, CommandError>> {
+            unimplemented!()
+        }
+        fn capabilities(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<SessionCapabilities, CommandError>> {
+            unimplemented!()
+        }
+        fn activity(&self, _: String) -> BoxFuture<'_, Result<Activity, CommandError>> {
+            unimplemented!()
+        }
+        fn stop(&self, _: Invocation) -> BoxFuture<'_, Result<(), CommandError>> {
+            unimplemented!()
+        }
+        fn validate_authority(&self) -> BoxFuture<'_, Result<(), CommandError>> {
+            unimplemented!()
+        }
+        fn create_root(&self, _: CreateRoot) -> BoxFuture<'_, Result<ChildSession, CommandError>> {
+            unimplemented!()
+        }
+        fn restore_root(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<Option<ChildSession>, CommandError>> {
+            unimplemented!()
+        }
+        fn abandon_revision(
+            &self,
+            _: String,
+        ) -> BoxFuture<'_, Result<RevisionDisposition, CommandError>> {
+            unimplemented!()
+        }
+        fn boundaries(&self) -> Result<Vec<SessionBoundary>, CommandError> {
+            unimplemented!()
+        }
+        fn workspace_patch(
+            &self,
+            _: SessionOperation,
+        ) -> BoxFuture<'_, Result<Option<WorkspacePatch>, CommandError>> {
+            unimplemented!()
+        }
+        fn artifact(
+            &self,
+            _: ReadArtifact,
+        ) -> BoxFuture<'_, Result<Option<ArtifactChunk>, CommandError>> {
+            unimplemented!()
+        }
+        fn changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, CommandError> {
+            unimplemented!()
+        }
+        fn restore_child(
+            &self,
+            _: CreateChild,
+        ) -> BoxFuture<'_, Result<Option<ChildSession>, CommandError>> {
+            unimplemented!()
+        }
+        fn create_child(
+            &self,
+            _: CreateChild,
+        ) -> BoxFuture<'_, Result<ChildSession, CommandError>> {
+            unimplemented!()
+        }
+        fn submit(&self, _: Submit) -> BoxFuture<'_, Result<Receipt, CommandError>> {
+            unimplemented!()
+        }
+        fn query(&self, _: SessionOperation) -> BoxFuture<'_, Result<Observation, CommandError>> {
+            unimplemented!()
+        }
+        fn cancel(&self, _: SessionOperation) -> BoxFuture<'_, Result<Observation, CommandError>> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn read_record_replays_turn_for_executor_completed_beyond_preview_limit() {
+        let invocation = Invocation {
+            session_id: "child".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "invocation".into(),
+        };
+        let body = "x".repeat(5000);
+        let facts = [
+            Fact::ExecutorObserved {
+                output: Output::MessageStart {
+                    message_id: "answer".into(),
+                },
+            },
+            Fact::ExecutorObserved {
+                output: Output::OutputDelta {
+                    message_id: "answer".into(),
+                    text: body.clone(),
+                },
+            },
+            Fact::ExecutorObserved {
+                output: Output::MessageEnd {
+                    message_id: "answer".into(),
+                },
+            },
+            Fact::ExecutorCompleted {
+                message_id: Some("answer".into()),
+            },
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Completed,
+            },
+        ];
+        let events: Vec<(u64, RuntimeEvent)> = facts
+            .into_iter()
+            .enumerate()
+            .map(|(idx, fact)| {
+                (
+                    (idx + 1) as u64,
+                    RuntimeEvent::new(invocation.clone(), fact),
+                )
+            })
+            .collect();
+        let completed_id = events[3].1.id.clone();
+        let terminal_id = events[4].1.id.clone();
+        let through = events.len() as u64;
+
+        let epoch = Epoch {
+            root_session_id: "root".into(),
+            epoch: 1,
+            graph_id: GraphId::new(),
+            created_at: 1,
+            mode: Mode::Graph,
+        };
+        let work = WorkId::new();
+        let operator = OperatorId::new();
+        let intent = Intent {
+            graph_id: epoch.graph_id.clone(),
+            work_id: work.clone(),
+            operator_id: operator.clone(),
+            schedule_revision: 1,
+            request: Submit {
+                operation_id: "work".into(),
+                session_id: "child".into(),
+                content: "task".into(),
+                orchestration_mode: None,
+            },
+        };
+        let observation = Observation {
+            receipt: Receipt {
+                invocation: invocation.clone(),
+                message_id: "msg".into(),
+                content_digest: "sha256:00".into(),
+            },
+            progress: Progress::Ended {
+                outcome: InvocationOutcome::Completed,
+            },
+            through_sequence: through,
+            terminal_event_id: Some(terminal_id),
+            attention_id: None,
+        };
+        let commands = Arc::new(ReplayCommands(events.clone()));
+        let mut execution = Execution::new(work.clone(), operator, observation);
+        execution
+            .apply_page(
+                EventPage {
+                    events: events
+                        .into_iter()
+                        .map(|(sequence, event)| StoredEvent { sequence, event })
+                        .collect(),
+                    through_sequence: through,
+                    next_after: None,
+                },
+                commands.as_ref(),
+                &intent.request.operation(),
+            )
+            .await
+            .unwrap();
+
+        let mut coordinator = Coordinator::new(
+            epoch,
+            Arc::new(NoopStore),
+            commands,
+            Arc::new(NoopOperators),
+        )
+        .unwrap();
+        coordinator.intents.insert(work.clone(), intent);
+        coordinator.executions.insert(work, execution);
+
+        let preview = coordinator
+            .record(&completed_id)
+            .expect("recent preview exists");
+        assert_eq!(preview.text.len(), 2048);
+        assert!(preview.truncated);
+
+        let full = coordinator
+            .read_record(&completed_id)
+            .await
+            .unwrap()
+            .expect("full ExecutorCompleted record");
+        assert_eq!(full.text, body);
+        assert!(!full.truncated);
+    }
 }

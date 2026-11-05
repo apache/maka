@@ -149,6 +149,10 @@ test('canonical order sorts MessageEnd-sourced text before earlier-source tools 
     kind: 'after',
     cursor: { position: { sourceSequence: 12, itemIndex: 0 }, field: 'body', offset: 0 },
   });
+  assert.deepEqual(historyFollowPosition(rows.at(-1), [], [3, 9], 5), {
+    kind: 'event',
+    sequence: 9,
+  });
 });
 
 test('replay cursor preserves the earliest complete part and tool seed without argument limits', () => {

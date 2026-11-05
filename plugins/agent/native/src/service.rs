@@ -1424,9 +1424,7 @@ fn delivery(event: StoreStreamEvent) -> Delivery {
     let model_tool_id = |step: &str, call: &str| tool_id(&format!("{step}:{call}"));
     let fact = match event.fact {
         StreamFact::InvocationOpened => DeliveryFact::Opened,
-        StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted {
-            message_id: event.id,
-        },
+        StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted,
         StreamFact::ExecutorMessageStarted { message_id } => DeliveryFact::ExecutorMessageStarted {
             message_id: maka_presentation::executor_message_id(
                 &event.invocation.invocation_id,

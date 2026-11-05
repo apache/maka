@@ -616,33 +616,44 @@ pub(crate) async fn record(
         output: maka_agent_facts::executor::Output::MessageEnd { message_id },
     } = &stored.event.fact
     {
-        let mut start = None;
-        let mut text = String::new();
-        let mut observations = sqlx::query_as::<_, (i64, String, Option<String>)>(
-            "SELECT sequence,json_extract(event_header,'$.fact.output.type'),json_extract(event_header,'$.fact.output.text')
-             FROM event_log INDEXED BY executor_message_observations
+        let start: Option<i64> = sqlx::query_scalar(
+            "SELECT sequence FROM event_log INDEXED BY executor_output_kinds
              WHERE kind='executor_observed' AND invocation_id=?1
-               AND json_extract(event_header,'$.fact.output.messageId')=?2 AND sequence<=?3
-               AND json_extract(event_header,'$.fact.output.type') IN ('message_start','output_delta')
-             ORDER BY sequence"
-        ).bind(&stored.event.invocation.invocation_id).bind(message_id).bind(sequence).fetch(&mut *db);
-        while let Some((sequence, kind, delta)) = observations.try_next().await? {
-            if kind == "message_start" {
-                start = Some(crate::sequence_number(sequence)?);
-            } else {
-                text.push_str(
-                    delta
-                        .as_deref()
-                        .ok_or_else(|| invalid("executor body delta lacks text"))?,
-                );
-            }
-        }
-        semantic::append_executor_message(
-            &mut transition,
-            stored,
+               AND json_extract(event_header,'$.fact.output.type')='message_start'
+               AND json_extract(event_header,'$.fact.output.messageId')=?2
+               AND sequence<=?3
+             ORDER BY sequence LIMIT 1",
+        )
+        .bind(&stored.event.invocation.invocation_id)
+        .bind(message_id)
+        .bind(sequence)
+        .fetch_optional(&mut *db)
+        .await?;
+        let start = crate::sequence_number(
             start.ok_or_else(|| invalid("executor message lacks canonical start"))?,
-            text,
-        );
+        )?;
+        let mut text = String::new();
+        let mut observations = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(event_header,'$.fact.output.text')
+             FROM event_log INDEXED BY executor_output_kinds
+             WHERE kind='executor_observed' AND invocation_id=?1
+               AND json_extract(event_header,'$.fact.output.type')='output_delta'
+               AND json_extract(event_header,'$.fact.output.messageId')=?2
+               AND sequence<=?3
+             ORDER BY sequence",
+        )
+        .bind(&stored.event.invocation.invocation_id)
+        .bind(message_id)
+        .bind(sequence)
+        .fetch(&mut *db);
+        while let Some(delta) = observations.try_next().await? {
+            text.push_str(
+                delta
+                    .as_deref()
+                    .ok_or_else(|| invalid("executor body delta lacks text"))?,
+            );
+        }
+        semantic::append_executor_message(&mut transition, stored, start, text);
     }
     let canonical_projection = match &stored.event.fact {
         Fact::ToolSettled {

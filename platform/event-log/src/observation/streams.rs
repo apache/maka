@@ -34,7 +34,7 @@ pub struct AssistantStreamSeed {
     pub text_kind: TextKind,
 }
 
-pub(super) async fn read(
+pub(crate) async fn read(
     connection: &mut sqlx::SqliteConnection,
     root: Option<&TurnBoundary>,
 ) -> Result<Vec<AssistantStreamSeed>, StoreError> {

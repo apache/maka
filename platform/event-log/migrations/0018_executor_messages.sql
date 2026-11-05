@@ -22,5 +22,8 @@ CREATE INDEX executor_message_observations ON event_log (
 ) WHERE kind = 'executor_observed';
 
 CREATE INDEX executor_output_kinds ON event_log (
-    invocation_id, json_extract(event_header, '$.fact.output.type'), sequence
+    invocation_id,
+    json_extract(event_header, '$.fact.output.type'),
+    json_extract(event_header, '$.fact.output.messageId'),
+    sequence
 ) WHERE kind = 'executor_observed';

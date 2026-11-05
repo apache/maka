@@ -295,10 +295,10 @@ async fn read_page(
             "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (false, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
     };
     let mut query = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(query))
@@ -599,7 +599,7 @@ async fn read_page(
             right = Some((cursor, row.total));
         } else if matches!(position, Position::Event { .. }) {
             let last: Option<(i64,i64)> = sqlx::query_as(
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1"
         ).bind(session).bind(through_sql).fetch_optional(&mut *tx).await?;
             if let Some(locator) = last {
                 let locator = row_position(locator.0, locator.1)?;
@@ -820,7 +820,7 @@ async fn neighbor(
     let query = if before {
         "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?3,?4))"
     } else {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
     };
     Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(query))
         .bind(session)

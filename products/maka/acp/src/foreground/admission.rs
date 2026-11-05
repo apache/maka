@@ -72,6 +72,7 @@ impl Foreground {
             after: observation.through,
             history_through: observation.through,
             parts: HashMap::new(),
+            message_starts: HashMap::new(),
             user: Vec::new(),
         };
         let result = async {

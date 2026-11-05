@@ -37,7 +37,13 @@ export type LivePart = {
   startSequence: number;
 };
 type LiveRow = Row & { invocationId: string; stepId: string; closedAt: number | null };
-type Overlay = { rows: LiveRow[]; tools: ToolActivity[]; parts: LivePart[] };
+type Seat = { invocationId: string; startSequence: number; closedAt: number | null };
+type Overlay = {
+  rows: LiveRow[];
+  tools: ToolActivity[];
+  parts: LivePart[];
+  closedStarts: number[];
+};
 
 /** Byte assembly for one attempt; display lifetime belongs to TranscriptOverlay. */
 class PreviewAssembly {
@@ -188,23 +194,35 @@ export class TranscriptOverlay {
   private rows: LiveRow[] = [];
   private tools: ToolActivity[] = [];
   private parts: LivePart[] = [];
+  private seats = new Map<string, Seat>();
   private canonical: ReadonlyMap<string, Row> = new Map();
   private tailThrough: number | null = 0;
   private observedThrough = 0;
   private activeInvocation: string | null | undefined;
 
   snapshot(): Overlay {
-    return { rows: this.rows, tools: this.tools, parts: this.parts };
+    const starts = new Set<number>();
+    for (const row of this.rows)
+      if (!row.preview && row.closedAt !== null && row.startSequence !== undefined)
+        starts.add(row.startSequence);
+    for (const seat of this.seats.values())
+      if (seat.closedAt !== null) starts.add(seat.startSequence);
+    return { rows: this.rows, tools: this.tools, parts: this.parts, closedStarts: [...starts] };
   }
 
-  history(canonical: ReadonlyMap<string, Row>, tailThrough: number | null) {
+  history(
+    canonical: ReadonlyMap<string, Row>,
+    tailThrough: number | null,
+    coveredFrom?: number,
+    windowStart?: number,
+  ) {
     this.canonical = canonical;
     // Off-tail windows do not display overlays, so terminal rows need no retention there.
     this.tailThrough = tailThrough === null ? null : Math.max(this.tailThrough ?? 0, tailThrough);
     for (const row of this.rows)
       if (canonical.has(`${row.messageId}/${row.field}`))
         this.assembly.commit(row.invocationId, row.stepId, row.messageId);
-    this.retireCovered();
+    this.retireCovered(coveredFrom, windowStart);
   }
 
   observe(observed: Pick<AgentObservation, 'through' | 'run' | 'parts'>) {
@@ -220,6 +238,20 @@ export class TranscriptOverlay {
         row.invocationId !== this.activeInvocation ||
         (!row.preview && !openMessages.has(row.messageId)),
     );
+    for (const [messageId, seat] of this.seats)
+      if (
+        seat.closedAt === null &&
+        (seat.invocationId !== this.activeInvocation || !openMessages.has(messageId))
+      )
+        this.seats.set(messageId, { ...seat, closedAt: observed.through });
+    if (run)
+      for (const part of observed.parts)
+        if (part.stepId === part.messageId && !this.seats.has(part.messageId))
+          this.seats.set(part.messageId, {
+            invocationId: run.invocationId,
+            startSequence: part.startSequence,
+            closedAt: null,
+          });
     this.tools = this.tools.filter((tool) => tool.invocationId === this.activeInvocation);
     this.parts = run
       ? observed.parts.map((part) => ({
@@ -267,10 +299,12 @@ export class TranscriptOverlay {
         if (sequence >= this.observedThrough) {
           this.activeInvocation = invocationId;
           this.close(sequence, (row) => row.invocationId !== invocationId);
+          this.closeSeats(sequence, (_, seat) => seat.invocationId !== invocationId);
           this.tools = this.tools.filter((tool) => tool.invocationId === invocationId);
         }
         break;
       case 'executor_message_started':
+        this.seats.set(fact.messageId, { invocationId, startSequence: sequence, closedAt: null });
         this.parts = [
           ...this.parts.filter(
             (part) => part.invocationId !== invocationId || part.messageId !== fact.messageId,
@@ -286,6 +320,7 @@ export class TranscriptOverlay {
         ];
         break;
       case 'delta': {
+        if (!fact.text) break;
         const part = this.parts.find(
           (part) =>
             part.invocationId === invocationId &&
@@ -326,6 +361,10 @@ export class TranscriptOverlay {
             row.stepId === fact.stepId &&
             row.messageId === fact.messageId,
         );
+        this.closeSeats(
+          sequence,
+          (messageId, seat) => seat.invocationId === invocationId && messageId === fact.messageId,
+        );
         break;
       case 'tool_input_ready':
         this.assembly.retireTool(invocationId, fact.stepId, fact.toolUseId);
@@ -336,6 +375,12 @@ export class TranscriptOverlay {
           sequence,
           (row) => row.invocationId === invocationId && row.stepId === fact.stepId,
         );
+        this.closeSeats(
+          sequence,
+          (messageId, seat) =>
+            seat.invocationId === invocationId &&
+            (fact.stepId === invocationId || messageId === fact.stepId),
+        );
         this.parts = this.parts.filter(
           (part) => part.invocationId !== invocationId || part.stepId !== fact.stepId,
         );
@@ -343,6 +388,7 @@ export class TranscriptOverlay {
       case 'ended':
         if (sequence >= this.observedThrough) this.activeInvocation = null;
         this.close(sequence, (row) => row.invocationId === invocationId);
+        this.closeSeats(sequence, (_, seat) => seat.invocationId === invocationId);
         this.parts = this.parts.filter((part) => part.invocationId !== invocationId);
         break;
     }
@@ -360,12 +406,34 @@ export class TranscriptOverlay {
     );
   }
 
-  private retireCovered() {
+  private closeSeats(sequence: number, matches: (messageId: string, seat: Seat) => boolean) {
+    for (const [messageId, seat] of this.seats)
+      if (seat.closedAt === null && matches(messageId, seat))
+        this.seats.set(messageId, { ...seat, closedAt: sequence });
+  }
+
+  private retireCovered(coveredFrom?: number, windowStart?: number) {
+    const windowCovered = (startSequence: number | undefined, closedAt: number) =>
+      this.tailThrough === null ||
+      (closedAt <= this.tailThrough &&
+        startSequence !== undefined &&
+        ((coveredFrom !== undefined && coveredFrom <= startSequence) ||
+          (windowStart !== undefined && startSequence < windowStart)));
+    for (const [messageId, seat] of this.seats)
+      if (
+        this.canonical.has(`${messageId}/body`) ||
+        this.canonical.has(`${messageId}/thinking`) ||
+        (seat.closedAt !== null && windowCovered(seat.startSequence, seat.closedAt))
+      )
+        this.seats.delete(messageId);
     const rows = this.rows.filter(
       (row) =>
         !this.canonical.has(`${row.messageId}/${row.field}`) &&
         (row.closedAt === null ||
-          (this.tailThrough !== null && (!row.preview || row.closedAt > this.tailThrough))),
+          (this.tailThrough !== null &&
+            (row.preview
+              ? row.closedAt > this.tailThrough
+              : !windowCovered(row.startSequence, row.closedAt)))),
     );
     if (rows.length !== this.rows.length) this.rows = rows;
   }

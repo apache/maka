@@ -75,11 +75,16 @@ export function senderSession(origin: MessageOrigin | null | undefined): string 
 export function historyFollowPosition(
   last: Row | undefined,
   live: readonly Row[],
+  closedStarts: readonly number[] = [],
+  windowStart?: number,
 ): HistoryPosition {
   let start: number | undefined;
-  for (const row of live)
-    if (!row.preview && row.closedAt != null && row.startSequence !== undefined)
-      start = Math.min(start ?? row.startSequence, row.startSequence);
+  const consider = (sequence: number | undefined) => {
+    if (sequence === undefined || (windowStart !== undefined && sequence < windowStart)) return;
+    start = Math.min(start ?? sequence, sequence);
+  };
+  for (const row of live) if (!row.preview && row.closedAt != null) consider(row.startSequence);
+  for (const sequence of closedStarts) consider(sequence);
   if (start !== undefined) return { kind: 'event', sequence: start };
   return last
     ? {

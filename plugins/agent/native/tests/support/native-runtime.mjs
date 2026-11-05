@@ -277,12 +277,11 @@ function output(text) {
   const middle = Math.floor(chars.length / 2);
   const chunks = [chars.slice(0, middle).join(''), chars.slice(middle).join('')];
   if (claude) {
-    for (const chunk of chunks)
-      append({
-        type: 'assistant',
-        uuid: crypto.randomUUID(),
-        message: { id, content: [{ type: 'text', text: chunk }] },
-      });
+    append({
+      type: 'assistant',
+      uuid: crypto.randomUUID(),
+      message: { id, content: [{ type: 'text', text }] },
+    });
   } else if (agy) {
     agyResponse += text;
     const index = agyStep++;
@@ -323,15 +322,14 @@ function nativeThinking(text, streaming) {
   const id = 'reasoning-' + messageIndex++;
   const chunks = streaming ? [text.slice(0, 7), text.slice(7)] : [text];
   if (claude) {
-    for (const thinking of chunks)
-      append({
-        type: 'assistant',
-        uuid: crypto.randomUUID(),
-        message: {
-          id,
-          content: [{ type: 'thinking', thinking }],
-        },
-      });
+    append({
+      type: 'assistant',
+      uuid: crypto.randomUUID(),
+      message: {
+        id,
+        content: [{ type: 'thinking', thinking: text }],
+      },
+    });
   } else {
     if (streaming) {
       event('item/started', {

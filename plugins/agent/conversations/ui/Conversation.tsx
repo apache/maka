@@ -870,11 +870,17 @@ export function Conversation(props: ConversationProps) {
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
   };
-  const publishHistory = (chunks: any[], through: number, older = false) => {
+  const publishHistory = (
+    chunks: any[],
+    through: number,
+    older = false,
+    coveredFrom?: number,
+    windowStart?: number,
+  ) => {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
-      overlay.history(canonical, atHistoryTail() ? through : null);
+      overlay.history(canonical, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
@@ -965,7 +971,12 @@ export function Conversation(props: ConversationProps) {
           before: page.before,
           after: page.after,
         });
-        publishHistory(page.chunks, page.through);
+        publishHistory(
+          page.chunks,
+          page.through,
+          false,
+          page.after === null && page.before === null ? 0 : undefined,
+        );
         ready.set(true);
         awayFromLatest.set(position.kind !== 'tail');
         innerReader.set(null);
@@ -1092,8 +1103,10 @@ export function Conversation(props: ConversationProps) {
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
     if (observed.through >= runThrough) {
-      overlay.observe(observed);
-      publishOverlay();
+      if (subscription === null) {
+        overlay.observe(observed);
+        publishOverlay();
+      }
       const completedTurn = observed.lastCompletedTurnId;
       const trigger = predictionTrigger({
         completedTurnId: completedTurn,
@@ -1131,8 +1144,19 @@ export function Conversation(props: ConversationProps) {
       do {
         followAgain = false;
         const fence = latestKnown;
-        if (historyWindow()?.after === null) {
-          let position = historyFollowPosition(rows().at(-1), overlay.snapshot().rows);
+        const currentWindow = historyWindow();
+        if (currentWindow?.after === null) {
+          const windowStart = currentWindow.before ? rows()[0]?.order?.sourceSequence : undefined;
+          const snap = overlay.snapshot();
+          const initial = historyFollowPosition(
+            rows().at(-1),
+            snap.rows,
+            snap.closedStarts,
+            windowStart,
+          );
+          const coveredFrom =
+            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
+          let position = initial;
           const chunks: AgentHistoryChunk[] = [];
           for (;;) {
             const page = await history(fence, position);
@@ -1141,7 +1165,7 @@ export function Conversation(props: ConversationProps) {
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
-          publishHistory(chunks, fence);
+          publishHistory(chunks, fence, false, coveredFrom, windowStart);
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
@@ -1239,9 +1263,6 @@ export function Conversation(props: ConversationProps) {
             void observe().catch(report);
             runThrough = event.sequence;
           }
-          changed = true;
-          break;
-        case 'executor_started':
           changed = true;
           break;
         case 'delta':

@@ -308,6 +308,8 @@ struct Message {
     text: String,
     summary: std::collections::BTreeMap<u64, String>,
     reasoning: std::collections::BTreeMap<u64, String>,
+    active_thinking: Option<(bool, u64)>,
+    has_thinking: bool,
     ended: bool,
 }
 impl Turn {
@@ -360,23 +362,38 @@ impl Turn {
                 let message = self.messages.get_mut(id).expect("started native message");
                 let delta = if method == "item/agentMessage/delta" {
                     message.text.push_str(text);
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
                     Output::OutputDelta {
                         message_id: id.into(),
                         text: text.into(),
                     }
                 } else {
-                    let (field, parts) = if method == "item/reasoning/summaryTextDelta" {
-                        ("summaryIndex", &mut message.summary)
+                    let (field, is_content, parts) = if method == "item/reasoning/summaryTextDelta"
+                    {
+                        ("summaryIndex", false, &mut message.summary)
                     } else {
-                        ("contentIndex", &mut message.reasoning)
+                        ("contentIndex", true, &mut message.reasoning)
                     };
                     let index = p.get(field).and_then(Value::as_u64).ok_or_else(|| {
                         Error::Invalid("Codex reasoning delta has no nonnegative part index".into())
                     })?;
                     parts.entry(index).or_default().push_str(text);
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
+                    let key = (is_content, index);
+                    let emitted = if message.has_thinking && message.active_thinking != Some(key) {
+                        format!("\n\n{text}")
+                    } else {
+                        text.into()
+                    };
+                    message.active_thinking = Some(key);
+                    message.has_thinking = true;
                     Output::ThinkingDelta {
                         message_id: id.into(),
-                        text: text.into(),
+                        text: emitted,
                     }
                 };
                 output.emit(delta).await?;
@@ -409,9 +426,10 @@ impl Turn {
                         if kind == "reasoning" {
                             let message =
                                 self.messages.get_mut(&id).expect("started native message");
-                            for (field, streamed) in [
-                                ("summary", &mut message.summary),
-                                ("content", &mut message.reasoning),
+                            let mut suffixes = Vec::new();
+                            for (field, is_content, streamed) in [
+                                ("summary", false, &mut message.summary),
+                                ("content", true, &mut message.reasoning),
                             ] {
                                 let parts = match item.get(field) {
                                     None => &[][..],
@@ -430,16 +448,16 @@ impl Turn {
                                             "Codex reasoning snapshot part is not text".into(),
                                         )
                                     })?;
-                                    let prefix =
-                                        streamed.remove(&(index as u64)).unwrap_or_default();
-                                    let suffix = text.strip_prefix(&prefix).ok_or_else(|| Error::Invalid("Codex reasoning snapshot differs from its streamed part".into()))?;
+                                    let key = (is_content, index as u64);
+                                    let prefix = streamed.remove(&key.1).unwrap_or_default();
+                                    let suffix = text.strip_prefix(&prefix).ok_or_else(|| {
+                                        Error::Invalid(
+                                            "Codex reasoning snapshot differs from its streamed part"
+                                                .into(),
+                                        )
+                                    })?;
                                     if !suffix.is_empty() {
-                                        output
-                                            .emit(Output::ThinkingDelta {
-                                                message_id: id.clone(),
-                                                text: suffix.into(),
-                                            })
-                                            .await?;
+                                        suffixes.push((key, suffix.to_owned()));
                                     }
                                 }
                                 if !streamed.is_empty() {
@@ -447,6 +465,33 @@ impl Turn {
                                         "Codex reasoning snapshot omitted streamed parts".into(),
                                     ));
                                 }
+                            }
+                            if let Some(active) = message.active_thinking
+                                && let Some(pos) = suffixes.iter().position(|(k, _)| *k == active)
+                            {
+                                let (_, suffix) = suffixes.remove(pos);
+                                message.has_thinking = true;
+                                output
+                                    .emit(Output::ThinkingDelta {
+                                        message_id: id.clone(),
+                                        text: suffix,
+                                    })
+                                    .await?;
+                            }
+                            for (key, suffix) in suffixes {
+                                let emitted = if message.has_thinking {
+                                    format!("\n\n{suffix}")
+                                } else {
+                                    suffix
+                                };
+                                message.has_thinking = true;
+                                message.active_thinking = Some(key);
+                                output
+                                    .emit(Output::ThinkingDelta {
+                                        message_id: id.clone(),
+                                        text: emitted,
+                                    })
+                                    .await?;
                             }
                         }
                         output
@@ -510,7 +555,12 @@ impl Turn {
                         Some("interrupted") => return Err(Error::Cancelled),
                         Some("failed") => Outcome::Failed {
                             code: Some("native_turn_failed".into()),
-                            message: "Codex turn failed".into(),
+                            message: p
+                                .pointer("/turn/error/message")
+                                .and_then(Value::as_str)
+                                .filter(|message| !message.is_empty())
+                                .unwrap_or("Codex turn failed")
+                                .into(),
                             recoverable: false,
                         },
                         _ => {
@@ -575,7 +625,7 @@ mod tests {
             ),
             (
                 "item/completed",
-                serde_json::json!({"item":{"id":"r","type":"reasoning","summary":["first summary","next part","snapshot only"],"content":["raw content"]}}),
+                serde_json::json!({"item":{"id":"r","type":"reasoning","summary":["first summary","next","snapshot only"],"content":["raw content","extra content"]}}),
             ),
         ] {
             turn.event(event(method, params), &sink).await.unwrap();
@@ -598,14 +648,28 @@ mod tests {
                 {"type":"message_start","messageId":"r"},
                 {"type":"thinking_delta","messageId":"r","text":"first "},
                 {"type":"thinking_delta","messageId":"r","text":"summary"},
-                {"type":"thinking_delta","messageId":"r","text":"next"},
-                {"type":"thinking_delta","messageId":"r","text":"raw"},
-                {"type":"thinking_delta","messageId":"r","text":" part"},
-                {"type":"thinking_delta","messageId":"r","text":"snapshot only"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nnext"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nraw"},
                 {"type":"thinking_delta","messageId":"r","text":" content"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nsnapshot only"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nextra content"},
                 {"type":"message_end","messageId":"r"}
             ])
         );
+        let mut failed_turn = super::tests::turn();
+        assert!(matches!(
+            failed_turn
+                .event(
+                    event(
+                        "turn/completed",
+                        serde_json::json!({"turn":{"id":"turn","status":"failed","error":{"message":"rate limit exceeded"}}})
+                    ),
+                    &sink
+                )
+                .await
+                .unwrap(),
+            Some(Outcome::Failed { message, .. }) if message == "rate limit exceeded"
+        ));
         let mut turn = super::tests::turn();
         turn.event(
             event(

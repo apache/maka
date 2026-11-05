@@ -1324,3 +1324,151 @@ async fn recall_indexes_tool_calls_ranks_multi_term_matches_and_exposes_compacte
 
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn history_context_orders_neighbors_by_display_seat_across_interleaved_executor_tools() {
+    use maka_agent_facts::{
+        event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
+        executor::{Binding, Output},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootStore::open(demand_owner(directory.path()))
+        .await
+        .unwrap();
+    let session = "demand-executor-order";
+    root.create_session(session, "create-executor-order", &json!({}), 1)
+        .await
+        .unwrap();
+    let log = root.session(session).await.unwrap();
+    let invocation = Invocation {
+        session_id: session.into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        invocation_id: "inv".into(),
+    };
+    let event = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
+    log.append(&event(Fact::InvocationOpened {
+        input: InvocationInput::Message {
+            content: "Check workspace layout".into(),
+            source_messages: vec![],
+            request_fingerprint: None,
+        },
+        configuration: Some(Box::new(
+            maka_agent_facts::execution::InvocationConfiguration {
+                language: maka_agent_facts::language::Language::En,
+                compaction_prompt: None,
+                workspace_origin: maka_agent_facts::execution::WorkspaceOrigin::Selected,
+                approval_policy: maka_agent_facts::execution::ApprovalPolicy::OnRequest,
+                boundary_revision: 0,
+                cwd: directory.path().to_string_lossy().into_owned(),
+                workspace_binding: None,
+                workspace_identity: None,
+                model: None,
+                editing_tools: None,
+                tool_discovery: false,
+                tool_composition: None,
+                system_prompt: None,
+                thinking_level: None,
+                sandbox_mode: maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+                collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
+                orchestration_mode: maka_agent_facts::execution::BehaviorId::default(),
+                tool_mode: maka_agent_facts::execution::ToolMode::Direct,
+                code_language: Default::default(),
+            },
+        )),
+    }))
+    .await
+    .unwrap();
+    log.append(&event(Fact::ExecutorStarted {
+        settings: Default::default(),
+        binding: Binding {
+            executor_id: "claude".to_owned().try_into().unwrap(),
+            package_id: "pkg".into(),
+            entry_id: "entry".into(),
+            activation: "act".into(),
+        },
+    }))
+    .await
+    .unwrap();
+    for output in [
+        Output::MessageStart {
+            message_id: "m1".into(),
+        },
+        Output::OutputDelta {
+            message_id: "m1".into(),
+            text: "Inspecting cargomanifestneedle".into(),
+        },
+        Output::ToolStart {
+            tool_call_id: "c1".into(),
+            name: "Read".into(),
+            input: json!({"file_path":"Cargo.toml"}),
+        },
+        Output::ToolResult {
+            tool_call_id: "c1".into(),
+            text: "[workspace]".into(),
+            is_error: false,
+        },
+        Output::MessageEnd {
+            message_id: "m1".into(),
+        },
+    ] {
+        log.append(&event(Fact::ExecutorObserved { output }))
+            .await
+            .unwrap();
+    }
+    log.append(&event(Fact::ExecutorCompleted {
+        message_id: Some("m1".into()),
+    }))
+    .await
+    .unwrap();
+    log.append(&event(Fact::InvocationEnded {
+        outcome: InvocationOutcome::Completed,
+    }))
+    .await
+    .unwrap();
+
+    let hits = root
+        .search_history(
+            "demand-",
+            query("cargomanifestneedle"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(hits.len(), 1);
+    let context = root
+        .history_context(
+            "demand-",
+            session,
+            &hits[0].message_id,
+            1,
+            1,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(context.anchor.body, "Inspecting cargomanifestneedle");
+    let roles: Vec<_> = context
+        .messages
+        .iter()
+        .map(|hit| (hit.role, hit.body.as_str()))
+        .collect();
+    assert_eq!(roles.len(), 2);
+    assert_eq!(
+        roles[0],
+        (
+            maka_agent_ports::session::history::Role::User,
+            "Check workspace layout"
+        )
+    );
+    assert_eq!(
+        roles[1].0,
+        maka_agent_ports::session::history::Role::ToolCall
+    );
+    assert!(roles[1].1.contains("Cargo.toml"));
+    root.close().await.unwrap();
+}

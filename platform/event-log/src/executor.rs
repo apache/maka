@@ -113,9 +113,15 @@ pub(crate) async fn validate(
             Output::OutputDelta { message_id, .. }
             | Output::ThinkingDelta { message_id, .. }
             | Output::MessageEnd { message_id } => {
-                let state: Option<String> = sqlx::query_scalar("SELECT json_extract(event_header, '$.fact.output.type') FROM runtime_events WHERE invocation_id=?1 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?2 ORDER BY sequence DESC LIMIT 1")
-                        .bind(id).bind(message_id).fetch_optional(&mut *connection).await?;
-                if state.is_none() || state.as_deref() == Some("message_end") {
+                let open: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?2 AND json_extract(event_header, '$.fact.output.type')='message_start')
+                     AND NOT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?2 AND json_extract(event_header, '$.fact.output.type')='message_end')",
+                )
+                .bind(id)
+                .bind(message_id)
+                .fetch_one(&mut *connection)
+                .await?;
+                if !open {
                     return Err(invalid("executor output outside its message"));
                 }
             }

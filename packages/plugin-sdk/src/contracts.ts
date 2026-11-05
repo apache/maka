@@ -24446,12 +24446,9 @@ export const contracts = {
                         type: 'string',
                         const: 'executor_started',
                       },
-                      messageId: {
-                        type: 'string',
-                      },
                     },
+                    required: ['kind'],
                     additionalProperties: false,
-                    required: ['kind', 'messageId'],
                   },
                   {
                     description:

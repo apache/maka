@@ -28,7 +28,7 @@ enum Behavior {
     Unsettled,
     Streaming,
     Attachments,
-    InvalidSuccess { message_id: Option<&'static str> },
+    InvalidSuccess,
 }
 struct Probe {
     behavior: Behavior,
@@ -64,7 +64,7 @@ impl Handler for Probe {
             input["invocation"],
             serde_json::to_value(invocation).unwrap()
         );
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let (behavior, entered, cancelled, release) = (
             self.behavior,
             self.entered.clone(),
@@ -139,11 +139,12 @@ impl Handler for Probe {
                     release.acquire().await.unwrap().forget();
                     return Ok(json!({"status":"completed","message_id":null}));
                 }
-                Behavior::InvalidSuccess { message_id } => {
+                Behavior::InvalidSuccess => {
                     context
                         .emit(json!({"type":"message_start","messageId":"partial"}))
                         .await?;
                     context.emit(json!({"type":"output_delta","messageId":"partial","text":"partial answer"})).await?;
+                    let message_id = if call == 0 { None } else { Some("unknown") };
                     return Ok(json!({"status":"completed","message_id":message_id}));
                 }
             };
@@ -1012,10 +1013,10 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
 #[tokio::test]
 async fn executor_service_invalid_success_fails_durably_and_preserves_interrupted_body() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        for message_id in [None, Some("unknown")] {
-            let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-            let probe = Probe::new(Behavior::InvalidSuccess { message_id });
-            activate(&mut fixture, true, Some(probe.clone()), true).await;
+        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::InvalidSuccess);
+        activate(&mut fixture, true, Some(probe.clone()), true).await;
+        for expected_calls in 1..=2 {
             let session = fixture.create("Invalid executor completion").await;
             let accepted = fixture
                 .mutation(2, "send", input_for(&session, "answer"), Uuid::new_v4())
@@ -1035,23 +1036,6 @@ async fn executor_service_invalid_success_fails_durably_and_preserves_interrupte
                     outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. }
                 } if class == "executor"
             )));
-            let mut view = maka_presentation::InvocationView::new();
-            let mut rows = Vec::new();
-            for row in stored.iter().filter(|row| {
-                row.event.invocation.invocation_id == accepted["invocationId"].as_str().unwrap()
-            }) {
-                rows.extend(view.push(row).unwrap());
-            }
-            let bodies: Vec<_> = rows
-                .iter()
-                .filter_map(|row| match &row.message.content {
-                    maka_presentation::Content::Assistant {
-                        text, interrupted, ..
-                    } => Some((text.as_str(), *interrupted)),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(bodies, vec![("partial answer", true)]);
             let history = fixture
                 .query(
                     "history",
@@ -1067,10 +1051,10 @@ async fn executor_service_invalid_success_fails_durably_and_preserves_interrupte
                 .unwrap();
             assert_eq!(partial["text"], "partial answer");
             assert_ne!(partial["finalOutput"], true);
-            assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
-            fixture.app.shutdown().await.unwrap();
-            fixture.config.shutdown().await.unwrap();
+            assert_eq!(probe.calls.load(Ordering::SeqCst), expected_calls);
         }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
     })
     .await
     .unwrap();

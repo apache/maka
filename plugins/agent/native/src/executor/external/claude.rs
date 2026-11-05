@@ -615,6 +615,7 @@ struct LiveTurn<'a> {
 struct AssistantMessage {
     id: String,
     has_body: bool,
+    has_thinking: bool,
 }
 impl LiveTurn<'_> {
     async fn end_message(&mut self, output: &dyn OutputSink) -> Result<(), Error> {
@@ -715,6 +716,7 @@ impl LiveTurn<'_> {
                 self.open_message = Some(AssistantMessage {
                     id: id.into(),
                     has_body: false,
+                    has_thinking: false,
                 });
             }
             if let Some(blocks) = content.as_array() {
@@ -722,16 +724,22 @@ impl LiveTurn<'_> {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             let text = runtime::string(block, "/text")?;
-                            self.open_message
-                                .as_mut()
-                                .expect("started API message")
-                                .has_body |= !text.is_empty();
-                            output
-                                .emit(Output::OutputDelta {
-                                    message_id: id.into(),
-                                    text: text.into(),
-                                })
-                                .await?;
+                            if !text.is_empty() {
+                                let message =
+                                    self.open_message.as_mut().expect("started API message");
+                                let emitted = if message.has_body {
+                                    format!("\n\n{text}")
+                                } else {
+                                    text.into()
+                                };
+                                message.has_body = true;
+                                output
+                                    .emit(Output::OutputDelta {
+                                        message_id: id.into(),
+                                        text: emitted,
+                                    })
+                                    .await?;
+                            }
                         }
                         Some("tool_use") => {
                             let name = runtime::string(block, "/name")?;
@@ -753,11 +761,21 @@ impl LiveTurn<'_> {
                             }
                         }
                         Some("thinking") => {
-                            if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                            if let Some(text) = block.get("thinking").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                let message =
+                                    self.open_message.as_mut().expect("started API message");
+                                let emitted = if message.has_thinking {
+                                    format!("\n\n{text}")
+                                } else {
+                                    text.into()
+                                };
+                                message.has_thinking = true;
                                 output
                                     .emit(Output::ThinkingDelta {
                                         message_id: id.into(),
-                                        text: text.into(),
+                                        text: emitted,
                                     })
                                     .await?;
                             }
@@ -765,20 +783,24 @@ impl LiveTurn<'_> {
                         _ => {}
                     }
                 }
-            } else if let Some(text) = content.as_str() {
-                self.open_message
-                    .as_mut()
-                    .expect("started API message")
-                    .has_body |= !text.is_empty();
+            } else if let Some(text) = content.as_str()
+                && !text.is_empty()
+            {
+                let message = self.open_message.as_mut().expect("started API message");
+                let emitted = if message.has_body {
+                    format!("\n\n{text}")
+                } else {
+                    text.into()
+                };
+                message.has_body = true;
                 output
                     .emit(Output::OutputDelta {
                         message_id: id.into(),
-                        text: text.into(),
+                        text: emitted,
                     })
                     .await?;
             }
         } else if kind == "user" {
-            self.end_message(output).await?;
             if let Some(blocks) = row.pointer("/message/content").and_then(Value::as_array) {
                 for block in blocks {
                     if block.get("type").and_then(Value::as_str) == Some("tool_result") {
@@ -893,19 +915,21 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn api_message_id_groups_rows_and_preserves_content_block_order() {
+    async fn api_message_id_groups_rows_joins_blocks_and_survives_interleaved_tool_results() {
         let sink = Collect(Default::default());
         let mut turn = turn();
-        let first = serde_json::json!({"type":"assistant","uuid":"row-1","message":{"id":"api-1","content":[{"type":"text","text":"before "}]}});
+        let first = serde_json::json!({"type":"assistant","uuid":"row-1","message":{"id":"api-1","content":[{"type":"thinking","thinking":"first thought"},{"type":"text","text":"before"}]}});
         for row in [
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
             first.clone(),
             first,
-            serde_json::json!({"type":"assistant","uuid":"row-2","message":{"id":"api-1","content":[{"type":"thinking","thinking":"consider"},{"type":"text","text":"tool"},{"type":"tool_use","id":"call","name":"Read","input":{"path":"a"}}]}}),
+            serde_json::json!({"type":"assistant","uuid":"row-2","message":{"id":"api-1","content":[{"type":"thinking","thinking":"second thought"},{"type":"text","text":"tool"},{"type":"tool_use","id":"call-1","name":"Read","input":{"path":"a"}}]}}),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"ok-1"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"row-2b","message":{"id":"api-1","content":[{"type":"tool_use","id":"call-2","name":"Read","input":{"path":"b"}}]}}),
         ] {
             assert!(turn.row(row, &sink).await.unwrap().is_none());
         }
-        // Reading a row is not an API message end, and Stop must leave it open.
+        // Interleaved tool_result rows within one API message must not close it prematurely.
         assert!(
             !sink
                 .0
@@ -915,7 +939,7 @@ mod tests {
                 .any(|event| matches!(event, Output::MessageEnd { .. }))
         );
         for row in [
-            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":"ok"}]}}),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"ok-2"}]}}),
             serde_json::json!({"type":"assistant","uuid":"row-3","message":{"id":"api-2","content":[{"type":"text","text":"after tool"}]}}),
             serde_json::json!({"type":"assistant","uuid":"row-4","message":{"id":"api-thinking","content":[{"type":"thinking","thinking":"not the answer"}]}}),
         ] {
@@ -928,12 +952,15 @@ mod tests {
             serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
             serde_json::json!([
                 {"type":"message_start","messageId":"api-1"},
-                {"type":"output_delta","messageId":"api-1","text":"before "},
-                {"type":"thinking_delta","messageId":"api-1","text":"consider"},
-                {"type":"output_delta","messageId":"api-1","text":"tool"},
-                {"type":"tool_start","toolCallId":"call","name":"Read","input":{"path":"a"}},
+                {"type":"thinking_delta","messageId":"api-1","text":"first thought"},
+                {"type":"output_delta","messageId":"api-1","text":"before"},
+                {"type":"thinking_delta","messageId":"api-1","text":"\n\nsecond thought"},
+                {"type":"output_delta","messageId":"api-1","text":"\n\ntool"},
+                {"type":"tool_start","toolCallId":"call-1","name":"Read","input":{"path":"a"}},
+                {"type":"tool_result","toolCallId":"call-1","text":"ok-1","isError":false},
+                {"type":"tool_start","toolCallId":"call-2","name":"Read","input":{"path":"b"}},
+                {"type":"tool_result","toolCallId":"call-2","text":"ok-2","isError":false},
                 {"type":"message_end","messageId":"api-1"},
-                {"type":"tool_result","toolCallId":"call","text":"ok","isError":false},
                 {"type":"message_start","messageId":"api-2"},
                 {"type":"output_delta","messageId":"api-2","text":"after tool"},
                 {"type":"message_end","messageId":"api-2"},
@@ -1218,15 +1245,6 @@ mod tests {
     }
     #[tokio::test]
     async fn host_mcp_results_are_not_orphan_native_tool_activities() {
-        struct Collect(std::sync::Mutex<Vec<Output>>);
-        impl OutputSink for Collect {
-            fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
-                Box::pin(async move {
-                    self.0.lock().unwrap().push(event);
-                    Ok(())
-                })
-            }
-        }
         let mut turn = turn();
         let sink = Collect(Default::default());
         for row in [
@@ -1237,19 +1255,31 @@ mod tests {
             turn.row(row, &sink).await.unwrap();
         }
         assert!(
-            matches!(&sink.0.lock().unwrap()[..], [Output::MessageStart { message_id: start }, Output::MessageEnd { message_id: end }] if start == "msg-host-call" && end == start)
+            matches!(&sink.0.lock().unwrap()[..], [Output::MessageStart { message_id: start }] if start == "msg-host-call")
         );
         sink.0.lock().unwrap().clear();
         for row in [
             serde_json::json!({"type":"assistant","uuid":"native-call","sessionId":"session","message":{"id":"msg-native-call","content":[{"type":"tool_use","id":"native-call","name":"Bash","input":{"command":"true"}}]}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","content":"done"}]}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
         ] {
             turn.row(row, &sink).await.unwrap();
         }
         let events = sink.0.lock().unwrap();
-        assert!(
-            matches!(&events[..], [Output::MessageStart { .. }, Output::ToolStart{tool_call_id:start,..},Output::MessageEnd { .. },Output::ToolResult{tool_call_id:end,..}] if start=="native-call" && end==start)
-        );
+        assert!(matches!(
+            &events[..],
+            [
+                Output::MessageEnd { message_id: closed_host },
+                Output::MessageStart { message_id: opened_native },
+                Output::ToolStart { tool_call_id: start, .. },
+                Output::ToolResult { tool_call_id: end, .. },
+                Output::MessageEnd { message_id: closed_native },
+            ] if closed_host == "msg-host-call"
+                && opened_native == "msg-native-call"
+                && closed_native == "msg-native-call"
+                && start == "native-call"
+                && end == start
+        ));
     }
     #[tokio::test]
     async fn api_failure_is_not_success_even_when_claude_also_writes_turn_duration() {

@@ -856,9 +856,7 @@ pub struct Delivery {
 #[schemars(rename = "AgentDeliveryFact")]
 pub enum DeliveryFact {
     Opened,
-    ExecutorStarted {
-        message_id: String,
-    },
+    ExecutorStarted,
     /// The original native assistant message starts here, not at executor admission.
     ExecutorMessageStarted {
         message_id: String,

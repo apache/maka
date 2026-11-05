@@ -31,6 +31,7 @@ struct Message {
     id: String,
     text: String,
     thought: bool,
+    ended: bool,
 }
 
 #[derive(Default)]
@@ -118,26 +119,45 @@ impl Projection {
             return Ok(());
         }
         match notification.update {
-            acp::SessionUpdate::AgentMessageChunk(chunk) => self.message(
-                chunk.message_id.to_string(),
-                MaybeUndefined::Value(vec![chunk.content]),
-                true,
-                false,
-            )?,
-            acp::SessionUpdate::AgentMessage(message) => self.message(
-                message.message_id.to_string(),
-                message.content,
-                false,
-                false,
-            )?,
-            acp::SessionUpdate::AgentThoughtChunk(chunk) => self.message(
-                chunk.message_id.to_string(),
-                MaybeUndefined::Value(vec![chunk.content]),
-                true,
-                true,
-            )?,
+            acp::SessionUpdate::AgentMessageChunk(chunk) => {
+                self.message(
+                    chunk.message_id.to_string(),
+                    MaybeUndefined::Value(vec![chunk.content]),
+                    true,
+                    false,
+                    sink,
+                )
+                .await?
+            }
+            acp::SessionUpdate::AgentMessage(message) => {
+                self.message(
+                    message.message_id.to_string(),
+                    message.content,
+                    false,
+                    false,
+                    sink,
+                )
+                .await?
+            }
+            acp::SessionUpdate::AgentThoughtChunk(chunk) => {
+                self.message(
+                    chunk.message_id.to_string(),
+                    MaybeUndefined::Value(vec![chunk.content]),
+                    true,
+                    true,
+                    sink,
+                )
+                .await?
+            }
             acp::SessionUpdate::AgentThought(message) => {
-                self.message(message.message_id.to_string(), message.content, false, true)?
+                self.message(
+                    message.message_id.to_string(),
+                    message.content,
+                    false,
+                    true,
+                    sink,
+                )
+                .await?
             }
             acp::SessionUpdate::UserMessage(message) => {
                 self.user(message.message_id.to_string())?
@@ -235,30 +255,28 @@ impl Projection {
         }
         if confirmed {
             for message in &mut self.messages {
-                if message.text.is_empty() {
+                if message.ended {
                     continue;
                 }
-                emit(
-                    sink,
-                    Output::MessageStart {
-                        message_id: message.id.clone(),
-                    },
-                )
-                .await?;
-                emit_text(&message.text, sink, |text| {
-                    if message.thought {
-                        Output::ThinkingDelta {
-                            message_id: message.id.clone(),
-                            text,
+                if !message.text.is_empty() {
+                    emit_text(&message.text, sink, |text| {
+                        if message.thought {
+                            Output::ThinkingDelta {
+                                message_id: message.id.clone(),
+                                text,
+                            }
+                        } else {
+                            Output::OutputDelta {
+                                message_id: message.id.clone(),
+                                text,
+                            }
                         }
-                    } else {
-                        Output::OutputDelta {
-                            message_id: message.id.clone(),
-                            text,
-                        }
+                    })
+                    .await?;
+                    if !message.thought {
+                        self.last_body = Some(message.id.clone());
                     }
-                })
-                .await?;
+                }
                 emit(
                     sink,
                     Output::MessageEnd {
@@ -266,9 +284,7 @@ impl Projection {
                     },
                 )
                 .await?;
-                if !message.thought {
-                    self.last_body = Some(message.id.clone());
-                }
+                message.ended = true;
                 message.text.clear();
             }
         }

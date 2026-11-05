@@ -33,7 +33,7 @@ CREATE TEMP TABLE transcript_directory (
 );
 CREATE UNIQUE INDEX temp.directory_order ON transcript_directory(session_id,order_sequence,order_item);
 CREATE INDEX temp.directory_turn_order ON transcript_directory(session_id,turn_id,order_sequence,order_item);
-CREATE INDEX temp.transcript_context_eligible ON transcript_directory(session_id,source_sequence,item_index)
+CREATE INDEX temp.transcript_context_eligible ON transcript_directory(session_id,order_sequence,order_item)
     WHERE context_eligible=1;
 
 CREATE TEMP TABLE transcript_failures (

@@ -70,10 +70,16 @@ impl EventLog {
                         super::directory::ensure(tx, &session, through).await?;
                         let crossing: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM transcript_directory
-                 WHERE session_id = ?1 AND source_sequence <= ?2
+                 WHERE session_id = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2
                  GROUP BY turn_id HAVING
-                    SUM((order_sequence,order_item) <= (SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4)) > 0
-                    AND SUM((order_sequence,order_item) > (SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4)) > 0)",
+                    SUM((order_sequence,order_item) <= (
+                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?3),
+                        COALESCE((SELECT order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?4)
+                    )) > 0
+                    AND SUM((order_sequence,order_item) > (
+                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?3),
+                        COALESCE((SELECT order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?4)
+                    )) > 0)",
                         )
                         .bind(session)
                         .bind(fence)
@@ -117,7 +123,7 @@ impl EventLog {
             let order_position = position;
             let query = match (direction, order_position.is_some()) {
                 (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
-                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3",
+                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3",
                 (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
                 (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3",
             };
