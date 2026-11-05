@@ -42,7 +42,7 @@ export const productInputs = [
   'scripts/rust/product.mjs',
 ];
 const oarInputs = [
-  'plugins/agent/oar-executor/worker',
+  'plugins/agent/oar-executor',
   'plugins/agent/native/tests/support/oar-worker.mjs',
   'scripts/oar',
   'scripts/asf-source-release.mjs',
@@ -61,6 +61,7 @@ const oarInputs = [
   'scripts/rust/licenses',
 ];
 const embeddedInputs = [
+  'products/maka/terminal-shell/tests/support/external-agent-worker.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
   'platform/computer-use/skills',

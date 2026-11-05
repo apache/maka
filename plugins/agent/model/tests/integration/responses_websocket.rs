@@ -58,6 +58,7 @@ fn request(base_url: &str, text: &str) -> ModelRequest {
         },
         prompt: vec![maka_model::prompt::Message::user(text)].into(),
         tools: vec![],
+        tool_choice: Default::default(),
         provider_options: json!({"openai":{"store":false}}),
         max_output_tokens: Some(32),
     }

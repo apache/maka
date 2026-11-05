@@ -369,6 +369,7 @@ async fn summary_advertised_tools_never_execute() {
         let (mut socket, _) = listener.accept().await.unwrap();
         let summary = read_request(&mut socket).await;
         assert_eq!(summary["tools"], main["tools"]);
+        assert_eq!(summary["tool_choice"], "auto");
         let call = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
             "choices":[{"index":0,"delta":{"content":"private forbidden summary prose","tool_calls":[{"index":0,"id":"forbidden","type":"function",
             "function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]});
@@ -376,6 +377,11 @@ async fn summary_advertised_tools_never_execute() {
             "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
             "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
         let body = format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let summary_retry = read_request(&mut socket).await;
+        assert_eq!(summary_retry["tools"], main["tools"]);
+        assert_eq!(summary_retry["tool_choice"], "none");
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let recovered = read_request(&mut socket).await;
@@ -401,16 +407,14 @@ async fn summary_advertised_tools_never_execute() {
         .run(log.store(), main, CancellationToken::new())
         .await
         .unwrap();
-    assert!(
-        worker
-            .run(
-                log.store(),
-                input(&base, "compact", true),
-                CancellationToken::new()
-            )
-            .await
-            .is_err()
-    );
+    worker
+        .run(
+            log.store(),
+            input(&base, "compact", true),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     worker.drain().await;
     worker
         .run(
@@ -431,31 +435,42 @@ async fn summary_advertised_tools_never_execute() {
             .is_none()
     );
     let events = log.prefix(100, 256 * 1024).await.unwrap();
-    let summary_step = events
+    assert!(events.events.iter().any(|event| matches!(
+        &event.event.fact,
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::ContextCompactFinished {
+                outcome: CompactOutcome::Failed { reason }
+            }
+        } if reason == "summary_contains_tool_content"
+    )));
+    let summary_steps: Vec<_> = events
         .events
         .iter()
-        .find_map(|event| match &event.event.fact {
+        .filter_map(|event| match &event.event.fact {
             Fact::ModelRequested {
                 step_id,
                 purpose: maka_agent_facts::context::ModelPurpose::Summary,
                 ..
-            } => Some(step_id),
+            } => Some(step_id.clone()),
             _ => None,
         })
-        .unwrap();
-    assert!(
-        !events.events.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelObserved { step_id, event: ModelObservation::Part(_) }
-            if step_id == summary_step)),
-        "an unexecuted local Summary request stays private"
-    );
-    assert!(
-        !events.events.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelCompleted { step_id, .. } if step_id == summary_step)),
-        "invalid tool output has no completed summary to supply usage"
-    );
-    assert!(events.events.iter().any(|event| matches!(&event.event.fact,
-        Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)));
+        .collect();
+    assert_eq!(summary_steps.len(), 2);
+    for summary_step in &summary_steps {
+        assert!(
+            !events.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelObserved { step_id, event: ModelObservation::Part(_) }
+                if step_id == summary_step)),
+            "an unexecuted local Summary request stays private"
+        );
+        assert!(
+            !events.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelCompleted { step_id, .. } if step_id == summary_step)),
+            "invalid tool output has no completed summary to supply usage"
+        );
+        assert!(events.events.iter().any(|event| matches!(&event.event.fact,
+            Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)));
+    }
     assert!(
         !serde_json::to_string(&events.events)
             .unwrap()
@@ -466,7 +481,7 @@ async fn summary_advertised_tools_never_execute() {
         .iter()
         .find(|event| {
             matches!(&event.event.fact,
-        Fact::ModelRequested { step_id, .. } if step_id == summary_step)
+        Fact::ModelRequested { step_id, .. } if step_id == &summary_steps[0])
         })
         .unwrap();
     let usage = log
@@ -506,5 +521,104 @@ async fn summary_advertised_tools_never_execute() {
             .events
             .iter()
             .any(|event| matches!(event.event.fact, Fact::ToolDispatched { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn summary_tool_call_retries_once_with_tool_choice_none_and_records_checkpoint() {
+    use crate::support::agent_loop;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        SessionFixture::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let main = read_request(&mut socket).await;
+        respond(&mut socket, "ordinary answer", "stop").await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let summary_first = read_request(&mut socket).await;
+        assert_eq!(summary_first["tools"], main["tools"]);
+        assert_eq!(summary_first["tool_choice"], "auto");
+        let call = serde_json::json!({"id":"summary-1","object":"chat.completion.chunk","created":1,"model":"test",
+            "choices":[{"index":0,"delta":{"content":"discarded draft","tool_calls":[{"index":0,"id":"forbidden","type":"function",
+            "function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]});
+        let end = serde_json::json!({"id":"summary-1","object":"chat.completion.chunk","created":1,"model":"test",
+            "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
+        let body = format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let summary_retry = read_request(&mut socket).await;
+        assert_eq!(summary_retry["tools"], main["tools"]);
+        assert_eq!(summary_retry["tool_choice"], "none");
+        respond(&mut socket, SUMMARY, "stop").await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let resumed = read_request(&mut socket).await;
+        let messages = resumed["messages"].to_string();
+        assert!(messages.contains("summary-marker"));
+        assert!(!messages.contains("ordinary answer"));
+        assert!(!messages.contains("discarded draft"));
+        respond(&mut socket, "resumed answer", "stop").await;
+    });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let worker = engine();
+    let mut main = input(&base, "main", false);
+    main.work = agent_loop::input(
+        &base,
+        "main",
+        Arc::new(agent_loop::Effect {
+            log: log.clone(),
+            count: effects.clone(),
+        }),
+    )
+    .work;
+    worker
+        .run(log.store(), main, CancellationToken::new())
+        .await
+        .unwrap();
+    worker
+        .run(
+            log.store(),
+            input(&base, "compact", true),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    worker.drain().await;
+    worker
+        .run(
+            log.store(),
+            input(&base, "resumed", false),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    worker.drain().await;
+    server.await.unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert!(
+        log.read_model_view("session", None)
+            .await
+            .unwrap()
+            .baseline
+            .is_some()
+    );
+    let events = log.prefix(100, 256 * 1024).await.unwrap();
+    assert!(
+        events
+            .events
+            .iter()
+            .any(|event| matches!(event.event.fact, Fact::ContextCheckpointRecorded { .. }))
+    );
+    assert!(
+        !serde_json::to_string(&events.events)
+            .unwrap()
+            .contains("discarded draft")
     );
 }

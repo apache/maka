@@ -230,6 +230,20 @@ https://github.com/image-rs/image-webp at revision
 Original license texts, source hashes and local changes are recorded in
 third-party/image-webp/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
+Open Agent Runtime (OAR) dependency patch
+
+Source: https://www.npmjs.com/package/@botiverse/oar/v/0.86.0
+Repository: https://github.com/botiverse/oar
+Version: 0.86.0
+Dependency patch: patches/@botiverse+oar+0.86.0.patch
+Upstream change: https://github.com/botiverse/oar/pull/620
+Revision: 73ae3ad2bb62f674f4070e3a47a1722075776dea
+License: Apache License 2.0 (the text above applies)
+
+Maka redistributes a patch to OAR's Antigravity adapter and its generated
+JavaScript, declarations and source maps. The patch supports the official
+agy acp entrypoint while preserving existing standalone-server launch paths.
+
 Zod dependency patch
 
 Source: https://www.npmjs.com/package/zod/v/4.6.7
@@ -431,6 +445,39 @@ airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circl
 The MIT License (MIT) (for the icons listed above)
 
 Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+OpenCode provider error recognition in
+plugins/agent/model/src/adapters/error/overflow.rs is adapted from
+packages/ai/src/provider-error.ts and packages/ai/src/utils/provider-codes.ts
+at https://github.com/anomalyco/opencode/tree/55276f2108c8853f94cf16dc530e7754a6ce8318.
+The measured-input calibration and background preparation in
+plugins/agent/engine/src/auto_context.rs follow the algorithms in
+packages/core/src/session/compaction.ts and packages/core/src/session/runner/llm.ts
+at the same revision.
+
+MIT License
+
+Copyright (c) 2025 opencode
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

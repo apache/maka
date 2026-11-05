@@ -67,9 +67,23 @@ pub(super) fn input(base: &str, id: &str, compact: bool) -> maka_agent_engine::R
     input
 }
 pub(super) async fn respond(socket: &mut TcpStream, item: Value, response_id: &str) {
+    respond_with_usage(
+        socket,
+        item,
+        response_id,
+        json!({"input_tokens":100,"output_tokens":30}),
+    )
+    .await;
+}
+pub(super) async fn respond_with_usage(
+    socket: &mut TcpStream,
+    item: Value,
+    response_id: &str,
+    usage: Value,
+) {
     let events = [
         json!({"type":"response.output_item.done","item":item}),
-        json!({"type":"response.completed","response":{"id":response_id,"model":"test","output":[item],"usage":{"input_tokens":100,"output_tokens":30}}}),
+        json!({"type":"response.completed","response":{"id":response_id,"model":"test","output":[item],"usage":usage}}),
     ];
     let body = events
         .iter()

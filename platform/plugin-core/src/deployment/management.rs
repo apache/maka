@@ -362,6 +362,12 @@ pub fn deployment_manager_contract() -> Contract {
                     ),
                 ),
                 (
+                    "configureBatch".into(),
+                    method::<InstanceConfigureBatch, ManagementResult<DeploymentRef>>(
+                        MethodMode::Mutation,
+                    ),
+                ),
+                (
                     "readDocument".into(),
                     method::<DeploymentDocumentRead, DeploymentDocumentChunk>(MethodMode::Query),
                 ),

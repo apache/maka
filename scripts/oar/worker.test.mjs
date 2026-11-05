@@ -21,9 +21,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { runtimes } from '../../plugins/agent/oar-executor/worker/runtimes.mjs';
 import { scriptedRuntime } from '@botiverse/oar/testing';
 import { Channel } from '../../plugins/agent/oar-executor/worker/channel.mjs';
-import { catalog, execute, setup } from '../../plugins/agent/oar-executor/worker/execution.mjs';
+import {
+  catalog,
+  execute,
+  setup,
+  status,
+} from '../../plugins/agent/oar-executor/worker/execution.mjs';
 
 function fixture(turn, configure = () => {}) {
   const source = scriptedRuntime({ turn });
@@ -186,7 +193,11 @@ test('partial UTF-8 pipe writes preserve complete messages and wait for a durabl
   });
   channel.publish({ kind: 'event', text: '中文🚀'.repeat(100) });
   const message = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  assert.deepEqual(message, { sequence: 1, kind: 'event', text: '中文🚀'.repeat(100) });
+  assert.deepEqual(message, {
+    sequence: 1,
+    kind: 'event',
+    text: '中文🚀'.repeat(100),
+  });
   let committed = false;
   const waiting = channel.committed().then(() => {
     committed = true;
@@ -222,7 +233,11 @@ test('discovery preserves OAR absence and authentication states without invoking
     installation: { kind: 'not_found' },
   });
   assert.equal(installed, false);
-  runtime.installation = async () => ({ kind: 'available', via: 'executable', command: '/vendor' });
+  runtime.installation = async () => ({
+    kind: 'available',
+    via: 'executable',
+    command: '/vendor',
+  });
   runtime.listModels = async (_installation, options) => {
     assert.equal(options.cwd, '/workspace');
     return { kind: 'unauthenticated', detail: 'Sign in through the vendor' };
@@ -234,8 +249,160 @@ test('discovery preserves OAR absence and authentication states without invoking
   });
 });
 
+test('settings metadata lists exactly the shipped OAR runtimes without machine discovery', async () => {
+  const metadata = JSON.parse(
+    await readFile(
+      new URL('../../plugins/agent/oar-executor/runtimes.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.deepEqual(
+    metadata,
+    [...runtimes.values()].map((runtime) => ({ id: runtime.id, name: runtime.brand.name })),
+  );
+});
+
+test('catalog keeps vendor installation and model failures local to their runtime', async () => {
+  const available = { kind: 'available', via: 'bundled' };
+  const records = await Promise.all([
+    catalog(
+      {
+        id: 'bad-install',
+        installation: async () => {
+          throw new Error('probe failed');
+        },
+      },
+      '/workspace',
+    ),
+    catalog(
+      {
+        id: 'claude',
+        installation: async () => available,
+        listModels: async () => {
+          throw new Error('claude exited before answering list_models');
+        },
+      },
+      '/workspace',
+    ),
+    catalog(
+      {
+        id: 'codex',
+        installation: async () => available,
+        listModels: async () => ({ kind: 'ok', models: [{ id: 'healthy-model' }] }),
+      },
+      '/workspace',
+    ),
+  ]);
+  assert.deepEqual(records, [
+    { runtime: 'bad-install', installation: { kind: 'error', detail: 'probe failed' } },
+    {
+      runtime: 'claude',
+      installation: available,
+      models: { kind: 'error', detail: 'claude exited before answering list_models' },
+    },
+    {
+      runtime: 'codex',
+      installation: available,
+      models: { kind: 'ok', models: [{ id: 'healthy-model' }] },
+    },
+  ]);
+});
+
+async function discoveryWorker(request) {
+  // Replace only the runtime providers; exercise the production stdin/stdout worker.
+  const runtimeUrl = new URL(
+    '../../plugins/agent/oar-executor/worker/runtimes.mjs',
+    import.meta.url,
+  ).href;
+  const source = `export const runtimes = new Map([
+    ['codex', {id:'codex',brand:{name:'Codex'},installation:async()=>({kind:'available'}),authStatus:async()=>({kind:'logged_in',source:'fixture'}),listModels:async()=>({kind:'ok',models:[{id:'healthy-model'}]})}],
+    ['claude', {id:'claude',brand:{name:'Claude'},installation:async()=>({kind:'available'}),listModels:async()=>{throw new Error('claude exited before answering list_models')}}],
+    ['unselected', {id:'unselected',installation:()=>{throw new Error('unselected runtime must never be probed')}}]
+  ]);`;
+  const hook = `import {registerHooks} from 'node:module';registerHooks({load(url,context,next){return url===${JSON.stringify(runtimeUrl)}?{format:'module',source:${JSON.stringify(source)},shortCircuit:true}:next(url,context)}});`;
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'data:text/javascript,' + encodeURIComponent(hook),
+      fileURLToPath(new URL('../../plugins/agent/oar-executor/worker/main.mjs', import.meta.url)),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  child.stdin.write(`${JSON.stringify(request)}\n`);
+  assert.equal(await exited, 0, stderr);
+  return JSON.parse(stdout).value;
+}
+
+test('worker discovery only probes explicitly selected runtimes and retains a healthy sibling', async () => {
+  const records = await discoveryWorker({
+    kind: 'catalog',
+    runtimes: ['codex', 'claude'],
+    cwd: '/workspace',
+  });
+  assert.deepEqual(
+    records.map((record) => record.runtime),
+    ['codex', 'claude'],
+  );
+  assert.deepEqual(records[0].models, { kind: 'ok', models: [{ id: 'healthy-model' }] });
+  assert.deepEqual(records[1].models, {
+    kind: 'error',
+    detail: 'claude exited before answering list_models',
+  });
+  assert.deepEqual(
+    await discoveryWorker({ kind: 'status', runtimes: ['codex'], cwd: '/workspace' }),
+    [
+      {
+        id: 'codex',
+        name: 'Codex',
+        installation: { kind: 'available' },
+        authentication: { kind: 'authenticated', source: 'fixture' },
+        models: { kind: 'ready', count: 1 },
+        canInstall: false,
+        installLines: [],
+      },
+    ],
+  );
+  const unknown = await discoveryWorker({
+    kind: 'catalog',
+    runtimes: ['codex', 'cluade'],
+    cwd: '/workspace',
+  });
+  assert.deepEqual(unknown[0].models, { kind: 'ok', models: [{ id: 'healthy-model' }] });
+  assert.deepEqual(unknown[1], {
+    runtime: 'cluade',
+    installation: { kind: 'unsupported', reason: 'Unknown OAR runtime: cluade' },
+  });
+  const unknownStatus = await discoveryWorker({
+    kind: 'status',
+    runtimes: ['cluade'],
+    cwd: '/workspace',
+  });
+  assert.equal(unknownStatus[0].installation.kind, 'unsupported');
+  assert.equal(unknownStatus[0].installation.detail, 'Unknown OAR runtime: cluade');
+  for (const kind of ['catalog', 'status']) {
+    assert.deepEqual(await discoveryWorker({ kind, runtimes: [], cwd: '/workspace' }), []);
+    assert.deepEqual(await discoveryWorker({ kind, cwd: '/workspace' }), []);
+  }
+});
+
 test('setup delegates only supported OAR installation operations and never substitutes a registry installer', async () => {
-  const runtime = { id: 'no-installer', installation: async () => ({ kind: 'not_found' }) };
+  const runtime = {
+    id: 'no-installer',
+    installation: async () => ({ kind: 'not_found' }),
+  };
   assert.deepEqual(await setup(runtime, { action: 'probe' }), {
     installation: { kind: 'not_found' },
     canInstall: false,
@@ -327,4 +494,183 @@ test('unknown runtime input is rejected without poisoning physical cleanup', asy
   assert.equal(frames[0].kind, 'result');
   assert.equal(frames[0].result.kind, 'rejected');
   assert.equal(frames[0].result.code, 'unsupported');
+});
+
+test('status observes native authentication independently of models and refreshes every time', async () => {
+  let signedIn = false;
+  let authReads = 0;
+  const installation = {
+    kind: 'available',
+    via: 'executable',
+    command: '/fixture',
+    version: '1.2',
+  };
+  const runtime = {
+    id: 'fixture',
+    brand: { name: 'Fixture' },
+    installation: async () => installation,
+    authStatus: async (observed) => {
+      assert.equal(observed, installation);
+      authReads += 1;
+      return signedIn
+        ? {
+            kind: 'logged_in',
+            source: 'native status',
+            account: { email: 'private@example.com' },
+          }
+        : {
+            kind: 'logged_out',
+            source: 'native status',
+            detail: 'Sign in with the native CLI',
+          };
+    },
+    listModels: async (observed, options) => {
+      assert.equal(observed, installation);
+      assert.deepEqual(options, { cwd: '/workspace' });
+      return { kind: 'ok', models: [{ id: 'model' }] };
+    },
+    install: () => {
+      throw new Error('status must not install');
+    },
+    installLines: [{ line: 'v2', description: 'Version 2' }],
+  };
+  const first = await status(runtime, '/workspace');
+  assert.deepEqual(first, {
+    id: 'fixture',
+    name: 'Fixture',
+    installation: { kind: 'available', version: '1.2' },
+    authentication: {
+      kind: 'unauthenticated',
+      source: 'native status',
+      detail: 'Sign in with the native CLI',
+    },
+    models: { kind: 'ready', count: 1 },
+    canInstall: true,
+    installLines: [{ line: 'v2', description: 'Version 2' }],
+  });
+  signedIn = true;
+  assert.deepEqual((await status(runtime, '/workspace')).authentication, {
+    kind: 'authenticated',
+    source: 'native status',
+  });
+  assert.equal(authReads, 2);
+  await catalog(runtime, '/workspace');
+  assert.equal(authReads, 2, 'model search must not refresh credentials');
+});
+
+test('status retains unavailable runtimes and independent probe failures', async () => {
+  const base = { id: 'fixture', brand: { name: 'Fixture' } };
+  const broken = async () => {
+    throw new Error('native probe failed');
+  };
+  const records = await Promise.all([
+    status(
+      {
+        ...base,
+        installation: async () => ({ kind: 'not_found' }),
+        authStatus: broken,
+        listModels: broken,
+      },
+      '/workspace',
+    ),
+    status(
+      {
+        ...base,
+        installation: async () => ({ kind: 'unsupported', reason: 'platform' }),
+      },
+      '/workspace',
+    ),
+    status({ ...base, installation: broken }, '/workspace'),
+    status(
+      {
+        ...base,
+        installation: async () => ({ kind: 'available', via: 'bundled' }),
+        authStatus: broken,
+        listModels: async () => ({ kind: 'ok', models: [] }),
+      },
+      '/workspace',
+    ),
+    status(
+      {
+        ...base,
+        installation: async () => ({ kind: 'available' }),
+        authStatus: async () => ({ kind: 'logged_in', source: 'native' }),
+        listModels: broken,
+      },
+      '/workspace',
+    ),
+  ]);
+  assert.deepEqual(
+    records.map((record) => record.installation),
+    [
+      { kind: 'not_found' },
+      { kind: 'unsupported', detail: 'platform' },
+      { kind: 'error', detail: 'native probe failed' },
+      { kind: 'available' },
+      { kind: 'available' },
+    ],
+  );
+  assert.deepEqual(
+    records.slice(0, 3).map((record) => record.models),
+    Array(3).fill({ kind: 'unavailable' }),
+  );
+  assert.deepEqual(records[0].authentication, {
+    kind: 'unknown',
+    detail: 'Authentication was not probed because the runtime is unavailable.',
+  });
+  assert.deepEqual(records[3].authentication, {
+    kind: 'error',
+    detail: 'native probe failed',
+  });
+  assert.deepEqual(records[3].models, { kind: 'ready', count: 0 });
+  assert.deepEqual(records[4].authentication, {
+    kind: 'authenticated',
+    source: 'native',
+  });
+  assert.deepEqual(records[4].models, {
+    kind: 'error',
+    detail: 'native probe failed',
+  });
+});
+
+test('status preserves unknown authentication and unsupported native capabilities honestly', async () => {
+  const runtime = {
+    id: 'fixture',
+    brand: { name: 'Fixture' },
+    installation: async () => ({ kind: 'available' }),
+    authStatus: async () => ({
+      kind: 'unknown',
+      detail: 'Not validated',
+      source: 'config',
+      configured: ['environment'],
+    }),
+    listModels: async () => ({
+      kind: 'unauthenticated',
+      detail: 'Login required',
+    }),
+  };
+  const unknown = await status(runtime, '/workspace');
+  assert.deepEqual(unknown.authentication, {
+    kind: 'unknown',
+    detail: 'Not validated',
+    source: 'config',
+    configured: ['environment'],
+  });
+  assert.deepEqual(unknown.models, {
+    kind: 'unauthenticated',
+    detail: 'Login required',
+  });
+  delete runtime.authStatus;
+  runtime.listModels = async () => ({
+    kind: 'unsupported',
+    reason: 'No native model list',
+  });
+  const unsupported = await status(runtime, '/workspace');
+  assert.deepEqual(unsupported.authentication, { kind: 'unsupported' });
+  assert.deepEqual(unsupported.models, {
+    kind: 'unsupported',
+    detail: 'No native model list',
+  });
+  assert.equal(unsupported.canInstall, false);
+  assert.deepEqual(unsupported.installLines, []);
 });

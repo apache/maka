@@ -1,0 +1,376 @@
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts
+index f346471..7cb2b11 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts
+@@ -1,10 +1,6 @@
+-/**
+- * Google documents installing the Antigravity agent only from inside an
+- * editor (Zed: agent settings, External Agents, Install from Registry;
+- * https://antigravity.google/docs/ide/extensions/zed), which also signs it in
+- * through the browser. There is no command-line installer: the ACP registry's
+- * zip is what the editor unpacks.
+- */
++import { type ScriptInstallMethod } from "../../shared/install.js";
++/** Google's installer verifies its release, then runs `agy install` for shell setup. */
++export declare const antigravityInstallMethod: ScriptInstallMethod;
+ export declare const antigravityInstallPlan: import("../../browser.js").InstallPlanner;
+ export declare const antigravityInstall: import("../../browser.js").Installer;
+ //# sourceMappingURL=install.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts.map
+index ab5efa0..1c56cca 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"install.d.ts","sources":["../../../src/runtimes/antigravity/install.ts"],"names":[],"mappings":"AAGA;;;;;;GAMG;AACH,eAAO,MAAM,sBAAsB,2CAIjC,CAAC;AAEH,eAAO,MAAM,kBAAkB,sCAAiE,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"install.d.ts","sources":["../../../src/runtimes/antigravity/install.ts"],"names":[],"mappings":"AAEA,OAAO,EAAoC,KAAK,mBAAmB,EAAE,MAAM,yBAAyB,CAAC;AAGrG,wFAAwF;AACxF,eAAO,MAAM,wBAAwB,EAAE,mBAStC,CAAC;AAEF,eAAO,MAAM,sBAAsB,2CAA8C,CAAC;AAClF,eAAO,MAAM,kBAAkB,sCAAiE,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js
+index 0389ee5..b7a01ed 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js
+@@ -1,16 +1,18 @@
+-import { planInstaller, unsupportedInstallPlan } from "../../shared/install.js";
++import { homedir } from "node:os";
++import path from "node:path";
++import { planInstaller, scriptInstallPlan } from "../../shared/install.js";
+ import { antigravityInstallation } from "./installation.js";
+-/**
+- * Google documents installing the Antigravity agent only from inside an
+- * editor (Zed: agent settings, External Agents, Install from Registry;
+- * https://antigravity.google/docs/ide/extensions/zed), which also signs it in
+- * through the browser. There is no command-line installer: the ACP registry's
+- * zip is what the editor unpacks.
+- */
+-export const antigravityInstallPlan = unsupportedInstallPlan({
+-    kind: "unsupported",
+-    reason: "requires_gui",
+-    detail: "Google installs the Antigravity agent from an editor's agent registry (Zed: External Agents, Install from Registry); https://antigravity.google/docs/ide/extensions/zed",
+-});
++/** Google's installer verifies its release, then runs `agy install` for shell setup. */
++export const antigravityInstallMethod = {
++    source: "https://antigravity.google/docs/getting-started/?tab=cli",
++    line: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
++    tools: ["curl", "bash"],
++    writes: () => {
++        const home = homedir();
++        return [path.join(home, ".local", "bin"), path.join(home, ".cache", "antigravity"), home];
++    },
++    windows: "use Google's Windows installer at https://antigravity.google/docs/getting-started/?tab=cli",
++};
++export const antigravityInstallPlan = scriptInstallPlan(antigravityInstallMethod);
+ export const antigravityInstall = planInstaller(antigravityInstallation, antigravityInstallPlan);
+ //# sourceMappingURL=install.js.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js.map
+index 9d5b175..d4de58b 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"install.js","sources":["../../../src/runtimes/antigravity/install.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,aAAa,EAAE,sBAAsB,EAAE,MAAM,yBAAyB,CAAC;AAChF,OAAO,EAAE,uBAAuB,EAAE,MAAM,mBAAmB,CAAC;AAE5D;;;;;;GAMG;AACH,MAAM,CAAC,MAAM,sBAAsB,GAAG,sBAAsB,CAAC;IAC3D,IAAI,EAAE,aAAa;IACnB,MAAM,EAAE,cAAc;IACtB,MAAM,EAAE,yKAAyK;CAClL,CAAC,CAAC;AAEH,MAAM,CAAC,MAAM,kBAAkB,GAAG,aAAa,CAAC,uBAAuB,EAAE,sBAAsB,CAAC,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"install.js","sources":["../../../src/runtimes/antigravity/install.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,MAAM,SAAS,CAAC;AAClC,OAAO,IAAI,MAAM,WAAW,CAAC;AAC7B,OAAO,EAAE,aAAa,EAAE,iBAAiB,EAA4B,MAAM,yBAAyB,CAAC;AACrG,OAAO,EAAE,uBAAuB,EAAE,MAAM,mBAAmB,CAAC;AAE5D,wFAAwF;AACxF,MAAM,CAAC,MAAM,wBAAwB,GAAwB;IAC3D,MAAM,EAAE,0DAA0D;IAClE,IAAI,EAAE,6DAA6D;IACnE,KAAK,EAAE,CAAC,MAAM,EAAE,MAAM,CAAC;IACvB,MAAM,EAAE,GAAG,EAAE;QACX,MAAM,IAAI,GAAG,OAAO,EAAE,CAAC;QACvB,OAAO,CAAC,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,QAAQ,EAAE,KAAK,CAAC,EAAE,IAAI,CAAC,IAAI,CAAC,IAAI,EAAE,QAAQ,EAAE,aAAa,CAAC,EAAE,IAAI,CAAC,CAAC;IAC5F,CAAC;IACD,OAAO,EAAE,4FAA4F;CACtG,CAAC;AAEF,MAAM,CAAC,MAAM,sBAAsB,GAAG,iBAAiB,CAAC,wBAAwB,CAAC,CAAC;AAClF,MAAM,CAAC,MAAM,kBAAkB,GAAG,aAAa,CAAC,uBAAuB,EAAE,sBAAsB,CAAC,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts
+index 4aeb368..126021d 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts
+@@ -1,13 +1,6 @@
+-/**
+- * agy_acp_server 1.2.1 prints its build stamp for `--version`; the release
+- * is the `Build label:` line. Its `--help` exits 1, so there is no cheap
+- * readiness check beyond the version read.
+- */
++/** The CLI prints a bare version; the registry server prints a build stamp. */
+ export declare function readAntigravityVersion(stdout: string): string | undefined;
+-/**
+- * The ACP registry ships the server as a zip that unpacks to
+- * `agy_acp_server.par` (`agy_acp_server.exe` on Windows) with no installer,
+- * so it is found on PATH or pinned with OAR_ANTIGRAVITY_BIN.
+- */
++/** The official installer defaults to ~/.local/bin, often absent from GUI PATH. */
++export declare function antigravityInstalledExecutableCandidates(platform?: NodeJS.Platform, home?: string): readonly string[];
+ export declare const antigravityInstallation: import("../../browser.js").InstallationProbe;
+ //# sourceMappingURL=installation.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts.map
+index f45342a..e66db47 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"installation.d.ts","sources":["../../../src/runtimes/antigravity/installation.ts"],"names":[],"mappings":"AAEA;;;;GAIG;AACH,wBAAgB,sBAAsB,CAAC,MAAM,EAAE,MAAM,GAAG,MAAM,GAAG,SAAS,CAEzE;AAED;;;;GAIG;AACH,eAAO,MAAM,uBAAuB,8CAMnC,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"installation.d.ts","sources":["../../../src/runtimes/antigravity/installation.ts"],"names":[],"mappings":"AAKA,+EAA+E;AAC/E,wBAAgB,sBAAsB,CAAC,MAAM,EAAE,MAAM,GAAG,MAAM,GAAG,SAAS,CAGzE;AAED,mFAAmF;AACnF,wBAAgB,wCAAwC,CACtD,QAAQ,GAAE,MAAM,CAAC,QAA2B,EAC5C,IAAI,GAAE,MAAkB,GACvB,SAAS,MAAM,EAAE,CAMnB;AAID,eAAO,MAAM,uBAAuB,8CAMnC,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js
+index 41c1666..800eacd 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js
+@@ -1,16 +1,21 @@
++import { homedir } from "node:os";
++import path from "node:path";
++import { environmentHome } from "../../shared/environment-home.js";
+ import { executableInstallation } from "../../shared/installation.js";
+-/**
+- * agy_acp_server 1.2.1 prints its build stamp for `--version`; the release
+- * is the `Build label:` line. Its `--help` exits 1, so there is no cheap
+- * readiness check beyond the version read.
+- */
++/** The CLI prints a bare version; the registry server prints a build stamp. */
+ export function readAntigravityVersion(stdout) {
+-    return /^Build label:\s*(\S+)/mu.exec(stdout)?.[1];
++    return /^Build label:\s*(\S+)/mu.exec(stdout)?.[1]
++        ?? /^(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)\s*$/u.exec(stdout.trim())?.[1];
+ }
+-/**
+- * The ACP registry ships the server as a zip that unpacks to
+- * `agy_acp_server.par` (`agy_acp_server.exe` on Windows) with no installer,
+- * so it is found on PATH or pinned with OAR_ANTIGRAVITY_BIN.
+- */
+-export const antigravityInstallation = executableInstallation("OAR_ANTIGRAVITY_BIN", process.platform === "win32" ? "agy_acp_server.exe" : "agy_acp_server.par", [], undefined, { versionTimeoutMs: 30_000, readVersion: readAntigravityVersion });
++/** The official installer defaults to ~/.local/bin, often absent from GUI PATH. */
++export function antigravityInstalledExecutableCandidates(platform = process.platform, home = homedir()) {
++    const paths = platform === "win32" ? path.win32 : path.posix;
++    return [
++        paths.join(home, ".local", "bin", platform === "win32" ? "agy.exe" : "agy"),
++        platform === "win32" ? "agy_acp_server.exe" : "agy_acp_server.par",
++    ];
++}
++// The override is still exclusive. CLI discovery takes precedence over the
++// older registry server; both keep their own native credential stores.
++export const antigravityInstallation = executableInstallation("OAR_ANTIGRAVITY_BIN", "agy", (env) => antigravityInstalledExecutableCandidates(process.platform, environmentHome(env)), undefined, { versionTimeoutMs: 30_000, readVersion: readAntigravityVersion });
+ //# sourceMappingURL=installation.js.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js.map
+index 111a2aa..e79cade 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/installation.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"installation.js","sources":["../../../src/runtimes/antigravity/installation.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,8BAA8B,CAAC;AAEtE;;;;GAIG;AACH,MAAM,UAAU,sBAAsB,CAAC,MAAc;IACnD,OAAO,yBAAyB,CAAC,IAAI,CAAC,MAAM,CAAC,EAAE,CAAC,CAAC,CAAC,CAAC;AACrD,CAAC;AAED;;;;GAIG;AACH,MAAM,CAAC,MAAM,uBAAuB,GAAG,sBAAsB,CAC3D,qBAAqB,EACrB,OAAO,CAAC,QAAQ,KAAK,OAAO,CAAC,CAAC,CAAC,oBAAoB,CAAC,CAAC,CAAC,oBAAoB,EAC1E,EAAE,EACF,SAAS,EACT,EAAE,gBAAgB,EAAE,MAAM,EAAE,WAAW,EAAE,sBAAsB,EAAE,CAClE,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"installation.js","sources":["../../../src/runtimes/antigravity/installation.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,MAAM,SAAS,CAAC;AAClC,OAAO,IAAI,MAAM,WAAW,CAAC;AAC7B,OAAO,EAAE,eAAe,EAAE,MAAM,kCAAkC,CAAC;AACnE,OAAO,EAAE,sBAAsB,EAAE,MAAM,8BAA8B,CAAC;AAEtE,+EAA+E;AAC/E,MAAM,UAAU,sBAAsB,CAAC,MAAc;IACnD,OAAO,yBAAyB,CAAC,IAAI,CAAC,MAAM,CAAC,EAAE,CAAC,CAAC,CAAC;WAC7C,uCAAuC,CAAC,IAAI,CAAC,MAAM,CAAC,IAAI,EAAE,CAAC,EAAE,CAAC,CAAC,CAAC,CAAC;AACxE,CAAC;AAED,mFAAmF;AACnF,MAAM,UAAU,wCAAwC,CACtD,QAAQ,GAAoB,OAAO,CAAC,QAAQ,EAC5C,IAAI,GAAW,OAAO,EAAE;IAExB,MAAM,KAAK,GAAG,QAAQ,KAAK,OAAO,CAAC,CAAC,CAAC,IAAI,CAAC,KAAK,CAAC,CAAC,CAAC,IAAI,CAAC,KAAK,CAAC;IAC7D,OAAO;QACL,KAAK,CAAC,IAAI,CAAC,IAAI,EAAE,QAAQ,EAAE,KAAK,EAAE,QAAQ,KAAK,OAAO,CAAC,CAAC,CAAC,SAAS,CAAC,CAAC,CAAC,KAAK,CAAC;QAC3E,QAAQ,KAAK,OAAO,CAAC,CAAC,CAAC,oBAAoB,CAAC,CAAC,CAAC,oBAAoB;KACnE,CAAC;AACJ,CAAC;AAED,2EAA2E;AAC3E,uEAAuE;AACvE,MAAM,CAAC,MAAM,uBAAuB,GAAG,sBAAsB,CAC3D,qBAAqB,EACrB,KAAK,EACL,CAAC,GAAG,EAAE,EAAE,CAAC,wCAAwC,CAAC,OAAO,CAAC,QAAQ,EAAE,eAAe,CAAC,GAAG,CAAC,CAAC,EACzF,SAAS,EACT,EAAE,gBAAgB,EAAE,MAAM,EAAE,WAAW,EAAE,sBAAsB,EAAE,CAClE,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts
+new file mode 100644
+index 0000000..50c4d89
+--- /dev/null
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts
+@@ -0,0 +1,4 @@
++/** Keep the existing server launch contract for pinned legacy executables. */
++export declare function isAntigravityCli(command: string): boolean;
++export declare function antigravityAcpArgs(command: string, platform?: NodeJS.Platform): readonly string[];
++//# sourceMappingURL=launch.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts.map
+new file mode 100644
+index 0000000..da829d1
+--- /dev/null
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.d.ts.map
+@@ -0,0 +1 @@
++{"version":3,"file":"launch.d.ts","sources":["../../../src/runtimes/antigravity/launch.ts"],"names":[],"mappings":"AAAA,8EAA8E;AAC9E,wBAAgB,gBAAgB,CAAC,OAAO,EAAE,MAAM,GAAG,OAAO,CAEzD;AAED,wBAAgB,kBAAkB,CAAC,OAAO,EAAE,MAAM,EAAE,QAAQ,GAAE,MAAM,CAAC,QAA2B,GAAG,SAAS,MAAM,EAAE,CAMnH"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js
+new file mode 100644
+index 0000000..61959b4
+--- /dev/null
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js
+@@ -0,0 +1,12 @@
++/** Keep the existing server launch contract for pinned legacy executables. */
++export function isAntigravityCli(command) {
++    return /(?:^|[/\\])agy(?:\.exe|\.cmd)?$/iu.test(command);
++}
++export function antigravityAcpArgs(command, platform = process.platform) {
++    if (isAntigravityCli(command)) {
++        return ["acp"];
++    }
++    // The registry's Linux server drops privileges unless --uid= is empty.
++    return platform === "linux" ? ["--uid="] : [];
++}
++//# sourceMappingURL=launch.js.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js.map
+new file mode 100644
+index 0000000..ca55fae
+--- /dev/null
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/launch.js.map
+@@ -0,0 +1 @@
++{"version":3,"file":"launch.js","sources":["../../../src/runtimes/antigravity/launch.ts"],"names":[],"mappings":"AAAA,8EAA8E;AAC9E,MAAM,UAAU,gBAAgB,CAAC,OAAe;IAC9C,OAAO,mCAAmC,CAAC,IAAI,CAAC,OAAO,CAAC,CAAC;AAC3D,CAAC;AAED,MAAM,UAAU,kBAAkB,CAAC,OAAe,EAAE,QAAQ,GAAoB,OAAO,CAAC,QAAQ;IAC9F,IAAI,gBAAgB,CAAC,OAAO,CAAC,EAAE,CAAC;QAC9B,OAAO,CAAC,KAAK,CAAC,CAAC;IACjB,CAAC;IACD,uEAAuE;IACvE,OAAO,QAAQ,KAAK,OAAO,CAAC,CAAC,CAAC,CAAC,QAAQ,CAAC,CAAC,CAAC,CAAC,EAAE,CAAC;AAChD,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js
+index c303586..1160b9f 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js
+@@ -5,7 +5,7 @@ import { startAcpProcess, withAcpDeadline } from "../../shared/acp/process.js";
+ import { acpThoughtLevelOption } from "../../shared/acp/model.js";
+ import { asRecord, asRecordList } from "../../shared/json.js";
+ import { listingCwd } from "../../shared/listing-cwd.js";
+-import { antigravityAcpArgs } from "./session.js";
++import { antigravityAcpArgs } from "./launch.js";
+ function text(value) {
+     if (typeof value !== "string") {
+         return undefined;
+@@ -51,7 +51,7 @@ export function projectAntigravityModels(response) {
+     return entries;
+ }
+ async function readNewSession(command, cwd, timeoutMs, env) {
+-    const runtime = startAcpProcess(command, antigravityAcpArgs(), createClient({ name: "oar" }), { cwd, env });
++    const runtime = startAcpProcess(command, antigravityAcpArgs(command), createClient({ name: "oar" }), { cwd, env });
+     try {
+         const initialize = methods.agent.initialize;
+         await withAcpDeadline(runtime, initialize, timeoutMs, (requestOptions) => runtime.connection.agent.request(initialize, {
+@@ -75,13 +75,13 @@ async function readNewSession(command, cwd, timeoutMs, env) {
+ }
+ export const antigravityListModels = async (installation, options = {}) => {
+     if (installation.via !== "executable") {
+-        return { kind: "unsupported", reason: "antigravity model listing requires the agy_acp_server executable" };
++        return { kind: "unsupported", reason: "antigravity model listing requires an agy or agy_acp_server executable" };
+     }
+     try {
+         const response = await readNewSession(installation.command, listingCwd(options), options.timeoutMs ?? 30_000, sessionEnvironment(options.env));
+         const models = projectAntigravityModels(response);
+         if (models === undefined) {
+-            return { kind: "unsupported", reason: "this agy_acp_server build returns no model config option on session/new" };
++            return { kind: "unsupported", reason: "this Antigravity ACP build returns no model config option on session/new" };
+         }
+         return { kind: "ok", models };
+     }
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js.map
+index f3f58b9..00e5dd6 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/list-models.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"list-models.js","sources":["../../../src/runtimes/antigravity/list-models.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"list-models.js","sources":["../../../src/runtimes/antigravity/list-models.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts
+index de22e41..cf39b14 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts
+@@ -1,13 +1,6 @@
+-import type { SessionOptions } from "../../contracts/session.js";
++import type { StartSession, SessionOptions } from "../../contracts/session.js";
+ import { type AcpSessionProfile } from "../../shared/acp/session.js";
+ import { type JsonRecord } from "../../shared/json.js";
+-/**
+- * The ACP registry's launch line for agy_acp_server 1.2.1. On Linux the
+- * binary's startup drops privileges to group `nobody` unless `--uid=` is
+- * empty, and on a host without that group it aborts before speaking ACP
+- * ("Check failed: LookupGIDByGroupName"). macOS and Windows take no args.
+- */
+-export declare function antigravityAcpArgs(platform?: NodeJS.Platform): readonly string[];
+ /**
+  * agy_acp_server 1.2.1 lists `yolo` both as a session mode and as a value of
+  * its `mode` config option; either way `session/set_mode` applies it.
+@@ -15,5 +8,5 @@ export declare function antigravityAcpArgs(platform?: NodeJS.Platform): readonly
+ export declare function supportsAntigravityYolo(response: JsonRecord): boolean;
+ export declare function antigravityToolDenials(options: SessionOptions): void;
+ export declare const antigravityAcpProfile: AcpSessionProfile;
+-export declare const antigravitySession: import("../../contracts/session.js").StartSession;
++export declare const antigravitySession: StartSession;
+ //# sourceMappingURL=session.d.ts.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts.map
+index e6d6a24..e5cec03 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"session.d.ts","sources":["../../../src/runtimes/antigravity/session.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,4BAA4B,CAAC;AAGjE,OAAO,EAAc,KAAK,iBAAiB,EAAE,MAAM,6BAA6B,CAAC;AACjF,OAAO,EAAY,KAAK,UAAU,EAAE,MAAM,sBAAsB,CAAC;AAGjE;;;;;GAKG;AACH,wBAAgB,kBAAkB,CAAC,QAAQ,GAAE,MAAM,CAAC,QAA2B,GAAG,SAAS,MAAM,EAAE,CAElG;AAED;;;GAGG;AACH,wBAAgB,uBAAuB,CAAC,QAAQ,EAAE,UAAU,GAAG,OAAO,CAUrE;AAUD,wBAAgB,sBAAsB,CAAC,OAAO,EAAE,cAAc,GAAG,IAAI,CAKpE;AAyBD,eAAO,MAAM,qBAAqB,EAAE,iBAgCnC,CAAC;AAEF,eAAO,MAAM,kBAAkB,mDAAoC,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"session.d.ts","sources":["../../../src/runtimes/antigravity/session.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,YAAY,EAAE,cAAc,EAAE,MAAM,4BAA4B,CAAC;AAG/E,OAAO,EAAc,KAAK,iBAAiB,EAAE,MAAM,6BAA6B,CAAC;AACjF,OAAO,EAAY,KAAK,UAAU,EAAE,MAAM,sBAAsB,CAAC;AAKjE;;;GAGG;AACH,wBAAgB,uBAAuB,CAAC,QAAQ,EAAE,UAAU,GAAG,OAAO,CAUrE;AAUD,wBAAgB,sBAAsB,CAAC,OAAO,EAAE,cAAc,GAAG,IAAI,CAKpE;AAyBD,eAAO,MAAM,qBAAqB,EAAE,iBAgCnC,CAAC;AAEF,eAAO,MAAM,kBAAkB,EAAE,YAMhC,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js
+index 989ddc4..1e8e8dd 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js
+@@ -3,15 +3,7 @@ import { UnsupportedOptionError } from "../../contracts/errors.js";
+ import { acpSession } from "../../shared/acp/session.js";
+ import { asRecord } from "../../shared/json.js";
+ import { refuseSessionOptions } from "../../shared/session-options.js";
+-/**
+- * The ACP registry's launch line for agy_acp_server 1.2.1. On Linux the
+- * binary's startup drops privileges to group `nobody` unless `--uid=` is
+- * empty, and on a host without that group it aborts before speaking ACP
+- * ("Check failed: LookupGIDByGroupName"). macOS and Windows take no args.
+- */
+-export function antigravityAcpArgs(platform = process.platform) {
+-    return platform === "linux" ? ["--uid="] : [];
+-}
++import { antigravityAcpArgs } from "./launch.js";
+ /**
+  * agy_acp_server 1.2.1 lists `yolo` both as a session mode and as a value of
+  * its `mode` config option; either way `session/set_mode` applies it.
+@@ -63,7 +55,7 @@ function sessionMeta(options, initialized) {
+     };
+ }
+ export const antigravityAcpProfile = {
+-    args: () => antigravityAcpArgs(),
++    args: ["acp"],
+     isResumeNotFound: (native) => native.code === -32_002,
+     // Subagents run inside the harness and never reach ACP under their own
+     // ids: opaque (tier #1, docs/spec/attribution.md). The method set has no
+@@ -92,5 +84,11 @@ export const antigravityAcpProfile = {
+         }
+     },
+ };
+-export const antigravitySession = acpSession(antigravityAcpProfile);
++export const antigravitySession = async (installation, options, context) => {
++    const session = await acpSession({
++        ...antigravityAcpProfile,
++        args: installation.via === "executable" ? antigravityAcpArgs(installation.command) : [],
++    })(installation, options, context);
++    return session;
++};
+ //# sourceMappingURL=session.js.map
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js.map
+index d09e081..3129a39 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/session.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"session.js","sources":["../../../src/runtimes/antigravity/session.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"session.js","sources":["../../../src/runtimes/antigravity/session.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.d.ts.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.d.ts.map
+index 2f5cccc..57d49b9 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.d.ts.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"update.d.ts","sources":["../../../src/runtimes/antigravity/update.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAmC,aAAa,EAAE,MAAM,2BAA2B,CAAC;AAIhG;;;;;;GAMG;AACH,wBAAgB,sBAAsB,CACpC,QAAQ,SAAmG,GAC1G,aAAa,CAgBf;AAED,eAAO,MAAM,sBAAsB,eAA2B,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"update.d.ts","sources":["../../../src/runtimes/antigravity/update.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAmC,aAAa,EAAE,MAAM,2BAA2B,CAAC;AAIhG;;;;;;GAMG;AACH,wBAAgB,sBAAsB,CACpC,QAAQ,SAAmG,GAC1G,aAAa,CAuBf;AAED,eAAO,MAAM,sBAAsB,eAA2B,CAAC"}
+\ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js
+index d72bc8c..73ebb88 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js
+@@ -1,3 +1,4 @@
++import { isAntigravityCli } from "./launch.js";
+ import { asRecord, parseJson } from "../../shared/json.js";
+ import { CHECK_TIMEOUT_MS, comparedCheck, executableUpdate, readReleaseSource, versionAtLeast } from "../../shared/update.js";
+ /**
+@@ -13,6 +14,13 @@ export function antigravityUpdateCheck(registry = "https://raw.githubusercontent
+         if (update.kind === "unavailable") {
+             return update.check;
+         }
++        if (isAntigravityCli(update.installation.command)) {
++            return {
++                kind: "unavailable",
++                reason: "unmanaged_installation",
++                detail: "The agy CLI updates itself; OAR has not integrated its update source. The ACP registry versions only the separate agy_acp_server.",
++            };
++        }
+         const read = await readReleaseSource(registry, options.timeoutMs ?? CHECK_TIMEOUT_MS);
+         if (!read.ok) {
+             return read.check;
+diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js.map b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js.map
+index 014b4cb..bcb7b94 100644
+--- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js.map
++++ b/node_modules/@botiverse/oar/dist/runtimes/antigravity/update.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"update.js","sources":["../../../src/runtimes/antigravity/update.ts"],"names":[],"mappings":"AAEA,OAAO,EAAE,QAAQ,EAAE,SAAS,EAAE,MAAM,sBAAsB,CAAC;AAC3D,OAAO,EAAE,gBAAgB,EAAE,aAAa,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,cAAc,EAAE,MAAM,wBAAwB,CAAC;AAE9H;;;;;;GAMG;AACH,MAAM,UAAU,sBAAsB,CACpC,QAAQ,GAAG,gGAAgG;IAE3G,OAAO,KAAK,EAAE,YAAmC,EAAE,OAAO,GAAuB,EAAE,EAAwB,EAAE;QAC3G,MAAM,MAAM,GAAG,gBAAgB,CAAC,YAAY,CAAC,CAAC;QAC9C,IAAI,MAAM,CAAC,IAAI,KAAK,aAAa,EAAE,CAAC;YAClC,OAAO,MAAM,CAAC,KAAK,CAAC;QACtB,CAAC;QACD,MAAM,IAAI,GAAG,MAAM,iBAAiB,CAAC,QAAQ,EAAE,OAAO,CAAC,SAAS,IAAI,gBAAgB,CAAC,CAAC;QACtF,IAAI,CAAC,IAAI,CAAC,EAAE,EAAE,CAAC;YACb,OAAO,IAAI,CAAC,KAAK,CAAC;QACpB,CAAC;QACD,MAAM,OAAO,GAAG,QAAQ,CAAC,SAAS,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC,EAAE,OAAO,CAAC;QACxD,MAAM,KAAK,GAAG,aAAa,CAAC,MAAM,CAAC,SAAS,EAAE,OAAO,OAAO,KAAK,QAAQ,CAAC,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,EAAE,EAAE,QAAQ,CAAC,CAAC;QACpG,OAAO,KAAK,CAAC,IAAI,KAAK,IAAI,IAAI,KAAK,CAAC,eAAe;YACjD,CAAC,CAAC,EAAE,GAAG,KAAK,EAAE,eAAe,EAAE,CAAC,cAAc,CAAC,KAAK,CAAC,SAAS,EAAE,KAAK,CAAC,MAAM,CAAC,EAAE;YAC/E,CAAC,CAAC,KAAK,CAAC;IACZ,CAAC,CAAC;AACJ,CAAC;AAED,MAAM,CAAC,MAAM,sBAAsB,GAAG,sBAAsB,EAAE,CAAC"}
+\ No newline at end of file
++{"version":3,"file":"update.js","sources":["../../../src/runtimes/antigravity/update.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAC;AAG/C,OAAO,EAAE,QAAQ,EAAE,SAAS,EAAE,MAAM,sBAAsB,CAAC;AAC3D,OAAO,EAAE,gBAAgB,EAAE,aAAa,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,cAAc,EAAE,MAAM,wBAAwB,CAAC;AAE9H;;;;;;GAMG;AACH,MAAM,UAAU,sBAAsB,CACpC,QAAQ,GAAG,gGAAgG;IAE3G,OAAO,KAAK,EAAE,YAAmC,EAAE,OAAO,GAAuB,EAAE,EAAwB,EAAE;QAC3G,MAAM,MAAM,GAAG,gBAAgB,CAAC,YAAY,CAAC,CAAC;QAC9C,IAAI,MAAM,CAAC,IAAI,KAAK,aAAa,EAAE,CAAC;YAClC,OAAO,MAAM,CAAC,KAAK,CAAC;QACtB,CAAC;QACD,IAAI,gBAAgB,CAAC,MAAM,CAAC,YAAY,CAAC,OAAO,CAAC,EAAE,CAAC;YAClD,OAAO;gBACL,IAAI,EAAE,aAAa;gBACnB,MAAM,EAAE,wBAAwB;gBAChC,MAAM,EAAE,mIAAmI;aAC5I,CAAC;QACJ,CAAC;QACD,MAAM,IAAI,GAAG,MAAM,iBAAiB,CAAC,QAAQ,EAAE,OAAO,CAAC,SAAS,IAAI,gBAAgB,CAAC,CAAC;QACtF,IAAI,CAAC,IAAI,CAAC,EAAE,EAAE,CAAC;YACb,OAAO,IAAI,CAAC,KAAK,CAAC;QACpB,CAAC;QACD,MAAM,OAAO,GAAG,QAAQ,CAAC,SAAS,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC,EAAE,OAAO,CAAC;QACxD,MAAM,KAAK,GAAG,aAAa,CAAC,MAAM,CAAC,SAAS,EAAE,OAAO,OAAO,KAAK,QAAQ,CAAC,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,EAAE,EAAE,QAAQ,CAAC,CAAC;QACpG,OAAO,KAAK,CAAC,IAAI,KAAK,IAAI,IAAI,KAAK,CAAC,eAAe;YACjD,CAAC,CAAC,EAAE,GAAG,KAAK,EAAE,eAAe,EAAE,CAAC,cAAc,CAAC,KAAK,CAAC,SAAS,EAAE,KAAK,CAAC,MAAM,CAAC,EAAE;YAC/E,CAAC,CAAC,KAAK,CAAC;IACZ,CAAC,CAAC;AACJ,CAAC;AAED,MAAM,CAAC,MAAM,sBAAsB,GAAG,sBAAsB,EAAE,CAAC"}
+\ No newline at end of file

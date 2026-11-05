@@ -103,8 +103,10 @@ impl ApplicationClient {
         match self {
             Self::Root => owner.client.refresh().await,
             Self::Ui(services) => {
-                owner.refresh_ui(serde_json::json!({})).await?;
-                services.client().await.map(drop)
+                owner.read_ui(serde_json::json!({})).await?;
+                services.client().await?;
+                // Changed UI bindings must be adopted before recapturing public endpoints.
+                owner.client.refresh().await
             }
         }
     }
@@ -206,8 +208,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 }
 
 impl Owner {
-    async fn refresh_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
-        self.client.refresh().await?;
+    async fn read_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
         require_contract(
             "management",
             "readUi",
@@ -297,6 +298,37 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let client = source.local(&original).await?;
+            serde_json::to_value(client.recent_workspaces().await?)
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    pub async fn set_recent_workspace(
+        this: Instance<Self>,
+        path: String,
+        workspace: Option<JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let recent = source
+                .local(&original)
+                .await?
+                .set_recent_workspace(path, workspace)
+                .await?;
+            serde_json::to_value(recent).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
     /// Snapshot files selected for a conversation that has not yet been sent.
     pub async fn stage_files(
         this: Instance<Self>,
@@ -608,7 +640,7 @@ impl ApplicationHost {
     pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        execute(owner.clone(), async move { owner.refresh_ui(input).await }).await
+        execute(owner.clone(), async move { owner.read_ui(input).await }).await
     }
 
     /// Return an owned generic subscription, with no second handle table.

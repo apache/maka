@@ -38,10 +38,19 @@ async fn respond_tail_call(
     id: &str,
     value: impl serde::Serialize,
 ) {
+    respond_tail_call_with_usage(socket, id, value, 4).await;
+}
+
+pub(super) async fn respond_tail_call_with_usage(
+    socket: &mut tokio::net::TcpStream,
+    id: &str,
+    value: impl serde::Serialize,
+    input_tokens: u64,
+) {
     let delta = json!({"id":"tail","object":"chat.completion.chunk","created":1,"model":"test",
         "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":"echo","arguments":json!({"value":value}).to_string()}}]},"finish_reason":null}]});
     let end = json!({"id":"tail","object":"chat.completion.chunk","created":1,"model":"test",
-        "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}});
+        "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":3,"total_tokens":input_tokens + 3}});
     let body = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
@@ -96,16 +105,18 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             log: log.clone(), count: count.clone(),
         }));
         next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
-        next.context = context(Some(70));
+        next.context = context(Some(110_000));
         next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
-        if native { configure_native(&mut next, &base, Some(70)); }
+        if native { configure_native(&mut next, &base, Some(110_000)); }
         let history_key = if native { "input" } else { "messages" };
         let invocation = next.invocation.clone();
         let observed = log.clone();
         let server = tokio::spawn(async move {
             let (mut old, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut old).await;
-            respond_for(&mut old, "old-answer", native).await;
+            if native {
+                crate::codex_compaction::respond_with_usage(&mut old, crate::codex_compaction::message("old-answer"), "old-answer", json!({"input_tokens":100_000,"output_tokens":30})).await;
+            } else { fixture::respond_with_usage(&mut old, "old-answer", "stop", json!({"prompt_tokens":100_000,"completion_tokens":50})).await; }
             let mut summary = None;
             let mut main = None;
             // Both requests must arrive while neither has a response. With a
@@ -164,7 +175,16 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             main.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0.01\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{failure}", failure.len()).as_bytes()).await.unwrap();
             let (mut retry, _) = listener.accept().await.unwrap();
             assert_eq!(fixture::read_request(&mut retry).await, frozen);
-            respond_call_for(&mut retry, "after-summary-call", 42, native).await;
+            if native {
+                crate::codex_compaction::respond_with_usage(&mut retry, json!({"type":"function_call","id":"ready-item","call_id":"while-summary-ready","name":"echo","arguments":"{\"value\":43}"}), "ready-summary", json!({"input_tokens":100_000,"output_tokens":30})).await;
+            } else { respond_tail_call_with_usage(&mut retry, "while-summary-ready", 43, 100_000).await; }
+            let (mut below_threshold, _) = listener.accept().await.unwrap();
+            let still_original = fixture::read_request(&mut below_threshold).await;
+            assert!(still_original[history_key].to_string().contains("old-answer"));
+            assert!(!still_original[history_key].to_string().contains("summary-marker"), "a ready candidate must wait for the adoption threshold");
+            if native {
+                crate::codex_compaction::respond_with_usage(&mut below_threshold, json!({"type":"function_call","id":"after-item","call_id":"after-summary-call","name":"echo","arguments":"{\"value\":42}"}), "after-summary", json!({"input_tokens":110_000,"output_tokens":30})).await;
+            } else { respond_tail_call_with_usage(&mut below_threshold, "after-summary-call", 42, 110_000).await; }
             let (mut last, _) = listener.accept().await.unwrap();
             let adopted = fixture::read_request(&mut last).await;
             let messages = adopted[history_key].to_string();
@@ -175,8 +195,11 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             let adopted_tail_start = adopted_messages.iter().position(|message| message["role"] == "user" && message["content"].to_string().contains("question next")).unwrap();
             assert!(adopted_messages[..adopted_tail_start].iter().any(|message| message.to_string().contains("summary-marker")));
             assert_eq!(&adopted_messages[adopted_tail_start..adopted_tail_start + frozen_tail.len()], frozen_tail, "all history captured during compaction follows the checkpoint once and in its original order");
-            let new_tail = &adopted_messages[adopted_tail_start + frozen_tail.len()..];
-            assert_eq!(new_tail.len(), 2, "the later accepted operation adds exactly its call and result");
+            let later_tail = &adopted_messages[adopted_tail_start + frozen_tail.len()..];
+            assert_eq!(later_tail.len(), 4, "each later operation adds exactly its call and result");
+            assert!(later_tail[0].to_string().contains("while-summary-ready"));
+            assert!(tool_result(&later_tail[1], native));
+            let new_tail = &later_tail[2..];
             if native {
                 assert_eq!(new_tail[0]["call_id"], "after-summary-call");
                 assert_eq!(new_tail[1]["call_id"], "after-summary-call");
@@ -203,7 +226,7 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
         worker.run(log.store(), next, CancellationToken::new()).await.unwrap();
         worker.drain().await;
         server.await.unwrap();
-        assert_eq!(count.load(Ordering::SeqCst), 2, "each accepted tool effect happens once");
+        assert_eq!(count.load(Ordering::SeqCst), 3, "each accepted tool effect happens once");
         let source = log.read_model_view("session", None).await.unwrap();
         assert!(source.baseline.is_some());
         assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
@@ -229,14 +252,14 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
             next.configuration.workspace_identity = Some(maka_agent_facts::execution::WorkspaceIdentity::from_marker_id(
                 "ef751105-55b5-4d65-a364-646281586a17").unwrap());
-            next.context = context(Some(70));
+            next.context = context(Some(110_000));
             next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
             let (seen, ready) = tokio::sync::oneshot::channel();
             let (release, released) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
                 let (mut old, _) = listener.accept().await.unwrap();
                 fixture::read_request(&mut old).await;
-                fixture::respond(&mut old, "old", "stop").await;
+                fixture::respond_with_usage(&mut old, "old", "stop", json!({"prompt_tokens":100_000,"completion_tokens":50})).await;
                 let mut summary = None;
                 let mut main = None;
                 for _ in 0..2 {
@@ -353,7 +376,7 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
             let (mut old, _) = listener.accept().await.unwrap();
             let request = fixture::read_request(&mut old).await;
             assert!(request["messages"].to_string().contains(&old_body));
-            fixture::respond(&mut old, "old-answer", "stop").await;
+            fixture::respond_with_usage(&mut old, "old-answer", "stop", json!({"prompt_tokens":100_000,"completion_tokens":50})).await;
 
             let mut summary = None;
             let mut main = None;
@@ -366,6 +389,7 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
                         maka_agent_facts::language::Language::En,
                     ).lines().next().unwrap(),
                 ) {
+                    assert_eq!(request["tool_choice"], "auto");
                     summary = Some(socket);
                 } else {
                     main = Some(socket);
@@ -381,15 +405,21 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
                 "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
             let response = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
             summary.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            let (mut summary_retry, _) = listener.accept().await.unwrap();
+            let retry_request = fixture::read_request(&mut summary_retry).await;
+            assert_eq!(retry_request["tool_choice"], "none");
+            summary_retry.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
             loop {
                 let prefix = observed.prefix(200, 512 * 1024).await.unwrap();
-                let summary_step = prefix.events.iter().find_map(|event| match &event.event.fact {
+                let summary_steps: Vec<_> = prefix.events.iter().filter_map(|event| match &event.event.fact {
                     Fact::ModelRequested { purpose: ModelPurpose::Summary, step_id, .. } => Some(step_id),
                     _ => None,
-                });
-                if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                    Fact::ModelInterrupted { step_id, partial: None, .. }
-                        if Some(step_id) == summary_step)) {
+                }).collect();
+                if summary_steps.len() == 2 && summary_steps.iter().all(|summary_step| {
+                    prefix.events.iter().any(|event| matches!(&event.event.fact,
+                        Fact::ModelInterrupted { step_id, partial: None, .. }
+                            if step_id == *summary_step))
+                }) {
                     break;
                 }
                 commits.changed().await.unwrap();
@@ -427,7 +457,7 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
         let mut next = agent_loop::input(&base, "next", effect.clone());
         next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
         next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
-        next.context = context(Some(70));
+        next.context = context(Some(110_000));
         worker.run(log.store(), next, CancellationToken::new()).await.unwrap();
         worker.drain().await;
         assert_eq!(count.load(Ordering::SeqCst), 2, "only original and Main calls execute once; Summary has no local authority");
@@ -483,7 +513,7 @@ async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_ol
         let server = tokio::spawn(async move {
             let (mut old, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut old).await;
-            fixture::respond(&mut old, "old-answer", "stop").await;
+            fixture::respond_with_usage(&mut old, "old-answer", "stop", json!({"prompt_tokens":100_000,"completion_tokens":50})).await;
             let mut summary = None;
             let mut main = None;
             for _ in 0..2 {
@@ -526,7 +556,7 @@ async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_ol
                 commits.changed().await.unwrap();
             }
             let mut calls = 1;
-            respond_tail_call(main.as_mut().unwrap(), "new-call-1", 41).await;
+            respond_tail_call_with_usage(main.as_mut().unwrap(), "new-call-1", 41, 110_000).await;
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut socket).await;
@@ -606,7 +636,7 @@ async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_ol
         );
         next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
         next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
-        next.context = context(Some(70));
+        next.context = context(Some(110_000));
         let outcome = worker
             .run(log.store(), next, CancellationToken::new())
             .await

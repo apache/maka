@@ -37,7 +37,7 @@ use uuid::Uuid;
 // Keep admission and pending observations on the same immutable Settings owner.
 macro_rules! settings_owner_sql {
     () => {
-        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential'))"
+        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','oarSetup')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential'))"
     };
 }
 
@@ -187,7 +187,9 @@ pub struct DraftReference {
 }
 
 mod recovery;
+mod workspaces;
 mod write;
+pub use workspaces::RecentWorkspace;
 
 impl Journal {
     async fn write(&self, command: write::Command) -> Result<write::Output> {
@@ -429,6 +431,8 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
                 .await

@@ -163,6 +163,26 @@ export function createSettingsOperations(host: Host) {
               }
               continue;
             }
+            if (original.endpoint === 'agent' && original.method === 'oarSetup') {
+              await afterKnown(original, value);
+              const result = record(value) && record(value.result) ? value.result : null;
+              if (result?.kind === 'unsupported')
+                throw new UiError('Automatic installation is not supported in Maka.');
+              if (result?.kind === 'failed')
+                throw new UiError(
+                  'External agent installation failed. Refresh to check its status.',
+                );
+              if (
+                !result ||
+                !['plan', 'installed', 'already_installed', 'available', 'not_found'].includes(
+                  String(result.kind),
+                )
+              )
+                throw new UiError(
+                  'External agent installation returned an unknown result. Refresh to check its status.',
+                );
+              continue;
+            }
             if (original.endpoint === 'agent' && original.method === 'updateGlobalInstructions') {
               // File CAS outcomes belong to the instruction editor, which preserves
               // an unsaved draft when the original receipt reports a conflict.

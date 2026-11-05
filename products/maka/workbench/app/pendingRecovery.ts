@@ -19,7 +19,7 @@
 
 import { cleanup, effect } from 'nsh';
 
-// Only observes original operations. Business methods stay with their caller.
+// Retry observations. Business mutations stay with their caller.
 export function createPendingRecovery(options: {
   pending(): boolean;
   blocked?(): boolean;

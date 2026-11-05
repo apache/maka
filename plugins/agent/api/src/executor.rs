@@ -44,11 +44,29 @@ pub use maka_agent_facts::executor::Selection;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentOarConfiguration")]
 pub struct OarConfiguration {
+    #[serde(default = "oar_enabled")]
+    pub enabled: bool,
+    /// Each runtime requires explicit opt-in, even when the legacy gate is enabled.
+    #[serde(default)]
+    pub runtimes: BTreeMap<String, bool>,
     /// Absent selects the worker shipped beside the Maka executable.
     #[serde(default)]
     pub executable: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+impl OarConfiguration {
+    pub fn enabled_runtimes(&self) -> impl Iterator<Item = &str> {
+        self.runtimes
+            .iter()
+            .filter(|(_, enabled)| self.enabled && **enabled)
+            .map(|(id, _)| id.as_str())
+    }
+}
+
+fn oar_enabled() -> bool {
+    true
 }
 
 /// Observations and text; immutable attachments travel in the actual request resources.
@@ -112,6 +130,33 @@ pub struct AttachmentMetadata {
 mod tests {
     use super::*;
     use maka_agent_facts::language::Language;
+
+    #[test]
+    fn oar_runtime_opt_in_preserves_old_launch_settings_without_enabling_any_runtime() {
+        let mut settings: OarConfiguration = serde_json::from_value(serde_json::json!({
+            "executable":"/custom/worker", "args":["--custom"]
+        }))
+        .unwrap();
+        assert!(settings.enabled);
+        assert_eq!(settings.enabled_runtimes().count(), 0);
+        settings.runtimes.insert("codex".into(), true);
+        settings.runtimes.insert("claude".into(), false);
+        assert_eq!(
+            settings.enabled_runtimes().collect::<Vec<_>>(),
+            vec!["codex"]
+        );
+        settings.enabled = false;
+        assert_eq!(settings.enabled_runtimes().count(), 0);
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            serde_json::json!({
+                "enabled":false, "runtimes":{"codex":true,"claude":false}, "executable":"/custom/worker", "args":["--custom"]
+            })
+        );
+        let restored: OarConfiguration =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(!restored.enabled);
+    }
 
     #[test]
     fn persisted_execute_uses_canonical_english_omission_and_exact_chinese_tags() {

@@ -37,6 +37,14 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Recent folders': ['Recent folders', '最近使用', '最近使用'],
+  'Remove this folder from recents': [
+    'Remove this folder from recents',
+    '从最近记录中移除此文件夹',
+    '從最近記錄中移除此資料夾',
+  ],
+  'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
+  'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
   'View the record of {title}': [
@@ -354,6 +362,7 @@ export const workspaceMessages = {
   'Retry current diff': ['Retry current diff', '重试当前差异', '重試目前差異'],
   'Retry current file': ['Retry current file', '重试当前文件', '重試目前檔案'],
   'Retry folder': ['Retry folder', '重试文件夹', '重試資料夾'],
+  'Folder unavailable': ['Folder unavailable', '文件夹不可用', '資料夾無法使用'],
   'Retry image: {name}': ['Retry image: {name}', '重试加载图片：{name}', '重新載入圖片：{name}'],
   'Retry image': ['Retry image', '重试加载图片', '重新載入圖片'],
   'Retry terminal observation': ['Retry terminal observation', '重试终端观察', '重試終端觀察'],

@@ -21,7 +21,7 @@
 mod journal;
 pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
-    UploadReference,
+    RecentWorkspace, UploadReference,
 };
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
 use maka_host_runtime::application::{
@@ -114,11 +114,12 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer" | "oarSetup"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
-        || (endpoint == "management" && matches!(method, "setEnabled" | "configure"))
+        || (endpoint == "management"
+            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
         || (endpoint == "authentication" && method == "loginCredential")
 }
 fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
@@ -813,6 +814,31 @@ impl Client {
         )
         .await
     }
+    async fn workspace_owner(&self) -> Result<String> {
+        let owner = self.service_owner("agent").await?;
+        serde_json::to_string(&(&self.0.source.state_domain, self.0.source.deployment, owner))
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn recent_workspaces(&self) -> Result<Vec<RecentWorkspace>> {
+        self.0
+            .journal
+            .recent_workspaces(&self.workspace_owner().await?)
+            .await
+    }
+
+    /// Move a directory to the front, or remove its recent entry when `workspace` is None.
+    pub async fn set_recent_workspace(
+        &self,
+        path: String,
+        workspace: Option<Value>,
+    ) -> Result<Vec<RecentWorkspace>> {
+        self.0
+            .journal
+            .set_recent_workspace(self.workspace_owner().await?, path, workspace)
+            .await
+    }
+
     async fn draft_key(&self, endpoint: &str, session: &str, editor: &str) -> Result<DraftKey> {
         let host = self.0.host.lock().await;
         let target = host.catalogue().describe(endpoint)?;

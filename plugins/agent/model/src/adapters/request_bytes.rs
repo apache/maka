@@ -50,6 +50,7 @@ pub(crate) async fn encoded_request_bytes(
         },
         prompt: crate::reasoning::normalize(request.prompt.clone(), &request.provider.kind)?,
         tools: request.tools.clone(),
+        tool_choice: request.tool_choice,
         provider_options: request.provider_options.clone(),
         max_output_tokens: request.max_output_tokens,
     };

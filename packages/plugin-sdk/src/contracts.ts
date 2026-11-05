@@ -4333,6 +4333,441 @@ export const contracts = {
           },
           resources: {},
         },
+        externalAgents: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentExternalAgentsRead',
+            type: 'object',
+            properties: {
+              inspect: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentExternalAgents',
+            type: 'object',
+            properties: {
+              target: {
+                $ref: '#/$defs/AgentExternalAgentsTarget',
+              },
+              configured: {
+                type: 'boolean',
+              },
+              runtimes: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentExternalRuntimeOption',
+                },
+              },
+              state: {
+                $ref: '#/$defs/AgentExternalAgentsState',
+              },
+            },
+            additionalProperties: false,
+            required: ['target', 'configured', 'runtimes', 'state'],
+            $defs: {
+              AgentExternalAgentsTarget: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/AgentDataSource',
+                  },
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['source', 'path'],
+              },
+              AgentDataSource: {
+                description:
+                  'Stable business-data origin, independent of package or activation revisions.',
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'namespace'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              AgentExternalRuntimeOption: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'enabled'],
+              },
+              AgentExternalAgentsState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'disabled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'enabled',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workspace_required',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                      message: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'message'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'ready',
+                      },
+                      runtimes: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentExternalRuntime',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'runtimes'],
+                  },
+                ],
+              },
+              AgentExternalRuntime: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  installation: {
+                    $ref: '#/$defs/AgentExternalInstallation',
+                  },
+                  authentication: {
+                    $ref: '#/$defs/AgentExternalAuthentication',
+                  },
+                  models: {
+                    $ref: '#/$defs/AgentExternalModels',
+                  },
+                  canInstall: {
+                    type: 'boolean',
+                  },
+                  installLines: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentExternalInstallLine',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'name',
+                  'installation',
+                  'authentication',
+                  'models',
+                  'canInstall',
+                  'installLines',
+                ],
+              },
+              AgentExternalInstallation: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'available',
+                      },
+                      version: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'not_found',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported',
+                      },
+                      detail: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'detail'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'error',
+                      },
+                      detail: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'detail'],
+                  },
+                ],
+              },
+              AgentExternalAuthentication: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'authenticated',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unauthenticated',
+                      },
+                      source: {
+                        type: 'string',
+                      },
+                      detail: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'source'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      detail: {
+                        type: ['string', 'null'],
+                      },
+                      source: {
+                        type: ['string', 'null'],
+                      },
+                      configured: {
+                        type: ['array', 'null'],
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'error',
+                      },
+                      detail: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'detail'],
+                  },
+                ],
+              },
+              AgentExternalModels: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'ready',
+                      },
+                      count: {
+                        type: 'integer',
+                        format: 'uint',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'count'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unauthenticated',
+                      },
+                      detail: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unsupported',
+                      },
+                      detail: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'detail'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'error',
+                      },
+                      detail: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'detail'],
+                  },
+                ],
+              },
+              AgentExternalInstallLine: {
+                type: 'object',
+                properties: {
+                  line: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['line', 'description'],
+              },
+            },
+          },
+          resources: {},
+        },
         fileCandidates: {
           mode: 'subscription',
           input: {
@@ -47195,6 +47630,231 @@ export const contracts = {
             additionalProperties: false,
             required: ['expectedRevision', 'instance', 'changes'],
             $defs: {
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              SettingChange: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                    minItems: 1,
+                  },
+                  value: {
+                    description:
+                      'None removes the field; all other fields retain their original source.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SettingValue',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              SettingValue: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'number',
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'text'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'boolean',
+                      },
+                      value: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'null',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'ManagementResultForDeploymentRef',
+            description:
+              "A deterministic refusal is a recorded business result. Uncertain SQL/worker\nfailures remain in the original operation journal's Unknown outcome.",
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  status: {
+                    type: 'string',
+                    const: 'committed',
+                  },
+                  value: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'value'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  status: {
+                    type: 'string',
+                    const: 'conflict',
+                  },
+                  currentRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'currentRevision'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  status: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/ManagementRejection',
+                  },
+                  diagnostic: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['status', 'reason'],
+              },
+            ],
+            $defs: {
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              ManagementRejection: {
+                type: 'string',
+                enum: [
+                  'invalid_bundle',
+                  'download_failed',
+                  'invalid_document',
+                  'invalid_source',
+                  'package_unavailable',
+                  'instance_unavailable',
+                  'parent_disabled',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        configureBatch: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'InstanceConfigureBatch',
+            type: 'object',
+            properties: {
+              expectedRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740990,
+              },
+              edits: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/InstanceConfigureEdit',
+                },
+                minItems: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['expectedRevision', 'edits'],
+            $defs: {
+              InstanceConfigureEdit: {
+                type: 'object',
+                properties: {
+                  instance: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  changes: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/SettingChange',
+                    },
+                    minItems: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['instance', 'changes'],
+              },
               InstanceId: {
                 description:
                   'Hierarchical, stable source keys. Display aliases never become data identities.',

@@ -115,6 +115,19 @@ impl Owner {
                 .get("runtime")
                 .and_then(Value::as_str)
                 .ok_or("agent_oar_catalog_invalid")?;
+            for field in ["installation", "models"] {
+                if let Some(error) = runtime
+                    .get(field)
+                    .filter(|value| value.get("kind").and_then(Value::as_str) == Some("error"))
+                {
+                    tracing::warn!(
+                        runtime = runtime_id,
+                        stage = field,
+                        detail = error.get("detail").and_then(serde_json::Value::as_str),
+                        "External agent model discovery failed"
+                    );
+                }
+            }
             if runtime.pointer("/models/kind").and_then(Value::as_str) != Some("ok") {
                 continue;
             }

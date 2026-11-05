@@ -56,6 +56,7 @@ pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
             description: "echo".into(),
             input_schema: json!({"type":"object","properties":{}}),
         })],
+        tool_choice: Default::default(),
         provider_options: json!({}),
         max_output_tokens: Some(128),
     }

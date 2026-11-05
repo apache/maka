@@ -220,7 +220,7 @@ impl Availability {
                 "Find tools by name or description. Matches become callable on the next model step. Loaded names persist in this Session until successful compaction or Host restart; current permissions and availability apply. Inventory: {}.",
                 names.join(", ")
             ),
-            input_schema: schemars::schema_for!(SearchInput).into(),
+            input_schema: crate::input::inline_refs(schemars::schema_for!(SearchInput).into()),
         })
     }
     pub fn prepare_search(&self, input: &Value) -> Result<PreparedEffect, ToolRejection> {

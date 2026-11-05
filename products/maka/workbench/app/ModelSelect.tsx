@@ -103,7 +103,12 @@ export function ModelSelect(props: {
   toggle(target: ModelTarget): void;
   close(instance: number): boolean;
   select(instance: number, backend: ModelBackend): Promise<void>;
-  manage(target: { sessionId: string; instance: number; model?: ModelSelection }): void;
+  manage(target: {
+    sessionId: string;
+    instance: number;
+    model?: ModelSelection;
+    page?: string;
+  }): void;
 }) {
   const owner = props.owner;
   let menu: ModelMenuHandle | null = null;
@@ -119,9 +124,15 @@ export function ModelSelect(props: {
       }
     };
   });
-  const model = () => modelCaption(owner.backend(), owner.modelDetails());
+  const model = () => {
+    const details = owner.modelDetails();
+    return details.kind === 'ready' && sameRoute(owner.backend(), details.choice.selection)
+      ? details.choice.label
+      : modelCaption(owner.backend(), details);
+  };
   const effort = () => effortCaption(owner.backend(), owner.modelDetails());
-  const label = () => (effort() ? `${model()} · ${effort()}` : model());
+  const tooltipLabel = () =>
+    [modelCaption(owner.backend(), owner.modelDetails()), effort()].filter(Boolean).join(' · ');
   return (
     <Popover
       open={props.instance() !== null}
@@ -150,7 +161,7 @@ export function ModelSelect(props: {
           tooltip={textTooltip(() =>
             props.instance() !== null
               ? undefined
-              : `${label()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
+              : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
@@ -228,13 +239,18 @@ export function ModelSelect(props: {
               current={() => props.current() && props.instance() === instance}
               close={props.close}
               select={(backend) => props.select(instance, backend)}
-              manage={(model) => {
+              manage={(model, page) => {
                 if (
                   props.current() &&
                   props.instance() === instance &&
                   (!model || sameRoute(owner.backend(), { kind: 'model', ...model }))
                 )
-                  props.manage({ sessionId: owner.sessionId, instance, model: model ?? undefined });
+                  props.manage({
+                    sessionId: owner.sessionId,
+                    instance,
+                    model: model ?? undefined,
+                    page,
+                  });
               }}
               attach={(handle) => {
                 menu = handle;
@@ -256,7 +272,7 @@ function ModelMenu(props: {
   current(): boolean;
   close(instance: number): boolean;
   select(backend: ModelBackend): Promise<void>;
-  manage(model: ModelSelection | null): void;
+  manage(model: ModelSelection | null, page?: string): void;
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
 }) {
@@ -824,6 +840,20 @@ function ModelMenu(props: {
       <If when={!platform.isTerminal}>
         <View style={{ height: 1, backgroundColor: C.line }} />
       </If>
+      <Button
+        disabled={pending()}
+        accessibilityLabel={tr('Manage external agents')}
+        onPress={inputAction(() => props.manage(null, 'external-agents'), null)}
+        style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
+        disabledStyle={controlDisabledStyle}
+      >
+        <Text style={{ ...captionTextStyle, color: C.accent, flex: 1 }}>
+          {tr('External agents')}
+        </Text>
+        <Icon name="right" color={C.muted} />
+      </Button>
       <Button
         disabled={pending()}
         accessibilityLabel={tr('Manage connections and models')}

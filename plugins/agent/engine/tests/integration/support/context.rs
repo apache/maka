@@ -68,8 +68,23 @@ pub fn input(base: &str, id: &str, compact: bool) -> RunInput {
 }
 
 pub async fn respond(socket: &mut TcpStream, text: &str, reason: &str) {
+    respond_with_usage(
+        socket,
+        text,
+        reason,
+        json!({"prompt_tokens":20,"completion_tokens":50,"total_tokens":70}),
+    )
+    .await;
+}
+
+pub async fn respond_with_usage(
+    socket: &mut TcpStream,
+    text: &str,
+    reason: &str,
+    usage: serde_json::Value,
+) {
     let first = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]});
-    let last = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":20,"completion_tokens":50,"total_tokens":70}});
+    let last = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":usage});
     let body = format!("data: {first}\n\ndata: {last}\n\ndata: [DONE]\n\n");
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
 }

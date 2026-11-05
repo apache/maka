@@ -301,7 +301,18 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
         let caller = fixture.mutation(2, "create", input, Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
         fixture.send(&caller).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
-        request(&mut socket).await;
+        let first_request = request(&mut socket).await;
+        let create_schema = &first_request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == "SessionCreate")
+            .unwrap()["function"]["parameters"];
+        assert!(create_schema.get("$defs").is_none(), "{create_schema}");
+        assert!(
+            create_schema["properties"]["workspace"]["oneOf"].is_array(),
+            "{create_schema}"
+        );
         service_tools::named_tool_response(&mut socket, "SessionCreate", json!({
             "title":"Created task", "labels":[], "workspace":{"kind":"session","sessionId":caller},
         })).await;

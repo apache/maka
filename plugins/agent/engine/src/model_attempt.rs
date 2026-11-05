@@ -44,6 +44,7 @@ pub(super) enum Attempt<'a> {
     Main(Main<'a>),
     Summary {
         surface: Arc<crate::request_composition::Surface>,
+        forbid_tools: bool,
     },
 }
 
@@ -95,6 +96,7 @@ pub(super) struct PromptSettings<'a> {
     pub provider: &'a maka_model::ProviderConfig,
     pub options: &'a serde_json::Value,
     pub context_window: Option<u64>,
+    pub tool_choice: maka_model::ToolChoiceMode,
 }
 impl<'a> PromptSettings<'a> {
     fn from_input<W>(input: &'a RunInput<W>) -> Self {
@@ -113,6 +115,7 @@ impl<'a> PromptSettings<'a> {
                 .context
                 .as_ref()
                 .and_then(|context| context.model_context_window),
+            tool_choice: maka_model::ToolChoiceMode::Auto,
         }
     }
 }
@@ -216,13 +219,13 @@ pub(super) async fn prompt_with_resources(
     let mut prompt = PreparedPrompt::from_history(body);
     let label = match settings.language {
         Language::En => {
-            "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n\n"
+            "Session checkpoint snapshot (not a new user request). If messages follow this snapshot, first reconcile it with their tool results, state changes, and latest user instructions so launched or completed work is not replayed; if compressed earlier details need exact verification, check the source via Recall (when available) or Read (including preserved resource_ref handles and workspace files), then continue the remaining work:\n\n"
         }
         Language::ZhCn => {
-            "历史检查点，不是新的用户请求。请结合后续消息更新此快照中的状态，然后继续尚未完成的工作：\n\n"
+            "以下是会话历史检查点快照（非新的用户请求）。若此快照之后附有后续消息，请先结合后续消息中的工具结果、状态变化和用户最新指示更新认知，避免重复执行已启动或已完成的操作；若快照中早期细节被压缩，可通过 Recall（若可用）或 Read（含已保留的 resource_ref 与工作区文件）核实原文，然后继续推进剩余工作：\n\n"
         }
         Language::ZhTw => {
-            "歷史檢查點，不是新的使用者請求。請結合後續訊息更新此快照中的狀態，然後繼續尚未完成的工作：\n\n"
+            "以下是工作階段歷史檢查點快照（非新的使用者請求）。若此快照之後附有後續訊息，請先結合後續訊息中的工具結果、狀態變化和使用者最新指示更新認知，避免重複執行已啟動或已完成的操作；若快照中早期細節被壓縮，可透過 Recall（若可用）或 Read（含已保留的 resource_ref 與工作區檔案）核實原文，然後繼續推進剩餘工作：\n\n"
         }
     };
     if let Err(error) = prompt
@@ -269,11 +272,13 @@ pub(super) struct RequestSource {
     pub effective_digest: String,
     pub checkpoint: Option<String>,
     pub capture: maka_agent_facts::event::SourceCapture,
+    pub latest_main: maka_event_log::context::LatestMainContext,
 }
 
 impl From<&ContextView> for RequestSource {
     fn from(source: &ContextView) -> Self {
         Self {
+            latest_main: source.latest_main.clone(),
             capture: maka_agent_facts::event::SourceCapture {
                 publication_watermark: source.selection.captured_through,
                 prior_unknown: source.selection.prior_unknown,
@@ -285,6 +290,21 @@ impl From<&ContextView> for RequestSource {
                 .as_ref()
                 .map(|baseline| baseline.event_id.clone()),
         }
+    }
+}
+
+impl RequestSource {
+    pub fn calibration(
+        &self,
+        provider: &maka_model::ProviderConfig,
+        binding: Option<&maka_agent_facts::execution::ModelBinding>,
+    ) -> Result<Option<crate::auto_context::Calibration>, RunError> {
+        crate::auto_context::calibration(
+            provider,
+            binding,
+            &self.latest_main,
+            self.checkpoint.as_deref(),
+        )
     }
 }
 
@@ -631,14 +651,33 @@ pub(super) async fn execute_once(
     confirmed_failure: &mut Option<String>,
     consumption: Option<maka_agent_facts::model_retry::ModelRetryConsumption>,
 ) -> Result<AttemptOutput, RunError> {
-    let (purpose, lane, surface, tools) = match attempt {
+    let (purpose, lane, surface, tools, tool_choice) = match attempt {
         Attempt::Main(Main {
             lane,
             surface,
             tools,
             ..
-        }) => (ModelPurpose::Main, Some(lane), surface, Some(tools)),
-        Attempt::Summary { surface } => (ModelPurpose::Summary, None, surface, None),
+        }) => (
+            ModelPurpose::Main,
+            Some(lane),
+            surface,
+            Some(tools),
+            maka_model::ToolChoiceMode::Auto,
+        ),
+        Attempt::Summary {
+            surface,
+            forbid_tools,
+        } => (
+            ModelPurpose::Summary,
+            None,
+            surface,
+            None,
+            if forbid_tools {
+                maka_model::ToolChoiceMode::None
+            } else {
+                maka_model::ToolChoiceMode::Auto
+            },
+        ),
     };
     if cancellation.is_cancelled() {
         if purpose == ModelPurpose::Main {
@@ -653,9 +692,11 @@ pub(super) async fn execute_once(
         .map(|tools| tools.steering().clone())
         .unwrap_or_default();
     let model_cancellation = cancellation.child_token();
+    let mut settings = PromptSettings::from_input(input);
+    settings.tool_choice = tool_choice;
     let prepared_wire = {
-        let mut wire = Box::pin(prepare_wire(
-            input,
+        let mut wire = Box::pin(prepare_wire_with_settings(
+            &settings,
             &mut prompt,
             &definitions,
             surface.max_output_tokens,
@@ -689,13 +730,18 @@ pub(super) async fn execute_once(
         return Err(error);
     }
     let cleanup = (purpose == ModelPurpose::Main).then(|| prompt.cleanup());
-    let prepared = match prepare_request(
-        input,
-        prompt,
-        definitions,
-        surface.max_output_tokens,
-        purpose,
-    ) {
+    let prepared = match source
+        .calibration(&input.provider, input.configuration.model.as_ref())
+        .and_then(|calibration| {
+            prepare_request_with_settings(
+                &settings,
+                prompt,
+                definitions,
+                surface.max_output_tokens,
+                purpose,
+                calibration,
+            )
+        }) {
         Ok(prepared) => prepared,
         Err(error) => {
             close_materialization(&cleanup).await?;
@@ -902,6 +948,7 @@ async fn commit_retry_request(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) async fn prepare_wire(
     input: &RunSettings,
     prompt: &mut PreparedPrompt,
@@ -965,6 +1012,7 @@ pub(super) fn prepare_request<W>(
     definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
+    source: Option<&RequestSource>,
 ) -> Result<PreparedRequest, RunError> {
     prepare_request_with_settings(
         &PromptSettings::from_input(input),
@@ -972,6 +1020,10 @@ pub(super) fn prepare_request<W>(
         definitions,
         max_output_tokens,
         purpose,
+        source
+            .map(|source| source.calibration(&input.provider, input.configuration.model.as_ref()))
+            .transpose()?
+            .flatten(),
     )
 }
 
@@ -981,6 +1033,7 @@ pub(super) fn prepare_request_with_settings(
     definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
+    calibration: Option<crate::auto_context::Calibration>,
 ) -> Result<PreparedRequest, RunError> {
     let prompt = prompt.model();
     let format = match settings.provider.kind {
@@ -1006,7 +1059,12 @@ pub(super) fn prepare_request_with_settings(
         .map_err(|error| RunError::Internal(error.into()))?;
     let max_output_tokens = Some(crate::context_input::output_limit(
         settings.context_window,
-        context_breakdown.estimated_tokens(),
+        calibration
+            .filter(|_| purpose == ModelPurpose::Main)
+            .map_or_else(
+                || context_breakdown.estimated_tokens(),
+                |baseline| baseline.estimate(context_breakdown.estimated_tokens()),
+            ),
         maka_agent_facts::context::effective_output_limit(max_output_tokens),
         purpose,
     ));
@@ -1023,6 +1081,8 @@ pub(super) fn prepare_request_with_settings(
         wire_root: &'a str,
         route_identity: &'a str,
         tools: &'a [Arc<ToolDefinition>],
+        #[serde(skip_serializing_if = "maka_model::ToolChoiceMode::is_auto")]
+        tool_choice: maka_model::ToolChoiceMode,
         provider_options: &'a serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<u64>,
@@ -1037,6 +1097,7 @@ pub(super) fn prepare_request_with_settings(
         wire_root: &wire.identity,
         route_identity: &route_identity,
         tools: &definitions,
+        tool_choice: settings.tool_choice,
         provider_options: settings.options,
         max_output_tokens,
     })?;
@@ -1048,6 +1109,7 @@ pub(super) fn prepare_request_with_settings(
             provider: settings.provider.clone(),
             prompt,
             tools: definitions,
+            tool_choice: settings.tool_choice,
             provider_options: settings.options.clone(),
             max_output_tokens,
         },
@@ -1681,6 +1743,7 @@ async fn finish(
     let result = result.and_then(|()| {
         let output = writer.completed()?;
         if output.binding.purpose == ModelPurpose::Summary
+            && output.compaction.is_some()
             && output.parts().iter().any(|record| {
                 matches!(
                     record.part.as_ref(),

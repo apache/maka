@@ -732,6 +732,18 @@ impl SessionStore {
         self.scoped().await?.read_model_view(session, current).await
     }
 
+    pub async fn active_checkpoint_coverage(
+        &self,
+        session: &str,
+        current: Option<&str>,
+    ) -> Result<u64, StoreError> {
+        self.check_session(session)?;
+        self.scoped()
+            .await?
+            .active_checkpoint_coverage(session, current)
+            .await
+    }
+
     /// Read an original request's fixed projection under this Session's custody.
     pub async fn read_frozen_model_request(
         &self,

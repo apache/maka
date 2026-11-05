@@ -324,6 +324,14 @@ const provenanceMarkers = [
  */
 const reviewedProvenance = new Map([
   [
+    'plugins/agent/model/src/adapters/error/overflow.rs',
+    'Maka Rust adaptation of OpenCode MIT provider error recognition; upstream copyright and license are preserved in LICENSE and docs/code-origin-audit.md.',
+  ],
+  [
+    'docs/code-origin-audit.md',
+    'Maka-authored source record quotes the attributed OpenCode copyright; the upstream MIT license is preserved in LICENSE.',
+  ],
+  [
     'plugins/workspace/workspace-files/patch/SOURCE.md',
     'Maka-authored adaptation record quoting the attributed upstream copyright.',
   ],

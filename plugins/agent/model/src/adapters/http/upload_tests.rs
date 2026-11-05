@@ -278,6 +278,7 @@ async fn usage_rejection_reopens_frozen_input_once_with_the_exact_header_variant
             },
             prompt: vec![crate::prompt::Message::user("original frozen input")].into(),
             tools: Vec::new(),
+            tool_choice: Default::default(),
             provider_options: serde_json::Value::Null,
             max_output_tokens: None,
         },

@@ -82,7 +82,6 @@ impl Surface {
         tools: &RequestTools<'_>,
         models: &maka_model::ModelExecutor,
         input: &RunSettings,
-        source: &maka_event_log::context::ContextView,
     ) -> Result<Self, RunError> {
         let system = input
             .configuration
@@ -100,7 +99,9 @@ impl Surface {
         if let Some(source) = &input.model_revision {
             sources.push(source.clone());
         }
-        let max_output_tokens = crate::auto_context::output_limit(input, source)?;
+        let max_output_tokens = Some(maka_agent_facts::context::effective_output_limit(
+            input.main_output_limit,
+        ));
         let dynamic_context = session_context(input);
         let rendered = render_system(system.as_deref(), &dynamic_context);
         let evidence = RequestComposition {
@@ -355,6 +356,7 @@ mod tests {
             vec![],
             Attempt::Summary {
                 surface: surface.clone(),
+                forbid_tools: false,
             },
             &cancellation,
             &mut progressed,

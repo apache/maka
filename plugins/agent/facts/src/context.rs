@@ -246,9 +246,6 @@ impl TextSummary {
         finish_reason: ModelFinishReason,
         parts: impl IntoIterator<Item = &'a ModelPart>,
     ) -> Result<Self, SummaryDefect> {
-        if finish_reason != ModelFinishReason::Stop {
-            return Err(SummaryDefect::InvalidFinish);
-        }
         let mut text = String::new();
         for part in parts {
             match part {
@@ -271,6 +268,9 @@ impl TextSummary {
                     return Err(SummaryDefect::ToolContent);
                 }
             }
+        }
+        if finish_reason != ModelFinishReason::Stop {
+            return Err(SummaryDefect::InvalidFinish);
         }
         Ok(Self { text })
     }

@@ -75,3 +75,74 @@ impl Owner {
         })
     }
 }
+
+impl Owner {
+    pub(crate) async fn external_agents(
+        &self,
+        inspect: bool,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<maka_agent_api::oar::ExternalAgents, String> {
+        use maka_agent_api::oar::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
+        let target = ConfigurationTarget {
+            source: self.data_source.clone(),
+            path: if matches!(self.behavior, Some(BuiltinBehavior::WorkHub)) {
+                vec!["agent".into(), "oar".into()]
+            } else {
+                vec!["oar".into()]
+            },
+        };
+        let state = if !self.executors.contains("oar") {
+            ExternalAgentsState::Disabled
+        } else if inspect {
+            ExternalAgentsState::Enabled
+        } else {
+            match self.oar_cwd().await {
+                Ok(None) => ExternalAgentsState::WorkspaceRequired,
+                Err(message) => ExternalAgentsState::Unavailable { message },
+                Ok(Some(cwd)) => {
+                    let mut ticket = scope
+                        .resources
+                        .reserve()
+                        .map_err(|error| error.to_string())?;
+                    ticket.start();
+                    let result = self
+                        .executors
+                        .oar_query(
+                            cwd.clone(),
+                            serde_json::json!({"kind":"status", "cwd":cwd}),
+                            scope.cancellation.clone(),
+                        )
+                        .await;
+                    ticket.complete(
+                        if matches!(
+                            &result,
+                            Err(maka_agent_ports::executor::Error::CleanupUnconfirmed)
+                        ) {
+                            Err("OAR status cleanup is unconfirmed".into())
+                        } else {
+                            Ok(())
+                        },
+                    );
+                    match result {
+                        Ok(Some(value)) => match serde_json::from_value(value) {
+                            Ok(runtimes) => ExternalAgentsState::Ready { runtimes },
+                            Err(error) => ExternalAgentsState::Unavailable {
+                                message: format!("Invalid OAR status: {error}"),
+                            },
+                        },
+                        Ok(None) => ExternalAgentsState::Disabled,
+                        Err(error) => ExternalAgentsState::Unavailable {
+                            message: error.to_string(),
+                        },
+                    }
+                }
+            }
+        };
+        Ok(ExternalAgents {
+            target,
+            configured: self.settings.oar.is_some(),
+            runtimes: maka_agent_api::oar::runtime_options(self.settings.oar.as_ref()),
+            state,
+        })
+    }
+}

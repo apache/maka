@@ -516,6 +516,11 @@ export interface ServiceMethods {
       input: Runtime.AgentExecutorsRead;
       output: Runtime.AgentExecutors;
     };
+    externalAgents: {
+      mode: 'query';
+      input: Runtime.AgentExternalAgentsRead;
+      output: Runtime.AgentExternalAgents;
+    };
     fileCandidates: {
       mode: 'subscription';
       input: Runtime.AgentFileCandidatesRead;
@@ -1437,6 +1442,11 @@ export interface ServiceMethods {
     configure: {
       mode: 'mutation';
       input: Runtime.InstanceConfigure;
+      output: Runtime.ManagementResultForDeploymentRef;
+    };
+    configureBatch: {
+      mode: 'mutation';
+      input: Runtime.InstanceConfigureBatch;
       output: Runtime.ManagementResultForDeploymentRef;
     };
     editComposition: {

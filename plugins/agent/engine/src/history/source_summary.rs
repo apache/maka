@@ -149,16 +149,8 @@ fn prefix_parts(language: Language) -> (&'static str, &'static str, &'static str
             ", content part ",
             ", ",
         ),
-        Language::ZhCn => (
-            "[媒体：request-source message position ",
-            "，内容部分 ",
-            "，",
-        ),
-        Language::ZhTw => (
-            "[媒體：request-source message position ",
-            "，內容部分 ",
-            "，",
-        ),
+        Language::ZhCn => ("[媒体：源请求消息位置 ", "，内容部分 ", "，"),
+        Language::ZhTw => ("[媒體：來源請求訊息位置 ", "，內容部分 ", "，"),
     }
 }
 fn label_suffix(language: Language) -> &'static str {

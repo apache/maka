@@ -108,3 +108,13 @@ For a new icon, add both fields and prefer a recognizable text symbol without
 private-use font codepoints. Check it in terminal context for clipping, alignment
 and meaning before changing an existing glyph; Lucide has no automatic Unicode
 equivalent.
+
+## External agents
+
+Open **Settings → External agents**, or choose **External agents** in the model picker. Each runtime has its own switch and is off by default. Merely listing a runtime does not probe its installation, check its account or discover its models. Enable only the agents you want to use; each enable requires an unchecked permission acknowledgement and a separate confirmation. Cancellation changes nothing.
+
+External agents use their own permissions, native tools and existing accounts, and can read and write files, run commands and access the network outside the Maka session sandbox. Other Maka permissions are unchanged. Each switch updates the conversation Agent and WorkHub coordinator atomically in the deployment source. Turning one agent off preserves its executable and arguments, leaves other agents alone, and does not uninstall or sign out. Admitted work remains under Maka-owned settlement.
+
+Enabled agents show a short status; expand **Details** for diagnostics. Sign in through the vendor’s native login flow, then refresh. Supported automatic installers require a reviewed installation plan and a separate **Install** action. Nothing installs or updates automatically.
+
+Antigravity uses the official `agy` CLI through `agy acp`. On supported systems, the installation plan uses the official script at `https://antigravity.google/cli/install.sh`; review the plan and confirm **Install** separately. OAR discovers `agy` on `PATH` or at `~/.local/bin/agy`. Run `agy` to complete its native sign-in, then refresh in Maka. `agy acp` reuses the CLI’s own credentials; Maka does not add a separate login flow or manage those credentials.

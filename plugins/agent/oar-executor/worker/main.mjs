@@ -19,7 +19,7 @@
 
 import { createInterface } from 'node:readline';
 import { Channel } from './channel.mjs';
-import { catalog, execute, setup } from './execution.mjs';
+import { catalog, execute, setup, status } from './execution.mjs';
 import { runtimes } from './runtimes.mjs';
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -48,10 +48,24 @@ const reading = (async () => {
 
 try {
   const request = await first.promise;
-  if (request.kind === 'catalog' && request.runtime === undefined) {
-    const value = await Promise.all(
-      [...runtimes.values()].map((runtime) => catalog(runtime, request.cwd)),
-    );
+  const selected = () =>
+    (request.runtimes ?? []).map((id) => {
+      const runtime = runtimes.get(id);
+      if (runtime) return runtime;
+      return {
+        id,
+        brand: { name: id },
+        installation: async () => ({
+          kind: 'unsupported',
+          reason: `Unknown OAR runtime: ${id}`,
+        }),
+      };
+    });
+  if (request.kind === 'status') {
+    const value = await Promise.all(selected().map((runtime) => status(runtime, request.cwd)));
+    channel.publish({ kind: 'status', value });
+  } else if (request.kind === 'catalog' && request.runtime === undefined) {
+    const value = await Promise.all(selected().map((runtime) => catalog(runtime, request.cwd)));
     channel.publish({ kind: 'catalog', value });
   } else {
     const runtime = runtimes.get(request.runtime);
@@ -63,10 +77,16 @@ try {
           result: { kind: 'rejected', code: 'unsupported', message },
         });
       else if (request.kind === 'setup' || request.kind === 'catalog')
-        channel.publish({ kind: request.kind, value: { kind: 'unsupported', detail: message } });
+        channel.publish({
+          kind: request.kind,
+          value: { kind: 'unsupported', detail: message },
+        });
       else throw new Error(`Unknown OAR request: ${request.kind}`);
     } else if (request.kind === 'catalog')
-      channel.publish({ kind: 'catalog', value: await catalog(runtime, request.cwd) });
+      channel.publish({
+        kind: 'catalog',
+        value: await catalog(runtime, request.cwd),
+      });
     else if (request.kind === 'setup')
       channel.publish({ kind: 'setup', value: await setup(runtime, request) });
     else if (request.kind === 'execute') {

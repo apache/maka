@@ -20,10 +20,18 @@
 use super::{Error, ItemMetadata, ReasoningMode, Replay, Result, ToolInput};
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    None,
+}
+
 pub struct Request<'a> {
     pub model: &'a str,
     pub input: &'a [Input],
     pub tools: &'a [Tool],
+    pub tool_choice: ToolChoice,
     pub options: &'a Value,
     pub max_output_tokens: Option<u64>,
     pub reasoning: ReasoningMode,
@@ -328,7 +336,13 @@ impl Request<'_> {
                 .map(Tool::encode)
                 .collect::<Result<Vec<_>>>()?;
             object.insert("tools".into(), json!(tools));
-            object.insert("tool_choice".into(), json!("auto"));
+            object.insert(
+                "tool_choice".into(),
+                json!(match self.tool_choice {
+                    ToolChoice::Auto => "auto",
+                    ToolChoice::None => "none",
+                }),
+            );
         }
         Ok(body)
     }

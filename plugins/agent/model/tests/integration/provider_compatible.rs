@@ -48,6 +48,7 @@ fn request(base_url: &str) -> ModelRequest {
         },
         prompt: vec![maka_model::prompt::Message::user("hello")].into(),
         tools: vec![],
+        tool_choice: Default::default(),
         provider_options: json!({}),
         max_output_tokens: Some(32),
     }
