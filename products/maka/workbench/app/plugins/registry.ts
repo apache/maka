@@ -319,6 +319,8 @@ export function createPlugins() {
             if (source === null) break;
             const next = (await nativeHost.readUi({ source })) as Catalog;
             if (!isCurrent()) return;
+            await nativeHost.refresh();
+            if (!isCurrent()) return;
             interruption = null;
             publish(next);
           }

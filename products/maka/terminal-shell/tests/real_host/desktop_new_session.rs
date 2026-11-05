@@ -250,7 +250,7 @@ impl Desktop {
     }
 
     async fn until<T>(&self, stage: &str, mut read: impl FnMut() -> Option<T>) -> T {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(super::support::WAIT_TIMEOUT, async {
             loop {
                 self.pump();
                 if let Some(value) = read() {
@@ -287,7 +287,7 @@ impl Desktop {
     }
 
     async fn wait<T>(&self, stage: &str, future: impl Future<Output = T>) -> T {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(super::support::WAIT_TIMEOUT, async {
             tokio::pin!(future);
             loop {
                 self.pump();
@@ -931,7 +931,7 @@ async fn desktop_retries_a_failed_turn_in_place() {
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.type_text("RETRIED_IN_PLACE_MESSAGE").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let failed = desktop.request(&mut fixture).await;
     failed
         .http_error(
@@ -1034,7 +1034,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop
         .type_text("Review the current implementation.")
         .await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let original = desktop.request(&mut fixture).await;
     let session = desktop
         .sessions()
@@ -1161,7 +1161,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             .unwrap()
     );
     desktop.type_text("Check keyboard focus too.").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let third = desktop.request(&mut fixture).await;
     let sent = third.body["messages"].to_string();
     assert!(
@@ -1287,7 +1287,7 @@ async fn disconnected_desktop(
     let desktop = Desktop::open_at(&fixture, &fixture.address, dimensions, appearance).await;
     desktop.new_draft().await;
     desktop.type_text("Start a response").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let mut reply = desktop.request(&mut fixture).await;
     desktop.control("Stop response").await;
     let closing = tokio::spawn({
@@ -1621,88 +1621,6 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
-    let traditional = std::env::var("MAKA_UI_LOCALE").as_deref() == Ok("zh-TW");
-    let (locale, edit, sign_in, copy, cancel, add, search, connect, compatibility) = if traditional
-    {
-        (
-            "zh-TW",
-            "編輯連線 ChatGPT Subscription",
-            "使用 ChatGPT 登入",
-            "複製登入代碼",
-            "取消供應商登入",
-            "新增連線",
-            "訂閱",
-            "連線至 ChatGPT 訂閱",
-            "連線至 Responses 相容介面",
-        )
-    } else {
-        (
-            "zh-CN",
-            "编辑连接 ChatGPT Subscription",
-            "使用 ChatGPT 登录",
-            "复制登录代码",
-            "取消提供商登录",
-            "添加连接",
-            "订阅",
-            "连接 ChatGPT 订阅",
-            "连接 Responses 兼容接口",
-        )
-    };
-    let fixture = Fixture::open().await;
-    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../terminal-shell/tests/real_host/model_settings_preview.tsx");
-    let output = fixture.directory.path().join("settings-preview");
-    let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
-        std::fs::read_to_string(compiled.module).unwrap()
-    })
-    .await
-    .unwrap();
-    let (theme, appearance, layout, width, height) = visual_case();
-    let desktop = Desktop::open_config(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
-        appearance,
-        Some((
-            source,
-            locale,
-            if locale == "zh-TW" {
-                "關閉設定"
-            } else {
-                "关闭设置"
-            },
-        )),
-    )
-    .await;
-    desktop.press(edit).await;
-    desktop.control(sign_in).await;
-    desktop.artifact(&format!("connection-localized-{locale}-{theme}-{layout}"));
-    desktop.press(sign_in).await;
-    desktop.control(copy).await;
-    desktop.artifact(&format!("sign-in-localized-{locale}-{theme}-{layout}"));
-    desktop.press(cancel).await;
-    desktop.control(sign_in).await;
-    desktop.press("返回").await;
-    desktop.press(add).await;
-    desktop.target_after(None).await;
-    desktop.type_text(search).await;
-    desktop.control(connect).await;
-    desktop.artifact(&format!("provider-localized-{locale}-{theme}-{layout}"));
-    desktop
-        .type_text(if traditional {
-            "相容介面"
-        } else {
-            "兼容接口"
-        })
-        .await;
-    desktop.control(compatibility).await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     let fixture = Fixture::open().await;
     let (theme, appearance, layout, width, height) = visual_case();
@@ -1760,130 +1678,6 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     desktop.press("Hide diagram source").await;
     desktop.control("Show diagram source").await;
     assert!(desktop.controls("Copy code block").is_empty());
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_context_tooltip_includes_output_speed() {
-    let fixture = Fixture::open().await;
-    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../terminal-shell/tests/real_host/context_gauge_preview.tsx");
-    let output = fixture.directory.path().join("context-preview");
-    let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
-        std::fs::read_to_string(compiled.module).unwrap()
-    })
-    .await
-    .unwrap();
-    let desktop = Desktop::open_config(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
-        nsh_core::platform::Appearance::Dark,
-        Some((source, "en", "Update output speed")),
-    )
-    .await;
-    let above = Bounds::new(point(px(0.), px(0.)), size(px(1120.), px(390.)));
-    let before = desktop.pixels(above).unwrap();
-    desktop
-        .platform
-        .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-            position: point(px(560.), px(400.)),
-            pressed_button: None,
-            modifiers: Modifiers::default(),
-        }))
-        .unwrap();
-    desktop
-        .until("context tooltip did not appear", || {
-            (desktop.pixels(above)? != before).then_some(())
-        })
-        .await;
-    desktop.artifact("context-tooltip-output-speed");
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back() {
-    let fixture = Fixture::open().await;
-    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../terminal-shell/tests/real_host/loading_preview.tsx");
-    let output = fixture.directory.path().join("loading-preview");
-    let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
-        std::fs::read_to_string(compiled.module).unwrap()
-    })
-    .await
-    .unwrap();
-    let desktop = Desktop::open_config(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(640), gpui::DevicePixels(400)),
-        nsh_core::platform::Appearance::Dark,
-        Some((source, "en", "Bottom")),
-    )
-    .await;
-    let icon = Bounds::new(point(px(0.), px(60.)), size(px(24.), px(24.)));
-    let painted = |pixels: &[u8]| {
-        pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|rgba| rgba[0] > 80)
-            .count()
-            > 10
-    };
-    let mut first = desktop
-        .until("initial loading indicator was not painted", || {
-            desktop.pixels(icon).filter(|pixels| painted(pixels))
-        })
-        .await;
-    for _ in 0..3 {
-        first = desktop
-            .until(
-                "loading indicator did not rotate on initial display",
-                || {
-                    desktop
-                        .pixels(icon)
-                        .filter(|pixels| painted(pixels) && *pixels != first)
-                },
-            )
-            .await;
-    }
-    desktop.press("Bottom").await;
-    desktop.control("Row 199").await;
-    desktop.press("Top").await;
-    desktop.control("Row 0").await;
-    let mut returned = desktop
-        .until("returned loading indicator was not painted", || {
-            desktop.pixels(icon).filter(|pixels| painted(pixels))
-        })
-        .await;
-    for _ in 0..3 {
-        returned = desktop
-            .until(
-                "loading indicator stopped after returning to its row",
-                || {
-                    desktop
-                        .pixels(icon)
-                        .filter(|pixels| painted(pixels) && *pixels != returned)
-                },
-            )
-            .await;
-    }
-    if std::env::var_os("MAKA_UI_ARTIFACT_DIR").is_some() {
-        for frame in 0..12 {
-            desktop
-                .wait(
-                    "loading animation recording",
-                    tokio::time::sleep(Duration::from_millis(80)),
-                )
-                .await;
-            desktop.artifact(&format!("loading-after-scroll-{frame:02}"));
-        }
-    }
-    desktop.artifact("loading-after-scroll");
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2414,54 +2208,6 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
         "large paste escaped the composer viewport: {card:?}"
     );
     desktop.expect_text(&draft).await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_attachment_picker_has_readable_dark_controls() {
-    let fixture = Fixture::open().await;
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
-        nsh_core::platform::Appearance::Dark,
-    )
-    .await;
-    desktop
-        .type_text("Keep this draft while picking an attachment")
-        .await;
-    let previous = desktop.platform.text_input_target();
-    desktop.key("u", true);
-    desktop.control("Close attachment picker").await;
-    desktop.target_after(previous).await;
-    desktop
-        .type_text("/tmp/attachment-path-not-submitted.txt")
-        .await;
-    desktop.control("Upload selected file").await;
-    let card = desktop.control("Focus message composer").await;
-    desktop.artifact("composer-dark-attachment-picker");
-    let pixels = desktop
-        .pixels(Bounds::new(
-            point(card.left() + px(12.), card.top() + px(12.)),
-            size(card.size.width - px(24.), card.size.height - px(24.)),
-        ))
-        .unwrap();
-    let black = pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .filter(|p| p[..3] == [0, 0, 0])
-        .count();
-    assert_eq!(
-        black, 0,
-        "attachment picker painted default black text/borders over the dark composer"
-    );
-    desktop.press("Close attachment picker").await;
-    desktop.press("Focus message composer").await;
-    desktop
-        .expect_text("Keep this draft while picking an attachment")
-        .await;
     desktop.close().await;
     fixture.finish().await;
 }

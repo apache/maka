@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createText, errorText, errorMessage, UiError } from './text';
+import { createText, errorText, errorMessage, isObservationCancelled, UiError } from './text';
 import { batch, cleanup, signal } from 'nsh';
 import type { Host } from './host';
 import type {
@@ -154,69 +154,93 @@ export function createBrowsing(host: Host): Browsing {
       }
     });
     void (async () => {
-      const opened: Subscription = await host.subscribe('agent', 'catalog', {
-        filter: read.filter,
-        rootsOnly: read.filter !== 'needs_you',
-        scope: read.scope,
-        position: { kind: 'start' },
-      });
-      if (!owns(read)) {
-        await opened.close();
-        return;
-      }
-      read.stream = opened;
-      for (;;) {
-        const next = await opened.next();
-        if (!owns(read)) return;
-        if (next === null) throw new UiError('Conversation updates ended. Refresh to reconnect.');
-        if (page?.revision === next.revision) continue;
-        // Preserve the requested read range, never append across revisions.
-        // The old snapshot stays mounted while this revision is assembled.
-        continuation = next;
-        if (sessions().length) loading.set(false);
-        let tail = next;
-        const rows = new Map(next.sessions.map((session) => [session.id, session]));
-        const through = read.extent;
-        let boundary = through;
+      for (let reconnects = 0; owns(read); ) {
+        let opened: Subscription | null = null;
         try {
-          if (boundary && !rows.has(boundary) && tail.after) {
-            const located = await list(read, { kind: 'at', cursor: boundary });
-            if (!owns(read)) return;
-            sameRevision(located, next.revision);
-            // At returns the current successor window, or the last window if
-            // the old boundary was removed at the end. Do not parse its ID.
-            if (!located.sessions.some((session) => session.id === boundary))
-              boundary = located.sessions.at(-1)?.id ?? null;
+          opened = await host.subscribe('agent', 'catalog', {
+            filter: read.filter,
+            rootsOnly: read.filter !== 'needs_you',
+            scope: read.scope,
+            position: { kind: 'start' },
+          });
+          if (!owns(read)) {
+            await opened.close();
+            return;
           }
+          read.stream = opened;
+          if (reconnects > 0) void loadProjects();
           for (;;) {
-            const reached = boundary === null || rows.has(boundary);
-            const extended =
-              boundary !== through ||
-              (through !== null && rows.has(through) && tail.sessions.at(-1)?.id !== through);
-            if ((reached && (!read.extend || extended)) || !tail.after) break;
-            tail = await after(read, tail);
+            const next = await opened.next();
             if (!owns(read)) return;
-            for (const session of tail.sessions) rows.set(session.id, session);
+            if (next === null)
+              throw new UiError('Conversation updates ended. Refresh to reconnect.');
+            reconnects = 0;
+            if (page?.revision === next.revision) continue;
+            // Preserve the requested read range, never append across revisions.
+            // The old snapshot stays mounted while this revision is assembled.
+            continuation = next;
+            if (sessions().length) loading.set(false);
+            let tail = next;
+            const rows = new Map(next.sessions.map((session) => [session.id, session]));
+            const through = read.extent;
+            let boundary = through;
+            try {
+              if (boundary && !rows.has(boundary) && tail.after) {
+                const located = await list(read, { kind: 'at', cursor: boundary });
+                if (!owns(read)) return;
+                sameRevision(located, next.revision);
+                // At returns the current successor window, or the last window if
+                // the old boundary was removed at the end. Do not parse its ID.
+                if (!located.sessions.some((session) => session.id === boundary))
+                  boundary = located.sessions.at(-1)?.id ?? null;
+              }
+              for (;;) {
+                const reached = boundary === null || rows.has(boundary);
+                const extended =
+                  boundary !== through ||
+                  (through !== null && rows.has(through) && tail.sessions.at(-1)?.id !== through);
+                if ((reached && (!read.extend || extended)) || !tail.after) break;
+                tail = await after(read, tail);
+                if (!owns(read)) return;
+                for (const session of tail.sessions) rows.set(session.id, session);
+              }
+            } catch (reason) {
+              if (!owns(read)) return;
+              // Subscription-before-read guarantees a newer catalog window for
+              // this conflict. Keep the gate until it arrives, without retry IO.
+              if (errorMessage(reason) === 'agent_catalog_changed') continue;
+              throw reason;
+            }
+            const snapshot = [...rows.values()];
+            page = tail;
+            continuation = null;
+            read.extent = snapshot.at(-1)?.id ?? null;
+            read.extend = false;
+            batch(() => {
+              sessions.set(snapshot);
+              needsYouCount.set(next.needsYouCount);
+              loading.set(false);
+              error.set('');
+            });
+            read.ready();
           }
         } catch (reason) {
           if (!owns(read)) return;
-          // Subscription-before-read guarantees a newer catalog window for
-          // this conflict. Keep the gate until it arrives, without retry IO.
-          if (errorMessage(reason) === 'agent_catalog_changed') continue;
+          if (isObservationCancelled(reason) && reconnects < 3) {
+            reconnects += 1;
+            page = null;
+            continuation = null;
+            if (reconnects > 1)
+              await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+            continue;
+          }
           throw reason;
+        } finally {
+          if (opened && read.stream === opened) {
+            read.stream = null;
+            await opened.close().catch(() => {});
+          }
         }
-        const snapshot = [...rows.values()];
-        page = tail;
-        continuation = null;
-        read.extent = snapshot.at(-1)?.id ?? null;
-        read.extend = false;
-        batch(() => {
-          sessions.set(snapshot);
-          needsYouCount.set(next.needsYouCount);
-          loading.set(false);
-          error.set('');
-        });
-        read.ready();
       }
     })()
       .catch((reason) => {

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createText, errorText, UiError } from './text';
+import { createText, errorText, isObservationCancelled, UiError } from './text';
 import { tr } from './locale';
 import { batch, cleanup, effect, signal, untracked } from 'nsh';
 import type { Host } from './host';
@@ -234,23 +234,43 @@ export function createWorkspaceFiles(
     };
     current = read;
     void (async () => {
-      const opened: Subscription = await host.subscribe('agent', 'watchFiles', {
-        sessionId: read.sessionId,
-        path: read.path,
-      });
-      if (!owns(read)) {
-        await opened.close();
-        return;
-      }
-      read.stream = opened;
-      for (;;) {
-        const change = await opened.next();
-        if (!owns(read)) return;
-        if (change === null) throw new UiError('File updates ended. Refresh to reconnect.');
-        if (change.kind === 'unavailable')
-          throw new UiError('The directory changed or is unavailable. Refresh to reopen it.');
-        if (change.kind === 'ready') read.identity = change.directoryIdentity;
-        invalidate(read);
+      for (let reconnects = 0; owns(read); ) {
+        let opened: Subscription | null = null;
+        try {
+          opened = await host.subscribe('agent', 'watchFiles', {
+            sessionId: read.sessionId,
+            path: read.path,
+          });
+          if (!owns(read)) {
+            await opened.close();
+            return;
+          }
+          read.stream = opened;
+          for (;;) {
+            const change = await opened.next();
+            if (!owns(read)) return;
+            if (change === null) throw new UiError('File updates ended. Refresh to reconnect.');
+            reconnects = 0;
+            if (change.kind === 'unavailable')
+              throw new UiError('The directory changed or is unavailable. Refresh to reopen it.');
+            if (change.kind === 'ready') read.identity = change.directoryIdentity;
+            invalidate(read);
+          }
+        } catch (reason) {
+          if (!owns(read)) return;
+          if (isObservationCancelled(reason) && reconnects < 3) {
+            reconnects += 1;
+            if (reconnects > 1)
+              await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+            continue;
+          }
+          throw reason;
+        } finally {
+          if (opened && read.stream === opened) {
+            read.stream = null;
+            await opened.close().catch(() => {});
+          }
+        }
       }
     })().catch((reason) => fail(read, reason));
   };

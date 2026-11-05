@@ -634,3 +634,173 @@ async fn recall_model_tool_ranks_multi_term_tool_calls_and_unlocks_mid_turn_comp
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn recall_and_catalog_isolate_unreadable_historical_sessions_and_events() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| settings.recall = true,
+        )
+        .await;
+        let healthy = imported(
+            &f,
+            "Healthy needle conversation",
+            &f.owner.prefix,
+            "Healthy needle answer",
+        )
+        .await;
+        let legacy_config = imported(
+            &f,
+            "Legacy needle config",
+            &f.owner.prefix,
+            "Legacy needle body",
+        )
+        .await;
+        let corrupt_events = imported(
+            &f,
+            "Corrupt needle events",
+            &f.owner.prefix,
+            "Corrupt needle event body",
+        )
+        .await;
+
+        // Pre-index legacy_config so recall_messages has hits whose session metadata is unreadable,
+        // exercising both catalog/title isolation and hit-metadata isolation.
+        assert_eq!(
+            f.recall(json!({"terms":["needle"],"session_id":legacy_config}))
+                .await
+                .unwrap()["passages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        {
+            let db = rusqlite::Connection::open(f.session_database(&legacy_config)).unwrap();
+            db.execute(
+                "UPDATE session_control SET configuration=json_set(configuration,'$.workspace',json('{\"kind\":\"inline_legacy\"}')) WHERE id=?1",
+                [&legacy_config],
+            )
+            .unwrap();
+        }
+        {
+            let db = rusqlite::Connection::open(f.session_database(&corrupt_events)).unwrap();
+            db.execute(
+                "UPDATE event_log
+                 SET event_header = json_set(event_header, '$.fact.kind', 'legacy_removed_fact'),
+                     canonical_bytes = length(CAST(json_set(event_header, '$.fact.kind', 'legacy_removed_fact') AS BLOB))
+                 WHERE event_session = ?1 AND body_id IS NULL AND event_header IS NOT NULL",
+                [&corrupt_events],
+            )
+            .unwrap();
+        }
+
+        let found = f.recall(json!({"terms":["needle"]})).await.unwrap();
+        assert_eq!(found["complete"], false, "{found}");
+        let title_ids: Vec<_> = found["titles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert!(title_ids.contains(&healthy.as_str()), "{found}");
+        assert!(title_ids.contains(&corrupt_events.as_str()), "{found}");
+        assert!(!title_ids.contains(&legacy_config.as_str()), "{found}");
+        let passage_ids: Vec<_> = found["passages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["session"]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(passage_ids, vec![healthy.as_str()], "{found}");
+        let gaps: Vec<_> = found["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|gap| gap.as_str().unwrap())
+            .collect();
+        assert!(
+            gaps.iter().any(|gap| gap.contains(&legacy_config)),
+            "{gaps:?}"
+        );
+        assert!(
+            gaps.iter().any(|gap| gap.contains(&corrupt_events)),
+            "{gaps:?}"
+        );
+
+        let scoped_healthy = f
+            .recall(json!({"terms":["needle"],"session_id":healthy}))
+            .await
+            .unwrap();
+        assert_eq!(scoped_healthy["complete"], true, "{scoped_healthy}");
+        assert_eq!(scoped_healthy["gaps"], json!([]), "{scoped_healthy}");
+        assert!(
+            f.recall(json!({"terms":["needle"],"session_id":legacy_config}))
+                .await
+                .is_err()
+        );
+
+        let listed = f
+            .query(
+                "list",
+                json!({
+                    "filter": "all",
+                    "rootsOnly": false,
+                    "scope": {"kind": "all"},
+                    "position": {"kind": "start"}
+                }),
+            )
+            .await
+            .unwrap();
+        let listed_ids: Vec<_> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert!(listed_ids.contains(&healthy.as_str()), "{listed}");
+        assert!(!listed_ids.contains(&legacy_config.as_str()), "{listed}");
+
+        let caller = f.create("Caller conversation").await;
+        let started = f
+            .mutation(
+                2,
+                "send",
+                json!({
+                    "sessionId": caller,
+                    "message": "Search earlier needle notes",
+                    "backend": model_backend(&f.selection().await)
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(started["kind"], "started");
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = request(&mut socket).await;
+        tool(&mut socket, "Recall", json!({"terms": ["needle"]})).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let tool_output = sent["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(tool_output.contains("Healthy needle answer"), "{tool_output}");
+        assert!(tool_output.contains(&corrupt_events), "{tool_output}");
+        response(&mut socket).await;
+        f.drained().await;
+        f.app.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

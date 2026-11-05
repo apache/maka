@@ -22,8 +22,8 @@ use super::{PARTITION_COUNT, RootStore};
 use crate::{
     EventLog, StoreError,
     sessions::{
-        CatalogFilter, CatalogKey, CatalogPosition, CatalogScope, MAX_SESSION_PAGE, SessionPage,
-        SessionPosition, SessionRecord,
+        CatalogFilter, CatalogKey, CatalogPosition, CatalogScope, MAX_SESSION_PAGE,
+        SessionOutcomePage, SessionPage, SessionPosition, SessionRecord, UnreadableSession,
     },
 };
 use futures_util::future::try_join_all;
@@ -141,6 +141,23 @@ impl RootStore {
             .await
     }
 
+    pub async fn scoped_session_outcomes<T: DeserializeOwned + Send + 'static>(
+        &self,
+        scope: CatalogScope,
+        expected_revision: Option<&str>,
+        position: SessionPosition<'_>,
+        filter: CatalogFilter,
+    ) -> Result<SessionOutcomePage<T>, StoreError> {
+        self.root_session_outcomes_page(
+            scope,
+            expected_revision,
+            position,
+            MAX_SESSION_PAGE,
+            filter,
+        )
+        .await
+    }
+
     pub async fn list_sessions<T: DeserializeOwned + Send + 'static>(
         &self,
         expected_revision: Option<&str>,
@@ -170,6 +187,31 @@ impl RootStore {
         limit: usize,
         filter: CatalogFilter,
     ) -> Result<SessionPage<T>, StoreError> {
+        let page = self
+            .root_session_outcomes_page(scope, expected_revision, position, limit, filter)
+            .await?;
+        let sessions = page
+            .sessions
+            .into_iter()
+            .map(|entry| entry.map_err(|unreadable| unreadable.error))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SessionPage {
+            revision: page.revision,
+            sessions,
+            pending_session_count: page.pending_session_count,
+            next_cursor: page.next_cursor,
+            previous_cursor: page.previous_cursor,
+        })
+    }
+
+    async fn root_session_outcomes_page<T: DeserializeOwned + Send + 'static>(
+        &self,
+        scope: CatalogScope,
+        expected_revision: Option<&str>,
+        position: SessionPosition<'_>,
+        limit: usize,
+        filter: CatalogFilter,
+    ) -> Result<SessionOutcomePage<T>, StoreError> {
         self.require_open()?;
         EventLog::catalog_selection_valid(&scope, filter)?;
         if limit == 0 || limit > MAX_SESSION_PAGE {
@@ -212,7 +254,14 @@ impl RootStore {
             }
         };
         let page = self
-            .session_page_at::<T>(&scope, filter, position, limit, vector, revision.clone())
+            .session_outcomes_page_at::<T>(
+                &scope,
+                filter,
+                position,
+                limit,
+                vector,
+                revision.clone(),
+            )
             .await;
         let current = self.catalog_vector().await?;
         if current != vector {
@@ -257,7 +306,7 @@ impl RootStore {
         Ok((candidates, pending))
     }
 
-    async fn session_page_at<T: DeserializeOwned + Send + 'static>(
+    async fn session_outcomes_page_at<T: DeserializeOwned + Send + 'static>(
         &self,
         scope: &CatalogScope,
         filter: CatalogFilter,
@@ -265,7 +314,7 @@ impl RootStore {
         limit: usize,
         vector: CatalogVector,
         revision: String,
-    ) -> Result<SessionPage<T>, StoreError> {
+    ) -> Result<SessionOutcomePage<T>, StoreError> {
         let (mut candidates, pending_session_count) = self
             .catalog_candidates(scope, filter, position.clone(), limit, vector, true)
             .await?;
@@ -335,7 +384,7 @@ impl RootStore {
                 .enumerate()
                 .filter(|(index, _)| !selected[*index].is_empty())
                 .map(|(index, log)| {
-                    log.root_catalog_records::<T>(
+                    log.root_catalog_record_outcomes::<T>(
                         index,
                         selected[index].clone(),
                         Some(vector.partition(index)),
@@ -343,16 +392,25 @@ impl RootStore {
                 }),
         )
         .await?;
-        let mut records: std::collections::BTreeMap<_, _> = pages
+        let mut records: std::collections::BTreeMap<
+            String,
+            Result<SessionRecord<T>, UnreadableSession>,
+        > = pages
             .into_iter()
             .flatten()
-            .map(|session| (session.id.clone(), session))
+            .map(|entry| {
+                let id = match &entry {
+                    Ok(session) => session.id.clone(),
+                    Err(unreadable) => unreadable.id.clone(),
+                };
+                (id, entry)
+            })
             .collect();
         let sessions = ordered_ids
             .into_iter()
             .map(|id| records.remove(&id).ok_or(StoreError::SessionNotFound))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(SessionPage {
+        Ok(SessionOutcomePage {
             revision,
             sessions,
             pending_session_count,

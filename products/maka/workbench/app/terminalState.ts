@@ -18,7 +18,7 @@
  */
 
 import { createPendingRecovery } from './pendingRecovery';
-import { errorText, renderText, UiError } from './text';
+import { errorText, isObservationCancelled, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
 import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
@@ -162,31 +162,52 @@ export function createTerminals(
     error.set('');
     void (async () => {
       try {
-        const opened = await host.subscribe('terminal', 'watchList', {
-          sessionId: session,
-          offset: 0,
-        });
-        if (!current()) {
-          await opened.close();
-          return;
-        }
-        run.stream = opened;
-        for (;;) {
-          const outcome = await opened.next();
-          if (!current()) return;
-          if (!outcome) throw new UiError('The Host closed the terminal list.');
-          const page = completed(outcome);
-          const resources = [...page.resources];
-          for (let offset = page.nextOffset ?? null; offset !== null; ) {
-            const more = completed(
-              await host.query('terminal', 'list', { sessionId: session, offset }),
-            );
+        for (let reconnects = 0; current(); ) {
+          try {
+            const opened = await host.subscribe('terminal', 'watchList', {
+              sessionId: session,
+              offset: 0,
+            });
+            if (!current()) {
+              await opened.close();
+              return;
+            }
+            run.stream = opened;
+            try {
+              for (;;) {
+                const outcome = await opened.next();
+                if (!current()) return;
+                if (!outcome) throw new UiError('The Host closed the terminal list.');
+                reconnects = 0;
+                const page = completed(outcome);
+                const resources = [...page.resources];
+                for (let offset = page.nextOffset ?? null; offset !== null; ) {
+                  const more = completed(
+                    await host.query('terminal', 'list', { sessionId: session, offset }),
+                  );
+                  if (!current()) return;
+                  resources.push(...more.resources);
+                  offset = more.nextOffset ?? null;
+                }
+                accept(resources);
+                loading.set(false);
+              }
+            } finally {
+              if (run.stream === opened) {
+                run.stream = null;
+                await opened.close().catch(() => {});
+              }
+            }
+          } catch (reason) {
             if (!current()) return;
-            resources.push(...more.resources);
-            offset = more.nextOffset ?? null;
+            if (isObservationCancelled(reason) && reconnects < 3) {
+              reconnects += 1;
+              if (reconnects > 1)
+                await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+              continue;
+            }
+            throw reason;
           }
-          accept(resources);
-          loading.set(false);
         }
       } catch (reason) {
         if (current()) {

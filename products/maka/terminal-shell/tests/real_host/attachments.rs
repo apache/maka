@@ -24,7 +24,7 @@ use maka_app_client::{Client, Draft};
 const ORIGINAL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
 
 async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) -> bool) -> Draft {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(support::WAIT_TIMEOUT, async {
         loop {
             if let Some(draft) = client.load_draft("agent", session, EDITOR).await.unwrap()
                 && expected(&draft)

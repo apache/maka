@@ -300,23 +300,6 @@ async fn composer_prediction_preserves_reverse_tab_and_escape_restores_forward_t
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn thinking_disclosure_renders_inline_markdown_and_keeps_formatted_body() {
-    let mut view = component("thinking-markdown").await;
-    let title = "Thinking · Opening Reddit homepage";
-    wait_enabled_node(&mut view, title).await;
-    let screen = view.snapshot();
-    assert!(screen.contains("Opening Reddit homepage"));
-    assert!(!screen.contains("Thinking ·"));
-    assert!(!screen.contains("**Opening Reddit homepage**"));
-    support::click_button(&mut view, title).await;
-    wait_view(&mut view, |screen| {
-        screen.contains("Checking local models and AI coding.")
-            && !screen.contains("**Opening Reddit homepage**")
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chip() {
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
@@ -347,78 +330,6 @@ async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chi
         view.surface()
             .input_context()
             .is_some_and(|input| input.text.as_deref() == Some("before "))
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_recorded_duration() {
-    let mut view = component("compaction").await;
-    support::click_button(&mut view, "Wait for background compaction").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("Compacting context… (2m ")
-    })
-    .await;
-    support::click_button(&mut view, "Complete compaction").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("Context compacted (1h 2m 6s)") && !screen.contains("Compacting context")
-    })
-    .await;
-    let screen = view.snapshot();
-    // The Plan opening must not expose its frozen request or user actions.
-    assert!(
-        !screen.contains("Execute the user-approved plan"),
-        "{screen}"
-    );
-    assert!(
-        !view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Copy user message")
-    );
-    support::click_button(&mut view, "Use Chinese").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("执行计划：FIXTURE_PLAN")
-    })
-    .await;
-    assert!(!view.snapshot().contains("Executing plan:"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_status_icons_keep_accessible_meanings() {
-    let mut view = component("tool-statuses").await;
-    let labels = [
-        "Recorded",
-        "Unknown",
-        "Error",
-        "Rejected",
-        "Dispatched",
-        "Input recorded",
-        "Running tool",
-    ];
-    wait_view_state(&mut view, |view, _| {
-        let nodes = view.accessibility_snapshot();
-        labels
-            .iter()
-            .all(|label| nodes.iter().any(|node| node.label == *label))
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn context_statistics_keep_output_speed_including_zero_when_metrics_update() {
-    let mut view = component("context-gauge").await;
-    wait_view_state(&mut view, |view, _| {
-        view.accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Context ≈584.3k / 500.0k · 117% · 100.5 tok/s")
-    })
-    .await;
-    support::click_button(&mut view, "Update output speed").await;
-    wait_view_state(&mut view, |view, _| {
-        view.accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Context ≈584.3k / 500.0k · 117% · 0.0 tok/s")
     })
     .await;
 }

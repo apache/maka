@@ -128,6 +128,10 @@ export function createBotTranscriptCore(
   };
   // The watch starts once the Session is known to be the Bot. If every lookup failed
   // it ends unstarted, and a later answer from the application starts it (`resume`).
+  const isObservationCancelled = (reason: unknown): boolean => {
+    const detail = reason instanceof Error ? reason.message : String(reason);
+    return detail === 'client subscription cancelled' || detail.endsWith('_observation_cancelled');
+  };
   let running = false;
   let identified = false;
   const run = async () => {
@@ -140,19 +144,38 @@ export function createBotTranscriptCore(
         changed();
         return;
       }
-      const opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
-      if (!alive) {
-        await opened.close();
-        return;
-      }
-      stream = opened;
-      ready();
-      await sync().catch(() => {});
-      for (;;) {
-        const latest = await opened.next();
-        if (!alive || latest === null) return;
-        if (latest.sessionId === sessionId) await sync().catch(() => {});
-        changed();
+      for (let reconnects = 0; alive; ) {
+        let opened: Awaited<ReturnType<Subscribe>> | null = null;
+        try {
+          opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
+          if (!alive) {
+            await opened.close();
+            return;
+          }
+          stream = opened;
+          ready();
+          await sync().catch(() => {});
+          for (;;) {
+            const latest = await opened.next();
+            if (!alive || latest === null) return;
+            reconnects = 0;
+            if (latest.sessionId === sessionId) await sync().catch(() => {});
+            changed();
+          }
+        } catch (reason) {
+          if (!alive) return;
+          if (isObservationCancelled(reason) && reconnects < 3) {
+            reconnects += 1;
+            if (reconnects > 1) await wait(250 * reconnects);
+            continue;
+          }
+          throw reason;
+        } finally {
+          if (opened && stream === opened) {
+            stream = null;
+            await opened.close().catch(() => {});
+          }
+        }
       }
     } catch {
       // The watch ended; what was read stays.

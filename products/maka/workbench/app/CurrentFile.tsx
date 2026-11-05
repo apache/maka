@@ -18,7 +18,14 @@
  */
 
 import { textTooltip } from './ui';
-import { createText, errorText, renderText, UiError, type UiText } from './text';
+import {
+  createText,
+  errorText,
+  isObservationCancelled,
+  renderText,
+  UiError,
+  type UiText,
+} from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, Scroll, signal, Text, View, Image, List } from 'nsh';
 import { Button } from 'nsh/base';
@@ -169,27 +176,49 @@ export function createCurrentFile(host: Host, target: WorkspaceFileTarget): Curr
     watching = watch;
     state.set({ kind: 'loading', previous: captured(state()) });
     void (async () => {
-      const opened: WatchSubscription = await host.subscribe('agent', 'watchFiles', {
-        sessionId: target.sessionId,
-        path: target.parent,
-      });
-      if (!ownsWatch(watch)) {
-        await opened.close();
-        return;
-      }
-      watch.stream = opened;
-      for (;;) {
-        const change = await opened.next();
-        if (!ownsWatch(watch)) return;
-        if (change === null) throw new UiError('File updates ended. Retry to reconnect.');
-        if (change.kind === 'unavailable')
-          throw new UiError('The parent directory changed or is unavailable. Retry to reopen it.');
-        if (change.kind === 'ready') {
-          watch.ready = true;
-          read(watch);
-        } else {
-          watch.changes += 1;
-          stale.set(true);
+      for (let reconnects = 0; ownsWatch(watch); ) {
+        let opened: WatchSubscription | null = null;
+        try {
+          opened = await host.subscribe('agent', 'watchFiles', {
+            sessionId: target.sessionId,
+            path: target.parent,
+          });
+          if (!ownsWatch(watch)) {
+            await opened.close();
+            return;
+          }
+          watch.stream = opened;
+          for (;;) {
+            const change = await opened.next();
+            if (!ownsWatch(watch)) return;
+            if (change === null) throw new UiError('File updates ended. Retry to reconnect.');
+            reconnects = 0;
+            if (change.kind === 'unavailable')
+              throw new UiError(
+                'The parent directory changed or is unavailable. Retry to reopen it.',
+              );
+            if (change.kind === 'ready') {
+              watch.ready = true;
+              read(watch);
+            } else {
+              watch.changes += 1;
+              stale.set(true);
+            }
+          }
+        } catch (reason) {
+          if (!ownsWatch(watch)) return;
+          if (isObservationCancelled(reason) && reconnects < 3) {
+            reconnects += 1;
+            if (reconnects > 1)
+              await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+            continue;
+          }
+          throw reason;
+        } finally {
+          if (opened && watch.stream === opened) {
+            watch.stream = null;
+            await opened.close().catch(() => {});
+          }
         }
       }
     })().catch((reason) => failWatch(watch, reason));

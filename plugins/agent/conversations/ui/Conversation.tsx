@@ -24,6 +24,7 @@ import {
   createTransientText,
   UiError,
   errorText,
+  isObservationCancelled,
   renderText,
   type UiText,
   message as uiMessage,
@@ -1332,6 +1333,7 @@ export function Conversation(props: ConversationProps) {
       }
       if (!alive) return;
       transcriptStatus.set('live');
+      immediateTranscriptRetry = true;
       if (!historyDestination.failed) error.set('');
       // Subscribe before reading history so facts cannot fall between fences.
       // The snapshot is sufficient for readiness; no new event is required.
@@ -1361,6 +1363,7 @@ export function Conversation(props: ConversationProps) {
       }
     }
   };
+  let immediateTranscriptRetry = true;
   const startTranscript = () => {
     if (!alive || transcriptTask !== null) return;
     transcriptStatus.set('loading');
@@ -1376,6 +1379,10 @@ export function Conversation(props: ConversationProps) {
           if (!alive) return;
           overlay.disconnect();
           publishOverlay();
+          if (immediateTranscriptRetry && isObservationCancelled(reason)) {
+            immediateTranscriptRetry = false;
+            continue;
+          }
           report(reason);
           // Match the desktop catalog's quiet two-second reconnect pause.
           // Only observations repeat; original mutations remain in the journal.
