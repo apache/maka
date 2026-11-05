@@ -116,38 +116,6 @@ test('disabling new intake lets a captured wake recover and periodic discovery c
   assert.equal(f.q.state().intakeEnabled, false);
 });
 
-test('a captured wake retries after an authorization outage without consuming unseen hints', async (t) => {
-  const f = await intakeFixture();
-  t.after(() => f.close());
-  await f.q.intake.collect();
-  await hint(f, 'one', '会议时间有变化');
-  const wake = await f.q.intake.next();
-  const authorize = f.ctx.sources.authorize;
-  const snapshot = f.agent.snapshot;
-  f.agent.snapshot = async () => {
-    f.ctx.sources.authorize = async () => {
-      throw Error('source temporarily offline');
-    };
-    return snapshot();
-  };
-  await f.q.dispatch();
-  await f.q.running;
-  assert.equal(f.counts().workerCalls, 0);
-  assert.deepEqual(f.q.state().pending.eventWake, wake);
-  assert.equal(f.q.intake.status().wakes[0].status, 'pending');
-
-  f.ctx.sources.authorize = authorize;
-  f.agent.snapshot = snapshot;
-  f.advance(3600000);
-  await f.q.dispatch();
-  await f.q.running;
-  assert.equal(f.counts().workerCalls, 1);
-  assert.match(f.prompts[0], /会议时间有变化/);
-  assert.equal(f.q.state().lastError, null);
-  assert.equal(f.q.state().pending, null);
-  assert.equal(f.q.intake.status().wakes[0].status, 'delivered');
-});
-
 test('hint permissions are rechecked; authorization outages retry and revocation drops a hint', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
@@ -170,6 +138,55 @@ test('hint permissions are rechecked; authorization outages retry and revocation
   assert.deepEqual(await f.q.intake.directions(wake!), []);
   assert.equal(
     f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='discarded'").get()?.n,
+    1,
+  );
+});
+
+test('a transient authorization failure between admission and hints keeps the wake pending', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '卡片可能没生效');
+  const authorize = f.ctx.sources.authorize;
+  const take = f.q.intake.next.bind(f.q.intake);
+  let wake: any,
+    outage = false;
+  f.q.intake.next = async () => {
+    wake = await take();
+    if (!outage && wake) {
+      outage = true;
+      // The source fails after admission, before directions() re-authorizes the same hint.
+      f.ctx.sources.authorize = async () => {
+        throw Error('offline');
+      };
+    }
+    return wake;
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /wake hints could not be read/i);
+  assert.equal(f.counts().workerCalls, 0);
+  assert.equal(
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,
+    1,
+  );
+  assert.equal(
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n,
+    0,
+  );
+  f.ctx.sources.authorize = authorize;
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.prompts.length, 1);
+  assert.match(f.prompts[0], /卡片可能没生效/);
+  assert.equal(
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,
+    0,
+  );
+  assert.equal(
+    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n,
     1,
   );
 });

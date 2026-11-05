@@ -733,18 +733,21 @@ export class EventIntake {
     return wakes.length ? { ids: wakes.map((wake) => wake.id) } : undefined;
   }
   async directions(wake: { ids: string[] }): Promise<string[]> {
-    const readable = await this.readableWakes(wake.ids);
-    const ids = new Set(readable.map((item) => item.id));
-    if (
-      wake.ids.some(
-        (id) =>
-          !ids.has(id) &&
-          this.db.prepare('SELECT status FROM intake_wakes WHERE id=?').get(id)?.status ===
-            'pending',
-      )
-    )
-      throw Error('Event wake source temporarily unavailable; captured hints retained');
-    return [...new Set<string>(readable.map((item) => item.direction))];
+    const wakes = await this.readableWakes(wake.ids),
+      read = new Set(wakes.map((item) => item.id));
+    // Admission and hint delivery authorize separately. A transient source failure in between
+    // must fail this activation: complete() is only reached by a delivered prompt, so returning
+    // fewer hints here would mark an undelivered hint delivered and lose it without a retry.
+    // Revoked or already discarded wakes are absent from this check and still disappear.
+    const pending = new Set(
+      this.db
+        .prepare("SELECT id FROM intake_wakes WHERE status='pending'")
+        .all()
+        .map((row) => String(row.id)),
+    );
+    if (wake.ids.some((id) => pending.has(id) && !read.has(id)))
+      throw Error('Wake hints could not be read; the pending wake is retained for retry');
+    return [...new Set<string>(wakes.map((item) => item.direction))];
   }
   /** Acknowledge this wake's execution, not completion of any underlying matter.
    * Called inside the successful activation's state transaction. New hints stay pending. */
