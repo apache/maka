@@ -46,6 +46,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { boundedFailureDiagnostic } from '../server/failure-diagnostic.js';
 import {
+  createAssistantMessageReader,
   createSessionTranscriptReader,
   createTurnResultReader,
   TRANSCRIPT_TURN_MAX_BYTES,
@@ -1058,6 +1059,52 @@ test('continues serving durable transcript rows with only soft projection diagno
   });
 });
 
+test('finds a settled assistant message past sixteen interleaved stretches', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-assistant-reader-stretches-'));
+  await withNestedTranscript(base, async (read, sessionId) => {
+    // The message reader walks one invocation-owned stretch per iteration, and
+    // a Turn that hands off — or waits on a Goal event — resumes in another
+    // invocation that owns the next stretch. Where the walk was bounded at
+    // sixteen iterations, a Turn that resumed more often than that read its
+    // last message as missing, so carry the message through seventeen resumes.
+    const readAssistantMessage = createAssistantMessageReader({
+      events: read.stores.runtimeEventStore,
+      ensureTranscriptLedger: async () => {},
+    });
+    await seed(read.stores, sessionId, 'resumed-0');
+    await read.text('resumed-0', 'resumed-0-text');
+    for (let index = 1; index <= 17; index++) {
+      const previous = `resumed-${index - 1}`;
+      const runId = `resumed-${index}`;
+      await read.pause(previous, `${previous}-pause`, runId, 'turn-resumed-0');
+      await seed(read.stores, sessionId, runId, {
+        turnId: 'turn-resumed-0',
+        opening: {
+          source: {
+            kind: 'handoff',
+            rootRunId: 'resumed-0',
+            sourceInvocationId: previous,
+            sourceRunId: previous,
+            sourceTurnId: 'turn-resumed-0',
+            sourceRuntimeEventHighWater: index * 2,
+            claimId: `${runId}-claim`,
+            boundaryDigest: `sha256:${'0'.repeat(64)}`,
+          },
+        },
+      });
+      await read.text(runId, `${runId}-text`, 'turn-resumed-0');
+    }
+    assert.equal(
+      await readAssistantMessage({
+        sessionId,
+        turnId: 'turn-resumed-0',
+        messageId: 'resumed-17-text',
+      }),
+      'resumed-17-text',
+    );
+  });
+});
+
 const seed = (
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   sessionId: string,
@@ -1080,7 +1127,7 @@ async function withNestedTranscript(
       stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
       text(runId: string, id: string, turnId?: string): Promise<unknown>;
       end(runId: string, id: string, turnId?: string): Promise<unknown>;
-      pause(runId: string, id: string, successor: string): Promise<unknown>;
+      pause(runId: string, id: string, successor: string, turnId?: string): Promise<unknown>;
     },
     sessionId: string,
   ) => Promise<void>,
@@ -1139,22 +1186,27 @@ async function withNestedTranscript(
           ),
         end: (runId, id, turnId) =>
           append(runId, id, { status: 'completed', actions: { endInvocation: true } }, turnId),
-        pause: (runId, id, successor) =>
-          append(runId, id, {
-            actions: {
-              endInvocation: true,
-              handoffPause: {
-                protocol: 'runtime_handoff_pause_v1',
-                handoffId: `${runId}-handoff`,
-                remainingSteps: null,
-                hostEpoch: 'old-host',
-                rootRunId: runId,
-                successorRunId: successor,
-                successorInvocationId: successor,
-                claimId: `${runId}-claim`,
+        pause: (runId, id, successor, turnId) =>
+          append(
+            runId,
+            id,
+            {
+              actions: {
+                endInvocation: true,
+                handoffPause: {
+                  protocol: 'runtime_handoff_pause_v1',
+                  handoffId: `${runId}-handoff`,
+                  remainingSteps: null,
+                  hostEpoch: 'old-host',
+                  rootRunId: runId,
+                  successorRunId: successor,
+                  successorInvocationId: successor,
+                  claimId: `${runId}-claim`,
+                },
               },
             },
-          }),
+            turnId,
+          ),
       },
       session.id,
     );
