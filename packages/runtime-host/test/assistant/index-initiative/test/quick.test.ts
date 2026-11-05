@@ -779,3 +779,28 @@ test('activity already waiting for broad discovery does not wait for another pol
     await f.close();
   }
 });
+
+test('a paused quick check still runs once and never reports a disabled intake', async () => {
+  const f = await setup();
+  try {
+    // Event intake stays on; only quick discovery is paused. The panel's "check once"
+    // button is not gated on enabled, so this is the ordinary paused-then-check path.
+    await f.q.control({ action: 'configure', eventIntake: true });
+    await f.q.control({ action: 'pause' });
+    assert.equal(f.q.state().enabled, false);
+    assert.equal(f.q.state().intakeEnabled, true);
+    await f.q.control({ action: 'check' });
+    assert.equal(f.q.state().checkRequested, true);
+    await f.run();
+    assert.equal(f.calls(), 1, 'the paused check reaches the worker exactly once');
+    assert.equal(f.q.state().lastError, null);
+    assert.equal(f.q.state().checkRequested, false, 'a successful check clears the request');
+    // The old failure persisted: every later tick retried the same rejected guard.
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(f.calls(), 1);
+    assert.equal(f.q.state().lastError, null);
+  } finally {
+    await f.close();
+  }
+});

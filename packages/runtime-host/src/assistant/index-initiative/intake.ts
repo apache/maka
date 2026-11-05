@@ -131,6 +131,14 @@ export class EventIntake {
     if (!this.quick.state()?.intakeEnabled || !this.quick.state()?.enabled)
       throw Error('Event intake disabled');
   }
+  /** Reading the journal is not intake. A paused quick discovery still owns its lease
+   * and may read pending wakes for a manual check, so only intakeEnabled gates it.
+   * Guarding reads with `enabled` made a paused check fail before activation and
+   * report "Event intake disabled" for a state where intake was in fact on. */
+  private readyForRead() {
+    this.quick.ready();
+    if (!this.quick.state()?.intakeEnabled) throw Error('Event intake disabled');
+  }
   private transaction<T>(fn: () => T, requireIntake = true): T {
     return this.quick.store.transaction(() => {
       // Fence inside BEGIN IMMEDIATE so takeover cannot race the following writes.
@@ -773,10 +781,10 @@ export class EventIntake {
   }
   async next(capturedOnly = false) {
     if (capturedOnly) this.quick.ready();
-    else this.ready();
+    else this.readyForRead();
     const wakes = await this.readableWakes(undefined, capturedOnly);
     if (capturedOnly) this.quick.ready();
-    else this.ready();
+    else this.readyForRead();
     // Bound durable activation metadata too; model capacity selects a smaller FIFO batch.
     return wakes.length ? { ids: wakes.slice(0, 128).map((wake) => wake.id) } : undefined;
   }
