@@ -113,6 +113,7 @@ import {
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
   originLabel,
@@ -275,6 +276,8 @@ type ConversationProps = {
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
   stopAction(): () => void;
+  /** Starts the Bot over; offered only on the Bot's own conversation. */
+  restartBot?(): Promise<void>;
 };
 function comparePosition(left: Position, right: Position): number {
   return left.sourceSequence - right.sourceSequence || left.itemIndex - right.itemIndex;
@@ -435,6 +438,15 @@ export function Conversation(props: ConversationProps) {
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
   const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
+  // A Bot that was replaced is a Bot only as an archived record of what it told the user.
+  // Restored, it is an ordinary conversation again: it holds no SendUser, so its own
+  // replies must show in Chat.
+  const formerBot = () =>
+    bot.identity() === 'bot' && (props.botSession?.() ?? sessionId) !== sessionId;
+  const botView = (): 'unknown' | 'bot' | 'ordinary' => {
+    const identity = bot.identity();
+    return formerBot() && ready() && !archived() ? 'ordinary' : identity;
+  };
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
@@ -593,7 +605,7 @@ export function Conversation(props: ConversationProps) {
     // Until the Host has said whether this is the Bot, assume it is: showing the model's
     // own text on the Bot's Chat would publish internal output, while a short blank on an
     // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
-    const botChat = bot.identity() !== 'ordinary' && reading() === 'chat';
+    const botChat = botView() !== 'ordinary' && reading() === 'chat';
     // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
     // shown after the Turn's own entries.
     let openTurn: string | undefined;
@@ -692,7 +704,7 @@ export function Conversation(props: ConversationProps) {
         if (
           reading() === 'trajectory' &&
           ((row.role === 'user' && !row.origin) ||
-            (row.finalOutput && bot.identity() === 'ordinary') ||
+            (row.finalOutput && botView() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
@@ -1891,6 +1903,10 @@ export function Conversation(props: ConversationProps) {
       return tr('Reconnecting updates… Your draft is kept.');
     if (!ready() || (invocation() !== null && runBackend() === null))
       return tr('Loading session history… Your draft is kept.');
+    if (archived() && formerBot())
+      return tr(
+        'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
+      );
     if (archived())
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
@@ -2799,6 +2815,11 @@ export function Conversation(props: ConversationProps) {
         browser={props.browser()}
         files={props.files}
         filesOpener={props.filesOpener}
+        actions={
+          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
+            <BotRestart restart={props.restartBot} />
+          ) : undefined
+        }
       />
       <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
         <View

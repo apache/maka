@@ -260,6 +260,8 @@ export function Header(props: {
   browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: ViewRef): void;
+  /** Extra controls for this conversation, after the files button. */
+  actions?: JSX.Element;
 }) {
   const workspaceName = () => {
     const path = props.workspace;
@@ -373,6 +375,7 @@ export function Header(props: {
           </Text>
         </Button>
       </If>
+      {props.actions}
       <If when={props.status}>
         <Text
           style={{

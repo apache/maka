@@ -388,6 +388,27 @@ export const conversationMessages = {
   Chat: ['Chat', '对话', '對話'],
   'Check original upload': ['Check original upload', '查询原上传结果', '查詢原上傳結果'],
   'Maka Bot': ['Maka Bot', 'Maka Bot', 'Maka Bot'],
+  'Start the Bot over': ['Start the Bot over', '重新开始 Bot', '重新開始 Bot'],
+  'Start the Bot over?': ['Start the Bot over?', '重新开始 Bot？', '重新開始 Bot？'],
+  'This opens a new Bot. The current Bot is archived with its conversation. Its checklist and scheduled tasks are not carried over.':
+    [
+      'This opens a new Bot. The current Bot is archived with its conversation. Its checklist and scheduled tasks are not carried over.',
+      '会开始一个新的 Bot。当前 Bot 会连同它的对话一起归档，它的待办和定时任务不会带到新 Bot。',
+      '會開始一個新的 Bot。目前的 Bot 會連同它的對話一起封存，它的待辦和定時任務不會帶到新 Bot。',
+    ],
+  'Keep the current Bot': ['Keep the current Bot', '保留当前 Bot', '保留目前的 Bot'],
+  'Start over': ['Start over', '重新开始', '重新開始'],
+  'Starting over…': ['Starting over…', '正在重新开始…', '正在重新開始…'],
+  'The current Bot could not be renamed: {reason}': [
+    'The current Bot could not be renamed: {reason}',
+    '无法重命名当前 Bot：{reason}',
+    '無法重新命名目前的 Bot：{reason}',
+  ],
+  'The current Bot could not be archived: {reason}': [
+    'The current Bot could not be archived: {reason}',
+    '无法归档当前 Bot：{reason}',
+    '無法封存目前的 Bot：{reason}',
+  ],
   'Bot could not be opened: {reason}': [
     'Bot could not be opened: {reason}',
     '无法打开 Bot：{reason}',
@@ -1357,6 +1378,12 @@ export const conversationMessages = {
     '此对话已归档，请在对话列表中恢复后发送；草稿已保留。',
     '此對話已封存，請在對話清單中還原後傳送；草稿已保留。',
   ],
+  'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.':
+    [
+      'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
+      '这是已被替换的旧 Bot，只能查看历史；如需当普通对话使用，请在对话列表中恢复。',
+      '這是已被取代的舊 Bot，只能檢視歷史；如需當一般對話使用，請在對話清單中還原。',
+    ],
   'This conversation is closed.': [
     'This conversation is closed.',
     '此对话已关闭。',
