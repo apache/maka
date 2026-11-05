@@ -140,6 +140,40 @@ export class QuickDiscoveryController {
   state() {
     return this.store.get();
   }
+  /** A handoff is sealed once the Host accepted this exact payload. Recovery keeps that
+   * identity: the accepted turn is still this activation's even though its completion
+   * state was never stored and the activation is back to pending. */
+  private sealed(pending: any) {
+    return pending &&
+      !pending.executionCompleted &&
+      pending.submission &&
+      pending.submission.messageId === pending.messageId
+      ? pending
+      : undefined;
+  }
+  /** The activation that owns a discovery worker's reads and writes. */
+  execution(sessionId: string, writing: boolean) {
+    const s = this.state();
+    if (s?.workerSession !== sessionId) throw Error('Not a discovery worker');
+    const owner = s.active ?? this.sealed(s.pending);
+    if (writing && (!owner || owner.executionCompleted))
+      throw Error('No active quick discovery execution');
+    return owner?.id;
+  }
+  /** Keep a recovery reservation owned by the activation that will resume on it. */
+  private retain(token: string) {
+    this.store.update((state) => {
+      state.quickSlot = token;
+    });
+  }
+  /** Settle one reservation: release the shared slot and forget its carried token. */
+  private settle(token: string, outcome?: 'completed' | 'interrupted') {
+    this.parent.coordinator.release(token, outcome);
+    if (this.owned && this.state()?.quickSlot === token)
+      this.store.update((state) => {
+        state.quickSlot = null;
+      });
+  }
   async control(input: {
     action: 'enable' | 'pause' | 'check' | 'configure';
     intervalMinutes?: number;
@@ -316,13 +350,30 @@ export class QuickDiscoveryController {
       this.parent.coordinator.withdraw('quick');
       return;
     }
-    const permit = this.parent.coordinator.acquire('quick');
+    // A sealed handoff resumes the same activation, so it keeps the shared slot instead of
+    // taking a second one; the token survives until that activation settles.
+    const recovering = this.sealed(s.pending);
+    const carried =
+      recovering && s.quickSlot && this.parent.coordinator.holds(String(s.quickSlot))
+        ? String(s.quickSlot)
+        : undefined;
+    const permit = carried ?? this.parent.coordinator.acquire('quick');
     if (!permit) return;
-    let admitted = false;
+    let admitted = false,
+      retained = false;
     try {
       const agent = await this.worker(s);
       const snapshot = await agent.snapshot();
-      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) {
+        // The Host is still running the turn this activation had admitted. Releasing the
+        // slot here would start broad discovery while that worker still holds the write
+        // identity it needs to record what it found.
+        if (recovering && snapshot?.agent?.status === 'running') {
+          retained = true;
+          this.retain(permit);
+        }
+        return;
+      }
       this.ready();
       this.parent.coordinator.assertActive(permit);
       const current = this.store.update((state) => {
@@ -357,7 +408,7 @@ export class QuickDiscoveryController {
         .finally(() => {
           this.running = undefined;
           const finished = this.state();
-          this.parent.coordinator.release(
+          this.settle(
             permit,
             deferred || finished?.active || finished?.pending || finished?.lastError
               ? 'interrupted'
@@ -365,7 +416,7 @@ export class QuickDiscoveryController {
           );
         });
     } finally {
-      if (!admitted) this.parent.coordinator.release(permit);
+      if (!admitted && !retained) this.settle(permit);
     }
   }
 

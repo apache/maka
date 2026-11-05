@@ -97,6 +97,17 @@ export class DiscoveryCoordinator {
   waiting(lane: Lane) {
     return !!this.store.db.prepare('SELECT 1 FROM discovery_waiters WHERE lane=?').get(lane);
   }
+  /** Whether this owner still holds a reservation. Recovery settles the reservations of
+   * an owner that is gone, so a token restored from durable state must be re-checked
+   * before it is treated as still holding the shared slot. */
+  holds(token: string) {
+    return (
+      !!token &&
+      !!this.store.db
+        .prepare('SELECT 1 FROM discovery_running WHERE token=? AND owner=?')
+        .get(token, this.store.owner)
+    );
+  }
   assertActive(token: string) {
     this.store.fence();
     if (

@@ -62,12 +62,10 @@ export async function initializeInitiative(
       if (writing && !active) throw Error('No active discovery execution');
       return active;
     }
-    const q = quick.state();
-    if (q?.workerSession !== sessionId) throw Error('Not a discovery worker');
     quick.ready();
-    if (writing && (!q.active || q.active.executionCompleted))
-      throw Error('No active quick discovery execution');
-    return q.active?.id;
+    // The worker's write identity belongs to the activation, and a sealed handoff keeps it
+    // while the accepted turn is still running under a recovered activation.
+    return quick.execution(sessionId, writing);
   };
   ctx.tools.register({
     name: 'DiscoveryNotebook',
