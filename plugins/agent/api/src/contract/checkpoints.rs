@@ -33,22 +33,11 @@ pub enum CheckpointWorkspaceConsistency {
     Unverified,
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentSessionCheckpointPublish")]
-pub struct SessionCheckpointPublish {
-    pub history: HistoryCheckpointPublish,
-    /// Must be explicitly selected. Maka does not fence other applications.
-    pub workspace_consistency: CheckpointWorkspaceConsistency,
-}
-
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentSessionCheckpointPublication")]
-pub struct SessionCheckpointPublication {
-    pub publication: HistoryCheckpointPublication,
-    pub workspace_consistency: CheckpointWorkspaceConsistency,
-    /// Stable warning, present even with a caller attestation.
+#[schemars(rename = "AgentCheckpointWorkspaceNotice")]
+pub struct CheckpointWorkspaceNotice {
+    pub consistency: CheckpointWorkspaceConsistency,
     pub warning: CheckpointWorkspaceWarning,
 }
 
@@ -61,26 +50,10 @@ pub enum CheckpointWorkspaceWarning {
     ExternalWritersNotFenced,
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentSessionCheckpointReceiptRead")]
-pub struct SessionCheckpointReceiptRead {
-    pub reference: RecoveryRef,
-    pub input: SessionCheckpointPublish,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentSessionCheckpointReceipt")]
-pub struct SessionCheckpointReceipt {
-    pub operation: Option<OperationObservation>,
-    pub checkpoint: Option<SessionCheckpointPublication>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentHistoryCheckpointPublish")]
-pub struct HistoryCheckpointPublish {
+#[schemars(rename = "AgentCheckpointPublish")]
+pub struct CheckpointPublish {
     #[schemars(length(min = 1))]
     pub session_id: String,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Uuid>")]
@@ -88,6 +61,12 @@ pub struct HistoryCheckpointPublish {
     /// Membership confirmation returned by previewHistoryCheckpoint, not a live revision.
     #[schemars(regex(pattern = "^[a-f0-9]{64}$"))]
     pub confirmed_subtree_digest: String,
+    /// Null captures history only. Otherwise the caller explicitly selects the
+    /// Workspace consistency guarantee; other applications are never fenced.
+    #[schemars(
+        with = "maka_plugin_core::wire_schema::RequiredNullable<CheckpointWorkspaceConsistency>"
+    )]
+    pub workspace_consistency: Option<CheckpointWorkspaceConsistency>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -124,11 +103,12 @@ pub struct HistoryCheckpointSession {
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentHistoryCheckpointPublication")]
-pub struct HistoryCheckpointPublication {
+#[schemars(rename = "AgentCheckpointPublication")]
+pub struct CheckpointPublication {
     pub state: HistoryCheckpointState,
     /// Cleanup failure does not undo a successful publication.
     pub cleanup_pending: bool,
+    pub workspace: Option<CheckpointWorkspaceNotice>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -143,21 +123,21 @@ pub enum HistoryCheckpointState {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentHistoryCheckpointReceiptRead")]
-pub struct HistoryCheckpointReceiptRead {
+#[schemars(rename = "AgentCheckpointReceiptRead")]
+pub struct CheckpointReceiptRead {
     pub reference: RecoveryRef,
     /// The exact original input. Changed input cannot select another publication.
-    pub input: HistoryCheckpointPublish,
+    pub input: CheckpointPublish,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentHistoryCheckpointReceipt")]
-pub struct HistoryCheckpointReceipt {
+#[schemars(rename = "AgentCheckpointReceipt")]
+pub struct CheckpointReceipt {
     /// Original Host observation. Domain success never fabricates Host cleanup confirmation.
     pub operation: Option<OperationObservation>,
     /// Authoritative domain result even when the Host response was lost.
     /// Absence is not permission to recapture under a replacement operation.
-    pub publication: Option<HistoryCheckpointPublication>,
+    pub publication: Option<CheckpointPublication>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -177,18 +157,12 @@ pub struct HistoryCheckpointRead {
 )]
 #[schemars(rename = "AgentHistoryCheckpointFrame")]
 pub enum HistoryCheckpointFrame {
-    /// The streamed payload is history; Workspace is a separate manifest component.
-    NativeSessionV1 {
+    /// MAKA-SESSION v2 history bytes follow; Workspace objects are separate.
+    Checkpoint {
         head: HistoryCheckpointHead,
         inventory: HistoryCheckpointInventory,
         bundle: HistoryCheckpointObject,
-        workspace: CheckpointWorkspaceSnapshot,
-    },
-    /// The following bytes use the MAKA-SESSION v2 history format.
-    NativeHistoryV1 {
-        head: HistoryCheckpointHead,
-        inventory: HistoryCheckpointInventory,
-        bundle: HistoryCheckpointObject,
+        workspace: Option<CheckpointWorkspaceSnapshot>,
     },
     Chunk {
         #[schemars(range(max = 9_007_199_254_740_991u64))]
@@ -333,19 +307,19 @@ mod tests {
         let Interface::Service { methods } = crate::contract().interface else {
             unreachable!()
         };
-        assert_eq!(
-            methods["publishHistoryCheckpoint"].mode,
-            MethodMode::Mutation
-        );
+        assert_eq!(methods["publishCheckpoint"].mode, MethodMode::Mutation);
         assert_eq!(
             methods["readHistoryCheckpoint"].mode,
             MethodMode::Subscription
         );
-        let publish =
-            jsonschema::validator_for(&methods["publishHistoryCheckpoint"].input).unwrap();
-        let valid = json!({"sessionId":"source","expectedRevision":null,"confirmedSubtreeDigest":"a".repeat(64)});
+        let publish = jsonschema::validator_for(&methods["publishCheckpoint"].input).unwrap();
+        let valid = json!({"sessionId":"source","expectedRevision":null,"confirmedSubtreeDigest":"a".repeat(64),"workspaceConsistency":null});
         assert!(publish.is_valid(&valid));
-        for key in ["expectedRevision", "confirmedSubtreeDigest"] {
+        for key in [
+            "expectedRevision",
+            "confirmedSubtreeDigest",
+            "workspaceConsistency",
+        ] {
             let mut absent = valid.clone();
             absent.as_object_mut().unwrap().remove(key);
             assert!(!publish.is_valid(&absent));
@@ -376,7 +350,6 @@ mod tests {
             "historyCheckpointLoadReceipt",
             "loadedHistoryCheckpointHistory",
             "loadedHistoryCheckpointArtifacts",
-            "loadedHistoryCheckpointArtifact",
         ] {
             assert_eq!(methods[method].mode, MethodMode::Query);
         }
@@ -395,6 +368,10 @@ mod tests {
             invalid[key] = value;
             assert!(!validator.is_valid(&invalid), "{key}");
         }
+        assert_eq!(
+            methods["loadedHistoryCheckpointArtifact"].mode,
+            MethodMode::Subscription
+        );
         let validator =
             jsonschema::validator_for(&methods["loadedHistoryCheckpointArtifact"].input).unwrap();
         let mut valid = json!({"inspection":{"sourceSessionId":"source","operationId":Uuid::new_v4()},"sessionId":"source","artifactId":"a","offset":0});
@@ -411,7 +388,9 @@ mod tests {
 #[schemars(rename = "AgentSessionCheckpointRestore")]
 pub struct SessionCheckpointRestore {
     pub checkpoint: HistoryCheckpointRead,
-    pub parent: super::DirectorySelection,
+    /// Absolute parent path. The Host captures and validates its directory identity.
+    #[schemars(length(min = 1))]
+    pub parent: String,
     pub permissions: super::WorkspacePermissions,
     pub backend: super::BackendPreference,
     pub accept_external_writers_risk: bool,

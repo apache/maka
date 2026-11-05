@@ -21,6 +21,7 @@ use super::Runs;
 use std::{
     collections::BTreeMap,
     ops::{Deref, DerefMut},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex as MapMutex, Weak},
 };
 use tokio::sync::{
@@ -30,14 +31,75 @@ use tokio::sync::{
 
 /// Lifecycle and control mutations exclude submissions. Submissions to distinct
 /// Sessions share that lifecycle boundary, but never their per-Session ordering.
-#[derive(Default)]
 pub(super) struct Registry {
     activity: Arc<RwLock<()>>,
     state: Arc<Mutex<Runs>>,
     sessions: MapMutex<BTreeMap<String, Weak<Gate>>>,
+    checkpoints: Arc<MapMutex<BTreeMap<String, PathBuf>>>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        let checkpoints = Arc::new(MapMutex::new(BTreeMap::new()));
+        Self {
+            activity: Default::default(),
+            state: Arc::new(Mutex::new(Runs {
+                checkpoints: checkpoints.clone(),
+                ..Runs::default()
+            })),
+            sessions: Default::default(),
+            checkpoints,
+        }
+    }
+}
+
+pub(super) fn overlaps(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+pub(super) struct Checkpoint {
+    checkpoints: Arc<MapMutex<BTreeMap<String, PathBuf>>>,
+    session: String,
+}
+impl Drop for Checkpoint {
+    fn drop(&mut self) {
+        self.checkpoints.lock().unwrap().remove(&self.session);
+    }
 }
 
 impl Registry {
+    pub(super) fn ordered_sessions(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, gate)| gate.strong_count() != 0)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    pub(super) fn checkpointed(&self, session: &str) -> bool {
+        self.checkpoints.lock().unwrap().contains_key(session)
+    }
+    pub(super) fn workspace_available(&self, session: &str, path: &Path) -> bool {
+        self.checkpoints
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(id, active)| id != session && !overlaps(path, active))
+    }
+    pub(super) fn checkpoint(&self, session: &str, path: PathBuf) -> Result<Checkpoint, String> {
+        let mut checkpoints = self.checkpoints.lock().unwrap();
+        if checkpoints.contains_key(session)
+            || checkpoints.values().any(|active| overlaps(&path, active))
+        {
+            return Err("agent_checkpoint_busy".into());
+        }
+        checkpoints.insert(session.to_owned(), path);
+        Ok(Checkpoint {
+            checkpoints: self.checkpoints.clone(),
+            session: session.to_owned(),
+        })
+    }
     pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
         self.state.lock().await
     }

@@ -130,8 +130,8 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
     tokio::time::timeout(Duration::from_secs(60),async {
         let mut fixture=Fixture::open().await;
         let preview=support::query(&fixture.native,"agent","previewHistoryCheckpoint",json!({"sessionId":fixture.session})).await;
-        let input=json!({"sessionId":fixture.session,"expectedRevision":null,"confirmedSubtreeDigest":preview["subtreeDigest"]});
-        let mut call=fixture.native.call("agent","publishHistoryCheckpoint".into(),input.clone(),Default::default()).await.unwrap();
+        let input=json!({"sessionId":fixture.session,"expectedRevision":null,"confirmedSubtreeDigest":preview["subtreeDigest"],"workspaceConsistency":null});
+        let mut call=fixture.native.call("agent","publishCheckpoint".into(),input.clone(),Default::default()).await.unwrap();
         call.start().await.unwrap();
         let Reply::Prepared {reference}=call.receive().await.unwrap() else {panic!("original operation reference")};
         let Reply::Mutation {reply,cleanup}=call.confirm().await.unwrap() else {panic!("publication receipt")};
@@ -139,7 +139,7 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
         let Receipt::Recorded {outcome:OperationOutcome::Returned {value},..}=reply.receipt else {panic!("publication failed")};
         assert_eq!(value["state"]["kind"],"published");
         call.close().await.unwrap();
-        let receipt=support::query(&fixture.native,"agent","historyCheckpointReceipt",json!({"reference":reference,"input":input})).await;
+        let receipt=support::query(&fixture.native,"agent","checkpointReceipt",json!({"reference":reference,"input":input})).await;
         assert_eq!(receipt["publication"],value);
         let head=support::query(&fixture.native,"agent","historyCheckpointHead",json!({"sessionId":fixture.session})).await;
         assert_eq!(head,value["state"]["head"]);
@@ -150,7 +150,7 @@ async fn published_product_endpoint_exposes_history_checkpoint_and_original_rece
         loop {
             match stream.pull().await.unwrap() {
                 Reply::Item {value}=>match value["kind"].as_str().unwrap() {
-                    "native_history_v1"=>assert_eq!(value["head"],head),
+                    "checkpoint"=>assert_eq!(value["head"],head),
                     "chunk"=>{assert_eq!(value["offset"],bytes.len() as u64); bytes.extend(STANDARD.decode(value["data"].as_str().unwrap()).unwrap());},
                     "end"=>{assert_eq!(value["bytes"],bytes.len() as u64); ended=true;},
                     _=>panic!("{value}"),

@@ -78,19 +78,9 @@ async fn workspace_material_is_immutable_and_load_preserves_conditional_guarante
             .canonical_path()
             .join("history-checkpoints/inspections")
             .join(format!("{key}.workspace"));
-        assert_eq!(
-            std::fs::read_to_string(path.join("src/main.rs")).unwrap(),
-            "original"
-        );
-        assert!(path.join("empty").is_dir());
-        assert!(!path.join(".git").exists());
-        assert_ne!(
-            std::fs::metadata(path.join("src/main.rs"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o111,
-            0
+        assert!(
+            !path.exists(),
+            "inspection must not copy workspace payloads"
         );
         assert_eq!(published(&handle.publish(request).await.unwrap()), head);
         store.close().await.unwrap();
@@ -109,13 +99,12 @@ async fn workspace_material_is_immutable_and_load_preserves_conditional_guarante
 
 #[tokio::test]
 async fn unsafe_workspace_material_cannot_publish_a_head() {
-    for kind in ["secret", "symlink", "fifo", "overlap"] {
+    for kind in ["symlink", "fifo", "overlap"] {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("project");
         std::fs::create_dir(&source).unwrap();
         let (store, handle, mut request) = fixture(dir.path()).await;
         match kind {
-            "secret" => std::fs::write(source.join(".env"), "secret").unwrap(),
             "symlink" => std::os::unix::fs::symlink(dir.path(), source.join("link")).unwrap(),
             "fifo" => {
                 assert!(
@@ -379,11 +368,61 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
 }
 #[tokio::test]
 async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
-    for race in ["head", "files", "extra", "parent", "symlink", "replacement"] {
+    for race in [
+        "head",
+        "history",
+        "busy",
+        "files",
+        "extra",
+        "parent",
+        "symlink",
+        "replacement",
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let (store, handle, mut publish, operation, prepared, configuration) =
             restore_fixture(directory.path()).await;
         match race {
+            "history" | "busy" => {
+                use maka_agent_facts::event::{
+                    EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+                };
+                let log = handle.session.scoped().await.unwrap();
+                let invocation = Invocation {
+                    session_id: "source".into(),
+                    turn_id: "new".into(),
+                    run_id: "new".into(),
+                    invocation_id: "new".into(),
+                };
+                log.append(
+                    &EventWrite::plain(RuntimeEvent::new(
+                        invocation.clone(),
+                        Fact::InvocationOpened {
+                            configuration: None,
+                            input: InvocationInput::Message {
+                                content: "new history".into(),
+                                source_messages: vec![],
+                                request_fingerprint: None,
+                            },
+                        },
+                    ))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+                if race == "history" {
+                    log.append(
+                        &EventWrite::plain(RuntimeEvent::new(
+                            invocation,
+                            Fact::InvocationEnded {
+                                outcome: InvocationOutcome::Completed,
+                            },
+                        ))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
             "head" => {
                 publish.operation = Uuid::new_v4();
                 publish.expected_revision = Some(operation.revision);
@@ -406,6 +445,11 @@ async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
             }
             _ => std::fs::write(prepared.path.join("extra"), "unrecorded").unwrap(),
         }
+        let before = store
+            .get_session::<serde_json::Value>("source")
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             handle
                 .commit_workspace_restore(operation.clone(), configuration, 2)
@@ -413,15 +457,13 @@ async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
                 .is_err(),
             "accepted {race} race"
         );
-        assert_eq!(
-            store
-                .get_session::<serde_json::Value>("source")
-                .await
-                .unwrap()
-                .unwrap()
-                .revision,
-            prepared.source_revision
-        );
+        let after = store
+            .get_session::<serde_json::Value>("source")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.configuration, before.configuration);
         assert!(
             handle
                 .workspace_restore_receipt(
@@ -500,5 +542,143 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
             .await
             .is_err()
     );
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtures() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("project");
+    for child in [".git/info", "target", ".venv", "nested", "fixtures"] {
+        std::fs::create_dir_all(source.join(child)).unwrap();
+    }
+    std::fs::write(
+        source.join(".gitignore"),
+        "target/\n.venv/\n*.log\n!keep.log\n",
+    )
+    .unwrap();
+    std::fs::write(source.join(".git/info/exclude"), "local-only\n").unwrap();
+    std::fs::write(source.join("nested/.gitignore"), "ignored\n").unwrap();
+    for file in [
+        "target/output",
+        ".venv/bin",
+        "build.log",
+        "local-only",
+        "nested/ignored",
+        ".env",
+        "fixtures/test.pem",
+        "fixtures/test.key",
+        "keep.log",
+        "nested/keep",
+    ] {
+        std::fs::write(source.join(file), file).unwrap();
+    }
+    std::os::unix::fs::symlink("/nonexistent", source.join("target/link")).unwrap();
+    let (store, handle, mut request) = fixture(dir.path()).await;
+    request.workspace = Some(WorkspaceCapture {
+        root: source,
+        identity: "workspace".into(),
+        consistency: WorkspaceConsistency::Unverified,
+    });
+    let head = published(&handle.publish(request).await.unwrap());
+    let checkout = handle.checkout_exact(head.revision).await.unwrap();
+    let objects = Objects::open(store.owned_root().unwrap()).unwrap();
+    let inventory: serde_json::Value = serde_json::from_reader(
+        objects
+            .read(&checkout.manifest.workspace().unwrap().inventory)
+            .unwrap(),
+    )
+    .unwrap();
+    let paths = inventory["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    for retained in [
+        "fixtures/test.pem",
+        "fixtures/test.key",
+        "keep.log",
+        "nested/keep",
+    ] {
+        assert!(paths.contains(retained), "missing {retained}: {paths:?}");
+    }
+    for omitted in [
+        "target",
+        ".venv",
+        "build.log",
+        "local-only",
+        "nested/ignored",
+        ".env",
+        ".git",
+    ] {
+        assert!(!paths.contains(omitted), "unexpected {omitted}: {paths:?}");
+    }
+    assert!(inventory.get("version").is_none());
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let (store, handle, _, original, _, mut configuration) =
+        restore_fixture(directory.path()).await;
+    let current = store
+        .get_session::<serde_json::Value>("source")
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .update_session_metadata(
+            "source",
+            current.revision,
+            |value: &mut serde_json::Value| {
+                value["title"] = json!("renamed after checkpoint");
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    let mut request = original.clone();
+    request.operation = Uuid::new_v4();
+    request.fingerprint = "e".repeat(64);
+    let prepared = handle
+        .prepare_workspace_restore(request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(prepared.path.join("file")).unwrap(),
+        "frozen"
+    );
+    configuration["workspace"] = serde_json::to_value(
+        store
+            .attach_workspace("fixture", &json!({"path":prepared.path}))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    handle
+        .commit_workspace_restore(request, configuration.clone(), 3)
+        .await
+        .unwrap();
+    let mut again = original;
+    again.operation = Uuid::new_v4();
+    again.fingerprint = "f".repeat(64);
+    let second = handle
+        .prepare_workspace_restore(again.clone())
+        .await
+        .unwrap();
+    assert_ne!(prepared.path, second.path);
+    configuration["workspace"] = serde_json::to_value(
+        store
+            .attach_workspace("fixture", &json!({"path":second.path}))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    handle
+        .commit_workspace_restore(again, configuration, 4)
+        .await
+        .unwrap();
     store.close().await.unwrap();
 }

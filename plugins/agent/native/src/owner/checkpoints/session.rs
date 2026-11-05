@@ -30,31 +30,33 @@ fn consistency(value: CheckpointWorkspaceConsistency) -> storage::WorkspaceConsi
 }
 fn response(
     value: storage::Publication,
-    mode: CheckpointWorkspaceConsistency,
-) -> SessionCheckpointPublication {
-    SessionCheckpointPublication {
-        publication: publication(value),
-        workspace_consistency: mode,
+    mode: Option<CheckpointWorkspaceConsistency>,
+) -> CheckpointPublication {
+    let mut result = publication(value);
+    result.workspace = mode.map(|consistency| CheckpointWorkspaceNotice {
+        consistency,
         warning: CheckpointWorkspaceWarning::ExternalWritersNotFenced,
-    }
+    });
+    result
 }
-fn requested(input: SessionCheckpointPublish) -> (Capture, CheckpointWorkspaceConsistency) {
-    let mut capture = capture(input.history);
-    capture.workspace = Some(storage::WorkspaceCapture {
+fn requested(input: CheckpointPublish) -> (Capture, Option<CheckpointWorkspaceConsistency>) {
+    let mode = input.workspace_consistency;
+    let mut capture = capture(input);
+    capture.workspace = mode.map(|mode| storage::WorkspaceCapture {
         root: Default::default(),
         identity: String::new(),
-        consistency: consistency(input.workspace_consistency),
+        consistency: consistency(mode),
     });
-    (capture, input.workspace_consistency)
+    (capture, mode)
 }
 
 impl Owner {
-    pub async fn publish_session_checkpoint(
+    pub async fn publish_checkpoint(
         self: &Arc<Self>,
-        input: SessionCheckpointPublish,
+        input: CheckpointPublish,
         operation: &RecoveryRef,
         scope: &Scope,
-    ) -> Result<SessionCheckpointPublication, String> {
+    ) -> Result<CheckpointPublication, String> {
         management(scope)?;
         let operation = operation.clone();
         self.resource_work(scope, move |owner, _| {
@@ -77,21 +79,14 @@ impl Owner {
                         .map(|p| response(p, mode))
                         .map_err(failure);
                 }
-                // Keep native admission closed until both history and workspace have been copied.
-                // Foreign Hosts and external applications remain covered only by the caller's assertion.
-                let runs = owner
-                    .runs
-                    .clone()
-                    .try_lock_owned()
-                    .map_err(|_| "agent_checkpoint_busy")?;
-                if runs.closing
-                    || !runs.controls.is_empty()
-                    || !runs.preparing.is_empty()
-                    || !runs.retained_cleanup.is_empty()
-                {
-                    return Err("agent_checkpoint_busy".into());
-                }
-                let session = owner.session(&capture.session_id).await?;
+                let Some(workspace_mode) = mode else {
+                    return publisher
+                        .publish(capture, &operation)
+                        .await
+                        .map(|value| response(value, None))
+                        .map_err(failure);
+                };
+                let (admission, session) = owner.checkpoint_admission(&capture.session_id).await?;
                 if owner.behavior.is_some()
                     || session.configuration.parent_session_id.is_some()
                     || session
@@ -120,36 +115,39 @@ impl Owner {
                 capture.workspace = Some(storage::WorkspaceCapture {
                     root: session.configuration.workspace.path.into(),
                     identity: session.configuration.workspace.identity.into(),
-                    consistency: consistency(mode),
+                    consistency: consistency(workspace_mode),
                 });
                 let result = publisher
                     .publish(capture, &operation)
                     .await
                     .map(|p| response(p, mode))
                     .map_err(failure);
-                drop(runs);
+                drop(admission);
                 result
             })
         })
         .await
     }
 
-    pub async fn session_checkpoint_receipt(
+    pub async fn checkpoint_receipt(
         self: &Arc<Self>,
-        input: SessionCheckpointReceiptRead,
+        input: CheckpointReceiptRead,
         context: Context,
-    ) -> Result<SessionCheckpointReceipt, String> {
+    ) -> Result<CheckpointReceipt, String> {
         management(context.scope())?;
         let scope = context.scope().clone();
         self.resource_work(&scope, move |owner, _| {
             Box::pin(async move {
                 let publisher = owner.history_checkpoints();
                 let (capture, mode) = requested(input.input);
+                publisher
+                    .validate_request(&capture, &input.reference)
+                    .map_err(failure)?;
                 let request = publisher
                     .request(&capture, &input.reference)
                     .map_err(failure)?;
                 let operation = context.recover(input.reference)?.await?;
-                let checkpoint = if operation.is_some() {
+                let publication = if operation.is_some() {
                     let repository = publisher
                         .repository(&capture.session_id)
                         .await
@@ -170,9 +168,9 @@ impl Owner {
                 } else {
                     None
                 };
-                Ok(SessionCheckpointReceipt {
+                Ok(CheckpointReceipt {
                     operation,
-                    checkpoint,
+                    publication,
                 })
             })
         })

@@ -150,29 +150,49 @@ impl Owner {
     pub async fn loaded_checkpoint_artifact(
         self: &Arc<Self>,
         input: CheckpointArtifactRead,
-        scope: &Scope,
-    ) -> Result<Option<CheckpointArtifactChunk>, String> {
-        management(scope)?;
-        self.resource_work(scope, move |owner, _| {
+        context: Context,
+    ) -> Result<Value, String> {
+        management(context.scope())?;
+        let scope = context.scope().clone();
+        let context = Arc::new(context);
+        self.resource_work(&scope.clone(), move |owner, _| {
             Box::pin(async move {
-                let record = owner
+                owner
                     .history_checkpoints()
                     .repository(&input.inspection.source_session_id)
                     .await
                     .map_err(failure)?
-                    .loaded_artifact(
+                    .stream_loaded_artifact(
                         input.inspection.operation_id,
                         input.session_id,
                         input.artifact_id,
                         input.offset,
+                        move |record| {
+                            let context = context.clone();
+                            let scope = scope.clone();
+                            let owner = owner.clone();
+                            async move {
+                                if scope.cancellation.is_cancelled() || owner.stop.is_cancelled() {
+                                    return Err(maka_event_log::StoreError::InvalidTransition(
+                                        "checkpoint artifact cancelled".into(),
+                                    ));
+                                }
+                                let chunk =
+                                    record.map(|(record, offset, chunk)| CheckpointArtifactChunk {
+                                        artifact: artifact(record),
+                                        offset,
+                                        data: STANDARD.encode(chunk.bytes),
+                                    });
+                                context
+                                    .emit(serde_json::to_value(chunk)?)
+                                    .await
+                                    .map_err(maka_event_log::StoreError::InvalidTransition)
+                            }
+                        },
                     )
                     .await
                     .map_err(failure)?;
-                Ok(record.map(|(record, chunk)| CheckpointArtifactChunk {
-                    artifact: artifact(record),
-                    offset: input.offset,
-                    data: STANDARD.encode(chunk.bytes),
-                }))
+                Ok(Value::Null)
             })
         })
         .await

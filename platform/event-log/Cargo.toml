@@ -24,6 +24,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+ignore = "0.4.33"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 hex.workspace = true

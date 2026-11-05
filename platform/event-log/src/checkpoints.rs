@@ -53,7 +53,6 @@ pub struct PublicationRequest {
     /// Confirmation of catalog membership, not a live revision precondition.
     pub confirmed_subtree_digest: String,
     /// Trusted assembly supplies the source; never a model-authored path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceCapture>,
 }
 
@@ -66,39 +65,23 @@ pub struct ObjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum Manifest {
-    #[serde(rename = "native_history_v1")]
-    NativeHistory {
-        root_id: String,
-        scope: Scope,
-        inventory: Inventory,
-        /// MAKA-SESSION version 2; no TS tar.zst compatibility is implied.
-        bundle: ObjectRef,
-        /// The native format's own framed-stream checksum.
-        transfer_digest: String,
-    },
-    #[serde(rename = "native_session_v1")]
-    NativeSession {
-        root_id: String,
-        scope: Scope,
-        inventory: Inventory,
-        bundle: ObjectRef,
-        transfer_digest: String,
-        workspace: WorkspaceSnapshot,
-    },
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub root_id: String,
+    pub scope: Scope,
+    pub inventory: Inventory,
+    /// MAKA-SESSION version 2; no TS tar.zst compatibility is implied.
+    pub bundle: ObjectRef,
+    pub transfer_digest: String,
+    pub history_cut: String,
+    pub workspace: Option<WorkspaceSnapshot>,
 }
 impl Manifest {
     pub fn bundle(&self) -> &ObjectRef {
-        match self {
-            Self::NativeHistory { bundle, .. } | Self::NativeSession { bundle, .. } => bundle,
-        }
+        &self.bundle
     }
     pub fn workspace(&self) -> Option<&WorkspaceSnapshot> {
-        match self {
-            Self::NativeHistory { .. } => None,
-            Self::NativeSession { workspace, .. } => Some(workspace),
-        }
+        self.workspace.as_ref()
     }
 }
 

@@ -31,6 +31,7 @@ use std::sync::{
 use tokio::sync::Notify;
 
 pub(super) struct Goals {
+    pub(super) admissions: Arc<runs::Registry>,
     storage: Arc<maka_host_runtime::storage::Storage>,
     pub(super) repository: Repository<MessageBasis>,
     pub(super) gate: Mutex<()>,
@@ -50,6 +51,7 @@ impl Goals {
                 .expect("goal namespace"),
         ));
         Self {
+            admissions: Arc::new(runs::Registry::default()),
             repository: Repository::new(storage.clone()),
             storage,
             gate: Mutex::new(()),
@@ -312,6 +314,7 @@ impl Owner {
                 session_id
             }
         };
+        let admission = self.goals.admissions.ordered(session).await;
         self.session(session).await?;
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
@@ -319,6 +322,7 @@ impl Owner {
         }
         let owner = self.clone();
         let job = self.workers.spawn(async move {
+            let _admission = admission;
             let _gate = owner.goals.gate.lock().await;
             if let Some(result) = owner.goals.receipt(&operation).await? {
                 return Ok(result);

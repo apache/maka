@@ -94,6 +94,19 @@ impl Commit {
         {
             return Err(invalid("checkpoint restore head moved"));
         }
+        let inventory = crate::bundle::Inventory {
+            root_session_id: self.request.session.clone(),
+            subtree_digest: String::new(),
+            sessions: vec![crate::bundle::Session {
+                id: self.request.session.clone(),
+                revision: self.prepared.source_revision,
+            }],
+        };
+        crate::bundle::require_idle(db, &inventory).await?;
+        if crate::bundle::history_cut(db, &self.request.session).await? != self.prepared.history_cut
+        {
+            return Err(invalid("live Session history advanced beyond checkpoint"));
+        }
         let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT request_json,prepared_json,directory_identity_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?").bind(&self.key).fetch_optional(db).await?;
         if row
             != Some((
@@ -163,15 +176,24 @@ impl HistoryCheckpoints {
                 return Ok(prior.prepared);
             }
             let checkout = checkout(&log, &objects, request.scope.clone(), request.session.clone(), request.operation.revision).await?;
-            let Manifest::NativeSession { inventory, workspace, .. } = checkout.manifest else { return Err(invalid("checkpoint has no workspace")); };
+            let Manifest { inventory, workspace, history_cut, .. } = checkout.manifest;
+            let workspace = workspace.ok_or_else(|| invalid("checkpoint has no workspace"))?;
             if inventory.sessions.len() != 1 || inventory.sessions[0].id != request.session { return Err(invalid("checkpoint restore requires one ordinary Session")); }
             let current = log.get_session::<Value>(&request.session).await?.ok_or(StoreError::SessionNotFound)?;
-            if current.archived || current.revision != inventory.sessions[0].revision { return Err(invalid("live Session advanced beyond checkpoint")); }
+            if current.archived { return Err(invalid("archived Session cannot be restored")); }
+            let expected = history_cut.clone();
+            log.connection.read(move |db| Box::pin(async move {
+                crate::bundle::require_idle(db, &inventory).await?;
+                if crate::bundle::history_cut(db, &inventory.root_session_id).await? != expected {
+                    return Err(invalid("live Session history advanced beyond checkpoint"));
+                }
+                Ok(())
+            })).await?;
             let parent = request.operation.parent.canonicalize()?;
             let directory = cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority())?;
             if directory_identity(&directory)? != request.operation.parent_identity { return Err(invalid("restore parent directory changed")); }
             if parent.starts_with(objects.owner.canonical_path()) { return Err(invalid("restore destination overlaps private Root")); }
-            let prepared = PreparedRestore { head: checkout.head, source_revision: current.revision, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
+            let prepared = PreparedRestore { head: checkout.head, source_revision: current.revision, history_cut, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
             let key = request.key()?;
             let encoded = serde_json::to_string(&request)?;
             let data = serde_json::to_string(&prepared)?;

@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
+[`CheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
 namespace and original `RecoveryRef` to Root-owned history capture and recovery.
 The [service adapter](src/owner/checkpoints.rs) exposes explicit management methods
 with Host admission, original receipt authorization and bounded subscription reads.

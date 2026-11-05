@@ -19,6 +19,11 @@
 
 use super::*;
 
+fn workspace(mut input: Value, consistency: &str) -> Value {
+    input["workspaceConsistency"] = json!(consistency);
+    input
+}
+
 async fn mutate(f: &Fixture, method: &str, input: Value, id: Uuid) -> (RecoveryRef, Value) {
     let client = f.app.client();
     let prepared = client
@@ -58,16 +63,22 @@ async fn workspace_checkpoint_restores_same_session_and_runs_next_turn_then_cas(
         let session = f.create("Restore workspace").await;
         std::fs::write(f.workspace.join("answer.txt"), "checkpoint file").unwrap();
         turn(&f, &listener, &session, "checkpoint history").await;
-        let original = json!({"history":input(&f,&session,Value::Null).await,"workspaceConsistency":"unverified"});
-        let (publication_ref,value) = mutate(&f,"publishSessionCheckpoint",original.clone(),Uuid::new_v4()).await;
-        assert_eq!(value["warning"],"external_writers_not_fenced");
-        assert_eq!(value["workspaceConsistency"],"unverified");
-        let head = value["publication"]["state"]["head"].clone();
+        let original = workspace(input(&f,&session,Value::Null).await, "unverified");
+        let (publication_ref,value) = mutate(&f,"publishCheckpoint",original.clone(),Uuid::new_v4()).await;
+        assert_eq!(value["workspace"]["warning"],"external_writers_not_fenced");
+        assert_eq!(value["workspace"]["consistency"],"unverified");
+        let head = value["state"]["head"].clone();
         std::fs::write(f.workspace.join("answer.txt"), "source modified later").unwrap();
-        let roots = f.query("directories", json!({"kind":"roots"})).await.unwrap();
+
         let restore_input = json!({"checkpoint":{"sessionId":session,"revision":head["revision"]},
-            "parent":roots["roots"][1]["selection"],"permissions":{"access":"workspace_write","requestPermissions":true},
+            "parent":f.workspace,"permissions":{"access":"workspace_write","requestPermissions":true},
             "backend":model_backend(&f.selection().await),"acceptExternalWritersRisk":true});
+        let observed = f.query("observe", json!({"sessionId":session})).await.unwrap();
+        let marked = f.mutation(2,"markRead",json!({"sessionId":session,"messageId":observed["session"]["tailMessageId"]}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(marked["kind"],"observed");
+        let current = f.query("observe", json!({"sessionId":session})).await.unwrap();
+        let changed = f.mutation(2,"metadata",json!({"sessionId":session,"expectedRevision":current["session"]["revision"],"title":"Renamed after checkpoint","labels":[],"pinned":true}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(changed["kind"],"committed");
         let operation = Uuid::new_v4();
         let (restore_ref,result) = mutate(&f,"restoreSessionCheckpoint",restore_input.clone(),operation).await;
         assert_eq!(result["sessionId"],session);
@@ -79,15 +90,18 @@ async fn workspace_checkpoint_restores_same_session_and_runs_next_turn_then_cas(
         let active = f.owner.session(&session).await.unwrap();
         assert_eq!(active.configuration.workspace.path,result["path"].as_str().unwrap());
         assert_eq!(f.mutation(2,"restoreSessionCheckpoint",restore_input.clone(),operation).await.unwrap(),result);
+        let repeated = f.mutation(2,"restoreSessionCheckpoint",restore_input.clone(),Uuid::new_v4()).await.unwrap();
+        assert_ne!(repeated["path"], result["path"]);
+        assert_eq!(repeated["head"], head);
         turn(&f,&listener,&session,"continued after workspace restore").await;
         let history=f.query("history",json!({"sessionId":session,"position":{"kind":"tail"}})).await.unwrap().to_string();
         assert!(history.contains("checkpoint history") && history.contains("continued after workspace restore"));
-        let next = f.mutation(2,"publishSessionCheckpoint",json!({"history":input(&f,&session,head["revision"].clone()).await,"workspaceConsistency":"caller_confirmed_quiescent"}),Uuid::new_v4()).await.unwrap();
-        assert_eq!(next["publication"]["state"]["kind"],"published", "{next}");
-        assert_ne!(next["publication"]["state"]["head"]["revision"], head["revision"]);
-        assert_eq!(f.query("historyCheckpointHead",json!({"sessionId":session})).await.unwrap(),next["publication"]["state"]["head"]);
+        let next = f.mutation(2,"publishCheckpoint",workspace(input(&f,&session,head["revision"].clone()).await, "caller_confirmed_quiescent"),Uuid::new_v4()).await.unwrap();
+        assert_eq!(next["state"]["kind"],"published", "{next}");
+        assert_ne!(next["state"]["head"]["revision"], head["revision"]);
+        assert_eq!(f.query("historyCheckpointHead",json!({"sessionId":session})).await.unwrap(),next["state"]["head"]);
         assert!(f.mutation(2,"restoreSessionCheckpoint",restore_input.clone(),Uuid::new_v4()).await.is_err());
-        assert_eq!(f.query("sessionCheckpointReceipt",json!({"reference":publication_ref,"input":original})).await.unwrap()["checkpoint"],value);
+        assert_eq!(f.query("checkpointReceipt",json!({"reference":publication_ref,"input":original})).await.unwrap()["publication"],value);
         let parent=target.parent().unwrap();
         std::fs::rename(parent,parent.with_file_name("moved-restored-parent")).unwrap();
         assert_eq!(f.query("sessionCheckpointRestoreReceipt",json!({"reference":restore_ref,"input":restore_input})).await.unwrap()["restore"],result);
@@ -108,7 +122,7 @@ async fn workspace_checkpoint_requires_explicit_consistency_and_rejects_advanced
     assert!(
         f.mutation(
             2,
-            "publishSessionCheckpoint",
+            "publishCheckpoint",
             json!({"history":history}),
             Uuid::new_v4()
         )
@@ -118,18 +132,14 @@ async fn workspace_checkpoint_requires_explicit_consistency_and_rejects_advanced
     let value = f
         .mutation(
             2,
-            "publishSessionCheckpoint",
-            json!({"history":history,"workspaceConsistency":"caller_confirmed_quiescent"}),
+            "publishCheckpoint",
+            workspace(history, "caller_confirmed_quiescent"),
             Uuid::new_v4(),
         )
         .await
         .unwrap();
     turn(&f, &listener, &session, "newer history").await;
-    let roots = f
-        .query("directories", json!({"kind":"roots"}))
-        .await
-        .unwrap();
-    let request = json!({"checkpoint":{"sessionId":session,"revision":value["publication"]["state"]["head"]["revision"]},"parent":roots["roots"][1]["selection"],"permissions":{"access":"read_only","requestPermissions":true},"backend":model_backend(&f.selection().await),"acceptExternalWritersRisk":true});
+    let request = json!({"checkpoint":{"sessionId":session,"revision":value["state"]["head"]["revision"]},"parent":f.workspace,"permissions":{"access":"read_only","requestPermissions":true},"backend":model_backend(&f.selection().await),"acceptExternalWritersRisk":true});
     assert!(
         f.mutation(2, "restoreSessionCheckpoint", request, Uuid::new_v4())
             .await
@@ -160,23 +170,16 @@ async fn workspace_restore_rejects_an_inflight_goal_producer() {
     let value = f
         .mutation(
             2,
-            "publishSessionCheckpoint",
-            json!({
-                "history":input(&f,&session,Value::Null).await,
-                "workspaceConsistency":"unverified"
-            }),
+            "publishCheckpoint",
+            workspace(input(&f, &session, Value::Null).await, "unverified"),
             Uuid::new_v4(),
         )
         .await
         .unwrap();
-    let roots = f
-        .query("directories", json!({"kind":"roots"}))
-        .await
-        .unwrap();
-    let request = json!({"checkpoint":{"sessionId":session,"revision":value["publication"]["state"]["head"]["revision"]},"parent":roots["roots"][1]["selection"],"permissions":{"access":"read_only","requestPermissions":true},"backend":model_backend(&f.selection().await),"acceptExternalWritersRisk":true});
+    let request = json!({"checkpoint":{"sessionId":session,"revision":value["state"]["head"]["revision"]},"parent":f.workspace,"permissions":{"access":"read_only","requestPermissions":true},"backend":model_backend(&f.selection().await),"acceptExternalWritersRisk":true});
     // A Goal producer can be admitted before restore takes the native runs gate,
     // yet not have written its first durable record. Its own gate must exclude restore.
-    let producer = f.owner.goals.gate.lock().await;
+    let producer = f.owner.goals.admissions.ordered(&session).await;
     let result = tokio::time::timeout(
         Duration::from_secs(10),
         f.mutation(
@@ -206,5 +209,62 @@ async fn workspace_restore_rejects_an_inflight_goal_producer() {
     f.mutation(2, "restoreSessionCheckpoint", request, Uuid::new_v4())
         .await
         .unwrap();
+    close(&f).await;
+}
+
+#[tokio::test]
+async fn checkpoint_admission_excludes_shared_workspaces_without_stalling_other_sessions() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let f = Fixture::new(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        None,
+    )
+    .await;
+    let a = f.create("Checkpoint A").await;
+    let shared = f.create("Shared workspace").await;
+    let roots = f
+        .query("directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let b = f.mutation(2,"create",json!({"title":"Unrelated B","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+    let shared_producer = f.owner.runs.ordered(&shared).await;
+    assert!(f.owner.checkpoint_admission(&a).await.is_err());
+    drop(shared_producer);
+    let producer_b = f.owner.goals.admissions.ordered(&b).await;
+    let (admission, _) = f.owner.checkpoint_admission(&a).await.unwrap();
+    assert!(f.owner.session(&a).await.is_err());
+    assert!(f.owner.session(&shared).await.is_err());
+    assert!(f.owner.checkpoint_admission(&shared).await.is_err());
+    drop(producer_b);
+    let (other_checkpoint, _) = f.owner.checkpoint_admission(&b).await.unwrap();
+    drop(other_checkpoint);
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        turn(&f, &listener, &b, "B progresses during A checkpoint"),
+    )
+    .await
+    .unwrap();
+    let current = f.query("observe", json!({"sessionId":b})).await.unwrap();
+    let changed = f.mutation(2,"metadata",json!({"sessionId":b,"expectedRevision":current["session"]["revision"],"title":"B still writable","labels":[]}),Uuid::new_v4()).await.unwrap();
+    assert_eq!(changed["kind"], "committed");
+    drop(admission);
+    assert!(f.owner.session(&shared).await.is_ok());
+    // An admitted run in a distinct directory must not block A's capture.
+    f.send(&b).await.unwrap();
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(15), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let result = f
+        .mutation(
+            2,
+            "publishCheckpoint",
+            workspace(input(&f, &a, Value::Null).await, "unverified"),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["state"]["kind"], "published");
+    drop(stream);
     close(&f).await;
 }

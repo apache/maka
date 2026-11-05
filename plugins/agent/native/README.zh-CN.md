@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
+[`CheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
 和原 `RecoveryRef` 绑定到 Root 持有的历史捕获与恢复流程。
 [服务适配层](src/owner/checkpoints.rs)通过 Host 准入、原操作回执授权和有界订阅读取提供显式管理方法。
 领域回执可确认 checkpoint 成功，但不伪造通用 Host 的清理确认。

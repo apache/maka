@@ -134,6 +134,24 @@ impl StagedBundle {
         }
     }
 
+    pub(crate) async fn history_cut(&mut self, session: &str) -> Result<String, StoreError> {
+        use futures_util::TryStreamExt;
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut rows = sqlx::query_scalar::<_, i64>(
+            "SELECT DISTINCT CAST(json_extract(record_json,'$.sequence') AS INTEGER) AS sequence
+             FROM frames WHERE
+             (json_extract(record_json,'$.kind')='member' AND json_extract(record_json,'$.session')=?1)
+             OR (json_extract(record_json,'$.kind')='event' AND
+                 json_extract(json_extract(record_json,'$.json'),'$.invocation.session_id')=?1)
+             ORDER BY sequence"
+        ).bind(session).fetch(&mut self.database);
+        while let Some(sequence) = rows.try_next().await? {
+            hash.update(crate::sequence_number(sequence)?.to_le_bytes());
+        }
+        Ok(hex::encode(hash.finalize()))
+    }
+
     pub fn summary(&self) -> &BundleSummary {
         &self.summary
     }

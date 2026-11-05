@@ -33,6 +33,7 @@ pub struct RestoreOperation {
 pub struct PreparedRestore {
     pub head: Head,
     pub source_revision: u64,
+    pub history_cut: String,
     pub workspace: WorkspaceSnapshot,
     pub path: std::path::PathBuf,
 }

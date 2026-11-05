@@ -47,6 +47,12 @@ impl Objects {
         File::open(owner.canonical_path())?.sync_all()?;
         Ok(Self { owner, directory })
     }
+    pub(super) fn existing(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
+        let directory = owner.canonical_path().join("history-checkpoints");
+        let objects = Self { owner, directory };
+        objects.validate()?;
+        Ok(objects)
+    }
     fn validate(&self) -> Result<(), StoreError> {
         self.owner.validate_current()?;
         for path in [
@@ -178,80 +184,6 @@ impl Objects {
     }
     pub(super) fn root_id(&self) -> &str {
         self.owner.root_id()
-    }
-
-    pub(super) fn inspection_workspace(
-        &self,
-        key: &str,
-        snapshot: &crate::checkpoints::WorkspaceSnapshot,
-    ) -> Result<PathBuf, StoreError> {
-        self.validate()?;
-        if !crate::checkpoints::valid_digest(key) {
-            return Err(invalid("invalid inspection key"));
-        }
-        let base = self.directory.join("inspections");
-        root::private_directory(&base)?;
-        let marker = base.join(format!("{key}.workspace-owner"));
-        let bytes = serde_json::to_vec(&(self.root_id(), key, snapshot))?;
-        // Publish the small ownership marker atomically; a killed write must not
-        // leave a truncated marker that poisons recovery of the original load.
-        let preparing = base.join(format!("{key}.workspace-owner-preparing"));
-        match fs::symlink_metadata(&preparing) {
-            Ok(m) if m.is_file() => fs::remove_file(&preparing)?,
-            Ok(_) => {
-                return Err(invalid(
-                    "checkpoint workspace marker staging is not regular",
-                ));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = options.open(&preparing)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        match fs::hard_link(&preparing, &marker) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut file = open_regular(&marker)?;
-                let mut actual = Vec::new();
-                Read::by_ref(&mut file)
-                    .take(bytes.len() as u64 + 1)
-                    .read_to_end(&mut actual)?;
-                if actual != bytes {
-                    return Err(invalid("checkpoint workspace owner differs"));
-                }
-            }
-            Err(e) => return Err(e.into()),
-        }
-        fs::remove_file(preparing)?;
-        File::open(&base)?.sync_all()?;
-        let target = base.join(format!("{key}.workspace"));
-        if target.try_exists()? {
-            if !fs::symlink_metadata(&target)?.is_dir() {
-                return Err(invalid("checkpoint workspace is not a directory"));
-            }
-            return Ok(target);
-        }
-        let staging = base.join(format!("{key}.workspace-preparing"));
-        match fs::symlink_metadata(&staging) {
-            Ok(m) if m.is_dir() => fs::remove_dir_all(&staging)?,
-            Ok(_) => return Err(invalid("checkpoint workspace staging is not owned")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        root::private_directory(&staging)?;
-        super::workspace::materialize(self, snapshot, &staging)?;
-        fs::rename(&staging, &target)?;
-        File::open(&base)?.sync_all()?;
-        Ok(target)
     }
 }
 fn open_regular(path: &Path) -> Result<File, StoreError> {

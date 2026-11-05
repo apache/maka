@@ -130,28 +130,48 @@ impl HistoryCheckpoints {
         .await
     }
 
-    pub async fn loaded_artifact(
+    /// Stream through one read-only inspection connection, with bounded chunks.
+    pub async fn stream_loaded_artifact<F, Fut>(
         &self,
         operation: Uuid,
         session: String,
         artifact: String,
         offset: u64,
-    ) -> Result<
-        Option<(
-            maka_agent_facts::artifact::Artifact,
-            crate::artifacts::ArtifactChunk,
-        )>,
-        StoreError,
-    > {
+        mut emit: F,
+    ) -> Result<(), StoreError>
+    where
+        F: FnMut(
+                Option<(
+                    maka_agent_facts::artifact::Artifact,
+                    u64,
+                    crate::artifacts::ArtifactChunk,
+                )>,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<(), StoreError>> + Send + 'static,
+    {
         self.with_loaded(operation, session.clone(), move |log, _| async move {
             let Some(record) = log.get_artifact(&session, &artifact).await?.record else {
-                return Ok(None);
+                return emit(None).await;
             };
-            let chunk = log
-                .read_artifact_chunk(&session, &artifact, offset, 32 * 1024)
-                .await?
-                .ok_or_else(|| invalid("inspection artifact payload missing"))?;
-            Ok(Some((record, chunk)))
+            let mut offset = offset;
+            loop {
+                let chunk = log
+                    .read_artifact_chunk(&session, &artifact, offset, 32 * 1024)
+                    .await?
+                    .ok_or_else(|| invalid("inspection artifact payload missing"))?;
+                let next = offset + chunk.bytes.len() as u64;
+                let done = next >= chunk.total_bytes;
+                if !done && next == offset {
+                    return Err(invalid("inspection artifact made no progress"));
+                }
+                emit(Some((record.clone(), offset, chunk))).await?;
+                if done {
+                    return Ok(());
+                }
+                offset = next;
+            }
         })
         .await
     }
@@ -170,9 +190,9 @@ impl HistoryCheckpoints {
         let key = load_key(&self.scope, self.session.id(), operation)?;
         let log = self.session.scoped().await?;
         let gates = self.session.gates.clone();
-        worker(log, gates.clone(), move |log, objects| async move {
+        read_worker(log, gates.clone(), move |log, objects| async move {
             let _pin = gates
-                .write([gates::Key::CheckpointLoad(key.clone())])
+                .read([gates::Key::CheckpointLoad(key.clone())])
                 .await?;
             let (request, loaded) = read(&log, key)
                 .await?
@@ -180,6 +200,7 @@ impl HistoryCheckpoints {
             let LoadState::Ready {
                 ref session_ids,
                 through,
+                ref transfer_digest,
                 ..
             } = loaded.state
             else {
@@ -188,9 +209,20 @@ impl HistoryCheckpoints {
             if !session_ids.contains(&session) {
                 return Err(StoreError::SessionNotFound);
             }
-            let target = destination(&objects, &request, false).await?;
+            let path = objects.inspection(&request.key()?, false)?;
+            let target = Arc::new(
+                EventLog::open_checkpoint_inspection(&path, objects.owner.clone(), through).await?,
+            );
             let result = async {
-                verify_receipt(&target, &objects, &request, &loaded).await?;
+                let receipt = target
+                    .bundle_import_receipt(transfer_digest, &request.binding()?)
+                    .await?
+                    .ok_or_else(|| invalid("checkpoint inspection import receipt missing"))?;
+                if receipt.root_session_id != request.session_id
+                    || &receipt.session_ids != session_ids
+                {
+                    return Err(invalid("checkpoint inspection inventory differs"));
+                }
                 action(target.clone(), through).await
             }
             .await;
@@ -354,18 +386,12 @@ fn manifest(
     loaded: &LoadedCheckpoint,
 ) -> Result<Manifest, StoreError> {
     let value = objects.manifest(&loaded.head.manifest)?;
-    let (Manifest::NativeHistory {
+    let Manifest {
         root_id,
         scope,
         inventory,
         ..
-    }
-    | Manifest::NativeSession {
-        root_id,
-        scope,
-        inventory,
-        ..
-    }) = &value;
+    } = &value;
     if loaded.head.revision != request.load.revision
         || root_id != objects.root_id()
         || scope != &request.scope
@@ -381,16 +407,11 @@ async fn verify_receipt(
     request: &LoadRequest,
     loaded: &LoadedCheckpoint,
 ) -> Result<(), StoreError> {
-    let (Manifest::NativeHistory {
+    let Manifest {
         transfer_digest,
         inventory,
         ..
-    }
-    | Manifest::NativeSession {
-        transfer_digest,
-        inventory,
-        ..
-    }) = manifest(objects, request, loaded)?;
+    } = manifest(objects, request, loaded)?;
     let receipt = target
         .bundle_import_receipt(&transfer_digest, &request.binding()?)
         .await?
@@ -417,18 +438,12 @@ async fn resume(
     let workspace = source.workspace().cloned();
     if let Some(snapshot) = &workspace {
         super::workspace::verify(objects, snapshot)?;
-        objects.inspection_workspace(&request.key()?, snapshot)?;
     }
-    let (Manifest::NativeHistory {
+    let Manifest {
         inventory,
         transfer_digest,
         ..
-    }
-    | Manifest::NativeSession {
-        inventory,
-        transfer_digest,
-        ..
-    }) = &source;
+    } = &source;
     let target = destination(objects, request, true).await?;
     let result = async {
         if target.bundle_import_receipt(transfer_digest, &request.binding()?).await?.is_none() {
@@ -465,6 +480,7 @@ async fn resume(
         Ok(LoadState::Ready {
             session_ids: inventory.sessions.iter().map(|s| s.id.clone()).collect(),
             through: target.committed_sequence().await?,
+            transfer_digest: transfer_digest.clone(),
             workspace,
         })
     }.await;

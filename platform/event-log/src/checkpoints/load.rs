@@ -35,7 +35,7 @@ pub enum LoadState {
     Ready {
         session_ids: Vec<String>,
         through: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transfer_digest: String,
         workspace: Option<WorkspaceSnapshot>,
     },
     Unavailable,

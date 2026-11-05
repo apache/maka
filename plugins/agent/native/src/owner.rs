@@ -173,6 +173,7 @@ struct Control {
 }
 #[derive(Default)]
 struct Runs {
+    checkpoints: Arc<std::sync::Mutex<BTreeMap<String, std::path::PathBuf>>>,
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, CancellationToken>,
@@ -181,7 +182,9 @@ struct Runs {
 }
 impl Runs {
     fn busy(&self, session: &str) -> bool {
-        self.controls.contains_key(session) || self.preparing.contains_key(session)
+        self.controls.contains_key(session)
+            || self.preparing.contains_key(session)
+            || self.checkpoints.lock().unwrap().contains_key(session)
     }
 }
 struct CreationPolicy {
@@ -734,13 +737,23 @@ impl Owner {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
+        if self.runs.checkpointed(id) {
+            return Err("agent_checkpoint_busy".into());
+        }
         let session = self
             .store
             .get_session::<StoredSessionConfiguration>(id)
             .await
             .map_err(|_| "agent_store_unavailable".to_owned())?
             .ok_or("agent_session_unavailable")?;
-        resolve_session(session)
+        let session = resolve_session(session)?;
+        if !self.runs.workspace_available(
+            id,
+            std::path::Path::new(&session.configuration.workspace.path),
+        ) {
+            return Err("agent_checkpoint_busy".into());
+        }
+        Ok(session)
     }
     pub(crate) fn caller_store(
         &self,
@@ -977,7 +990,17 @@ impl Owner {
         })
     }
     pub async fn mark_read(&self, input: MarkRead) -> Result<MarkReadResult, String> {
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MarkReadResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MarkReadResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MarkReadResult::Rejected {
                 reason: Rejection::Closed,
@@ -1030,7 +1053,17 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(MetadataResult::Rejected { reason });
         }
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::Closed,

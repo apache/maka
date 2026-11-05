@@ -82,26 +82,9 @@ impl Owner {
                 if !input.accept_external_writers_risk {
                     return Err("agent_checkpoint_external_writers_not_fenced".into());
                 }
-                let runs = owner
-                    .runs
-                    .clone()
-                    .try_lock_owned()
-                    .map_err(|_| "agent_checkpoint_busy")?;
-                if runs.closing
-                    || !runs.controls.is_empty()
-                    || !runs.preparing.is_empty()
-                    || !runs.retained_cleanup.is_empty()
-                {
-                    return Err("agent_checkpoint_busy".into());
-                }
-                // A producer admitted before the runs gate may not have saved
-                // its Goal yet. Do not wait here: producers also need runs.
-                let goal_producer = owner
-                    .goals
-                    .gate
-                    .try_lock()
-                    .map_err(|_| "agent_checkpoint_busy")?;
-                let session = owner.session(&input.checkpoint.session_id).await?;
+                let (admission, session) = owner
+                    .checkpoint_admission(&input.checkpoint.session_id)
+                    .await?;
                 if owner.behavior.is_some()
                     || session.archived
                     || session.configuration.parent_session_id.is_some()
@@ -125,9 +108,29 @@ impl Owner {
                     return Err("agent_checkpoint_backend_unavailable".into());
                 }
                 let root = owner.store.owned_root().map_err(failure)?;
+                let path = std::path::PathBuf::from(&input.parent);
+                if !path.is_absolute() {
+                    return Err("agent_directory_unavailable".into());
+                }
+                let path = tokio::task::spawn_blocking(move || path.canonicalize())
+                    .await
+                    .map_err(|_| "agent_directory_unavailable")?
+                    .map_err(|_| "agent_directory_unavailable")?;
+                if path.starts_with(root.control_directory())
+                    || path.starts_with(&owner.managed_worktrees)
+                {
+                    return Err("agent_directory_unavailable".into());
+                }
+                let selection = workspace::selection_at(
+                    owner.workspace_roots.clone(),
+                    path.to_string_lossy().into_owned(),
+                    root.canonical_path().to_owned(),
+                )
+                .await?
+                .ok_or("agent_directory_unavailable")?;
                 let parent = workspace::observed(
                     owner.workspace_roots.clone(),
-                    input.parent.clone(),
+                    selection,
                     root.canonical_path().to_owned(),
                 )
                 .await?
@@ -137,7 +140,7 @@ impl Owner {
                     fingerprint,
                     revision: storage::Revision(input.checkpoint.revision),
                     parent: parent.path.into(),
-                    parent_identity: input.parent.directory_identity.clone(),
+                    parent_identity: parent.selection.directory_identity,
                 };
                 let prepared = repository
                     .prepare_workspace_restore(request.clone())
@@ -190,8 +193,7 @@ impl Owner {
                     .await
                     .map(restored)
                     .map_err(failure);
-                drop(goal_producer);
-                drop(runs);
+                drop(admission);
                 result
             })
         })

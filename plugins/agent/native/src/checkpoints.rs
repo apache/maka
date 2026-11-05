@@ -28,7 +28,7 @@ use maka_plugin_core::operation::RecoveryRef;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct HistoryCheckpointPublisher {
+pub struct CheckpointPublisher {
     store: Arc<RootStore>,
     scope: Scope,
     prefix: String,
@@ -42,7 +42,7 @@ pub struct Capture {
     pub workspace: Option<maka_event_log::checkpoints::WorkspaceCapture>,
 }
 
-impl HistoryCheckpointPublisher {
+impl CheckpointPublisher {
     /// Called by trusted native assembly, never with model-authored scope.
     pub fn new(store: Arc<RootStore>, scope: Scope, coordinator: bool) -> Self {
         let prefix = maka_agent_authority::session_namespace(
@@ -79,12 +79,7 @@ impl HistoryCheckpointPublisher {
             || operation.source.deployment != self.scope.deployment
             || operation.namespace != self.scope.namespace
             || operation.export != maka_agent_api::EXPORT
-            || operation.method
-                != if capture.workspace.is_some() {
-                    "publishSessionCheckpoint"
-                } else {
-                    "publishHistoryCheckpoint"
-                }
+            || operation.method != "publishCheckpoint"
         {
             return Err(StoreError::InvalidTransition(
                 "checkpoint operation belongs to another authority".into(),
@@ -208,7 +203,7 @@ mod tests {
             deployment: Uuid::from_u128(1),
             namespace: InstanceId(vec![Uuid::from_u128(2)]),
         };
-        let publisher = HistoryCheckpointPublisher::new(store.clone(), scope.clone(), false);
+        let publisher = CheckpointPublisher::new(store.clone(), scope.clone(), false);
         let id = format!("{}{}", publisher.prefix, "1".repeat(32));
         store
             .create_session(&id, "create", &serde_json::json!({}), 1)
@@ -228,7 +223,7 @@ mod tests {
             },
             namespace: scope.namespace,
             export: maka_agent_api::EXPORT.into(),
-            method: "publishHistoryCheckpoint".into(),
+            method: "publishCheckpoint".into(),
             operation: Uuid::from_u128(3),
             fingerprint: format!("sha256-{}", "b".repeat(64)),
             contract: RecoveryContract {

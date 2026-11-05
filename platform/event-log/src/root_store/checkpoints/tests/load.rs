@@ -270,3 +270,60 @@ async fn load_process_death_recovers_original_target_at_each_publication_boundar
         store.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn inspection_reads_share_admission_and_do_not_take_a_writer_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, handle, publish) = fixture(dir.path()).await;
+    let head = published(&handle.publish(publish).await.unwrap());
+    let input = request(head.revision);
+    handle.load_exact(input.clone()).await.unwrap();
+    let key = LoadRequest {
+        scope: scope(),
+        session_id: "source".into(),
+        load: input.clone(),
+    }
+    .key()
+    .unwrap();
+    let objects = Objects::existing(store.owned_root().unwrap()).unwrap();
+    let database = objects.inspection(&key, false).unwrap();
+    let mut lock = database.as_os_str().to_os_string();
+    lock.push(".writer.lock");
+    let lease = crate::root::FileLease::acquire(Path::new(&lock)).unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let reader = handle.clone();
+    let (e, r) = (entered.clone(), release.clone());
+    let task = tokio::spawn(async move {
+        reader
+            .stream_loaded_artifact(
+                input.operation,
+                "source".into(),
+                "missing".into(),
+                0,
+                move |value| {
+                    let (e, r) = (e.clone(), r.clone());
+                    async move {
+                        assert!(value.is_none());
+                        e.notify_one();
+                        r.notified().await;
+                        Ok(())
+                    }
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    let read = tokio::time::timeout(
+        Duration::from_secs(10),
+        handle.loaded_history(input.operation, "source".into(), Position::Tail, false),
+    )
+    .await;
+    release.notify_one();
+    task.await.unwrap().unwrap();
+    read.unwrap().unwrap();
+    drop(lease);
+    store.close().await.unwrap();
+}

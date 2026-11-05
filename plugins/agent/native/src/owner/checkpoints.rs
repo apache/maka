@@ -22,7 +22,7 @@ use super::*;
 mod load;
 mod restore;
 mod session;
-use crate::checkpoints::{Capture, HistoryCheckpointPublisher};
+use crate::checkpoints::{Capture, CheckpointPublisher};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_capabilities::call::Scope;
 use maka_event_log::{StoreError, checkpoints as storage};
@@ -30,9 +30,90 @@ use maka_host_runtime::application::Context;
 use maka_plugin_core::operation::RecoveryRef;
 use tokio::io::AsyncReadExt;
 
+pub(super) struct CheckpointAdmission {
+    _session: runs::Ordered,
+    _goal: runs::Ordered,
+    _workspace: runs::Checkpoint,
+}
+
 impl Owner {
-    fn history_checkpoints(&self) -> HistoryCheckpointPublisher {
-        HistoryCheckpointPublisher::new(
+    pub(super) async fn checkpoint_admission(
+        self: &Arc<Self>,
+        id: &str,
+    ) -> Result<(CheckpointAdmission, SessionRecord<ResolvedConfiguration>), String> {
+        let goal = self
+            .goals
+            .admissions
+            .try_ordered(id)
+            .map_err(|_| "agent_checkpoint_busy")?;
+        let ordered = self
+            .runs
+            .try_ordered(id)
+            .map_err(|_| "agent_checkpoint_busy")?;
+        let runs = self.runs.state().await;
+        if runs.closing || runs.busy(id) || runs.retained_cleanup.contains(id) {
+            return Err("agent_checkpoint_busy".into());
+        }
+        let session = self.session(id).await?;
+        let path = std::path::PathBuf::from(&session.configuration.workspace.path);
+        let mut active = runs
+            .controls
+            .keys()
+            .chain(runs.preparing.keys())
+            .chain(runs.retained_cleanup.iter())
+            .cloned()
+            .chain(self.runs.ordered_sessions())
+            .chain(self.goals.admissions.ordered_sessions())
+            .filter(|active| active != id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut after = None;
+        loop {
+            let pending = self
+                .store
+                .pending_message_sessions(&self.prefix, after.as_deref())
+                .await
+                .map_err(|_| "agent_store_unavailable")?;
+            if pending.is_empty() {
+                break;
+            }
+            after = pending.last().cloned();
+            active.extend(pending.into_iter().filter(|active| active != id));
+        }
+        for active in active {
+            // Existing checkpoint reservations are compared atomically below.
+            if self.runs.checkpointed(&active) {
+                continue;
+            }
+            let other = resolve_session(
+                self.store
+                    .get_session::<StoredSessionConfiguration>(&active)
+                    .await
+                    .map_err(|_| "agent_store_unavailable")?
+                    .ok_or("agent_session_unavailable")?,
+            )?;
+            if runs::overlaps(
+                &path,
+                std::path::Path::new(&other.configuration.workspace.path),
+            ) {
+                return Err("agent_checkpoint_busy".into());
+            }
+        }
+        let workspace = self.runs.checkpoint(id, path)?;
+        drop(runs);
+        Ok((
+            CheckpointAdmission {
+                _session: ordered,
+                _goal: goal,
+                _workspace: workspace,
+            },
+            session,
+        ))
+    }
+}
+
+impl Owner {
+    fn history_checkpoints(&self) -> CheckpointPublisher {
+        CheckpointPublisher::new(
             self.store.clone(),
             storage::Scope {
                 state_domain: self.data_source.state_domain.clone(),
@@ -68,27 +149,6 @@ impl Owner {
         .await
     }
 
-    pub async fn publish_history_checkpoint(
-        self: &Arc<Self>,
-        input: HistoryCheckpointPublish,
-        operation: &RecoveryRef,
-        scope: &Scope,
-    ) -> Result<HistoryCheckpointPublication, String> {
-        management(scope)?;
-        let operation = operation.clone();
-        self.resource_work(scope, move |owner, _| {
-            Box::pin(async move {
-                owner
-                    .history_checkpoints()
-                    .publish(capture(input), &operation)
-                    .await
-                    .map(publication)
-                    .map_err(failure)
-            })
-        })
-        .await
-    }
-
     pub async fn history_checkpoint_head(
         self: &Arc<Self>,
         input: SessionRead,
@@ -103,42 +163,6 @@ impl Owner {
                     .await
                     .map(|value| value.map(head))
                     .map_err(failure)
-            })
-        })
-        .await
-    }
-
-    pub async fn history_checkpoint_receipt(
-        self: &Arc<Self>,
-        input: HistoryCheckpointReceiptRead,
-        context: Context,
-    ) -> Result<HistoryCheckpointReceipt, String> {
-        management(context.scope())?;
-        let scope = context.scope().clone();
-        self.resource_work(&scope, move |owner, _| {
-            Box::pin(async move {
-                let publisher = owner.history_checkpoints();
-                let capture = capture(input.input);
-                // Validate domain identity before invoking the separately authorized Host lookup.
-                publisher
-                    .validate_request(&capture, &input.reference)
-                    .map_err(failure)?;
-                let operation = context.recover(input.reference.clone())?.await?;
-                let publication = if operation.is_some() {
-                    publisher
-                        .receipt(capture, &input.reference)
-                        .await
-                        .map_err(failure)?
-                        .map(publication)
-                } else {
-                    None
-                };
-                // Host cleanup and a committed domain result are different facts. In
-                // particular a lookup must never manufacture an original DispatchClaim.
-                Ok(HistoryCheckpointReceipt {
-                    operation,
-                    publication,
-                })
             })
         })
         .await
@@ -163,34 +187,21 @@ impl Owner {
                     .workspace()
                     .cloned()
                     .map(workspace_snapshot);
-                let (storage::Manifest::NativeHistory {
+                let storage::Manifest {
                     inventory: members,
                     bundle,
                     ..
-                }
-                | storage::Manifest::NativeSession {
-                    inventory: members,
-                    bundle,
-                    ..
-                }) = checkout.manifest;
+                } = checkout.manifest;
                 let expected = bundle.clone();
                 emit(
                     &context,
                     &owner,
                     &scope,
-                    if let Some(workspace) = workspace {
-                        HistoryCheckpointFrame::NativeSessionV1 {
-                            head: head(checkout.head),
-                            inventory: inventory(members),
-                            bundle: object(bundle),
-                            workspace,
-                        }
-                    } else {
-                        HistoryCheckpointFrame::NativeHistoryV1 {
-                            head: head(checkout.head),
-                            inventory: inventory(members),
-                            bundle: object(bundle),
-                        }
+                    HistoryCheckpointFrame::Checkpoint {
+                        head: head(checkout.head),
+                        inventory: inventory(members),
+                        bundle: object(bundle),
+                        workspace,
                     },
                 )
                 .await?;
@@ -262,7 +273,7 @@ async fn emit(
         .emit(serde_json::to_value(frame).map_err(|_| "agent_history_checkpoint_output_invalid")?)
         .await
 }
-fn capture(input: HistoryCheckpointPublish) -> Capture {
+fn capture(input: CheckpointPublish) -> Capture {
     Capture {
         session_id: input.session_id,
         expected_checkpoint_revision: input.expected_revision.map(storage::Revision),
@@ -309,7 +320,7 @@ fn inventory(value: maka_event_log::bundle::Inventory) -> HistoryCheckpointInven
             .collect(),
     }
 }
-fn publication(value: storage::Publication) -> HistoryCheckpointPublication {
+fn publication(value: storage::Publication) -> CheckpointPublication {
     let state = match value.state {
         storage::PublicationState::Capturing => HistoryCheckpointState::Capturing,
         storage::PublicationState::Prepared { .. } => HistoryCheckpointState::Prepared,
@@ -322,9 +333,10 @@ fn publication(value: storage::Publication) -> HistoryCheckpointPublication {
         storage::PublicationState::Interrupted => HistoryCheckpointState::Interrupted,
         storage::PublicationState::Unavailable { .. } => HistoryCheckpointState::Unavailable,
     };
-    HistoryCheckpointPublication {
+    CheckpointPublication {
         state,
         cleanup_pending: value.cleanup_pending,
+        workspace: None,
     }
 }
 fn failure(error: StoreError) -> String {

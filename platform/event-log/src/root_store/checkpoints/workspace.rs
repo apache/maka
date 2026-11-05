@@ -32,14 +32,9 @@ use std::{
 #[cfg(test)]
 thread_local! { pub(super) static AFTER_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
 
-const MAX_ENTRIES: usize = 20_000;
-const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_INVENTORY: u64 = 16 * 1024 * 1024;
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Inventory {
-    version: u32,
     entries: Vec<WorkspaceEntry>,
 }
 
@@ -77,9 +72,6 @@ fn secret(name: &str) -> bool {
             name.as_str(),
             ".ssh" | ".aws" | ".gnupg" | "credentials.json" | "id_rsa" | "id_ed25519"
         )
-        || name.ends_with(".key")
-        || name.ends_with(".pem")
-        || name.ends_with(".p12")
 }
 
 fn stamp(meta: &cap_std::fs::Metadata) -> Result<String, StoreError> {
@@ -108,50 +100,52 @@ fn stamp(meta: &cap_std::fs::Metadata) -> Result<String, StoreError> {
     }
 }
 
-fn scan(
-    dir: &Dir,
-    prefix: &str,
-    output: &mut BTreeMap<String, String>,
-    depth: usize,
-) -> Result<(), StoreError> {
-    if depth > 64 {
-        return Err(invalid("checkpoint workspace depth limit"));
-    }
-    for entry in dir.entries()? {
-        let entry = entry?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| invalid("non-UTF8 checkpoint workspace path"))?;
-        if excluded(&name) {
+fn scan(dir: &Dir, root: &Path) -> Result<BTreeMap<String, String>, StoreError> {
+    // The repository controls what belongs to its workspace. The capability
+    // handle is still used to open every selected path without following links.
+    let walk = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .parents(false)
+        .git_global(false)
+        .require_git(false)
+        .follow_links(false)
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || entry
+                    .file_name()
+                    .to_str()
+                    .is_none_or(|name| !excluded(name) && !secret(name))
+        })
+        .build();
+    let mut output = BTreeMap::new();
+    for entry in walk {
+        let entry =
+            entry.map_err(|error| invalid(format!("checkpoint workspace scan: {error}")))?;
+        if let Some(error) = entry.error() {
+            return Err(invalid(format!(
+                "checkpoint workspace ignore rules: {error}"
+            )));
+        }
+        if entry.depth() == 0 {
             continue;
         }
-        if secret(&name) {
-            return Err(invalid(
-                "checkpoint workspace contains an excluded secret path",
-            ));
-        }
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        relative(&path)?;
-        if output.len() >= MAX_ENTRIES {
-            return Err(invalid("checkpoint workspace entry limit"));
-        }
-        let metadata = dir.symlink_metadata(&name)?;
+        let path = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| invalid("checkpoint workspace path escaped root"))?
+            .to_str()
+            .ok_or_else(|| invalid("non-UTF8 checkpoint workspace path"))?;
+        relative(path)?;
+        let (parent, name) = parent(dir, path)?;
+        let metadata = parent.symlink_metadata(&name)?;
         if !metadata.is_dir() && !metadata.is_file() {
             return Err(invalid(
                 "checkpoint workspace links and special files are unsupported",
             ));
         }
-        output.insert(path.clone(), stamp(&metadata)?);
-        if metadata.is_dir() {
-            scan(&dir.open_dir_nofollow(&name)?, &path, output, depth + 1)?;
-        }
+        output.insert(path.to_owned(), stamp(&metadata)?);
     }
-    Ok(())
+    Ok(output)
 }
 
 fn parent(dir: &Dir, path: &str) -> Result<(Dir, String), StoreError> {
@@ -180,8 +174,7 @@ pub(super) fn capture(
     }
     let dir = Dir::open_ambient_dir(&source_path, cap_std::ambient_authority())?;
     let before_root = stamp(&dir.dir_metadata()?)?;
-    let mut before = BTreeMap::new();
-    scan(&dir, "", &mut before, 0)?;
+    let before = scan(&dir, &source_path)?;
     #[cfg(test)]
     AFTER_SCAN.with(|hook| {
         if let Some(action) = hook.borrow_mut().take() {
@@ -189,12 +182,7 @@ pub(super) fn capture(
         }
     });
     let mut entries = Vec::new();
-    let mut total = 0u64;
-    let start = std::time::Instant::now();
     for (path, expected) in &before {
-        if start.elapsed() > std::time::Duration::from_secs(120) {
-            return Err(invalid("checkpoint workspace capture deadline"));
-        }
         objects.owner.validate_current()?;
         let (parent, name) = parent(&dir, path)?;
         let metadata = parent.symlink_metadata(&name)?;
@@ -220,16 +208,12 @@ pub(super) fn capture(
         let mut copied = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
-            if start.elapsed() > std::time::Duration::from_secs(120) {
-                return Err(invalid("checkpoint workspace capture deadline"));
-            }
             let n = file.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
             copied += n as u64;
-            total += n as u64;
-            if total > MAX_BYTES || copied > metadata.len() {
+            if copied > metadata.len() {
                 return Err(invalid("checkpoint workspace size limit or source change"));
             }
             staged.write_all(&buffer[..n])?;
@@ -258,8 +242,7 @@ pub(super) fn capture(
             executable,
         });
     }
-    let mut after = BTreeMap::new();
-    scan(&dir, "", &mut after, 0)?;
+    let after = scan(&dir, &source_path)?;
     let named = Dir::open_ambient_dir(&source.root, cap_std::ambient_authority())?;
     if before != after
         || before_root != stamp(&dir.dir_metadata()?)?
@@ -267,13 +250,7 @@ pub(super) fn capture(
     {
         return Err(invalid("checkpoint workspace changed during capture"));
     }
-    let encoded = serde_json::to_vec(&Inventory {
-        version: 1,
-        entries,
-    })?;
-    if encoded.len() as u64 > MAX_INVENTORY {
-        return Err(invalid("checkpoint workspace inventory limit"));
-    }
+    let encoded = serde_json::to_vec(&Inventory { entries })?;
     let mut file = objects.create(request, "workspace")?;
     file.write_all(&encoded)?;
     file.sync_all()?;
@@ -289,13 +266,7 @@ pub(super) fn inventory(
     objects: &Objects,
     snapshot: &WorkspaceSnapshot,
 ) -> Result<Vec<WorkspaceEntry>, StoreError> {
-    if snapshot.inventory.bytes > MAX_INVENTORY {
-        return Err(invalid("checkpoint workspace inventory limit"));
-    }
     let inventory: Inventory = serde_json::from_reader(objects.read(&snapshot.inventory)?)?;
-    if inventory.version != 1 || inventory.entries.len() > MAX_ENTRIES {
-        return Err(invalid("unsupported checkpoint workspace inventory"));
-    }
     let mut paths = BTreeSet::new();
     let mut directories = BTreeSet::new();
     let mut total = 0u64;
@@ -321,9 +292,6 @@ pub(super) fn inventory(
                 total = total
                     .checked_add(object.bytes)
                     .ok_or_else(|| invalid("checkpoint workspace size overflow"))?;
-                if total > MAX_BYTES {
-                    return Err(invalid("checkpoint workspace size limit"));
-                }
             }
         }
     }
@@ -339,15 +307,7 @@ pub(super) fn verify(objects: &Objects, snapshot: &WorkspaceSnapshot) -> Result<
     Ok(())
 }
 
-/// The caller supplies an exclusively owned, empty destination; never a user project.
-pub(super) fn materialize(
-    objects: &Objects,
-    snapshot: &WorkspaceSnapshot,
-    destination: &Path,
-) -> Result<(), StoreError> {
-    let dir = Dir::open_ambient_dir(destination, cap_std::ambient_authority())?;
-    materialize_in(objects, snapshot, &dir)
-}
+/// The caller supplies an exclusively owned, empty destination.
 pub(super) fn materialize_in(
     objects: &Objects,
     snapshot: &WorkspaceSnapshot,

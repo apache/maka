@@ -214,18 +214,12 @@ async fn checkout(
         .filter(|head| head.revision == revision)
         .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
     let manifest = objects.manifest(&head.manifest)?;
-    let (Manifest::NativeHistory {
+    let Manifest {
         root_id,
         scope: origin,
         inventory,
         ..
-    }
-    | Manifest::NativeSession {
-        root_id,
-        scope: origin,
-        inventory,
-        ..
-    }) = &manifest;
+    } = &manifest;
     if root_id != objects.root_id() || origin != &scope || inventory.root_session_id != session {
         return Err(invalid("history checkpoint origin differs"));
     }
@@ -269,26 +263,37 @@ async fn capture(
     drop(file);
     let bundle = objects.publish(&objects.staging(request, "bundle")?)?;
     boundary("payload");
-    let manifest = if let Some(source) = &request.publication.workspace {
-        let workspace = workspace::capture(objects, request, source)?;
-        Manifest::NativeSession {
-            root_id: objects.root_id().into(),
-            scope: request.scope.clone(),
-            inventory: summary.inventory,
-            bundle,
-            transfer_digest: summary.digest,
-            workspace,
+    let mut staged = StagedBundle::read(tokio::fs::File::from_std(objects.read(&bundle)?))
+        .await
+        .map_err(bundle_error)?;
+    let validated = async {
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.summary().inventory != summary.inventory
+            || staged.summary().digest != summary.digest
+        {
+            return Err(invalid("checkpoint captured bundle differs"));
         }
-    } else {
-        Manifest::NativeHistory {
-            root_id: objects.root_id().into(),
-            scope: request.scope.clone(),
-            inventory: summary.inventory,
-            bundle,
-            transfer_digest: summary.digest,
-        }
+        staged.history_cut(&request.session_id).await
+    }
+    .await;
+    let closed = staged.close().await.map_err(bundle_error);
+    let history_cut = validated?;
+    closed?;
+    let workspace = request
+        .publication
+        .workspace
+        .as_ref()
+        .map(|source| workspace::capture(objects, request, source))
+        .transpose()?;
+    let manifest = Manifest {
+        root_id: objects.root_id().into(),
+        scope: request.scope.clone(),
+        inventory: summary.inventory,
+        bundle,
+        transfer_digest: summary.digest,
+        history_cut,
+        workspace,
     };
-    validate_bundle(objects, &manifest).await?;
     objects.publish_manifest(request, &manifest)
 }
 
@@ -296,18 +301,12 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
     if let Some(workspace) = manifest.workspace() {
         workspace::verify(objects, workspace)?;
     }
-    let (Manifest::NativeHistory {
+    let Manifest {
         inventory,
         bundle,
         transfer_digest,
         ..
-    }
-    | Manifest::NativeSession {
-        inventory,
-        bundle,
-        transfer_digest,
-        ..
-    }) = manifest;
+    } = manifest;
     let file = tokio::fs::File::from_std(objects.read(bundle)?);
     let mut staged = StagedBundle::read(file).await.map_err(bundle_error)?;
     let result = async {
@@ -317,7 +316,11 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
         {
             return Err(invalid("checkpoint manifest and bundle differ"));
         }
-        staged.validate_history().await.map_err(bundle_error)
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.history_cut(&inventory.root_session_id).await? != manifest.history_cut {
+            return Err(invalid("checkpoint history cut differs from bundle"));
+        }
+        Ok(())
     }
     .await;
     let closed = staged.close().await.map_err(bundle_error);
@@ -330,18 +333,12 @@ async fn verify(
     reference: &ObjectRef,
 ) -> Result<(), StoreError> {
     let manifest = objects.manifest(reference)?;
-    let (Manifest::NativeHistory {
+    let Manifest {
         root_id,
         scope,
         inventory,
         ..
-    }
-    | Manifest::NativeSession {
-        root_id,
-        scope,
-        inventory,
-        ..
-    }) = &manifest;
+    } = &manifest;
     if root_id != objects.root_id()
         || scope != &request.scope
         || inventory.root_session_id != request.session_id
@@ -423,6 +420,33 @@ where
     F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
+    physical_worker(log, gates, Objects::open, action).await
+}
+
+async fn read_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
+    physical_worker(log, gates, Objects::existing, action).await
+}
+
+async fn physical_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    open: fn(Arc<root::RootOwner>) -> Result<Objects, StoreError>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
     let root = log.owned_root()?;
     gates.start_work()?;
     let mut work = PhysicalWork {
@@ -439,7 +463,7 @@ where
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let objects = Objects::open(root)?;
+                let objects = open(root)?;
                 runtime.block_on(action(log, objects))
             })();
             work.complete = true;

@@ -207,6 +207,41 @@ enum OpenPurpose {
 }
 
 impl EventLog {
+    /// A completed checkpoint inspection is immutable and never enters execution.
+    /// The caller holds its shared checkpoint gate through the physical close.
+    async fn open_checkpoint_inspection(
+        path: &Path,
+        root: Arc<root::RootOwner>,
+        through: u64,
+    ) -> Result<Self, StoreError> {
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        match std::fs::metadata(Path::new(&wal)) {
+            Ok(metadata) if metadata.len() != 0 => return Err(StoreError::WriterBusy),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let connection = OwnedConnection::open(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(false)
+                .read_only(true)
+                .immutable(true)
+                .query_planner_stability(true),
+            ConnectionAuthority::Root(root.clone()),
+            application_inspection::initialize,
+        )
+        .await?;
+        Ok(Self {
+            expected_session: None,
+            connection,
+            root_owner: Some(root),
+            commits: commits::CommitHub::new(through),
+            shell_changes: tokio::sync::broadcast::channel(256).0,
+        })
+    }
+
     /// Observe canonical SQLite actors.
     pub async fn sqlite_resource_stats(
         &self,

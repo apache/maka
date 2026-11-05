@@ -74,10 +74,18 @@ async fn exact_load_reads_frozen_history_and_artifacts_without_changing_live_ses
         assert_eq!(artifacts["artifacts"].as_array().unwrap().len(),1);
         let artifact=&artifacts["artifacts"][0];assert_eq!(artifact["name"],"before.txt");
         let mut actual=Vec::new();
-        while actual.len()<bytes.len() {
-            let chunk=f.query("loadedHistoryCheckpointArtifact",json!({"inspection":inspection,"sessionId":session,"artifactId":artifact["id"],"offset":actual.len()})).await.unwrap();
-            let chunk=STANDARD.decode(chunk["data"].as_str().unwrap()).unwrap();assert!(chunk.len()<=32768);actual.extend(chunk);
+        let mut stream = f.app.client().subscribe(f.binding(2).await,
+            "loadedHistoryCheckpointArtifact".into(),
+            json!({"inspection":inspection,"sessionId":session,"artifactId":artifact["id"],"offset":0}),
+            scope(&f.issuer,true), Attachments::new().into()).await.unwrap();
+        while let Some(chunk) = stream.recv().await {
+            assert_eq!(chunk["offset"], actual.len());
+            let chunk=STANDARD.decode(chunk["data"].as_str().unwrap()).unwrap();
+            assert!(chunk.len()<=32768); actual.extend(chunk);
         }
+        let completion = stream.completion().await;
+        completion.cleanup.unwrap();
+        assert_eq!(completion.result.unwrap(), Value::Null);
         assert_eq!(actual,bytes);
         let current=published(publish(&f,input(&f,&session,head["revision"].clone()).await,Uuid::new_v4()).await.1);
         assert_ne!(current["state"]["head"],head);

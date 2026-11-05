@@ -1890,12 +1890,12 @@ pub fn contract() -> Contract {
                     method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
                 ),
                 (
-                    "publishHistoryCheckpoint".into(),
-                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                    "publishCheckpoint".into(),
+                    method::<CheckpointPublish, CheckpointPublication>(MethodMode::Mutation),
                 ),
                 (
-                    "historyCheckpointReceipt".into(),
-                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                    "checkpointReceipt".into(),
+                    method::<CheckpointReceiptRead, CheckpointReceipt>(MethodMode::Query),
                 ),
                 (
                     "historyCheckpointHead".into(),
@@ -1908,12 +1908,10 @@ pub fn contract() -> Contract {
                 ("loadHistoryCheckpoint".into(), method::<HistoryCheckpointRead, CheckpointLoad>(MethodMode::Mutation)),
                 ("restoreSessionCheckpoint".into(), method::<SessionCheckpointRestore, SessionCheckpointRestored>(MethodMode::Mutation)),
                 ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
-                ("publishSessionCheckpoint".into(), method::<SessionCheckpointPublish, SessionCheckpointPublication>(MethodMode::Mutation)),
-                ("sessionCheckpointReceipt".into(), method::<SessionCheckpointReceiptRead, SessionCheckpointReceipt>(MethodMode::Query)),
                 ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
                 ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
                 ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
-                ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
                     "fork".into(),
                     method::<Fork, ForkResult>(MethodMode::Mutation),

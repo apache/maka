@@ -369,19 +369,6 @@ impl Handler for Agent {
                         .preview_history_checkpoint(decode(input)?, context.scope())
                         .await?,
                 ),
-                "publishHistoryCheckpoint" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .publish_history_checkpoint(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
-                "historyCheckpointReceipt" => encode(
-                    owner
-                        .history_checkpoint_receipt(decode(input)?, context)
-                        .await?,
-                ),
                 "historyCheckpointHead" => encode(
                     owner
                         .history_checkpoint_head(decode(input)?, context.scope())
@@ -411,19 +398,17 @@ impl Handler for Agent {
                         .session_checkpoint_restore_receipt(decode(input)?, context)
                         .await?,
                 ),
-                "publishSessionCheckpoint" => {
+                "publishCheckpoint" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
                         owner
-                            .publish_session_checkpoint(decode(input)?, operation, context.scope())
+                            .publish_checkpoint(decode(input)?, operation, context.scope())
                             .await?,
                     )
                 }
-                "sessionCheckpointReceipt" => encode(
-                    owner
-                        .session_checkpoint_receipt(decode(input)?, context)
-                        .await?,
-                ),
+                "checkpointReceipt" => {
+                    encode(owner.checkpoint_receipt(decode(input)?, context).await?)
+                }
                 "historyCheckpointLoadReceipt" => encode(
                     owner
                         .history_checkpoint_load_receipt(decode(input)?, context)
@@ -439,11 +424,11 @@ impl Handler for Agent {
                         .loaded_checkpoint_artifacts(decode(input)?, context.scope())
                         .await?,
                 ),
-                "loadedHistoryCheckpointArtifact" => checkpoint_output(
+                "loadedHistoryCheckpointArtifact" => {
                     owner
-                        .loaded_checkpoint_artifact(decode(input)?, context.scope())
-                        .await?,
-                ),
+                        .loaded_checkpoint_artifact(decode(input)?, context)
+                        .await
+                }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
