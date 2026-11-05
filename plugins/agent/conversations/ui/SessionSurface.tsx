@@ -976,6 +976,17 @@ export function createConversationUi(
         if (owns() && files.length)
           stagePending(async () => ({ files: await host.stageFiles(files) }));
       },
+      dropFiles(files: string[], onText: (text: string) => void) {
+        if (owns() && files.length)
+          stagePending(async () => {
+            const selection = await host.stageDroppedFiles(files);
+            try {
+              return { files: selection.files(), text: selection.text };
+            } finally {
+              selection.dispose();
+            }
+          }, onText);
+      },
       pasteClipboard(onText: (text: string) => void) {
         if (owns())
           stagePending(async () => {
