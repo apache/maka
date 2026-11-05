@@ -30,23 +30,3 @@ When updating the dependency, verify its behavior before replacing or removing t
 ## `pele@1.13.0`
 
 The synchronous `render()` API works without a DOM, but the package's shared declarations also reference browser-only `HTMLElement` and `Node` types. The declaration-only patch resolves those types from `globalThis` when available, and to `never` otherwise. It does not add DOM globals, change runtime code, or relax the UI's library checks. Recheck native and browser type compatibility when upgrading Pele.
-
-## `@botiverse/oar@0.86.0`
-
-Backports [OAR #620](https://github.com/botiverse/oar/pull/620) at
-[`73ae3ad2bb62f674f4070e3a47a1722075776dea`](https://github.com/botiverse/oar/commit/73ae3ad2bb62f674f4070e3a47a1722075776dea)
-to the pinned npm package, without upgrading the shared ACP kernel or dependencies.
-The patch includes the generated JavaScript, declarations and corresponding maps.
-
-Antigravity discovers the official `agy` CLI on PATH or in `~/.local/bin` and
-uses `agy acp` for model discovery and sessions. It plans Google's documented
-CLI installer through OAR's existing installation contract. Native `agy` login
-and credentials remain vendor-owned. Existing standalone-server overrides retain
-their original launch arguments and registry update checks; the CLI update query
-explicitly reports unavailable rather than compare unrelated release versions.
-
-When OAR publishes this fix, upgrade the pin and remove this patch after checking
-CLI discovery, model/effort readback, execution, resume, cleanup and installation
-plans. `scripts/oar/antigravity.test.mjs` verifies the installed package and the
-actual product worker bundle with local protocol fixtures, without vendor login
-or installation.

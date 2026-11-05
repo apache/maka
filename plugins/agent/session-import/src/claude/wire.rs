@@ -135,6 +135,17 @@ pub(super) enum Block {
     Other,
 }
 impl Content {
+    pub fn instructions(&self) -> bool {
+        match self {
+            Self::Text(text) => crate::synthetic::instructions(text),
+            Self::Blocks(blocks) => {
+                blocks
+                    .iter()
+                    .all(|block| matches!(block, Block::Text { .. }))
+                    && crate::synthetic::instructions(&self.text())
+            }
+        }
+    }
     pub fn has_results(&self) -> bool {
         matches!(self, Self::Blocks(blocks) if blocks.iter().any(|block| matches!(block, Block::ToolResult { .. })))
     }

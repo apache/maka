@@ -533,4 +533,216 @@ async fn inherited_archives_remain_scoped_to_their_copied_owner() {
     log.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history() {
+    use maka_agent_facts::{
+        execution::{
+            ApprovalPolicy, BehaviorId, CollaborationMode, InvocationConfiguration, SandboxMode,
+            ToolMode, WorkspaceOrigin,
+        },
+        executor::Binding,
+        read::{MAX_PAGE_CHARS, ResourceAddress},
+        session::{CopyPurpose, ForkPosition},
+        tool_call::ToolOrigin,
+        tool_output::DurableToolProjection,
+    };
+    use maka_event_log::sessions::{SessionCopy, SessionCopyResult};
+
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("host_sdk_archive.sqlite"))
+        .await
+        .unwrap();
+    for id in ["session", "other"] {
+        log.create_session(id, id, &json!({}), 1).await.unwrap();
+    }
+    log.append(&event(
+        "exec-run",
+        Fact::InvocationOpened {
+            configuration: Some(Box::new(InvocationConfiguration {
+                language: maka_agent_facts::language::Language::En,
+                compaction_prompt: None,
+                workspace_origin: WorkspaceOrigin::Selected,
+                approval_policy: ApprovalPolicy::OnRequest,
+                boundary_revision: 0,
+                cwd: directory.path().to_string_lossy().into_owned(),
+                workspace_binding: None,
+                workspace_identity: None,
+                model: None,
+                editing_tools: None,
+                tool_discovery: false,
+                tool_composition: None,
+                system_prompt: None,
+                thinking_level: None,
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                collaboration_mode: CollaborationMode::Agent,
+                orchestration_mode: BehaviorId::default(),
+                tool_mode: ToolMode::Direct,
+                code_language: Default::default(),
+            })),
+            input: InvocationInput::Message {
+                source_messages: Vec::new(),
+                content: "run host tool".into(),
+                request_fingerprint: None,
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&event(
+        "exec-run",
+        Fact::ExecutorStarted {
+            binding: Binding {
+                executor_id: "external".to_owned().try_into().unwrap(),
+                package_id: "fixture_package".into(),
+                entry_id: "external".into(),
+                activation: "fixture_activation".into(),
+            },
+            settings: Default::default(),
+        },
+    ))
+    .await
+    .unwrap();
+    let payload = (1..=400)
+        .map(|line| format!("line-{line:03}: {}\n", "x".repeat(32)))
+        .collect::<String>();
+    let call = ToolCallIdentity {
+        tool_call_id: "host-call".into(),
+        origin: ToolOrigin::HostSdk {
+            package_id: "fixture_package".into(),
+            entry_id: "external".into(),
+            activation: "fixture_activation".into(),
+            parent: None,
+        },
+    };
+    let dispatch = event(
+        "exec-run",
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "host-op".into(),
+            call,
+            name: "Recall".into(),
+            input: json!({"query":"external"}),
+        },
+    );
+    let root_id = uuid::Uuid::new_v4().to_string();
+    let (settled, _) = EventWrite::tool_success(
+        root_id.clone(),
+        std::time::SystemTime::now(),
+        dispatch.event().invocation.clone(),
+        "host-op".into(),
+        ToolSuccess::from(json!(payload)),
+    )
+    .unwrap();
+    log.append(&dispatch).await.unwrap();
+    log.append(&settled).await.unwrap();
+    log.append(&event(
+        "exec-run",
+        Fact::ExecutorCompleted {
+            text: "done".into(),
+        },
+    ))
+    .await
+    .unwrap();
+    end(&log, "exec-run").await;
+
+    let short_prefix = &root_id[..12];
+    for prefix in [root_id.as_str(), short_prefix] {
+        assert_eq!(
+            log.resolve_read_resource("session", ResourceAddress::ToolResult(prefix.into()))
+                .await
+                .unwrap(),
+            Some(ResourceAddress::ToolResult(root_id.clone()))
+        );
+    }
+    assert_eq!(
+        log.resolve_read_resource("other", ResourceAddress::ToolResult(short_prefix.into()))
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        log.read_tool_result("other", &root_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let result = log
+        .read_tool_result("session", &root_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.tool_name, "Recall");
+    assert_eq!(
+        result.serialized_result,
+        serde_json::to_string(&payload).unwrap()
+    );
+    let placeholder = ArchivedPlaceholder::prepare(
+        root_id.clone(),
+        "host-call".into(),
+        "Recall".into(),
+        &DurableToolProjection::Json {
+            value: json!(payload),
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!placeholder.page.partial_line);
+    let mut content = placeholder.page.content.clone();
+    let mut next = placeholder.page.next;
+    assert!(next.is_some());
+    while let Some(request) = next {
+        let page = request
+            .resolve()
+            .unwrap()
+            .tool_result_page(&result.tool_name, &result.serialized_result, MAX_PAGE_CHARS)
+            .unwrap();
+        assert!(!page.partial_line);
+        // Complete-line pages omit their separating newline.
+        content.push('\n');
+        content.push_str(&page.content);
+        next = page.next;
+    }
+    assert_eq!(content, payload);
+    let revision = log
+        .get_session::<serde_json::Value>("session")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    assert!(matches!(
+        log.copy_session(
+            SessionCopy {
+                source_session_id: "session".into(),
+                target_session_id: "copied".into(),
+                expected_source_revision: revision,
+                purpose: CopyPurpose::Branch {
+                    position: ForkPosition::End,
+                    side_conversation: false
+                },
+            },
+            &json!({}),
+            2
+        )
+        .await
+        .unwrap(),
+        SessionCopyResult::Committed(_)
+    ));
+    assert_eq!(
+        log.resolve_read_resource("copied", ResourceAddress::ToolResult(short_prefix.into()))
+            .await
+            .unwrap(),
+        Some(ResourceAddress::ToolResult(root_id.clone()))
+    );
+    assert_eq!(
+        log.read_tool_result("copied", &root_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .serialized_result,
+        result.serialized_result
+    );
+    log.close().await.unwrap();
+}
+
 mod automatic;

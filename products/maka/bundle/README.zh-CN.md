@@ -45,31 +45,35 @@
 
 侧栏会话菜单中的**子会话**在独立、适应窗口大小的弹窗中显示后代树。展开箭头按需读取直接子会话，跨工作区且包含归档会话；点击标题打开对应会话。树沿用不可变的 `parentSessionId` 创建关系，而非 fork 的历史来源。深层树可横向滚动，长分支通过现有会话目录分页加载。
 
-### OAR 执行
+### 原生外部执行
 
-OAR 由 Agent 安装配置显式启用：在编写的安装配置中设置 `agent.oar: {}`，或通过部署差量设置 Agent 实例的 `oar` 配置；省略或设为 `null` 时关闭。分发的 `maka-oar-worker` 从 Maka 可执行文件同级目录定位；开发时可用 `executable` 和 `args` 指定 worker。
+在 `agent.external.runtimes`（Agent 实例的 `external` 配置）中逐项启用 CLI，例如 `{ "runtimes": { "codex": true } }`。仅支持 `antigravity`、`codex`、`claude`。配置省略或为 `null`、以及未选中的运行时都不会启动外部进程。`external.commands` 可分别覆盖 CLI 可执行文件、参数和环境。安装和登录请使用原生 CLI；Maka 不再分发 agent SDK、不代装 CLI、不迁移凭据。
 
-开发构建可使用官方 Deno 模板；发行构建必须使用本仓受控的 denort/V8，不回退官方模板。发行许可门禁按精确 target 将实际 runtime 许可正文与已审正文逐字比较；缺少审核记录或正文变化都会失败。
+Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
 
-启用 OAR 表示接受外部 agent 自身的默认权限和原生工具，不改变 Code Mode、Computer Use、普通插件或原生模型的工具权限。外部执行器不能满足会话显式收窄的 Host 工具列表。外部轮次执行期间的后续消息进入 Maka 可编辑队列；Stop 等待 OAR dispose 和 worker 实际退出。清理无法确认时会明确报错，不自动重发 prompt。
+内置 `external` executor 直接使用 agy ACP、Codex app-server 和 Claude Code 交互式 PTY。agy 与 Claude 使用 `--dangerously-skip-permissions`，Codex 使用 `never` 审批和完全访问 sandbox。Claude 包括模型发现都不使用 `-p`/`--print`，不做静默执行回退；不支持的初始化或原生能力明确报错。CLI 保留 Maka 沙箱之外的原生工具和权限；Host 工具仍遵守 Maka 捕获的授权、原始回执和清理规则。
 
-例如，可用以下 `backend` 选择外部模型：
+例如：
 
 ```json
 {
   "kind": "executor",
   "selection": {
-    "executor": "oar",
-    "settings": { "runtime": "codex", "model": "gpt-6-astra", "thinkingLevel": "high" }
+    "executor": "external",
+    "settings": { "runtime": "codex", "model": "gpt-6-luna", "thinkingLevel": "high" }
   }
 }
 ```
 
-已安装模型和推理档位字符串来自固定版本的 OAR runtime，不来自 Settings connection。安装不自动发生：可信应用调用者可对 Agent 调用 `oarSetup` mutation，先传 `{ "runtime": "codex", "action": { "kind": "probe" } }`，再显式使用 `plan` 或 `install`（可传 `line`）。只调用 OAR 自带的安装 API，不支持的操作仍返回不支持；不另接 registry 安装器、不迁移凭证，也不自动更新 OAR。
+模型与推理档位来自原生协议，不来自 Settings connection。Claude 提供其已配置的原生默认模型，不启动 headless 发现进程。外部发现失败不会丢弃原生模型；目录读取和单模型校验共享有界缓存，刷新会使缓存失效。发现使用 Agent 配置的第一个工作区根目录。
 
-切换执行来源时，Maka 只补充新轮次之前尚未交付的规范可读历史，限定为近期 64 KiB / 128 个片段，缺口和局部片段会明确标注。这些是上下文，不是工具请求重放，也不是提供者私有状态的无损复制；不包含 thinking 或历史附件内容。连续使用同一 OAR runtime 时恢复原生会话，不重复交付已有历史。当前 runtime 模型发现使用 Agent 配置的第一个工作区根目录，而非每个会话的目录。
+提交提示之前先持久化原生会话 ID 和运行中栅栏。后续 invocation 恢复同一原生会话；切换来源仅补充尚未交付的规范可读历史（最多 8 MiB 可读正文／64 MiB 编码源数据），明确标注缺口，不重放历史工具、thinking 或历史附件内容。executor 只读取当前 `maka.agent.external` journal 格式；存储与配置迁移是离线操作，不在激活时执行兼容分支。
 
-附件从 Maka 拥有的不可变上传材料读取：支持 UTF-8 文本/JSON 和 PNG/JPEG/GIF/WebP 图片，其他媒体明确拒绝。恢复原生 agent 会话时不会静默重放历史附件。
+后续消息通过 Maka 可编辑队列持久接纳。Codex 和 Claude 运行中默认接受 steering；Unix 上 Antigravity 在原操作与进程结算后，通过软中断在同一原生 conversation 中启动新的 Host invocation 续接。显式 `delivery: "queue"` 从不中断。Stop 关闭 Host 工具准入、请求取消，等待已准入原操作结算，再确认原生进程与输出流收尾。静默、Stop hook、EOF 或退出码零都不证明成功；Claude 的本轮 JSONL 结束记录必须结合 API 错误标记判断。清理无法确认时不自动重发提示。
+
+当前上传支持 UTF-8 文本/JSON，以及原生模型支持的 PNG/JPEG/GIF/WebP 图片。Claude 交互 PTY 粘贴不可变图片路径并等待原生图片确认；Antigravity 接收有序路径与媒体类型。
+
+同一 Host 激活期间，MCP 地址与私有配置路径跨 invocation 保持稳定。工具定义在每轮内部不可变，结算后可刷新。接入初始化仅做一次；说明内容不变时不重复，变更或清空时在下个任务前明确交付。每个 invocation 仍使用新凭据、自己的权限与原操作回执。Host 重启会重绑本地 endpoint，不重复已完成的初始化。Windows 启动命令须使用原生 `.exe`，或显式 `node.exe` 加 CLI 脚本参数；不支持 `.cmd`／`.bat` 启动脚本。
 
 ## 运行与开发
 

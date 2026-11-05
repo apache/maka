@@ -43,6 +43,7 @@ runs:
           target/CACHEDIR.TAG
           target/**/.fingerprint
           target/**/build
+          target/**/gn_out
           target/**/deps/*.*
           !target/**/deps/*.exe
         key: ${{ inputs.key }}

@@ -369,7 +369,7 @@ impl Converter {
             .clone()
     }
     fn user(&mut self, text: String, line: u64) -> Option<Content> {
-        if text.is_empty() {
+        if text.is_empty() || crate::synthetic::instructions(&text) {
             return None;
         }
         if !self.explicit_turn {

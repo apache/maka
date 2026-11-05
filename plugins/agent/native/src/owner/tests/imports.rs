@@ -268,3 +268,69 @@ async fn imports_reject_stale_sources_foreign_entries_and_replaced_physical_dire
     );
     fixture.app.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "Requires MAKA_TEST_CLAUDE_TRANSCRIPT from the real interactive MCP probe"]
+async fn imports_real_interactive_claude_transcript_through_preview_copy_and_history() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let original = std::path::PathBuf::from(std::env::var("MAKA_TEST_CLAUDE_TRANSCRIPT").expect("Set MAKA_TEST_CLAUDE_TRANSCRIPT to the captured native JSONL"));
+        let session_id = original.file_stem().unwrap().to_str().unwrap();
+        let bytes = std::fs::read(&original).unwrap();
+        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let captured = fixture.workspace.join("projects/native-claude").join(format!("{session_id}.jsonl"));
+        std::fs::create_dir_all(captured.parent().unwrap()).unwrap();
+        std::fs::write(&captured, &bytes).unwrap();
+        let source = saved_source(&fixture, "claude_code", 0).await;
+        let page = catalog(&fixture, &source).await;
+        let entry = page["entries"].as_array().unwrap().iter().find(|entry| entry["id"] == session_id).expect("Native Claude session must be discoverable");
+        let review = preview(&fixture, &source, entry).await;
+        assert_eq!(review["kind"], "preview", "{review}");
+        assert!(review["preview"]["records"].as_u64().unwrap() >= 6, "{review}");
+        let destinations = fixture.query("directories", json!({"kind":"roots"})).await.unwrap();
+        let input = json!({"kind":"copy","selection":review["preview"]["selection"],"directory":destinations["roots"][1]["selection"],"title":"Real Claude Code via Codex Luna"});
+        let operation = Uuid::new_v4();
+        let imported = fixture.mutation(2, "import", input.clone(), operation).await.unwrap();
+        assert_eq!(imported["kind"], "imported", "{imported}");
+        let copied = imported["session"]["id"].as_str().unwrap();
+        assert_eq!(imported["session"]["workspace"]["path"], destinations["roots"][1]["path"]);
+        let history = fixture.query("history", json!({"sessionId":copied,"position":{"kind":"start"}})).await.unwrap();
+        let text = history.to_string();
+        for expected in ["CLAUDE_NATIVE_MCP_83b62f", "mcp__maka_probe__read_marker", "gpt-6-luna"] {
+            assert!(text.contains(expected), "Imported history must retain {expected}: {history}");
+        }
+        use maka_agent_facts::{event::Fact, import::Content};
+        let prefix = fixture.prefix(copied, 128, 1024 * 1024).await;
+        let records: Vec<_> = prefix.events.iter().filter_map(|row| match &row.event.fact {
+            Fact::MessageImported { record, .. } => Some(record),
+            _ => None,
+        }).collect();
+        let answers = records.iter().filter(|record| matches!(&record.content,
+            Content::Assistant { text, model, .. }
+                if text == "CLAUDE_NATIVE_MCP_83b62f" && model.as_deref() == Some("codex/gpt-6-luna")
+        )).count();
+        assert_eq!(answers, 3, "All three native replies, including the resumed turn, must retain model provenance");
+        for expected in ["Verification task.", "Without calling any tools,", "This process has resumed our saved conversation."] {
+            assert!(records.iter().any(|record| matches!(&record.content,
+                Content::User { text } if text.starts_with(expected)
+            )), "Missing original user turn: {expected}");
+        }
+        let mcp_call = records.iter().find_map(|record| match &record.content {
+            Content::ToolCall { call_id, name, .. } if name == "mcp__maka_probe__read_marker" => Some(call_id),
+            _ => None,
+        }).expect("Missing original MCP call");
+        assert!(records.iter().any(|record| matches!(&record.content,
+            Content::ToolResult { call_id, output, is_error: false }
+                if call_id == mcp_call && output.to_string().contains("CLAUDE_NATIVE_MCP_83b62f")
+        )), "Original MCP result must retain its call correlation");
+        println!("Imported {} native records; all three turns, requested model and correlated MCP result preserved", records.len());
+        assert!(fixture.session(copied).await.unfinished_invocations(0, 16).await.unwrap().invocations.is_empty());
+        assert!(fixture.store.pending_message_sessions(&fixture.owner.prefix, None).await.unwrap().is_empty());
+        assert_eq!(fixture.mutation(2, "import", input, operation).await.unwrap(), imported);
+        let copies = fixture.query("imports", json!({"kind":"copies","after":null})).await.unwrap();
+        assert_eq!(copies["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(std::fs::read(&captured).unwrap(), bytes);
+        println!("LIVE_CLAUDE_IMPORT_VERIFIED: catalog, preview, copy, native text/tool/model history, no execution, original receipt");
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

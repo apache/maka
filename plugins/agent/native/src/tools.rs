@@ -125,6 +125,8 @@ pub(crate) struct Catalog {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
+    pub host_tools: Vec<String>,
+    pub resource_reads: Vec<String>,
     pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
@@ -137,6 +139,8 @@ pub(crate) fn catalog(
     workers: tokio_util::task::TaskTracker,
 ) -> Result<Catalog, String> {
     let mut basis = Vec::new();
+    let mut host_tools = Vec::new();
+    let mut resource_reads = Vec::new();
     let file_contract = maka_workspace_api::files::contract();
     let editing: Vec<_> = selected
         .iter()
@@ -181,6 +185,24 @@ pub(crate) fn catalog(
             let Interface::Service { methods } = &binding.contract().interface else {
                 return Err("agent_tool_contract_invalid".to_owned());
             };
+            let contract = binding.contract();
+            let resource_read = contract == &file_contract && selection.method == "readText";
+            let supported = if contract == &maka_agent_api::contract::contract() {
+                matches!(selection.method.as_str(),
+                    "models" | "list" | "observe" | "history" | "create" | "fork" |
+                    "send" | "stop" | "resume" | "pendingInteractions" | "interaction" |
+                    "respond" | "queue" | "editQueue" | "work" | "execution")
+            } else {
+                resource_read || (contract == &maka_skills_api::contract() && matches!(selection.method.as_str(), "search" | "load"))
+                    || (contract == &maka_interactions_api::questions::contract() && selection.method == "ask")
+                    || contract == &maka_plugin_core::deployment::management::deployment_manager_contract()
+            };
+            if supported && selection.result == ToolResult::Json {
+                host_tools.push(selection.name.clone());
+                if resource_read {
+                    resource_reads.push(selection.name.clone());
+                }
+            }
             let method = methods
                 .get(&selection.method)
                 .ok_or("agent_tool_method_unavailable")?;
@@ -393,6 +415,8 @@ pub(crate) fn catalog(
         tools: catalog,
         basis,
         editing,
+        host_tools,
+        resource_reads,
         executor: Arc::new(ApprovalExecutor {
             services: native_services,
         }),

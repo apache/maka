@@ -228,7 +228,7 @@ async fn skill_candidates_work_with_preparation_only_library() {
     assert_eq!(page["skills"][12]["invocation"], "/skill:z-extra-11");
     let external = f.query("skillCandidates", json!({
         "sessionId":session,
-        "backend":{"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex"}}},
+        "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex"}}},
         "query":""
     })).await.unwrap();
     assert_eq!(external, json!({"revision":null,"skills":[]}));

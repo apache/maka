@@ -50,11 +50,11 @@ hooks.deregister();
 const native = { kind: 'model', connectionId: 'local', modelId: 'shared', thinkingLevel: null };
 const executor = {
   kind: 'executor',
-  selection: { executor: 'oar', settings: { runtime: 'codex', model: 'shared' } },
+  selection: { executor: 'external', settings: { runtime: 'codex', model: 'shared' } },
 };
 const choice = {
   selection: executor,
-  sourceName: 'OAR · Codex',
+  sourceName: 'Native CLI · Codex',
   label: 'Shared',
   thinkingLevels: ['provider-custom'],
   defaultThinkingLevel: 'provider-custom',
@@ -78,7 +78,7 @@ test('executor effort accepts provider-owned strings without losing its selectio
   assert.deepEqual(selected, {
     kind: 'executor',
     selection: {
-      executor: 'oar',
+      executor: 'external',
       settings: {
         runtime: 'codex',
         model: 'shared',
@@ -104,7 +104,7 @@ test('native effort retains the native contract and rejects executor-only effort
 });
 
 test('selection captions expose source and preserve unavailable selections', () => {
-  assert.equal(modelCaption(executor, { kind: 'ready', choice }), 'Shared · OAR · Codex');
+  assert.equal(modelCaption(executor, { kind: 'ready', choice }), 'Shared · Native CLI · Codex');
   assert.equal(modelCaption(executor, { kind: 'loading' }), 'shared');
   assert.equal(
     modelCaption(executor, { kind: 'unavailable', message: '' }),

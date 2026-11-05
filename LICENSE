@@ -230,20 +230,6 @@ https://github.com/image-rs/image-webp at revision
 Original license texts, source hashes and local changes are recorded in
 third-party/image-webp/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
-Open Agent Runtime (OAR) dependency patch
-
-Source: https://www.npmjs.com/package/@botiverse/oar/v/0.86.0
-Repository: https://github.com/botiverse/oar
-Version: 0.86.0
-Dependency patch: patches/@botiverse+oar+0.86.0.patch
-Upstream change: https://github.com/botiverse/oar/pull/620
-Revision: 73ae3ad2bb62f674f4070e3a47a1722075776dea
-License: Apache License 2.0 (the text above applies)
-
-Maka redistributes a patch to OAR's Antigravity adapter and its generated
-JavaScript, declarations and source maps. The patch supports the official
-agy acp entrypoint while preserving existing standalone-server launch paths.
-
 Zod dependency patch
 
 Source: https://www.npmjs.com/package/zod/v/4.6.7

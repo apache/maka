@@ -21,7 +21,6 @@ import { cleanup, signal } from 'nsh';
 import type {
   AgentExternalAgents,
   AgentExternalRuntime,
-  AgentOarSetupResult,
   DeploymentRef,
   SettingChange,
   ManagementResultForDeploymentRef,
@@ -40,50 +39,6 @@ type Target = {
 };
 type Basis = { source: DeploymentRef; targets: Target[] };
 export type ExternalAgentAction = { view: number };
-type Plan = {
-  runtime: string;
-  name: string;
-  line?: string;
-  basis: Basis;
-  steps: string[];
-  source: string;
-} & ({ kind: 'plan' } | { kind: 'unsupported'; detail: string });
-
-const record = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-function planResult(value: AgentOarSetupResult['result']) {
-  const steps = value.steps;
-  if (
-    steps !== undefined &&
-    (!Array.isArray(steps) ||
-      steps.some((step) => !record(step) || typeof step.display !== 'string'))
-  )
-    throw new UiError('Invalid external agent installation plan.');
-  const display = (steps ?? []) as { display: string }[];
-  const source = typeof value.source === 'string' ? value.source : '';
-  if (value.kind === 'unsupported')
-    return {
-      kind: 'unsupported' as const,
-      steps: display.map((step) => step.display),
-      source,
-      detail:
-        typeof value.detail === 'string' ? value.detail : String(value.reason ?? 'unsupported'),
-    };
-  if (
-    value.kind !== 'plan' ||
-    !Array.isArray(steps) ||
-    !source ||
-    value.network !== true ||
-    value.privileges !== false
-  )
-    throw new UiError('Invalid external agent installation plan.');
-  return {
-    kind: 'plan' as const,
-    steps: display.map((step) => step.display),
-    source,
-  };
-}
-
 export function createExternalAgentSettings(
   host: Host,
   agents: readonly UiService[],
@@ -101,8 +56,6 @@ export function createExternalAgentSettings(
   } | null>(null);
   const details = signal<string | null>(null);
   const failure = signal<string | null>(null);
-  const plan = signal<Plan | null>(null);
-  const lines = signal<Record<string, string>>({});
   const loading = signal(false);
   let alive = true;
   const view = signal(0);
@@ -149,9 +102,7 @@ export function createExternalAgentSettings(
     view.set(view() + 1);
     basis.set(null);
     confirmation.set(null);
-    plan.set(null);
     catalog.set(null);
-    lines.set({});
     details.set(null);
   };
   const load = async () => {
@@ -222,11 +173,6 @@ export function createExternalAgentSettings(
       const edits = original.targets.map(({ target, configured }) => {
         const changes: SettingChange[] = [];
         if (!configured) changes.push({ path: target.path as [string, ...string[]] });
-        if (enabled)
-          changes.push({
-            path: target.path.concat('enabled') as [string, ...string[]],
-            value: { kind: 'boolean', value: true },
-          });
         changes.push({
           path: target.path.concat('runtimes', runtime) as [string, ...string[]],
           value: { kind: 'boolean', value: enabled },
@@ -234,7 +180,7 @@ export function createExternalAgentSettings(
         return { instance: target.source.namespace, changes };
       });
       // Remove consent before dispatch. Unknown receipts remain in the existing journal,
-      // never in a second retryable enable/install request.
+      // never in a second retryable enable request.
       confirmation.set(null);
       view.set(view() + 1);
       const result: ManagementResultForDeploymentRef = await operations.mutate(
@@ -268,7 +214,6 @@ export function createExternalAgentSettings(
       name: runtime.name,
       acknowledged: false,
     });
-    plan.set(null);
   };
   const acknowledge = (request: ExternalAgentAction & { value: boolean }) => {
     if (!current(request) || disabled() || !confirmation()) return;
@@ -278,7 +223,6 @@ export function createExternalAgentSettings(
     if (!current(request) || disabled()) return;
     view.set(view() + 1);
     confirmation.set(null);
-    plan.set(null);
   };
   const runtimes = (): AgentExternalAgents['runtimes'] => {
     const rows = new Map<string, AgentExternalAgents['runtimes'][number]>();
@@ -296,75 +240,6 @@ export function createExternalAgentSettings(
   const statuses = (): AgentExternalRuntime[] => {
     const state = catalog()?.state;
     return state?.kind === 'ready' ? state.runtimes : [];
-  };
-  const chooseLine = (request: ExternalAgentAction & { runtime: string; line: string }) => {
-    if (!current(request) || disabled()) return;
-    const runtime = statuses().find((item) => item.id === request.runtime);
-    if (!runtime?.installLines.some((item) => item.line === request.line)) return;
-    view.set(view() + 1);
-    lines.set({ ...lines(), [request.runtime]: request.line });
-    plan.set(null);
-  };
-  const viewPlan = (request: ExternalAgentAction & { runtime: string; line?: string }) => {
-    if (!current(request) || disabled() || !basis()) return;
-    const runtime = statuses().find((item) => item.id === request.runtime);
-    if (!runtime?.canInstall || runtime.installation.kind !== 'not_found') return;
-    if (
-      runtime.installLines.length &&
-      !runtime.installLines.some((item) => item.line === request.line)
-    )
-      return;
-    const original = basis()!;
-    return run(async () => {
-      if (!(await verify(original, request))) return;
-      const result = await operations.mutate('agent', 'oarSetup', {
-        runtime: runtime.id,
-        action: { kind: 'plan', line: request.line },
-      });
-      if (!current(request)) return;
-      const resultPlan = planResult(result.result);
-      details.set(null);
-      view.set(view() + 1);
-      plan.set({
-        ...resultPlan,
-        runtime: runtime.id,
-        name: runtime.name,
-        line: request.line,
-        basis: original,
-      });
-    });
-  };
-  const install = (request: ExternalAgentAction) => {
-    if (!current(request) || disabled()) return;
-    const original = plan();
-    if (original?.kind !== 'plan') return;
-    return run(async () => {
-      if (!(await verify(original.basis, request))) return;
-      plan.set(null);
-      view.set(view() + 1);
-      const result = await operations.mutate('agent', 'oarSetup', {
-        runtime: original.runtime,
-        action: { kind: 'install', line: original.line },
-      });
-      const value = result.result;
-      await load();
-      changed();
-      if (value.kind === 'unsupported')
-        throw new UiError('Error: {detail}', {
-          detail: typeof value.detail === 'string' ? value.detail : String(value.reason),
-        });
-      if (value.kind === 'failed')
-        throw new UiError('Error: {detail}', {
-          detail:
-            typeof value.output === 'string' && value.output
-              ? value.output
-              : tr('External agent installation failed. Refresh to check its status.'),
-        });
-      if (value.kind !== 'installed' && value.kind !== 'already_installed')
-        throw new UiError(
-          'External agent installation returned an unknown result. Refresh to check its status.',
-        );
-    });
   };
   const reload = (request: ExternalAgentAction) => {
     if (!current(request) || disabled()) return;
@@ -391,8 +266,6 @@ export function createExternalAgentSettings(
     },
     status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,
-    plan,
-    lines,
     loading,
     disabled,
     action,
@@ -401,9 +274,6 @@ export function createExternalAgentSettings(
     acknowledge,
     cancel,
     reload,
-    chooseLine,
-    viewPlan,
-    install,
     enable: (request: ExternalAgentAction) => save(request, confirmation()?.runtime ?? '', true),
     disable: (request: ExternalAgentAction & { runtime: string }) =>
       save(request, request.runtime, false),
@@ -414,7 +284,7 @@ export function createExternalAgentSettings(
     reset,
     navigation: () => JSON.stringify(action()),
     back: () => {
-      if (confirmation() || plan()) {
+      if (confirmation()) {
         cancel(action());
         return false;
       }

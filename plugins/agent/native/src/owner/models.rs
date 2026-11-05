@@ -22,6 +22,7 @@ use maka_agent_api::contract::{
     ModelChoice, ModelRead, ModelResult, ModelsCursor, ModelsPage, ModelsRead,
 };
 use maka_agent_facts::executor::{BackendPreference, Selection, Settings};
+use maka_agent_ports::executor::Error as ExecutorError;
 
 impl Owner {
     async fn native_choices(&self) -> Result<Vec<ModelChoice>, String> {
@@ -75,46 +76,44 @@ impl Owner {
         }
         Ok(choices)
     }
-    async fn oar_choices(
+    async fn external_choices(
         &self,
-        runtime: Option<&str>,
+        requested_runtime: Option<&str>,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<ModelChoice>, String> {
-        if !self.executors.contains("oar") {
+    ) -> Result<Vec<ModelChoice>, ExecutorError> {
+        if !self.executors.contains("external") {
             return Ok(Vec::new());
         }
-        let Some(cwd) = self.oar_cwd().await? else {
+        let Some(cwd) = self.external_cwd().await.map_err(ExecutorError::Provider)? else {
             return Ok(Vec::new());
         };
         let mut request = serde_json::json!({"kind":"catalog", "cwd":cwd});
-        if let Some(runtime) = runtime {
-            request["runtime"] = serde_json::json!(runtime);
+        if let Some(runtime) = requested_runtime {
+            request["runtime"] = runtime.into();
         }
         let Some(catalog) = self
             .executors
-            .oar_query(cwd, request, cancellation.clone())
-            .await
-            .map_err(|error| error.to_string())?
+            .external_query(cwd, request, cancellation.clone())
+            .await?
         else {
             return Ok(Vec::new());
         };
-        let runtimes = if runtime.is_some() {
-            if catalog.get("kind").and_then(Value::as_str) == Some("unsupported") {
-                return Ok(Vec::new());
-            }
+        let runtimes = if requested_runtime.is_some() {
             std::slice::from_ref(&catalog)
         } else {
             catalog
                 .as_array()
-                .ok_or("agent_oar_catalog_invalid")?
-                .as_slice()
+                .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?
         };
         let mut choices = Vec::new();
         for runtime in runtimes {
             let runtime_id = runtime
                 .get("runtime")
                 .and_then(Value::as_str)
-                .ok_or("agent_oar_catalog_invalid")?;
+                .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?;
+            if requested_runtime.is_some_and(|requested| requested != runtime_id) {
+                continue;
+            }
             for field in ["installation", "models"] {
                 if let Some(error) = runtime
                     .get(field)
@@ -128,29 +127,62 @@ impl Owner {
                     );
                 }
             }
+            if runtime.get("installation").is_some_and(|installation| {
+                !matches!(
+                    installation.get("kind").and_then(Value::as_str),
+                    Some("not_found" | "error" | "unsupported")
+                )
+            }) && runtime
+                .pointer("/authentication/kind")
+                .and_then(Value::as_str)
+                != Some("unauthenticated")
+            {
+                let native = runtime_id
+                    .parse::<maka_agent_api::executor::NativeRuntime>()
+                    .map_err(|error| {
+                        ExecutorError::Provider(format!("agent_external_catalog_invalid: {error}"))
+                    })?;
+                choices.push(ModelChoice {
+                    selection: BackendPreference::Executor {
+                        selection: Selection {
+                            executor: "external".into(),
+                            settings: Settings {
+                                runtime: Some(runtime_id.into()),
+                                model: None,
+                                thinking_level: None,
+                            },
+                        },
+                    },
+                    source_name: format!("Native CLI · {}", native.name()),
+                    label: format!("{} · native default", native.name()),
+                    thinking_levels: vec![],
+                    default_thinking_level: None,
+                });
+            }
             if runtime.pointer("/models/kind").and_then(Value::as_str) != Some("ok") {
                 continue;
             }
             let models = runtime
                 .pointer("/models/models")
                 .and_then(Value::as_array)
-                .ok_or("agent_oar_catalog_invalid")?;
+                .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?;
             for model in models {
-                let id = model
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or("agent_oar_catalog_invalid")?;
+                let id = model.get("id").and_then(Value::as_str).ok_or_else(|| {
+                    ExecutorError::Provider("agent_external_catalog_invalid".into())
+                })?;
                 let levels: Vec<String> = model
                     .get("effortLevels")
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()
-                    .map_err(|_| "agent_oar_catalog_invalid")?
+                    .map_err(|error| {
+                        ExecutorError::Provider(format!("agent_external_catalog_invalid: {error}"))
+                    })?
                     .unwrap_or_default();
                 choices.push(ModelChoice {
                     selection: BackendPreference::Executor {
                         selection: Selection {
-                            executor: "oar".into(),
+                            executor: "external".into(),
                             settings: Settings {
                                 runtime: Some(runtime_id.into()),
                                 model: Some(id.into()),
@@ -158,7 +190,7 @@ impl Owner {
                             },
                         },
                     },
-                    source_name: format!("OAR · {runtime_id}"),
+                    source_name: format!("Native CLI · {runtime_id}"),
                     label: model
                         .get("displayName")
                         .and_then(Value::as_str)
@@ -174,7 +206,7 @@ impl Owner {
         }
         Ok(choices)
     }
-    pub(super) async fn oar_cwd(&self) -> Result<Option<String>, String> {
+    pub(super) async fn external_cwd(&self) -> Result<Option<String>, String> {
         let DirectoryPage::Roots { roots } =
             workspace::query(self.workspace_roots.clone(), Directories::Roots).await?
         else {
@@ -187,6 +219,9 @@ impl Owner {
         input: ModelsRead,
         cancellation: &CancellationToken,
     ) -> Result<ModelsPage, String> {
+        if cancellation.is_cancelled() {
+            return Err(ExecutorError::Cancelled.to_string());
+        }
         let (query, offset, expected) = match input {
             ModelsRead::Start { query } => (query, 0, None),
             ModelsRead::Continue { revision, cursor } => {
@@ -197,7 +232,15 @@ impl Owner {
             return Err("agent_model_query_invalid".into());
         }
         let mut choices = self.native_choices().await?;
-        choices.extend(self.oar_choices(None, cancellation).await?);
+        match self.external_choices(None, cancellation).await {
+            Ok(external) => choices.extend(external),
+            Err(error @ (ExecutorError::Cancelled | ExecutorError::Retired)) => {
+                return Err(error.to_string());
+            }
+            Err(error) => {
+                tracing::warn!(%error, "External model discovery unavailable; retaining native choices")
+            }
+        }
         let revision = hex::encode(Sha256::digest(
             serde_json::to_vec(&choices).map_err(|e| e.to_string())?,
         ));
@@ -239,11 +282,24 @@ impl Owner {
         input: ModelRead,
         cancellation: &CancellationToken,
     ) -> Result<ModelResult, String> {
+        if cancellation.is_cancelled() {
+            return Err(ExecutorError::Cancelled.to_string());
+        }
         let choices = match &input.backend {
             BackendPreference::Model { .. } => self.native_choices().await?,
-            BackendPreference::Executor { selection } if selection.executor == "oar" => {
+            BackendPreference::Executor { selection } if selection.executor == "external" => {
                 match selection.settings.runtime.as_deref() {
-                    Some(runtime) => self.oar_choices(Some(runtime), cancellation).await?,
+                    Some(runtime) => match self.external_choices(Some(runtime), cancellation).await
+                    {
+                        Ok(choices) => choices,
+                        Err(error @ (ExecutorError::Cancelled | ExecutorError::Retired)) => {
+                            return Err(error.to_string());
+                        }
+                        Err(error) => {
+                            tracing::warn!(runtime, %error, "External model validation unavailable");
+                            Vec::new()
+                        }
+                    },
                     None => Vec::new(),
                 }
             }

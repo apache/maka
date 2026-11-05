@@ -19,11 +19,21 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  globSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { parse } from 'yaml';
 import { checkResults, createPlan } from './ci/plan.mjs';
 import { executor } from './ci/run.mjs';
 
@@ -52,6 +62,7 @@ function fixture() {
   const metadata = {
     root: workspace([
       ['maka-code-runtime', 'platform/code-runtime'],
+      ['maka-agent-native', 'plugins/agent/native'],
       ['maka-computer-use', 'platform/computer-use', ['platform/code-runtime']],
       ['maka-skills-core', 'plugins/skills/core'],
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
@@ -155,6 +166,85 @@ test('Windows backend changes select the native tests and default desktop consum
   assert.equal(template.full, false);
 });
 
+test('compiler cache pruning and both archive paths retain V8 native outputs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-cache-'));
+  try {
+    writeFileSync(
+      join(directory, 'Cargo.toml'),
+      '[package]\nname = "ci-cache-fixture"\nversion = "0.1.0"\nedition = "2024"\n',
+    );
+    mkdirSync(join(directory, 'src'));
+    writeFileSync(join(directory, 'src/lib.rs'), '');
+    writeFileSync(
+      join(directory, 'Cargo.lock'),
+      'version = 4\n[[package]]\nname = "ci-cache-fixture"\nversion = "0.1.0"\n',
+    );
+    const outputs = {
+      'target/CACHEDIR.TAG': 'Signature: 8a477f597d28d172789f06886806bc55\n',
+      'target/debug/gn_out/obj/librusty_v8.a': 'native archive',
+      'target/debug/gn_out/src_binding.rs': 'native bindings',
+      'target/x86_64-pc-windows-msvc/debug/gn_out/obj/rusty_v8.lib': 'cross archive',
+      'target/debug/.fingerprint/v8-fixture/run-build-script-build': 'fingerprint',
+      'target/debug/build/v8-fixture/output': 'cargo:rustc-link-search=native=gn_out/obj',
+    };
+    for (const [path, contents] of Object.entries(outputs)) {
+      mkdirSync(join(directory, path, '..'), { recursive: true });
+      writeFileSync(join(directory, path), contents);
+    }
+    const built = execFileSync('cargo', ['build', '--offline', '--message-format=json'], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: { ...process.env, CARGO_TARGET_DIR: join(directory, 'target') },
+    });
+    const local = built
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((message) => message.reason === 'compiler-artifact')
+      .flatMap((message) => message.filenames)
+      .filter((path) => path.endsWith('.rlib'));
+    assert.ok(local.length > 0, 'Cargo must report a real local library artifact');
+    for (const path of local) assert.ok(existsSync(path), path);
+    execFileSync(
+      process.execPath,
+      [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'prune'],
+      {
+        cwd: directory,
+        env: { ...process.env, MAKA_CI_ROLE: 'root', MAKA_CI_WORKSPACE: 'root' },
+      },
+    );
+    for (const path of local) assert.equal(existsSync(path), false, path);
+    for (const action of ['ci-setup', 'ci-cache']) {
+      const document = parse(
+        readFileSync(new URL(`../.github/actions/${action}/action.yml`, import.meta.url), 'utf8'),
+      );
+      const paths = document.runs.steps
+        .find((step) => step.with?.path?.includes('target/'))
+        .with.path.trim()
+        .split('\n');
+      const files = globSync(
+        paths.filter((path) => !path.startsWith('!')),
+        {
+          cwd: directory,
+          exclude: paths.filter((path) => path.startsWith('!')).map((path) => path.slice(1)),
+        },
+      );
+      const archive = join(directory, `${action}.tar`);
+      execFileSync('tar', ['-cf', archive, '-T', '-'], {
+        cwd: directory,
+        input: files.join('\n') + '\n',
+      });
+      const restored = join(directory, action);
+      mkdirSync(restored);
+      execFileSync('tar', ['-xf', archive, '-C', restored]);
+      for (const [path, contents] of Object.entries(outputs))
+        assert.equal(readFileSync(join(restored, path), 'utf8'), contents, `${action}: ${path}`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('Windows setup installs nextest and keys caches by both Cargo workspaces', () => {
   const directory = mkdtempSync(join(tmpdir(), 'maka-ci-windows-'));
   try {
@@ -163,6 +253,14 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     writeFileSync(join(directory, 'Cargo.toml'), '[workspace]');
     writeFileSync(join(directory, 'third-party/nsh/Cargo.toml'), '[workspace]');
     writeFileSync(join(directory, '.cargo/config.toml'), '');
+    const cacheActions = [
+      '.github/actions/ci-setup/action.yml',
+      '.github/actions/ci-cache/action.yml',
+    ];
+    for (const path of cacheActions) {
+      mkdirSync(join(directory, path, '..'), { recursive: true });
+      writeFileSync(join(directory, path), readFileSync(new URL('../' + path, import.meta.url)));
+    }
     writeFileSync(join(directory, 'Cargo.lock'), 'root-v1');
     writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v1');
     const output = join(directory, 'output');
@@ -193,6 +291,8 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     };
     assert.equal(setup('tool-list').tools, 'cargo-nextest@0.9.100');
     const before = setup('keys');
+    assert.ok(before.compiled_prefix.startsWith('rust-deps-'));
+    assert.ok(before.compiled.startsWith(before.compiled_prefix));
     writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v2');
     const nsh = setup('keys');
     assert.notEqual(before.compiled, nsh.compiled);
@@ -205,6 +305,19 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     const features = setup('keys');
     assert.notEqual(root.compiled, features.compiled);
     assert.equal(root.downloads, features.downloads);
+    let previous = features;
+    for (const path of cacheActions) {
+      writeFileSync(join(directory, path), readFileSync(join(directory, path), 'utf8') + '\n');
+      const changed = setup('keys');
+      assert.notEqual(
+        previous.compiled_prefix,
+        changed.compiled_prefix,
+        'cache schema changes must also invalidate fallback restore keys',
+      );
+      assert.ok(changed.compiled.startsWith(changed.compiled_prefix));
+      assert.equal(previous.downloads, changed.downloads);
+      previous = changed;
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -394,22 +507,29 @@ test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PR
 });
 
 test('the external-agent UI worker fixture reaches real CLI tests', () => {
-  const plan = fixture()(['products/maka/terminal-shell/tests/support/external-agent-worker.mjs']);
+  const plan = fixture()(['products/maka/terminal-shell/tests/support/external-agent-cli.mjs']);
   assert.equal(plan.full, false);
   assert.ok(plan.suites.root);
   assert.equal(plan.suites.root.filter, 'all()');
 });
 
-test('OAR source, dependency patch, worker tests and native fixture reach their consumers', () => {
+test('native interpreted fixtures reach the root tests replayed from archives', () => {
+  const directory = 'plugins/agent/native/tests/support';
+  const inputs = readdirSync(new URL('../' + directory + '/', import.meta.url), {
+    recursive: true,
+  }).filter((path) => path.endsWith('.mjs'));
+  assert.ok(inputs.length, 'native runtime behavior fixtures must be present');
+  for (const input of inputs) {
+    const path = directory + '/' + input.replaceAll('\\', '/');
+    const plan = fixture()([path]);
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.suites.root.filter, 'all()', path);
+    assert.ok(plan.suites.tooling, path);
+  }
+});
+
+test('distribution build and license inputs reach their consumers', () => {
   for (const path of [
-    'patches/@botiverse+oar+0.86.0.patch',
-    'scripts/oar/antigravity.test.mjs',
-    'scripts/oar/fixtures/antigravity.mjs',
-    'plugins/agent/oar-executor/worker/main.mjs',
-    'plugins/agent/oar-executor/runtimes.json',
-    'plugins/agent/native/tests/support/oar-worker.mjs',
-    'scripts/oar/build.mjs',
-    'scripts/oar/worker.test.mjs',
     'scripts/rust/cargo.mjs',
     'scripts/rust/build-v8.mjs',
     'scripts/rust/v8-source.json',
@@ -421,7 +541,7 @@ test('OAR source, dependency patch, worker tests and native fixture reach their 
     'scripts/rust/license-source.mjs',
     'scripts/rust/notices.mjs',
     'scripts/rust/notices-sources.json',
-    'scripts/rust/licenses/deno-2.9.6-source-notices.txt',
+    'scripts/rust/licenses/declared-mit.txt',
   ]) {
     const plan = fixture()([path]);
     assert.equal(plan.full, false, path);
@@ -432,7 +552,7 @@ test('OAR source, dependency patch, worker tests and native fixture reach their 
 });
 
 test('product verification reaches the reviewed notice gate and propagates its failure', async () => {
-  const plan = fixture()(['scripts/rust/licenses/deno-runtime-2.9.6-aarch64-apple-darwin.txt']);
+  const plan = fixture()(['scripts/rust/licenses/declared-mit.txt']);
   assert.ok(plan.suites.product);
   const missingCoverage = new Error('Third-party notices do not cover cargo:windows@1.0.0');
   let productChecked = false;

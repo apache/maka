@@ -35,7 +35,7 @@ impl EventLog {
     pub async fn commit_pending_steering(
         &self,
         invocation: &Invocation,
-    ) -> Result<usize, CommitError> {
+    ) -> Result<Vec<maka_agent_facts::message::RootSourceMessage>, CommitError> {
         self.commit_steering(invocation)
             .await
             .map_err(|error| match error {
@@ -112,7 +112,10 @@ impl EventLog {
         })).await
     }
 
-    async fn commit_steering(&self, invocation: &Invocation) -> Result<usize, StoreError> {
+    async fn commit_steering(
+        &self,
+        invocation: &Invocation,
+    ) -> Result<Vec<maka_agent_facts::message::RootSourceMessage>, StoreError> {
         self.validate_root()?;
         // Only an empty snapshot bypasses the writer; deliveries are rechecked below.
         let session = invocation.session_id.clone();
@@ -131,7 +134,7 @@ impl EventLog {
             })
             .await?;
         if !pending {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         let invocation = invocation.clone();
         let commits = self.commits.session(&invocation.session_id);
@@ -141,7 +144,7 @@ impl EventLog {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     let pending =
                         crate::message_admissions::pending(&mut tx, &invocation.session_id).await?;
-                    let mut count = 0;
+                    let mut delivered = Vec::new();
                     let mut high = None;
                     for admission in pending.into_iter().filter(|admission| {
                         *admission.steering_target() == invocation
@@ -151,7 +154,7 @@ impl EventLog {
                             invocation.clone(),
                             Fact::MessageSteered {
                                 message: Box::new(admission.source.message.clone()),
-                                source: Box::new(admission.source),
+                                source: Box::new(admission.source.clone()),
                             },
                         ))
                         .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
@@ -160,7 +163,7 @@ impl EventLog {
                             | AppendResult::ActivationChanged(sequence) => high = Some(sequence),
                             AppendResult::Existing(_) => return Err(StoreError::EventConflict),
                         }
-                        count += 1;
+                        delivered.push(admission.source);
                     }
                     if let Some(high) = high {
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
@@ -168,7 +171,7 @@ impl EventLog {
                     } else {
                         tx.rollback().await?;
                     }
-                    Ok(count)
+                    Ok(delivered)
                 })
             })
             .await

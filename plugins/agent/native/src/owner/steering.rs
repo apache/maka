@@ -40,13 +40,11 @@ impl Owner {
                 basis.language,
                 Some(basis.workspace.clone()),
                 parent,
-                self.selected_tools(
+                self.skill_tool_names(
                     session,
                     &basis,
-                    false,
                     basis.model.as_ref().and_then(|model| model.editing_tools),
-                )?
-                .names(),
+                )?,
             )
             .await?
         {
