@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 347 files — blocker 0, reimplementation 0, polish 5, aligned 342.
+**Totals:** 350 files — blocker 0, reimplementation 0, polish 5, aligned 345.
 
 ## Exclusions (explicit)
 
@@ -101,6 +101,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/overlays/ui/overlays-root.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/overlays/ui/search-modal-host.tsx` | dialog-overlay | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/personal-assistant/avatar.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/personal-assistant/card-actions.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/personal-assistant/chat-presentation.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/personal-assistant/original-reader.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/features/personal-assistant/original-reader.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
@@ -331,6 +332,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/markdown-math.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/markdown.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/mermaid-diagram.tsx` | ui-composition | Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar | aligned — uses Astryx (Button, CodeBlock, Collapsible, Dialog, IconButton, Toolbar) | aligned |
+| `packages/ui/src/message-card.css` | ui-composition | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `packages/ui/src/message-card.tsx` | ui-composition | Button, Card, Link | aligned — uses Astryx (Button, Card, Link) | aligned |
 | `packages/ui/src/message-summary.tsx` | ui-composition | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/model-picker-internals.tsx` | ui-composition | SelectorOption | aligned — uses Astryx (SelectorOption) | aligned |
 | `packages/ui/src/model-picker.tsx` | ui-composition | Selector | aligned — uses Astryx (Selector) | aligned |

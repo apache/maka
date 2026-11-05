@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld("pet", {
   move: (dx: number, dy: number) => ipcRenderer.send('pet-desktop:move', {dx,dy}),
   composeOpen: (): Promise<void> => ipcRenderer.invoke("pet-desktop:compose-open"),
   composeFocus: (handler: () => void) => ipcRenderer.on("pet-desktop:compose-focus", handler),
+  cardAction: (input: { target: string; cardId: string; actionKey?: string }): Promise<{ selectedKey: string | null }> => ipcRenderer.invoke('pet-desktop:card-action', input),
+  openLink: (url: string): Promise<void> => ipcRenderer.invoke('pet-desktop:open-link', url),
   chatTarget: (): Promise<string> => ipcRenderer.invoke("pet-desktop:chat-target"),
   send: (input: {target: string; id: string; text: string}): Promise<void> => ipcRenderer.invoke("pet-desktop:chat-send", input),
   state: (handler: (state: PetDesktopState) => void) =>

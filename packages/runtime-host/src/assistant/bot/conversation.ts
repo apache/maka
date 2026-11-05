@@ -54,7 +54,8 @@ export async function publishBotConversationMessage(
         message.type === 'user' ? message.origin : undefined,
       ) ||
       text.author !== (message.type === 'user' ? (message.origin ? 'host' : 'user') : 'agent') ||
-      text.content.summary !== (message.type === 'assistant' ? message.summary : undefined)
+      text.content.summary !== (message.type === 'assistant' ? message.summary : undefined) ||
+      !isDeepStrictEqual(text.content.card, message.type === 'assistant' ? message.card : undefined)
     )
       throw Error('Assistant conversation ledger identity conflict');
     return;
@@ -96,6 +97,9 @@ export async function publishBotConversationMessage(
       content: {
         kind: 'text',
         text: message.text,
+        ...(message.type === 'assistant' && message.card !== undefined
+          ? { card: message.card }
+          : {}),
         ...(message.type === 'assistant' && message.summary !== undefined
           ? { summary: message.summary }
           : {}),

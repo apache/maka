@@ -64,6 +64,8 @@ const request = z
       'assistant.set-enabled',
       'assistant.binding',
       'assistant.allocate-workspace',
+      'assistant.card-status',
+      'assistant.card-reply',
       'assistant.avatar',
       'assistant.character-status',
       'assistant.avatar-image',

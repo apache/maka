@@ -426,28 +426,45 @@ function projectToolModePlan(
   execTool: MakaTool,
 ): ToolAvailabilityPlan {
   if (toolMode === 'direct') return plan;
+  const directTools = plan.providerTools.filter((tool) => tool.nesting === 'direct_only');
+  const directNames = new Set(directTools.map((tool) => tool.name));
+  const projectActive = (names: readonly string[]) => [
+    execTool.name,
+    ...names.filter((name) => directNames.has(name)),
+  ];
+  const projectBaseActive = plan.projectActiveTools;
   return {
     ...plan,
     providerTools: [
       execTool,
+      ...directTools,
       ...plan.providerTools.filter((tool) => tool.name === INVALID_TOOL_NAME),
     ],
-    activeTools: [execTool.name],
-    ...(plan.projectActiveTools
-      ? { projectActiveTools: () => ({ activeTools: [execTool.name] }) }
+    activeTools: projectActive(plan.activeTools),
+    ...(projectBaseActive
+      ? {
+          projectActiveTools: (options) => ({
+            activeTools: projectActive(projectBaseActive(options).activeTools),
+          }),
+        }
       : {}),
-    currentRepairToolNames: () => [execTool.name],
+    currentRepairToolNames: () => projectActive(plan.currentRepairToolNames()),
     diagnostics: () => undefined,
   };
 }
 
-function renderCodeModeCatalogPrompt(nested: ReadonlyMap<string, MakaTool>): string {
+function renderCodeModeCatalogPrompt(
+  nested: ReadonlyMap<string, MakaTool>,
+  directNames: readonly string[],
+): string {
   // The aggregate catalog can exceed the evidence codec's bound for one tool
   // description. Keep exec's schema fixed; requestSystemPrompt and its hash
   // carry this step's exact, refreshable nested surface instead.
   const catalog = requestCompositionToolSchemas([...nested.values()], [...nested.keys()]);
   return [
-    'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
+    directNames.length
+      ? `Code Mode: call the tools in the following catalog from inside exec. Call these control tools directly, never from exec: ${directNames.join(', ')}.`
+      : 'Code Mode: exec is the only callable tool. Call the following tools from inside exec.',
     'After tool_search, return its result and use the refreshed catalog in the next exec call.',
     JSON.stringify(catalog),
   ].join('\n');
@@ -1581,6 +1598,9 @@ export class AiSdkTurn {
                         ),
                       )
                     : nestedTools,
+                  boundaryAwareToolNames(plan.currentRepairToolNames()).filter(
+                    (name) => name !== codeModeExecTool.name,
+                  ),
                 )
               : undefined;
           const resolveDispatch = (active: readonly string[] | undefined): DispatchRequestShape => {

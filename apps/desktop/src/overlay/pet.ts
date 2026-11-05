@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PetCardView, type PetCardPort } from "./pet-card.js";
 import { resolvePetAnimationState } from "@maka/core/pet";
 import { PetMessageQueue, PetBubbleView, PetAnimationBehavior, selectPetIdleAnimation, petMessageText, petMessageDuration, PetBackgroundNotice, shouldClosePetComposer } from "../shared/pet-desktop.js";
 import type {
@@ -30,7 +31,7 @@ import {
 
 declare global {
   interface Window {
-    pet: {
+    pet: PetCardPort & {
       action(action: string): void;
       hitRegions(regions: { x: number; y: number; width: number; height: number }[]): void;
       layout(height: number, petTop: number, below: boolean): void;
@@ -52,6 +53,7 @@ const context = canvas.getContext("2d")!;
 const bubble = document.querySelector<HTMLElement>("#bubble")!;
 const caption = document.querySelector<HTMLElement>("#caption")!;
 const content = document.querySelector<HTMLElement>("#content")!;
+const cards = new PetCardView(document.querySelector<HTMLElement>("#card")!, window.pet);
 const count = document.querySelector<HTMLElement>("#count")!;
 const pagination = document.querySelector<HTMLElement>("#pagination")!;
 const mode = document.querySelector<HTMLButtonElement>("#mode")!;
@@ -80,9 +82,11 @@ function renderBubble(now: number) {
   pet.setAttribute('aria-label', `宠物，${petAction}`);
   document.querySelector<HTMLElement>("#notification")!.hidden = view.unreadCount === 0;
   document.querySelector<HTMLElement>("#unread-count")!.textContent = view.unreadLabel;
-  if (bubble.hidden) return;
+  if (bubble.hidden) { cards.show(); return; }
   const manual = assistant && view.mode === 'messages';
   const message = assistant ? view.message() : undefined;
+  cards.show(surface.sessionId, message?.id, message?.card);
+  bubble.dataset.card = String(!!message?.card);
   const messageIndex = manual ? view.index : queue.index;
   const messageCount = manual ? queue.history.length : queue.messages.length;
   const notice = assistant && !manual ? background.read(surface, now) : undefined;
@@ -251,7 +255,7 @@ async function flipBubble(change: () => void) {
   } finally { flipping = false; }
 }
 bubble.addEventListener('dblclick', event => {
-  if ((event.target as Element).closest('#pagination')) return;
+  if ((event.target as Element).closest('#pagination, #card button, #card a')) return;
   event.preventDefault();
   void flipBubble(() => {
     if (current?.mode === 'assistant') view.cycle();
@@ -335,7 +339,7 @@ function tick(now: number) {
   if (!composer.hidden && shouldClosePetComposer(draft.value, now-lastInput, sending, composingText)) closeComposer();
   if (now > statusUntil) sendStatus.hidden = true;
   renderBubble(now);
-  if (view.mode === "auto" && queue.current() && !paused && composer.hidden && !flipping) {
+  if (view.mode === "auto" && queue.current() && !paused && !cards.pending && composer.hidden && !flipping) {
     elapsed += dt;
     const duration = petMessageDuration(queue.current()!);
     if (elapsed > duration) {

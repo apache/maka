@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { assistantCardImageMarkdown } from '@maka/core/assistant-card';
+
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
@@ -698,7 +700,7 @@ export function createAssistantMessageReader(input: {
               (event.refs?.storedMessageId ?? event.refs?.providerEventId ?? event.id) ===
               identity.messageId
             )
-              text = event.content.text;
+              text = event.content.text + '\n' + assistantCardImageMarkdown(event.content.card);
           }
           return { text, next: run.lastOrdinal + 1 };
         },

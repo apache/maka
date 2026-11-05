@@ -37,6 +37,17 @@ export function createPetAssistantChat(resolveClient: () => Client | undefined) 
   };
   return {
     async target() { return target(client()); },
+    async cardAction(input: { target: string; cardId: string; actionKey?: string }) {
+      const current = client();
+      if (await target(current) !== input.target || resolveClient() !== current)
+        throw Error('助手或 Host 已变化，请重新打开消息');
+      const [, sessionId] = JSON.parse(input.target);
+      const result = await current.request('personal-assistant.call', {
+        method: input.actionKey === undefined ? 'assistant.card-status' : 'assistant.card-reply',
+        input: { sessionId, cardId: input.cardId, ...(input.actionKey === undefined ? {} : { actionKey: input.actionKey }) },
+      });
+      return result.value as { selectedKey: string | null };
+    },
     async send(input: { target: string; id: string; text: string }) {
       const current = client();
       if (await target(current) !== input.target || resolveClient() !== current)

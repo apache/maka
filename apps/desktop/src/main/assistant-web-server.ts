@@ -99,7 +99,7 @@ export async function startAssistantWebServer(options: {
       }
       if (url.pathname === '/api/history' && req.method === 'GET')
         return json(res, 200, await options.backend.history(url.searchParams));
-      if (url.pathname === '/api/messages' && req.method === 'POST') {
+      if ((url.pathname === '/api/messages' || url.pathname === '/api/card-action') && req.method === 'POST') {
         if (!req.headers['content-type']?.startsWith('application/json'))
           throw new AssistantWebError(415, '需要 JSON 请求');
         const chunks: Buffer[] = [];
@@ -109,11 +109,21 @@ export async function startAssistantWebServer(options: {
           if (bytes > 128 * 1024) throw new AssistantWebError(413, '消息太长，请分段发送');
           chunks.push(Buffer.from(chunk));
         }
-        let input: { id?: unknown; text?: unknown; conversationId?: unknown };
+        let input: { id?: unknown; text?: unknown; conversationId?: unknown; cardId?: unknown; actionKey?: unknown };
         try {
           input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         } catch {
           throw new AssistantWebError(400, '无效的消息');
+        }
+        if (url.pathname === '/api/card-action') {
+          if (!input || typeof input.conversationId !== 'string' || input.conversationId.length > 512
+            || typeof input.cardId !== 'string' || !input.cardId || input.cardId.length > 512
+            || (input.actionKey !== undefined && (typeof input.actionKey !== 'string' || !/^\d+:\d+$/.test(input.actionKey))))
+            throw new AssistantWebError(400, '无效的卡片选项');
+          const result = await options.backend.cardAction(input as { conversationId: string; cardId: string; actionKey?: string });
+          json(res, 200, result);
+          if (input.actionKey !== undefined) void poll();
+          return;
         }
         if (
           !input ||
