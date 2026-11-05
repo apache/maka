@@ -145,10 +145,10 @@ for (const changedVersion of [false, true]) {
 
     await f.q.close();
     await f.restart();
-    assert.ok(f.q.state().pending?.submission, 'the interrupted activation is pending');
+    assert.ok(f.q.state().active?.submission, 'the original execution identity survives restart');
     if (changedVersion)
       f.q.store.update((s: any) => {
-        s.pending.submission.version = 'previous-prompt';
+        s.active.submission.version = 'previous-prompt';
       });
 
     f.advance(2 * 3600000);

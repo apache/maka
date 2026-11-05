@@ -255,3 +255,112 @@ for (const terminalFailure of [false, true]) {
     assert.equal(f.q.state().checkedThrough, pending.to);
   });
 }
+
+for (const unknown of [false, true]) {
+  test(`restored quick work blocks new broad admission until ownership is reconciled (${unknown})`, async (t) => {
+    const f = await intakeFixture();
+    t.after(() => f.close());
+    await f.q.control({ action: 'check', eventIntake: false });
+    let release!: () => void;
+    let running = true;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.agent.snapshot = async () => ({
+      agent: { status: running ? 'running' : 'active' },
+      pendingInteractions: 0,
+    });
+    // Initial admission still starts from an idle worker.
+    const snapshot = f.agent.snapshot;
+    f.agent.snapshot = async () => ({ agent: { status: 'active' }, pendingInteractions: 0 });
+    f.agent.whenIdle = async (signal?: AbortSignal) => {
+      f.agent.snapshot = snapshot;
+      signal?.throwIfAborted();
+      let abort!: () => void;
+      try {
+        await Promise.race([
+          done,
+          new Promise<never>((_, reject) => {
+            abort = () => reject(signal?.reason);
+            signal?.addEventListener('abort', abort, { once: true });
+          }),
+        ]);
+      } finally {
+        signal?.removeEventListener('abort', abort);
+      }
+    };
+    try {
+      await f.q.dispatch();
+      // Reach durable admission/observation before simulating scheduler replacement.
+      for (let i = 0; i < 100 && !f.counts().workerCalls; i++)
+        await new Promise((r) => setTimeout(r, 5));
+      const activation = f.q.state().active;
+      assert.ok(activation);
+      const query = f.agent.messageExecution;
+      if (unknown) f.agent.messageExecution = async () => undefined as any;
+      await f.restart();
+      const coordinator = f.parent.coordinator;
+      assert.equal(coordinator.acquire('broad'), undefined);
+      if (unknown) {
+        await f.q.dispatch();
+        assert.equal(
+          coordinator.acquire('broad'),
+          undefined,
+          'an unknown receipt cannot free recovery capacity',
+        );
+        f.agent.messageExecution = query;
+      }
+      await f.q.dispatch();
+      assert.equal(f.q.state().active?.id, activation.id);
+      assert.equal(coordinator.status().running?.lane, 'quick');
+      assert.equal(
+        f.counts().workerCalls,
+        1,
+        'observe the original submission, never submit again',
+      );
+      await f.q.report({ key: 'restored', messages: ['Recovered finding'] }, 'worker');
+      const observing = f.q.running;
+      running = false;
+      release();
+      await observing;
+      assert.equal(f.q.state().pending, null);
+      assert.equal(f.delivered.size, 1);
+      const permit = coordinator.acquire('broad');
+      assert.ok(permit, 'queued broad work starts after the recovered execution settles');
+      coordinator.release(permit!);
+    } finally {
+      running = false;
+      release();
+    }
+  });
+}
+
+for (const missing of [false, true]) {
+  test(`recovery never adopts a busy or removed worker for an unadmitted message (missing ${missing})`, async (t) => {
+    const f = await intakeFixture();
+    t.after(() => f.close());
+    await f.q.control({ action: 'check', eventIntake: false });
+    await f.q.dispatch();
+    await f.q.running;
+    f.q.store.update((s: any) => {
+      s.pending = {
+        id: 'not-started',
+        messageId: 'not-admitted',
+        from: s.startedAt,
+        to: s.startedAt,
+        reports: [],
+        tokens: {},
+      };
+    });
+    f.agent.snapshot = async () => ({ agent: { status: 'running' }, pendingInteractions: 0 });
+    if (missing) f.ctx.sessionQuery.list = async () => [];
+    await f.restart();
+    await f.q.dispatch();
+    assert.equal(f.q.state().active, null);
+    assert.equal(f.q.state().pending.id, 'not-started');
+    assert.equal(f.counts().workerCalls, 1);
+    const permit = f.parent.coordinator.acquire('broad');
+    assert.ok(permit);
+    f.parent.coordinator.release(permit!);
+  });
+}

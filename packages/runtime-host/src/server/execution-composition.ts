@@ -2438,6 +2438,9 @@ export async function createExecutionRuntimeHostComposition(
         submitAgentMessage(id, message, 'next_turn', initiator, options?.messageId),
       messageExecution: async (id, messageId, initiator) => {
         initiator.abortSignal.throwIfAborted();
+        // An owned receipt alone cannot prove that its Root is idle before recovery
+        // has installed resumed executions. Leave the outcome uncertain until then.
+        if (!rootRecoveryCompleted || draining) return undefined;
         if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
           throw new Error('Agent is outside the current ownership tree');
         const result = await messages.handlers['turn.message.execution.query'](

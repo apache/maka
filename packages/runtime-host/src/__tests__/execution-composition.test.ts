@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { QuickDiscoveryController } from '../assistant/index-initiative/quick.js';
+import { InitiativeController } from '../assistant/index-initiative/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -5986,6 +5988,193 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
       assert.equal((await captured.manager.listSessions()).length, 1);
     } finally {
       await captured.composition.close();
+    }
+  });
+});
+
+test('a recovered quick investigation keeps its slot and memory identity ahead of queued broad work', {
+  timeout: 30000,
+}, async (t) => {
+  let quick!: QuickDiscoveryController;
+  let parent!: InitiativeController;
+  const quickStart = QuickDiscoveryController.prototype.start;
+  const parentStart = InitiativeController.prototype.start;
+  t.mock.method(
+    QuickDiscoveryController.prototype,
+    'start',
+    function (this: QuickDiscoveryController, tickMs: number) {
+      quick = this;
+      return quickStart.call(this, tickMs);
+    },
+  );
+  t.mock.method(InitiativeController.prototype, 'start', function (this: InitiativeController) {
+    parent = this;
+    return parentStart.call(this);
+  });
+  await withCompositionRoot(async ({ root, owner }) => {
+    const entered = deferred<void>();
+    const boundary = deferred<void>();
+    const requested = deferred<void>();
+    const resumed = deferred<void>();
+    const broadEntered = deferred<void>();
+    const finishWorkers = deferred<void>();
+    let quickSession: string | undefined;
+    const runningSessions = new Set<string>();
+    const backendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        async prepareRunComposition(input: { runId: string; turnId: string }) {
+          await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+        }
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
+          runningSessions.add(context.sessionId);
+          if (!quickSession) {
+            quickSession = context.sessionId;
+            entered.resolve();
+            await boundary.promise;
+            assert.equal(await input.handoffBoundary!(new AbortController().signal, 3), 'pause');
+            runningSessions.delete(context.sessionId);
+            return;
+          }
+          if (context.sessionId === quickSession) resumed.resolve();
+          else broadEntered.resolve();
+          await finishWorkers.promise;
+          runningSessions.delete(context.sessionId);
+          yield {
+            type: 'complete',
+            id: randomUUID(),
+            turnId: input.turnId,
+            ts: Date.now(),
+            stopReason: 'end_turn',
+          };
+        }
+      })(context);
+    const residencies = new HostResidencyRegistry();
+    const first = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: backendFactory,
+      residencies,
+    });
+    let successorOwner: InteractiveRootOwner | undefined;
+    let successor: Awaited<ReturnType<typeof createCapturedExecutionComposition>> | undefined;
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'r5',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => residencies.acquire('r5'),
+    };
+    try {
+      const call = async (method: string, input: unknown) => {
+        const result = await first.composition.handlers['personal-assistant.call'](
+          { method, input } as any,
+          caller,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+      };
+      await call('assistant.set-enabled', { enabled: true });
+      const chat = await first.manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      await call('assistant.bind', { sessionId: chat.id });
+      await quick.control({ action: 'check' });
+      await quick.dispatch();
+      await entered.promise;
+      const activation = quick.state().active;
+      assert.ok(activation && !activation.executionCompleted);
+      // Stop only the scheduler observer at the crash boundary; preserve the real Root for handoff.
+      quick.abort.abort(Error('R5 scheduler terminated after durable admission'));
+      await quick.running;
+      const request = first.manager.requestRunHandoff.bind(first.manager);
+      first.manager.requestRunHandoff = (...args) => {
+        const r = request(...args);
+        requested.resolve();
+        return r;
+      };
+      const preparing = first.composition.prepareHandoff!(
+        'execution-composition-test',
+        new AbortController().signal,
+      );
+      await requested.promise;
+      boundary.resolve();
+      const preparation = await preparing;
+      assert.ok(preparation);
+      assert.equal(await preparation.seal(), true);
+      await preparation.detach();
+      first.composition.beginDrain();
+      await first.composition.close();
+      await owner.close();
+      successorOwner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(successorOwner);
+      successor = await createCapturedExecutionComposition(successorOwner, {
+        primaryBackendFactory: backendFactory,
+      });
+      await resumed.promise;
+      assert.ok(quickSession);
+      const proof = await successor.composition.handlers['turn.message.execution.query'](
+        { sessionId: quickSession, messageIds: [activation.messageId] },
+        caller,
+      );
+      assert.ok(proof.ok && proof.result.resolutions[0]?.state === 'owned', JSON.stringify(proof));
+      // Broad asks first. Recovery of already-owned work must precede new FIFO admission.
+      await parent.control('check', { sessionId: chat.id });
+      assert.equal(runningSessions.size, 1);
+      await quick.dispatch();
+      assert.equal(quick.state().active?.id, activation.id);
+      assert.equal(parent.coordinator.status().running?.lane, 'quick');
+      const remember = parent.ctx.tools
+        .resolve(quickSession, [])
+        .tools.find((tool: any) => tool.name === 'DiscoveryNotebookRemember');
+      assert.ok(remember);
+      const memoryInput = remember.parameters.parse({
+        key: 'resumed-knowledge',
+        executionId: activation.id,
+        expectedFeedbackRevision: parent.notebook.revision(),
+        notes: [
+          {
+            topicId: 'recovery',
+            title: 'Recovery',
+            text: 'Recovered investigation result',
+            sources: ['synthetic original'],
+          },
+        ],
+      });
+      await remember.impl(memoryInput, {
+        sessionId: quickSession,
+        turnId:
+          proof.ok && proof.result.resolutions[0]?.state === 'owned'
+            ? proof.result.resolutions[0].turnId
+            : '',
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      });
+      const memory = parent.notebook.readMemory({ view: 'topic', topicId: 'recovery' });
+      assert.ok('items' in memory);
+      assert.equal(memory.items.length, 1);
+      assert.equal(runningSessions.size, 1);
+      const observing = quick.running;
+      finishWorkers.resolve();
+      await observing;
+      assert.equal(quick.state().active, null);
+      await parent.dispatch();
+      await broadEntered.promise;
+      assert.equal(quickSession, quick.state().workerSession, 'the original worker was reused');
+    } finally {
+      boundary.resolve();
+      finishWorkers.resolve();
+      first.composition.beginDrain();
+      await first.composition.close();
+      successor?.composition.beginDrain();
+      await successor?.composition.close();
+      await successorOwner?.close();
     }
   });
 });

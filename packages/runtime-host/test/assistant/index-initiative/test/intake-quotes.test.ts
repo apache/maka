@@ -20,53 +20,104 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
+import { decodeMessageAdmissionContent } from '../../../../src/protocol/turn.js';
 
-// A quote-only frame is a real protocol shape: the owner replies to an excerpt, so the
-// message body is empty and the owner's words live in quotes[].comment. Event intake is
-// allowed to be late, but it may not silently drop such a frame.
-const quoted = {
-  id: 'quote-1',
-  type: 'user',
-  text: '',
-  quotes: [{ text: '合同第三条：验收后 30 日内付款', comment: '这条要改，改成预付三成' }],
-};
-
-const receipt = (f: any, key = 'maka') => {
-  const row = f.q.store.db.prepare('SELECT value FROM intake_meta WHERE key=?').get(key);
-  return row ? JSON.parse(String(row.value)) : undefined;
-};
-
-test('screening reads the quoted comment of a frame whose body is empty', async (t) => {
+test('Maka intake screens quote comments and can wake without a body or activity-token fallback', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  f.say('chat', { id: 'earlier', type: 'user', text: '开场白' });
+  const comment = '交付已取消，需要确认备用安排';
+  const messages: any[] = [];
+  let revision = 0;
+  f.ctx.sessionQuery.historyList = async () => [{ id: 'project', historyRevision: revision }];
+  f.ctx.sessionQuery.historyRead = async () => ({ messages });
   await f.q.intake.collect();
-  f.say('chat', quoted);
+  const tokens = (await f.q.activity(f.q.state())).tokens;
+  f.q.store.update((s: any) => {
+    s.checkedTokens = tokens;
+    s.lastPeriodicFinishedAt = f.q.now();
+  });
+  messages.push({
+    id: 'reply',
+    type: 'user',
+    ...decodeMessageAdmissionContent({ text: '', quotes: [{ text: '原定周五交付', comment }] }),
+  });
+  revision++;
   await f.q.intake.collect();
-  const prompts: string[] = [];
-  f.ctx.llm.generate = async (input: any) => {
-    prompts.push(String(input.prompt));
-    return { modelId: 'fixture', text: JSON.stringify('合同付款条件可能要改') };
-  };
   f.advance();
+  f.ctx.llm.generate = async (input: any) => {
+    const records = JSON.parse(input.prompt).events.flatMap((g: any) => g.records);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].content, comment);
+    return { text: JSON.stringify('交付取消，可能需要协助') };
+  };
   await f.q.intake.judge();
-  assert.equal(prompts.length, 1, 'the frame still reaches screening');
-  assert.match(prompts[0], /改成预付三成/, 'screening must read the owner quote comment');
+  assert.ok(await f.q.intake.next());
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  await f.q.intake.collect();
+  assert.equal(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 1);
 });
 
-test('a frame that projects to nothing does not advance the receipt position', async (t) => {
+test('Maka intake keeps display text and every quote comment without replaying baselined history', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  f.say('chat', { id: 'earlier', type: 'user', text: '开场白' });
+  const messages: any[] = [
+    { id: 'old', text: '', quotes: [{ text: 'old excerpt', comment: 'old comment' }] },
+  ];
+  let revision = 0;
+  f.ctx.sessionQuery.historyList = async () => [{ id: 'project', historyRevision: revision }];
+  f.ctx.sessionQuery.historyRead = async () => ({ messages });
   await f.q.intake.collect();
-  const before = receipt(f);
-  assert.ok(before?.chat, 'baseline receipt is recorded');
-  f.say('chat', { id: 'empty-1', type: 'user', text: '', quotes: [] });
+  messages.push({
+    id: 'new',
+    text: 'internal body',
+    displayText: 'visible body',
+    quotes: [
+      { text: 'quoted context', comment: 'first comment' },
+      { text: 'another excerpt', comment: 'second comment' },
+      { text: 'context only' },
+    ],
+  });
+  revision++;
   await f.q.intake.collect();
-  assert.deepEqual(receipt(f), before, 'an unprojectable frame keeps the receipt position');
+  const rows = f.q.store.db.prepare('SELECT payload FROM intake_events').all();
+  assert.equal(rows.length, 1);
+  assert.equal(
+    JSON.parse(String(rows[0].payload)).content,
+    'visible body\n\nfirst comment\n\nsecond comment',
+  );
+});
+
+test('an empty frame advances the receipt and is reconsidered when its comment changes', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.say('chat', { id: 'earlier', type: 'user', text: 'Earlier message' });
+  await f.q.intake.collect();
+  const message = {
+    id: 'quote-1',
+    type: 'user',
+    text: '',
+    quotes: [{ text: 'Context only', comment: '' }],
+  };
+  f.say('chat', message);
+  const read = f.ctx.sessionQuery.historyRead;
+  let reads = 0;
+  f.ctx.sessionQuery.historyRead = async (...args: any[]) => {
+    reads++;
+    return read(...args);
+  };
+  await f.q.intake.collect();
+  await f.q.intake.collect();
+  assert.equal(reads, 1, 'an unchanged empty frame must not repeatedly reread the whole history');
   assert.equal(
     f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE source='maka'").get()?.n,
     0,
-    'an empty projection is not queued as a screened event',
   );
+  message.quotes[0].comment = 'New feedback';
+  await f.q.intake.collect();
+  assert.equal(reads, 2, 'a revised message is read again');
+  const rows = f.q.store.db.prepare("SELECT payload FROM intake_events WHERE source='maka'").all();
+  assert.equal(rows.length, 1);
+  assert.equal(JSON.parse(String(rows[0].payload)).content, 'New feedback');
 });

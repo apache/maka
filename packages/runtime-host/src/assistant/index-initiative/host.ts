@@ -63,8 +63,6 @@ export async function initializeInitiative(
       return active;
     }
     quick.ready();
-    // The worker's write identity belongs to the activation, and a sealed handoff keeps it
-    // while the accepted turn is still running under a recovered activation.
     return quick.execution(sessionId, writing);
   };
   ctx.tools.register({

@@ -103,6 +103,7 @@ export class QuickDiscoveryController {
   private timer?: ReturnType<typeof setInterval>;
   private heartbeat?: ReturnType<typeof setInterval>;
   private agent?: any;
+  private recovering = false;
   constructor(
     readonly ctx: any,
     readonly parent: any,
@@ -111,6 +112,9 @@ export class QuickDiscoveryController {
   ) {
     this.store = new InitiativeStore(join(directory, 'quick-discovery'), randomUUID());
     this.intake = new EventIntake(this);
+    const unfinished = this.state()?.active ?? this.state()?.pending;
+    this.recovering = !!unfinished && !unfinished.executionCompleted;
+    this.parent.coordinator.recoveryLane = () => (this.recovering ? 'quick' : undefined);
   }
   start(tickMs: number) {
     const acquire = () => {
@@ -118,11 +122,15 @@ export class QuickDiscoveryController {
       if (owned && !this.owned)
         this.store.update((s) => {
           this.intake.upgrade(s);
-          if (s?.active) {
+          // A restored Root can call its tools before the next scheduler tick.
+          // Keep its durable execution identity until Host reconciliation settles it.
+          if (s?.active?.executionCompleted) {
             s.pending = s.active;
             s.active = null;
             s.retryAt = this.now();
           }
+          const unfinished = s?.active ?? s?.pending;
+          this.recovering = !!unfinished && !unfinished.executionCompleted;
         });
       if (!owned && this.owned) this.abort.abort(Error('Quick discovery ownership lost'));
       this.owned = owned;
@@ -140,39 +148,14 @@ export class QuickDiscoveryController {
   state() {
     return this.store.get();
   }
-  /** A handoff is sealed once the Host accepted this exact payload. Recovery keeps that
-   * identity: the accepted turn is still this activation's even though its completion
-   * state was never stored and the activation is back to pending. */
-  private sealed(pending: any) {
-    return pending &&
-      !pending.executionCompleted &&
-      pending.submission &&
-      pending.submission.messageId === pending.messageId
-      ? pending
-      : undefined;
-  }
-  /** The activation that owns a discovery worker's reads and writes. */
+  /** The activation that owns this worker's reads and writes. A saved submission alone
+   * is not admission proof; pending work must first be reconciled with the Host. */
   execution(sessionId: string, writing: boolean) {
     const s = this.state();
     if (s?.workerSession !== sessionId) throw Error('Not a discovery worker');
-    const owner = s.active ?? this.sealed(s.pending);
-    if (writing && (!owner || owner.executionCompleted))
+    if (writing && (!s.active || s.active.executionCompleted))
       throw Error('No active quick discovery execution');
-    return owner?.id;
-  }
-  /** Keep a recovery reservation owned by the activation that will resume on it. */
-  private retain(token: string) {
-    this.store.update((state) => {
-      state.quickSlot = token;
-    });
-  }
-  /** Settle one reservation: release the shared slot and forget its carried token. */
-  private settle(token: string, outcome?: 'completed' | 'interrupted') {
-    this.parent.coordinator.release(token, outcome);
-    if (this.owned && this.state()?.quickSlot === token)
-      this.store.update((state) => {
-        state.quickSlot = null;
-      });
+    return s.active?.id;
   }
   async control(input: {
     action: 'enable' | 'pause' | 'check' | 'configure';
@@ -298,7 +281,60 @@ export class QuickDiscoveryController {
       });
     return this.ticking;
   }
+  private async restoreExecution() {
+    const state = this.state();
+    const unfinished = state?.active ?? state?.pending;
+    if (!unfinished || unfinished.executionCompleted || !state.workerSession) {
+      this.recovering = false;
+      return;
+    }
+    const leavePending = () => {
+      this.store.update((s) => {
+        if (s.active?.id === unfinished.id) {
+          s.pending = s.active;
+          s.active = null;
+        }
+      });
+      this.recovering = false;
+    };
+    const sessions = await this.owner(state, () => this.ctx.sessionQuery.list());
+    if (!sessions.some((session: any) => session.id === state.workerSession)) {
+      leavePending(); // A removed worker cannot own a live execution in this tree.
+      return;
+    }
+    const agent = await this.owner(state, () =>
+      this.ctx.agents.resume({ sessionId: state.workerSession }),
+    );
+    const execution = await agent.messageExecution(unfinished.messageId);
+    this.ready();
+    if (!execution) return; // Startup or an uncertain query is not proof of absence.
+    if (execution.state === 'owned' || execution.state === 'pending') {
+      const permit = this.parent.coordinator.acquire('quick');
+      if (!permit) return;
+      let restored = false;
+      try {
+        const current = this.store.update((s) => {
+          if ((s.active ?? s.pending)?.id !== unfinished.id)
+            throw Error('Quick wake ownership changed');
+          s.active = s.active ?? s.pending;
+          s.pending = null;
+        });
+        this.recovering = false;
+        this.launch(agent, current, permit);
+        restored = true;
+      } finally {
+        if (!restored) this.parent.coordinator.release(permit);
+      }
+      return;
+    }
+    if (execution.state === 'not_admitted' || execution.state === 'cancelled') leavePending();
+  }
   async dispatch() {
+    if (this.running) return;
+    if (this.recovering) {
+      await this.restoreExecution();
+      if (this.recovering || this.running) return;
+    }
     const s = this.state(),
       now = this.now();
     if (
@@ -350,30 +386,13 @@ export class QuickDiscoveryController {
       this.parent.coordinator.withdraw('quick');
       return;
     }
-    // A sealed handoff resumes the same activation, so it keeps the shared slot instead of
-    // taking a second one; the token survives until that activation settles.
-    const recovering = this.sealed(s.pending);
-    const carried =
-      recovering && s.quickSlot && this.parent.coordinator.holds(String(s.quickSlot))
-        ? String(s.quickSlot)
-        : undefined;
-    const permit = carried ?? this.parent.coordinator.acquire('quick');
+    const permit = this.parent.coordinator.acquire('quick');
     if (!permit) return;
-    let admitted = false,
-      retained = false;
+    let admitted = false;
     try {
       const agent = await this.worker(s);
       const snapshot = await agent.snapshot();
-      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) {
-        // The Host is still running the turn this activation had admitted. Releasing the
-        // slot here would start broad discovery while that worker still holds the write
-        // identity it needs to record what it found.
-        if (recovering && snapshot?.agent?.status === 'running') {
-          retained = true;
-          this.retain(permit);
-        }
-        return;
-      }
+      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
       this.ready();
       this.parent.coordinator.assertActive(permit);
       const current = this.store.update((state) => {
@@ -399,25 +418,34 @@ export class QuickDiscoveryController {
       });
       if (!current.active) return;
       admitted = true;
-      this.agent = agent;
-      let deferred = false;
-      this.running = this.run(agent, current)
-        .then((result) => {
-          deferred = result === 'deferred';
-        })
-        .finally(() => {
-          this.running = undefined;
-          const finished = this.state();
-          this.settle(
-            permit,
-            deferred || finished?.active || finished?.pending || finished?.lastError
-              ? 'interrupted'
-              : 'completed',
-          );
-        });
+      this.launch(agent, current, permit);
     } finally {
-      if (!admitted && !retained) this.settle(permit);
+      if (!admitted) this.parent.coordinator.release(permit);
     }
+  }
+
+  private launch(agent: any, current: any, permit: string) {
+    this.agent = agent;
+    let deferred = false;
+    this.running = this.run(agent, current)
+      .then((result) => {
+        deferred = result === 'deferred';
+      })
+      .finally(() => {
+        this.running = undefined;
+        const finished = this.state();
+        const unfinished = finished?.active ?? finished?.pending;
+        this.recovering =
+          !!unfinished &&
+          !unfinished.executionCompleted &&
+          unfinished.messageId === current.active.messageId;
+        this.parent.coordinator.release(
+          permit,
+          deferred || finished?.active || finished?.pending || finished?.lastError
+            ? 'interrupted'
+            : 'completed',
+        );
+      });
   }
 
   private async worker(s: any) {
@@ -676,12 +704,17 @@ export class QuickDiscoveryController {
           await delay(50, undefined, { signal: this.abort.signal });
         }
         let waitError: unknown;
-        try {
-          await agent.whenIdle(this.abort.signal);
-        } catch (error) {
-          waitError = error;
+        let snapshot: any;
+        for (;;) {
+          try {
+            await agent.whenIdle(this.abort.signal);
+          } catch (error) {
+            waitError = error;
+          }
+          snapshot = await agent.snapshot();
+          if (waitError || !awaitingUser(snapshot)) break;
+          await delay(1000, undefined, { signal: this.abort.signal });
         }
-        const snapshot = await agent.snapshot();
         failedExecution =
           ['failed', 'aborted'].includes(snapshot?.agent?.status) ||
           (snapshot?.agent?.status === 'blocked' && snapshot.pendingInteractions === 0);

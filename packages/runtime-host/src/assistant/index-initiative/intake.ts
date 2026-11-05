@@ -331,7 +331,6 @@ export class EventIntake {
       if (!snapshot) continue;
       const seen: Record<string, string> = {},
         items: any[] = [];
-      let projected = true;
       for (const [n, m] of snapshot.messages.entries()) {
         const id = m.id ?? m.messageId ?? String(n),
           digest = hash(m);
@@ -340,14 +339,10 @@ export class EventIntake {
           continue;
         }
         const content = messageText(m);
-        if (!content) {
-          // Nothing was projected, so this frame was not received. Keeping it out of
-          // `seen` and leaving the revision behind retries it; advancing would screen an
-          // empty event and then never look at the original again.
-          projected = false;
-          continue;
-        }
         seen[id] = digest;
+        // Empty frames contain no new words to screen. Record their revision so an
+        // unchanged history is not reread on every poll; later edits have a new digest.
+        if (!content) continue;
         items.push({
           id: hash([session.id, id, digest]),
           group: session.id,
@@ -362,9 +357,6 @@ export class EventIntake {
         });
       }
       this.accept('maka', 'maka', 'local', items);
-      // An unprojected frame did not get received, so this session's position stays put
-      // and the next collection reads it again instead of treating it as handled.
-      if (!projected) continue;
       previous[session.id] = { revision, seen };
       this.transaction(() => this.save('maka', previous));
     }

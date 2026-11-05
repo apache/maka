@@ -259,8 +259,9 @@ test('legacy unfinished event queues rescreen without resetting sources or resto
     f.q.store.db.prepare("SELECT cursor FROM intake_sources WHERE id='mail'").get()?.cursor,
     cursor,
   );
-  assert.equal(f.q.state().pending.eventBatch, undefined);
-  assert.deepEqual(f.q.state().pending.eventWake, { ids: [] });
+  const unfinished = f.q.state().active ?? f.q.state().pending;
+  assert.equal(unfinished.eventBatch, undefined);
+  assert.deepEqual(unfinished.eventWake, { ids: [] });
 });
 
 test('worker tools expose no event reader, per-event report fields or mandatory finish hook', async (t) => {

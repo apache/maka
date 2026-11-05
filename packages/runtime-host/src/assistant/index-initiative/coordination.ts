@@ -26,6 +26,8 @@ type Outcome = 'completed' | 'interrupted';
 /** One non-preemptive investigation slot. Event receipt/screening never holds it. */
 export class DiscoveryCoordinator {
   private readonly pendingReleases = new Map<string, Outcome | undefined>();
+  /** Reattach an admitted investigation before accepting new FIFO work. */
+  recoveryLane?: () => Lane | undefined;
   constructor(
     private readonly store: InitiativeStore,
     private readonly sequence: () => number,
@@ -75,11 +77,13 @@ export class DiscoveryCoordinator {
       this.store.db
         .prepare('INSERT OR IGNORE INTO discovery_waiters(lane,queued_at) VALUES(?,?)')
         .run(lane, Date.now());
+      const recovering = this.recoveryLane?.();
+      if (recovering && recovering !== lane) return;
       if (this.store.db.prepare('SELECT 1 FROM discovery_running').get()) return;
       const next = this.store.db
         .prepare('SELECT lane FROM discovery_waiters ORDER BY seq LIMIT 1')
         .get();
-      if (next?.lane !== lane) return;
+      if (next?.lane !== lane && recovering !== lane) return;
       const token = randomUUID();
       this.store.db.prepare('DELETE FROM discovery_waiters WHERE lane=?').run(lane);
       this.store.db
@@ -96,17 +100,6 @@ export class DiscoveryCoordinator {
   }
   waiting(lane: Lane) {
     return !!this.store.db.prepare('SELECT 1 FROM discovery_waiters WHERE lane=?').get(lane);
-  }
-  /** Whether this owner still holds a reservation. Recovery settles the reservations of
-   * an owner that is gone, so a token restored from durable state must be re-checked
-   * before it is treated as still holding the shared slot. */
-  holds(token: string) {
-    return (
-      !!token &&
-      !!this.store.db
-        .prepare('SELECT 1 FROM discovery_running WHERE token=? AND owner=?')
-        .get(token, this.store.owner)
-    );
   }
   assertActive(token: string) {
     this.store.fence();

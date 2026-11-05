@@ -21,72 +21,60 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 
-/** Stop at the crash boundary that the Host owns: the wake was admitted, the completion
- * state was never stored, and the admitted turn is still running in its Session. */
-async function handoff(f: any) {
+test('a prepared submission without Host admission grants no memory write identity', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
   await f.q.control({ action: 'check', eventIntake: false });
-  const followup = f.agent.followup;
-  f.agent.followup = async (...args: any[]) => {
-    const result = await followup(...args);
-    f.q.abort.abort(Error('terminated after admission'));
-    return result;
+  f.agent.followup = async () => {
+    throw Error('Request never reached the Host');
   };
   await f.q.dispatch();
   await f.q.running;
-  const active = f.q.state().active;
-  assert.ok(active && !active.executionCompleted, 'the crash leaves the activation unfinished');
-  assert.equal(active.submission.messageId, active.messageId, 'the accepted payload is sealed');
-  f.agent.followup = followup;
-  f.agent.snapshot = async () => ({ agent: { status: 'running' }, pendingInteractions: 0 });
-  f.advance(3600000);
-  await f.restart();
-  await f.q.control({ action: 'configure', eventIntake: false });
-  f.agent.snapshot = async () => ({ agent: { status: 'running' }, pendingInteractions: 0 });
-  f.advance(3600000);
-  return active;
-}
-
-test('recovery keeps the shared investigation slot while the admitted worker still runs', async (t) => {
-  const f = await intakeFixture();
-  t.after(() => f.close());
-  const active = await handoff(f);
-  assert.equal(f.parent.coordinator.status().running, null, 'the crash released the old owner');
+  const pending = f.q.state().pending;
+  assert.equal(
+    pending.submission.messageId,
+    pending.messageId,
+    'a payload is saved before submission',
+  );
+  assert.equal((await f.agent.messageExecution(pending.messageId)).state, 'not_admitted');
+  assert.throws(() => f.q.execution('worker', true), /No active quick discovery execution/);
+  assert.equal(f.q.execution('worker', false), undefined);
+  assert.throws(() => f.q.execution('owner', true), /Not a discovery worker/);
+  // Reconciliation clears uncertainty without ignoring the configured retry deadline.
   await f.q.dispatch();
-  const state = f.q.state();
-  assert.equal(state.active, null, 'the recovered activation stays pending until it can run');
-  assert.equal(state.pending.id, active.id);
-  assert.equal(
-    f.parent.coordinator.status().running?.lane,
-    'quick',
-    'a running worker still owns the shared slot',
-  );
-  assert.equal(
-    f.parent.coordinator.acquire('broad'),
-    undefined,
-    'broad discovery cannot start under an unfinished quick activation',
-  );
-  f.parent.coordinator.withdraw('broad');
+  assert.equal(f.counts().workerCalls, 0);
+  const broad = f.parent.coordinator.acquire('broad');
+  assert.ok(broad);
+  f.parent.coordinator.release(broad);
 });
 
-test('a sealed handoff keeps the worker write identity across recovery', async (t) => {
+test('an investigation awaiting user input keeps its slot and write identity', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  const active = await handoff(f);
-  await f.q.dispatch();
-  assert.equal(f.q.state().active, null);
-  assert.equal(
-    f.q.execution('worker', true),
-    active.id,
-    'DiscoveryNotebookRemember must resolve the sealed activation, not reject it',
-  );
-  assert.throws(() => f.q.execution('owner', true), /Not a discovery worker/);
-  // Only an accepted payload is sealed; a prepared but unaccepted handoff grants nothing.
-  f.q.store.update((s: any) => {
-    delete s.pending.submission;
+  await f.q.control({ action: 'check', eventIntake: false });
+  let awaiting = false;
+  let observed!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    observed = resolve;
   });
-  assert.throws(
-    () => f.q.execution('worker', true),
-    /No active quick discovery execution/,
-    'an unaccepted handoff does not keep a write identity',
-  );
+  f.agent.whenIdle = async () => {
+    awaiting = true;
+  };
+  f.agent.snapshot = async () => {
+    if (awaiting) observed();
+    return {
+      agent: { status: awaiting ? 'waiting_for_user' : 'idle' },
+      pendingInteractions: Number(awaiting),
+    };
+  };
+  await f.q.dispatch();
+  await blocked;
+  assert.ok(f.q.running);
+  assert.equal(f.q.execution('worker', true), f.q.state().active.id);
+  assert.equal(f.parent.coordinator.status().running?.lane, 'quick');
+  assert.equal(f.parent.coordinator.acquire('broad'), undefined);
+  f.parent.coordinator.withdraw('broad');
+  // Only this observer is aborted; user-input handling itself remains the Host's job.
+  f.q.abort.abort(Error('Test finished at user-input boundary'));
+  await f.q.running;
 });
