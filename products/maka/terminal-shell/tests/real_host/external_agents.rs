@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use super::*;
+use super::{
+    support::{evidence, evidence_cells},
+    *,
+};
 use maka_app_client::Client;
 use std::{path::Path, sync::OnceLock};
 
@@ -285,6 +288,8 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
                 .any(|node| node.label.contains("Qwen Code")
                     || node.label.contains("View installation plan"))
         );
+        evidence("native-external-runtimes", &view.snapshot());
+        evidence_cells("native-external-runtimes", &view);
         assert!(requests(fixture.directory.path()).is_empty());
         click(&mut view, "Enable Codex").await;
         assert!(!button(&mut view, ACKNOWLEDGE).await.state.selected);
@@ -294,6 +299,8 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
                 .any(|node| node.label == CONFIRM && node.state.disabled)
         );
         see(&mut view, "native full-access mode").await;
+        evidence("native-external-consent", &view.snapshot());
+        evidence_cells("native-external-consent", &view);
         click(&mut view, "Cancel enabling external agents").await;
         button(&mut view, "Enable Codex").await;
         assert_eq!(source(&client).await, (revision, before));

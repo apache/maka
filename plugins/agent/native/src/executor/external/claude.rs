@@ -37,6 +37,8 @@ pub(super) async fn execute(
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
 ) -> Result<Outcome, Error> {
+    let provisional = journal.native_session().is_none();
+    let mut spawned = false;
     let result = prepare(
         config,
         cwd,
@@ -46,6 +48,7 @@ pub(super) async fn execute(
         output,
         bridge.clone(),
         cancellation,
+        &mut spawned,
     )
     .await;
     // Preparation can fail before a PTY exists; credentials are still revoked.
@@ -54,6 +57,31 @@ pub(super) async fn execute(
         return result;
     }
     closed?;
+    settle_preparation(storage, journal, provisional, spawned, result).await
+}
+async fn settle_preparation(
+    storage: &Storage,
+    journal: &mut journal::Journal,
+    provisional: bool,
+    spawned: bool,
+    result: Result<Outcome, Error>,
+) -> Result<Outcome, Error> {
+    if !spawned && let Err(error) = &result {
+        match error {
+            Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_) => return result,
+            _ => {}
+        }
+        if provisional {
+            journal.revoke_unspawned(storage).await?;
+        }
+        if !matches!(error, Error::Cancelled) {
+            return Ok(Outcome::Failed {
+                message: error.to_string(),
+                code: Some("native_preparation_failed".into()),
+                recoverable: false,
+            });
+        }
+    }
     result
 }
 #[expect(
@@ -69,6 +97,7 @@ async fn prepare(
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
+    spawned: &mut bool,
 ) -> Result<Outcome, Error> {
     if request
         .get("images")
@@ -141,6 +170,7 @@ async fn prepare(
     )
     .await
     .map_err(runtime::process_error)?;
+    *spawned = true;
     let exited = CancellationToken::new();
     let settle = CancellationToken::new();
     let lifecycle = async {
@@ -382,6 +412,7 @@ async fn observe(
         text: String::new(),
         message_ids: std::collections::BTreeSet::new(),
         host_tool_calls: Default::default(),
+        api_failure: None,
     };
     loop {
         match cursor.next().await? {
@@ -409,6 +440,7 @@ struct LiveTurn<'a> {
     text: String,
     message_ids: std::collections::BTreeSet<String>,
     host_tool_calls: std::collections::BTreeSet<String>,
+    api_failure: Option<String>,
 }
 impl LiveTurn<'_> {
     async fn row(&mut self, row: Value, output: &dyn OutputSink) -> Result<Option<Outcome>, Error> {
@@ -442,10 +474,14 @@ impl LiveTurn<'_> {
         }
         if kind == "assistant" {
             if row.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-                return Err(Error::Provider(format!(
-                    "Claude API request failed: {}",
-                    content_text(&row["message"]["content"])
-                )));
+                self.api_failure.get_or_insert_with(|| {
+                    format!(
+                        "Claude API request failed: {}",
+                        content_text(&row["message"]["content"])
+                    )
+                });
+                self.assistant = true;
+                return Ok(None);
             }
             self.assistant = true;
             let content = &row["message"]["content"];
@@ -521,8 +557,15 @@ impl LiveTurn<'_> {
                     "Claude terminal lacks current assistant/session correlation".into(),
                 ));
             }
-            return Ok(Some(Outcome::Completed {
-                text: std::mem::take(&mut self.text),
+            return Ok(Some(match self.api_failure.take() {
+                Some(message) => Outcome::Failed {
+                    message,
+                    code: Some("native_api_failed".into()),
+                    recoverable: false,
+                },
+                None => Outcome::Completed {
+                    text: std::mem::take(&mut self.text),
+                },
             }));
         }
         Ok(None)
@@ -560,7 +603,121 @@ mod tests {
             text: String::new(),
             message_ids: Default::default(),
             host_tool_calls: Default::default(),
+            api_failure: None,
         }
+    }
+    #[tokio::test]
+    async fn cancellation_before_spawn_revokes_only_an_unspawned_new_uuid() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = maka_event_log::root::RootOwner::create(
+            &directory.path().join("root"),
+            &maka_event_log::root::RootNamespaces {
+                ownership: directory.path().join("owners"),
+                control: directory.path().join("control"),
+            },
+        )
+        .unwrap();
+        let storage = Storage::new(
+            Arc::new(RootStore::open(Arc::new(root)).await.unwrap()),
+            String::new(),
+            maka_capabilities::storage::Namespace::new(
+                "maka.agent.oar",
+                maka_plugin_core::scope::Scope::Profile,
+            )
+            .unwrap(),
+        );
+        let request = Request {
+            language: maka_agent_facts::language::Language::En,
+            invocation: maka_agent_facts::event::Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+            conversation_key: "session".into(),
+            cwd: directory.path().to_str().unwrap().into(),
+            content: serde_json::from_value(serde_json::json!({"text":"prompt"})).unwrap(),
+            instructions: None,
+            settings: maka_agent_facts::executor::Settings {
+                runtime: Some("claude".into()),
+                ..Default::default()
+            },
+        };
+        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
+        journal.start(&storage, "first").await.unwrap();
+        let cancellation = CancellationToken::new();
+        let allocated = Uuid::new_v4().to_string();
+        let (committed, ()) = tokio::join!(journal.opened(&storage, allocated.clone()), async {
+            cancellation.cancel();
+        });
+        committed.unwrap();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(journal.native_session(), Some(allocated.as_str()));
+        assert!(matches!(
+            settle_preparation(&storage, &mut journal, true, false, Err(Error::Cancelled)).await,
+            Err(Error::Cancelled)
+        ));
+        journal.ready(&storage).await.unwrap();
+        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
+        assert!(
+            journal.native_session().is_none(),
+            "the next turn must allocate, rather than resume a UUID with no transcript"
+        );
+        let established = Uuid::new_v4().to_string();
+        journal.start(&storage, "followup").await.unwrap();
+        journal.opened(&storage, established.clone()).await.unwrap();
+        assert!(matches!(
+            settle_preparation(&storage, &mut journal, false, false, Err(Error::Cancelled)).await,
+            Err(Error::Cancelled)
+        ));
+        journal.ready(&storage).await.unwrap();
+        let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
+        assert_eq!(
+            journal.native_session(),
+            Some(established.as_str()),
+            "pre-spawn cancellation must preserve an established resume identity"
+        );
+        journal.start(&storage, "post-spawn").await.unwrap();
+        assert!(matches!(
+            settle_preparation(
+                &storage,
+                &mut journal,
+                false,
+                true,
+                Err(Error::Provider("post-prompt uncertainty".into()))
+            )
+            .await,
+            Err(Error::Provider(_))
+        ));
+        assert!(matches!(
+            journal::Journal::load(&storage, &request).await,
+            Err(Error::Unknown)
+        ));
+        for (index, error) in [
+            Error::Unknown,
+            Error::CleanupUnconfirmed,
+            Error::Persistence("unconfirmed commit".into()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut request = request.clone();
+            request.conversation_key = format!("uncertain-{index}");
+            let mut journal = journal::Journal::load(&storage, &request).await.unwrap();
+            journal.start(&storage, "uncertain").await.unwrap();
+            journal.opened(&storage, allocated.clone()).await.unwrap();
+            assert!(
+                settle_preparation(&storage, &mut journal, true, false, Err(error))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(journal.native_session(), Some(allocated.as_str()));
+            assert!(matches!(
+                journal::Journal::load(&storage, &request).await,
+                Err(Error::Unknown)
+            ));
+        }
+        storage.finish().await.unwrap();
     }
     #[tokio::test]
     async fn blocked_stop_attempts_wait_for_final_turn_duration_after_current_prompt() {
@@ -618,11 +775,10 @@ mod tests {
         let mut turn = turn();
         let sink = Sink;
         turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        let error = turn.row(serde_json::json!({"type":"assistant","sessionId":"session","uuid":"api-error","isApiErrorMessage":true,"error":"unknown","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: 400 PTY_ERROR_SENTINEL"}]}}), &sink).await.unwrap_err();
+        assert!(turn.row(serde_json::json!({"type":"assistant","sessionId":"session","uuid":"api-error","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 400 PTY_ERROR_SENTINEL"}]}}), &sink).await.unwrap().is_none());
         assert!(
-            matches!(error, Error::Provider(ref reason) if reason.contains("PTY_ERROR_SENTINEL"))
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Failed{message,..}) if message=="Claude API request failed: API Error: 400 PTY_ERROR_SENTINEL")
         );
-        assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.is_err());
     }
     #[tokio::test]
     async fn recoverable_tool_failure_does_not_turn_an_assistant_reply_into_api_failure() {

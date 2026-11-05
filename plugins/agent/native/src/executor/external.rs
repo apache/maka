@@ -46,11 +46,44 @@ struct CatalogSnapshot {
     result: Shared<BoxFuture<'static, Result<Value, Error>>>,
 }
 
+enum Catalog {
+    Empty,
+    Cached(CatalogSnapshot),
+    Failed(Error),
+}
+impl Catalog {
+    fn failure(&self) -> Result<(), Error> {
+        match self {
+            Self::Failed(error) => Err(error.clone()),
+            _ => Ok(()),
+        }
+    }
+    fn invalidate(&mut self) {
+        if !matches!(self, Self::Failed(_)) {
+            *self = Self::Empty;
+        }
+    }
+    fn admit(
+        &self,
+        resources: &Arc<maka_capabilities::call::Resources>,
+    ) -> Result<maka_capabilities::call::Ticket, Error> {
+        self.failure()?;
+        resources.reserve().map_err(|_| Error::Retired)
+    }
+    fn observe(&mut self, result: &Result<Value, Error>) {
+        if let Err(error @ (Error::Unknown | Error::CleanupUnconfirmed)) = result
+            && !matches!(self, Self::Failed(Error::CleanupUnconfirmed))
+        {
+            *self = Self::Failed(error.clone());
+        }
+    }
+}
+
 pub(super) struct External {
     commands: BTreeMap<NativeRuntime, NativeCommand>,
     storage: Storage,
     queries: Arc<maka_capabilities::call::Resources>,
-    catalog: tokio::sync::Mutex<Option<CatalogSnapshot>>,
+    catalog: tokio::sync::Mutex<Catalog>,
     stop: CancellationToken,
     root: Arc<RootStore>,
     package: String,
@@ -108,7 +141,7 @@ impl External {
             commands,
             storage,
             queries: Arc::default(),
-            catalog: tokio::sync::Mutex::new(None),
+            catalog: tokio::sync::Mutex::new(Catalog::Empty),
             stop: CancellationToken::new(),
             root: persistence.store().clone(),
             package: context.package().id.clone(),
@@ -175,23 +208,15 @@ impl External {
         if selected.is_none() && kind == "models" {
             return Err(Error::Invalid("Models require a runtime selection".into()));
         }
-        if let Some(Err(error @ (Error::CleanupUnconfirmed | Error::Unknown))) = self
-            .catalog
-            .lock()
-            .await
-            .as_ref()
-            .and_then(|entry| entry.result.peek())
-        {
-            return Err(error.clone());
-        }
         if kind == "catalog" && selected.is_none() {
             let discovery = {
                 let mut cached = self.catalog.lock().await;
-                if let Some(entry) = cached.as_ref().filter(|entry| {
-                    entry.cwd == cwd
-                        && (entry.result.peek().is_none()
-                            || entry.started.elapsed() < Duration::from_secs(30))
-                }) {
+                cached.failure()?;
+                if let Catalog::Cached(entry) = &*cached
+                    && entry.cwd == cwd
+                    && (entry.result.peek().is_none()
+                        || entry.started.elapsed() < Duration::from_secs(30))
+                {
                     entry.result.clone()
                 } else {
                     let owner = self.clone();
@@ -207,7 +232,7 @@ impl External {
                     tokio::spawn(async move {
                         let _ = retained.await;
                     });
-                    *cached = Some(CatalogSnapshot {
+                    *cached = Catalog::Cached(CatalogSnapshot {
                         cwd,
                         started: Instant::now(),
                         result: discovery.clone(),
@@ -222,7 +247,7 @@ impl External {
             };
         }
         if kind == "status" {
-            self.catalog.lock().await.take();
+            self.catalog.lock().await.invalidate();
         }
         self.discover(cwd, kind.to_owned(), selected, cancellation)
             .await
@@ -234,7 +259,7 @@ impl External {
         selected: Option<NativeRuntime>,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
-        let mut ticket = self.queries.reserve().map_err(|_| Error::Retired)?;
+        let mut ticket = self.catalog.lock().await.admit(&self.queries)?;
         let owner = self.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
@@ -246,6 +271,7 @@ impl External {
                 result = &mut work => result,
                 () = owner.stop.cancelled() => { cancel.cancel(); work.await },
             };
+            owner.catalog.lock().await.observe(&result);
             ticket.complete(if matches!(result, Err(Error::CleanupUnconfirmed)) {
                 Err("Native discovery cleanup is unconfirmed".into())
             } else {
@@ -253,11 +279,18 @@ impl External {
             });
             let _ = send.send(result);
         });
-        receive.await.map_err(|_| Error::CleanupUnconfirmed)?
+        match receive.await {
+            Ok(result) => result,
+            Err(_) => {
+                let result = Err(Error::CleanupUnconfirmed);
+                self.catalog.lock().await.observe(&result);
+                result
+            }
+        }
     }
     pub async fn finish(&self) -> Result<(), String> {
         self.stop.cancel();
-        self.catalog.lock().await.take();
+        self.catalog.lock().await.invalidate();
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let storage = self.storage.finish().await;
         queries?;
@@ -386,5 +419,94 @@ impl Call {
                 .await?;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::{Mutex, oneshot};
+
+    #[tokio::test]
+    async fn evicted_catalog_probe_still_quarantines_metadata_and_drains_overlapping_status() {
+        let cached = CatalogSnapshot {
+            cwd: "workspace".into(),
+            started: Instant::now(),
+            result: futures_util::future::pending::<Result<Value, Error>>()
+                .boxed()
+                .shared(),
+        };
+        let catalog = Arc::new(Mutex::new(Catalog::Cached(cached)));
+        let resources = Arc::new(maka_capabilities::call::Resources::default());
+        async fn probe(
+            catalog: Arc<Mutex<Catalog>>,
+            resources: Arc<maka_capabilities::call::Resources>,
+            entered: oneshot::Sender<()>,
+            release: oneshot::Receiver<Result<Value, Error>>,
+        ) -> Result<Value, Error> {
+            let mut ticket = catalog.lock().await.admit(&resources)?;
+            ticket.start();
+            entered.send(()).unwrap();
+            let result = release.await.unwrap();
+            catalog.lock().await.observe(&result);
+            ticket.complete(if matches!(result, Err(Error::CleanupUnconfirmed)) {
+                Err("probe cleanup unconfirmed".into())
+            } else {
+                Ok(())
+            });
+            result
+        }
+        let (catalog_entered, entered) = oneshot::channel();
+        let (release_catalog, result) = oneshot::channel();
+        let original = tokio::spawn(probe(
+            catalog.clone(),
+            resources.clone(),
+            catalog_entered,
+            result,
+        ));
+        entered.await.unwrap();
+        catalog.lock().await.invalidate();
+        assert!(matches!(*catalog.lock().await, Catalog::Empty));
+        let (status_entered, entered) = oneshot::channel();
+        let (release_status, result) = oneshot::channel();
+        let status = tokio::spawn(probe(
+            catalog.clone(),
+            resources.clone(),
+            status_entered,
+            result,
+        ));
+        entered.await.unwrap();
+        release_catalog
+            .send(Err(Error::CleanupUnconfirmed))
+            .unwrap();
+        assert!(matches!(
+            original.await.unwrap(),
+            Err(Error::CleanupUnconfirmed)
+        ));
+        catalog.lock().await.invalidate();
+        assert!(matches!(
+            catalog.lock().await.admit(&resources),
+            Err(Error::CleanupUnconfirmed)
+        ));
+        assert!(
+            resources.has_pending(),
+            "the admitted status probe must remain owned after its sibling fails"
+        );
+        release_status.send(Ok(serde_json::json!([]))).unwrap();
+        status.await.unwrap().unwrap();
+        assert!(!resources.has_pending());
+        assert!(
+            resources.reserve().is_ok(),
+            "Resources alone do not quarantine discovery"
+        );
+        catalog.lock().await.invalidate();
+        assert!(
+            matches!(
+                catalog.lock().await.admit(&resources),
+                Err(Error::CleanupUnconfirmed)
+            ),
+            "clean status completion/refresh cannot erase the original fatal result"
+        );
+        assert!(resources.finish().await.is_err());
     }
 }

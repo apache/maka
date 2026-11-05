@@ -288,7 +288,7 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
         let mut settings=json!({"runtime":runtime.as_str()});
         if let Ok(model)=std::env::var("MAKA_NATIVE_REAL_MODEL") {settings["model"]=model.into();}
         if let Ok(effort)=std::env::var("MAKA_NATIVE_REAL_EFFORT") {settings["thinkingLevel"]=effort.into();}
-        for message in [format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session}. Remember verification marker {marker} for our next turn. After the tool returns, reply with exactly that marker. Do not use other tools."),"What verification marker did I give in the previous turn? Reply with exactly that marker; do not use tools.".into()] {
+        for (turn,message) in [format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session}. Remember verification marker {marker} for our next turn. After the tool returns, reply with exactly that marker. Do not use other tools."),format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session} again. Then recall the verification marker from our previous turn and reply with exactly that marker. Do not use other tools.")].into_iter().enumerate() {
             let accepted=f.mutation(2,"send",json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"external","settings":settings}}}),Uuid::new_v4()).await.unwrap();
             assert_eq!(accepted["kind"],"started");f.drained().await;
             let observed=work(&f,session,&accepted).await;
@@ -300,10 +300,14 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
             let journal=super::external_support::record_runtime(&f,session,runtime.as_str()).await;
             let current=journal["nativeSession"].as_str().unwrap().to_owned();
             if let Some(original)=&original {assert_eq!(original,&current);}else{original=Some(current);}
+            let events=f.prefix(session,256,1024*1024).await.events;
+            let dispatched:Vec<_>=events.iter().filter_map(|row|match &row.event.fact {
+                maka_agent_facts::event::Fact::ToolDispatched{operation_id,name,call,..} if name=="SessionRead" && matches!(&call.origin,maka_agent_facts::tool_call::ToolOrigin::HostSdk{entry_id,..} if entry_id=="external")=>Some(operation_id),
+                _=>None,
+            }).collect();
+            assert_eq!(dispatched.len(),turn+1,"each native invocation must use its fresh Host bridge");
+            for operation in dispatched {assert!(events.iter().any(|row|matches!(&row.event.fact,maka_agent_facts::event::Fact::ToolSettled{operation_id,outcome:maka_agent_facts::event::ToolOutcome::Succeeded{..}} if operation_id==operation)));}
         }
-        let events=f.prefix(session,256,1024*1024).await.events;
-        assert!(events.iter().any(|row|matches!(&row.event.fact,maka_agent_facts::event::Fact::ToolDispatched{name,call,..} if name=="SessionRead" && matches!(&call.origin,maka_agent_facts::tool_call::ToolOrigin::HostSdk{entry_id,..} if entry_id=="external"))));
-        assert!(events.iter().any(|row|matches!(&row.event.fact,maka_agent_facts::event::Fact::ToolSettled{outcome:maka_agent_facts::event::ToolOutcome::Succeeded{..},..})));
         f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

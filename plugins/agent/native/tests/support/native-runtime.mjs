@@ -82,7 +82,8 @@ async function prompt() {
   await Promise.all(calls);
   if(plan.expectCancel) { await new Promise(resolve=>{const poll=setInterval(()=>{if(interrupted){clearInterval(poll);resolve()}},5)}); trace('cancelled_tools');trace('terminal'); await gate.next(); return; }
  }
- output('committed output');
+ if (claude && request.message==='api-error') append({type:'assistant',uuid:crypto.randomUUID(),isApiErrorMessage:true,message:{content:[{type:'text',text:'API Error: 400 FIXTURE_API_FAILURE'}]}});
+ else output('committed output');
  trace('output');
  if(request.message==='wait') return;
  await gate.next();

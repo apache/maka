@@ -116,3 +116,135 @@ async fn native_external_exited_worker_with_an_escaped_stdout_holder_returns_unc
     .await
     .unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_clean_preparation_failure_releases_new_uuid_but_preserves_resume_identity() {
+    use super::external_support::{input_runtime, record_runtime};
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let mut paths = None;
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            let command = settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .claude
+                .as_mut()
+                .unwrap();
+            let node = std::path::Path::new(&command.env["PATH"]).join(&command.executable);
+            let launch = settings.workspace_roots[0]
+                .path
+                .join("claude-fixture-launch");
+            command.executable = launch.to_str().unwrap().into();
+            paths = Some((node, launch));
+        })
+        .await;
+        let (node, launch) = paths.unwrap();
+        let session = f.create("Claude preparation recovery").await;
+        let failed = f
+            .mutation(
+                2,
+                "send",
+                input_runtime(&session, "claude", "complete"),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        f.drained().await;
+        assert_eq!(
+            work(&f, &session, &failed).await["execution"]["state"],
+            "failed"
+        );
+        let record = record_runtime(&f, &session, "claude").await;
+        assert!(record["nativeSession"].is_null());
+        assert!(record["running"].is_null());
+        assert!(listener.accept().now_or_never().is_none());
+        let mut original: Option<Value> = None;
+        for resume in [false, true] {
+            std::os::unix::fs::symlink(&node, &launch).unwrap();
+            let accepted = f
+                .mutation(
+                    2,
+                    "send",
+                    input_runtime(&session, "claude", "complete"),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let opened = packet(&mut control, "opened").await;
+            if resume {
+                assert_eq!(
+                    opened["request"]["resume"],
+                    original.as_ref().unwrap().clone()
+                );
+            } else {
+                assert!(opened["request"].get("resume").is_none());
+            }
+            release(&mut control).await;
+            packet(&mut control, "output").await;
+            release(&mut control).await;
+            packet(&mut control, "terminal").await;
+            release(&mut control).await;
+            f.drained().await;
+            assert_eq!(
+                work(&f, &session, &accepted).await["execution"]["state"],
+                "completed"
+            );
+            let record = record_runtime(&f, &session, "claude").await;
+            if original.is_none() {
+                original = Some(record["nativeSession"].clone());
+            }
+            std::fs::remove_file(&launch).unwrap();
+            if !resume {
+                let failed = f
+                    .mutation(
+                        2,
+                        "send",
+                        input_runtime(&session, "claude", "complete"),
+                        Uuid::new_v4(),
+                    )
+                    .await
+                    .unwrap();
+                f.drained().await;
+                assert_eq!(
+                    work(&f, &session, &failed).await["execution"]["state"],
+                    "failed"
+                );
+                let record = record_runtime(&f, &session, "claude").await;
+                assert_eq!(record["nativeSession"], original.as_ref().unwrap().clone());
+                assert!(record["running"].is_null());
+            }
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn claude_api_error_with_duration_settles_failed_and_allows_same_native_session_followup() {
+    use super::external_support::{input_runtime, record_runtime};
+    tokio::time::timeout(Duration::from_secs(60),async {
+        let (f,listener)=setup("http://127.0.0.1:9/v1").await;
+        let session=f.create("Claude API failure recovery").await;
+        let mut original=None;
+        for message in ["api-error","complete"] {
+            let accepted=f.mutation(2,"send",input_runtime(&session,"claude",message),Uuid::new_v4()).await.unwrap();
+            let mut control=BufReader::new(listener.accept().await.unwrap().0);
+            let opened=packet(&mut control,"opened").await;
+            if let Some(original)=&original {assert_eq!(&opened["request"]["resume"],original);}
+            release(&mut control).await;packet(&mut control,"output").await;
+            assert_eq!(record_runtime(&f,&session,"claude").await["running"],accepted["invocationId"],"the API-error row alone cannot release the running fence");
+            release(&mut control).await;packet(&mut control,"terminal").await;release(&mut control).await;f.drained().await;
+            assert_eq!(work(&f,&session,&accepted).await["execution"]["state"],if message=="api-error" {"failed"} else {"completed"});
+            let record=record_runtime(&f,&session,"claude").await;
+            assert!(record["running"].is_null());
+            if let Some(original)=&original {assert_eq!(&record["nativeSession"],original);}else{original=Some(record["nativeSession"].clone());}
+        }
+        assert!(f.prefix(&session,128,1024*1024).await.events.iter().any(|row| matches!(&row.event.fact,maka_agent_facts::event::Fact::InvocationEnded{outcome:maka_agent_facts::event::InvocationOutcome::Failed{message:Some(message),..}} if message.contains("FIXTURE_API_FAILURE"))));
+        f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

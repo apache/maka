@@ -348,7 +348,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             props,
             {
               title: externalAgents.title,
-              nested: () => !!externalAgents.confirmation() || !!externalAgents.plan(),
+              nested: () => !!externalAgents.confirmation(),
               navigation: externalAgents.navigation,
               back: externalAgents.back,
               busy: operations.busy,
