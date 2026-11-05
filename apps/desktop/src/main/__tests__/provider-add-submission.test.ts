@@ -24,8 +24,10 @@ import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
+  onboardingPickerModels,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
+  usesLegacyConnectionWriter,
   validateAddProviderDraft,
   type AddProviderDraft,
   type AddProviderField,
@@ -268,32 +270,70 @@ test('a duplicate slug outranks a missing key, so one fix is asked for at a time
   );
 });
 
-test('routes only fixed-endpoint API-key drafts without request customization to Host onboarding', () => {
+test('routes an API-key draft to Host onboarding unless a probe input cannot ride along', () => {
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'openai',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasRequestHeaders: false,
+    hasEndpoint: false,
   }), { kind: 'host' });
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'openai',
-    requestHeaderCount: 1,
-    hasRequestBodyOverlay: false,
-  }), { kind: 'legacy', reason: 'request_headers' });
+    hasRequestBodyOverlay: true,
+    hasRequestHeaders: false,
+    hasEndpoint: false,
+  }), { kind: 'legacy', reason: 'request_body' });
+  // The verify wire carries headers into a create target, but the managed save
+  // that would follow commits the key and the catalog and nothing else. A
+  // built-in with headers would therefore be stored without them.
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'openai',
-    requestHeaderCount: 0,
-    hasRequestBodyOverlay: true,
-  }), { kind: 'legacy', reason: 'request_body' });
+    hasRequestBodyOverlay: false,
+    hasRequestHeaders: true,
+    hasEndpoint: false,
+  }), { kind: 'legacy', reason: 'request_headers' });
+  // A relay with no registry endpoint has nothing to verify against until the
+  // form supplies one.
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'custom',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasRequestHeaders: false,
+    hasEndpoint: false,
   }), { kind: 'legacy', reason: 'custom_endpoint' });
+  // …and once it does, the probe carries the form's endpoint and headers, so
+  // the relay joins the managed route rather than the legacy create-then-fetch.
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'custom',
+    hasRequestBodyOverlay: false,
+    hasRequestHeaders: false,
+    hasEndpoint: true,
+  }), { kind: 'host' });
+  // Headers do not divert a relay, because the writer its save already uses is
+  // the one that persists them.
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'custom',
+    hasRequestBodyOverlay: false,
+    hasRequestHeaders: true,
+    hasEndpoint: true,
+  }), { kind: 'host' });
+  // The overlay is still the one probe input the Host cannot carry.
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'custom',
+    hasRequestBodyOverlay: true,
+    hasRequestHeaders: false,
+    hasEndpoint: true,
+  }), { kind: 'legacy', reason: 'request_body' });
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'cloudflare-workers-ai',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasRequestHeaders: false,
+    hasEndpoint: false,
   }), { kind: 'legacy', reason: 'cloudflare' });
+});
+
+test('the relay is the one provider whose save is still the create-then-discover writer', () => {
+  assert.equal(usesLegacyConnectionWriter('custom'), true);
+  assert.equal(usesLegacyConnectionWriter('openai'), false);
 });
 
 test('uses a stable discovered-model order and prefers the registered recommendation', () => {
@@ -308,6 +348,35 @@ test('uses a stable discovered-model order and prefers the registered recommenda
   assert.deepEqual(initialOnboardingModelIds(models, 'z-model'), ['z-model']);
   assert.deepEqual(initialOnboardingModelIds(models, 'missing'), ['a-model']);
   assert.deepEqual(initialOnboardingModelIds([], 'missing'), []);
+});
+
+test('a typed model the catalog does not list still reaches the picker', () => {
+  const models = [
+    { id: 'z-model', displayName: 'Zulu' },
+    { id: 'a-model', displayName: 'Alpha' },
+  ];
+  // Present in the catalog: no duplicate.
+  assert.deepEqual(onboardingPickerModels(models, 'z-model').map(({ id }) => id).sort(), [
+    'a-model',
+    'z-model',
+  ]);
+  // Absent: offered alongside the catalog rather than silently replaced.
+  const withTyped = onboardingPickerModels(models, 'typed-model');
+  assert.deepEqual(withTyped.map(({ id }) => id).sort(), [
+    'a-model',
+    'typed-model',
+    'z-model',
+  ]);
+  assert.deepEqual(initialOnboardingModelIds(withTyped, 'typed-model'), ['typed-model']);
+  // A relay that exposes no catalog at all can still be completed with the
+  // model the user typed.
+  assert.deepEqual(onboardingPickerModels([], 'typed-model').map(({ id }) => id), [
+    'typed-model',
+  ]);
+  assert.deepEqual(onboardingPickerModels(models, '').map(({ id }) => id).sort(), [
+    'a-model',
+    'z-model',
+  ]);
 });
 
 test('only an idle form projects a dispatched save as outcome unknown', () => {
