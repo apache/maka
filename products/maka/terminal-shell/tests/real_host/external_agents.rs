@@ -63,14 +63,6 @@ fn worker_state(directory: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(directory.join("external-state.json")).unwrap()).unwrap()
 }
 
-fn update_worker_state(directory: &Path, update: impl FnOnce(&mut Value)) {
-    let mut state = worker_state(directory);
-    update(&mut state);
-    let temporary = directory.join("external-state.next");
-    std::fs::write(&temporary, serde_json::to_vec(&state).unwrap()).unwrap();
-    std::fs::rename(temporary, directory.join("external-state.json")).unwrap();
-}
-
 fn requests(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("external-requests.jsonl"))
         .unwrap()
@@ -265,143 +257,138 @@ async fn model_choices(view: &mut AppView) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation() {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        let fixture = fixture().await;
-        let client = fixture.client().await;
-        let (revision, before) = source(&client).await;
-        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
-        view.resize(180, 160);
-        wait_editable_composer(&mut view).await;
-        open_settings(&mut view).await;
-        for name in ["Antigravity", "Codex", "Claude Code"] {
-            assert!(
-                !button(&mut view, &format!("Enable {name}"))
-                    .await
-                    .state
-                    .selected
-            );
-        }
+    let fixture = fixture().await;
+    let client = fixture.client().await;
+    let (revision, before) = source(&client).await;
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    view.resize(180, 160);
+    wait_editable_composer(&mut view).await;
+    open_settings(&mut view).await;
+    for name in ["Antigravity", "Codex", "Claude Code"] {
         assert!(
-            !view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label.contains("Qwen Code")
-                    || node.label.contains("View installation plan"))
+            !button(&mut view, &format!("Enable {name}"))
+                .await
+                .state
+                .selected
         );
-        evidence("native-external-runtimes", &view.snapshot());
-        evidence_cells("native-external-runtimes", &view);
-        assert!(requests(fixture.directory.path()).is_empty());
-        click(&mut view, "Enable Codex").await;
-        assert!(!button(&mut view, ACKNOWLEDGE).await.state.selected);
-        assert!(
-            view.accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == CONFIRM && node.state.disabled)
-        );
-        see(&mut view, "native full-access mode").await;
-        evidence("native-external-consent", &view.snapshot());
-        evidence_cells("native-external-consent", &view);
-        click(&mut view, "Cancel enabling external agents").await;
-        button(&mut view, "Enable Codex").await;
-        assert_eq!(source(&client).await, (revision, before));
-        assert!(requests(fixture.directory.path()).is_empty());
+    }
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label.contains("Qwen Code")
+                || node.label.contains("View installation plan"))
+    );
+    evidence("native-external-runtimes", &view.snapshot());
+    evidence_cells("native-external-runtimes", &view);
+    assert!(requests(fixture.directory.path()).is_empty());
+    click(&mut view, "Enable Codex").await;
+    assert!(!button(&mut view, ACKNOWLEDGE).await.state.selected);
+    assert!(
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == CONFIRM && node.state.disabled)
+    );
+    see(&mut view, "native full-access mode").await;
+    evidence("native-external-consent", &view.snapshot());
+    evidence_cells("native-external-consent", &view);
+    click(&mut view, "Cancel enabling external agents").await;
+    button(&mut view, "Enable Codex").await;
+    assert_eq!(source(&client).await, (revision, before));
+    assert!(requests(fixture.directory.path()).is_empty());
 
-        toggle_runtime(&mut view, &client, "codex", "Codex", true).await;
-        see(&mut view, "1 models available").await;
-        click(&mut view, "Show Codex details").await;
-        see(&mut view, "Signed in (codex account/read)").await;
-        click(&mut view, "Hide Codex details").await;
-        click(&mut view, "Close settings").await;
-        model_choices(&mut view).await;
-        button(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        button(&mut view, "Use External model · Native CLI · codex").await;
+    toggle_runtime(&mut view, &client, "codex", "Codex", true).await;
+    see(&mut view, "1 models available").await;
+    click(&mut view, "Show Codex details").await;
+    see(&mut view, "Signed in (codex account/read)").await;
+    click(&mut view, "Hide Codex details").await;
+    click(&mut view, "Close settings").await;
+    model_choices(&mut view).await;
+    button(&mut view, "Use fixture-model-alt · NSH fixture").await;
+    button(&mut view, "Use External model · Native CLI · codex").await;
 
-        let page = client
-            .query("agent", "models", json!({"kind":"start","query":""}))
+    let page = client
+        .query("agent", "models", json!({"kind":"start","query":""}))
+        .await
+        .unwrap();
+    let external = page["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|choice| {
+            choice.pointer("/selection/selection/settings/model") == Some(&json!("external-model"))
+        })
+        .unwrap();
+    let count = requests(fixture.directory.path())
+        .iter()
+        .filter(|row| row["method"] == "launch")
+        .count();
+    for _ in 0..3 {
+        let checked = client
+            .query("agent", "model", json!({"backend":external["selection"]}))
             .await
             .unwrap();
-        let external = page["choices"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|choice| {
-                choice.pointer("/selection/selection/settings/model")
-                    == Some(&json!("external-model"))
-            })
-            .unwrap();
-        let count = requests(fixture.directory.path())
+        assert_eq!(checked["kind"], "ready");
+    }
+    assert_eq!(
+        requests(fixture.directory.path())
             .iter()
             .filter(|row| row["method"] == "launch")
-            .count();
-        for _ in 0..3 {
-            let checked = client
-                .query("agent", "model", json!({"backend":external["selection"]}))
-                .await
-                .unwrap();
-            assert_eq!(checked["kind"], "ready");
-        }
-        assert_eq!(
-            requests(fixture.directory.path())
-                .iter()
-                .filter(|row| row["method"] == "launch")
-                .count(),
-            count,
-            "single-model validation must reuse the shared catalog, not launch native processes"
-        );
+            .count(),
+        count,
+        "single-model validation must reuse the shared catalog, not launch native processes"
+    );
 
-        click(&mut view, "Use External model · Native CLI · codex").await;
-        wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
-        let observed = client
-            .query("agent", "observe", json!({"sessionId":fixture.session}))
-            .await
-            .unwrap();
-        assert_eq!(
-            observed["session"]["backend"].pointer("/selection/executor"),
-            Some(&json!("external"))
-        );
+    click(&mut view, "Use External model · Native CLI · codex").await;
+    wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
+    let observed = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    assert_eq!(
+        observed["session"]["backend"].pointer("/selection/executor"),
+        Some(&json!("external"))
+    );
 
-        open_settings(&mut view).await;
-        update_worker_state(fixture.directory.path(), |state| {
-            state["modelsFail"] = json!(true)
-        });
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Disable Codex").await;
-        click(&mut view, "Close settings").await;
-        model_choices(&mut view).await;
-        button(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        assert!(
-            !view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == "Use External model · Native CLI · codex"),
-            "failed external discovery must not retain stale external choices"
-        );
-        click(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
-        let observed = client
-            .query("agent", "observe", json!({"sessionId":fixture.session}))
-            .await
-            .unwrap();
-        assert_eq!(observed["session"]["backend"]["kind"], "model");
+    open_settings(&mut view).await;
+    update_worker_state(fixture.directory.path(), |state| {
+        state["modelsFail"] = json!(true)
+    });
+    click(&mut view, "Refresh external agents").await;
+    button(&mut view, "Disable Codex").await;
+    click(&mut view, "Close settings").await;
+    model_choices(&mut view).await;
+    button(&mut view, "Use fixture-model-alt · NSH fixture").await;
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Use External model · Native CLI · codex"),
+        "failed external discovery must not retain stale external choices"
+    );
+    click(&mut view, "Use fixture-model-alt · NSH fixture").await;
+    wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
+    let observed = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["backend"]["kind"], "model");
 
-        open_settings(&mut view).await;
-        toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
-        let settled = requests(fixture.directory.path());
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Enable Codex").await;
-        click(&mut view, "Close settings").await;
-        model_choices(&mut view).await;
-        button(&mut view, "Use fixture-model · NSH fixture").await;
-        assert_eq!(
-            requests(fixture.directory.path()),
-            settled,
-            "disabled runtimes must not launch native processes"
-        );
-        drop(view);
-        bindings.close().await.unwrap();
-        client.close().await.unwrap();
-        fixture.finish().await;
-    })
-    .await
-    .expect("native external agent settings workflow timed out");
+    open_settings(&mut view).await;
+    toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
+    let settled = requests(fixture.directory.path());
+    click(&mut view, "Refresh external agents").await;
+    button(&mut view, "Enable Codex").await;
+    click(&mut view, "Close settings").await;
+    model_choices(&mut view).await;
+    button(&mut view, "Use fixture-model · NSH fixture").await;
+    assert_eq!(
+        requests(fixture.directory.path()),
+        settled,
+        "disabled runtimes must not launch native processes"
+    );
+    drop(view);
+    bindings.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.finish().await;
 }

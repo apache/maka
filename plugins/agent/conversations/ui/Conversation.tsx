@@ -111,9 +111,18 @@ import type {
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
 import {
   botTurnEnding,
+  reportedWorker,
+  activeWorkers,
+  type ActiveWorker,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
-import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import {
+  BotNote,
+  BotReply,
+  BotWaiting,
+  BotWorking,
+} from '../../../../products/maka/workbench/app/BotReply';
 import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
@@ -273,6 +282,8 @@ type ConversationProps = {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
+  /** Opens a conversation in this pane, for when no side pane fits. */
+  openSessionHere?(sessionId: string): void;
   attach(handle: ConversationHandle): void;
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
@@ -439,6 +450,13 @@ export function Conversation(props: ConversationProps) {
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
   const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
+  // The Bot's own conversations come from the Host's catalog stream; the sidebar list
+  // holds only top-level ones. Not read for a replaced Bot, which has no live workers.
+  const botWorkers = createBotWorkers(
+    host,
+    () => sessionId,
+    () => bot.identity() === 'bot' && props.visible() && !formerBot(),
+  );
   // A Bot that was replaced is a Bot only as an archived record of what it told the user.
   // Restored, it is an ordinary conversation again: it holds no SendUser, so its own
   // replies must show in Chat.
@@ -579,11 +597,15 @@ export function Conversation(props: ConversationProps) {
     },
     { equals: (left, right) => left.size === right.size && [...left].every((id) => right.has(id)) },
   );
+  // A worker or sender opens beside this conversation when a side pane fits, otherwise in
+  // this pane (the Bot stays pinned in the sidebar to switch back).
+  const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
+  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const senders = createMessageSenders(
     host,
     senderIds,
     (id) => props.knownSession?.(id),
-    () => props.openSessionBeside,
+    () => (canOpenWorker() ? openWorker : undefined),
   );
   const canFoldTurn = (turn: TurnPresentation) =>
     turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
@@ -597,9 +619,10 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
-    | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
-    | { kind: 'botWorking'; key: string };
+    | { kind: 'botWorking'; key: string }
+    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -632,11 +655,15 @@ export function Conversation(props: ConversationProps) {
       if (openTurn !== undefined) {
         working(openTurn);
         const sent = bot.forTurn(openTurn).length > 0;
+        // A Turn the Bot started because a worker finished carries that worker as the
+        // origin of its opening message; the reply can then link to the worker's record.
+        const worker = sent ? reportedWorker(projection().rowsById.values(), openTurn) : undefined;
         if (sent)
           result.push({
             kind: 'bot',
             key: `bot/${openTurn}`,
             turnId: openTurn,
+            ...(worker !== undefined ? { worker } : {}),
           });
         // Silence is valid and gets no marker; a Turn that neither sent nor slept would
         // look the same, so say so.
@@ -722,6 +749,16 @@ export function Conversation(props: ConversationProps) {
       speak();
       // The running Turn may not be projected yet (its message is still pending).
       working(undefined);
+      // A worker that is running, or waiting for the user's approval or answer, has not
+      // ended its run, so the Bot has nothing to say about it yet; Chat is where the user
+      // would look for it.
+      const active = activeWorkers(botWorkers.sessions(), sessionId);
+      if (active.length > 0)
+        result.push({
+          kind: 'botWaiting',
+          key: 'bot/waiting',
+          workers: active,
+        });
     }
     return result;
   });
@@ -3097,16 +3134,53 @@ export function Conversation(props: ConversationProps) {
                             }}
                           />
                         );
+                      if (initial.kind === 'botWaiting')
+                        return (
+                          <BotWaiting
+                            workers={() => {
+                              const latest = entry();
+                              return latest.kind === 'botWaiting'
+                                ? latest.workers
+                                : initial.workers;
+                            }}
+                            open={canOpenWorker() ? openWorker : undefined}
+                          />
+                        );
                       if (initial.kind === 'botNote')
                         return <BotNote text={() => tr('The Bot did not reply this time')} />;
-                      if (initial.kind === 'bot')
+                      if (initial.kind === 'bot') {
+                        const worker = () => {
+                          const latest = entry();
+                          return latest.kind === 'bot' ? latest.worker : initial.worker;
+                        };
                         return (
                           <BotReply
+                            worker={
+                              worker() !== undefined && canOpenWorker()
+                                ? {
+                                    title: () => {
+                                      const id = worker();
+                                      return id !== undefined
+                                        ? (senders.session(id)?.title ?? '')
+                                        : '';
+                                    },
+                                    exists: () => {
+                                      const id = worker();
+                                      return id !== undefined && senders.session(id) !== null;
+                                    },
+                                    open: () => {
+                                      const id = worker();
+                                      if (id !== undefined) openWorker(id);
+                                    },
+                                  }
+                                : undefined
+                            }
                             messages={() => bot.forTurn(initial.turnId)}
                             openLink={props.openLink}
                             userScroll={() => cancelNavigation()}
                           />
                         );
+                      }
                       const first = currentRow(initial.rowId);
                       if (!first) return <View />;
                       const row = () => currentRow(initial.rowId) ?? first;

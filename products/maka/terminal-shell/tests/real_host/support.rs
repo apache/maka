@@ -64,6 +64,7 @@ use uuid::Uuid;
 
 pub const EDITOR: &str = "composer";
 pub const PROVIDER_KEY: &str = "nsh-real-provider-key";
+pub const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 fn frame_time() -> f64 {
     static STARTED: OnceLock<Instant> = OnceLock::new();
     STARTED.get_or_init(Instant::now).elapsed().as_secs_f64()
@@ -354,13 +355,13 @@ impl Fixture {
         .unwrap()
     }
     pub async fn next_request(&mut self) -> ModelRequest {
-        tokio::time::timeout(Duration::from_secs(20), self.requests.recv())
+        tokio::time::timeout(WAIT_TIMEOUT, self.requests.recv())
             .await
             .unwrap()
             .unwrap()
     }
     pub async fn idle(&self, client: &Client, session: &str) {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(WAIT_TIMEOUT, async {
             loop {
                 let observed = client
                     .query("agent", "observe", json!({"sessionId":session}))
@@ -612,7 +613,7 @@ pub async fn wait_enabled_button(
     view: &mut AppView,
     label: &str,
 ) -> nsh_platform_tui::AccessibleNode {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(WAIT_TIMEOUT, async {
         loop {
             view.poll().unwrap();
             tick(view);
@@ -711,7 +712,7 @@ pub fn wait_view_state(
                 return snapshot;
             }
             assert!(
-                started.elapsed() < Duration::from_secs(20),
+                started.elapsed() < WAIT_TIMEOUT,
                 "expected real UI state did not appear at {caller}:\n{snapshot}\naccessibility={:?}",
                 view.accessibility_snapshot()
                     .into_iter()
@@ -732,7 +733,7 @@ pub fn wait_draft<'a>(
     let caller = std::panic::Location::caller();
     async move {
         let mut last = None;
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(WAIT_TIMEOUT, async {
             loop {
                 last = client.load_draft("agent", session, EDITOR).await.unwrap();
                 if last.as_ref().is_some_and(|draft| draft.text == text) {

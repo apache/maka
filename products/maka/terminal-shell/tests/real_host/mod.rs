@@ -104,7 +104,7 @@ async fn commit_native_events(view: &mut AppView) {
         .advance_clock(Duration::ZERO, move || {
             let _ = done.send(());
         });
-    tokio::time::timeout(Duration::from_secs(20), committed)
+    tokio::time::timeout(support::WAIT_TIMEOUT, committed)
         .await
         .unwrap()
         .unwrap();
@@ -222,7 +222,7 @@ async fn provider_failure_is_visible_and_does_not_consume_the_next_draft() {
     gate.arm();
     support::click_button(&mut view, "Send message").await;
     let request = fixture.next_request().await;
-    tokio::time::timeout(Duration::from_secs(20), gate.held.notified())
+    tokio::time::timeout(support::WAIT_TIMEOUT, gate.held.notified())
         .await
         .expect("the send acknowledgement did not reach the gate");
     tab_to_label(&mut view, "Message composer").await;

@@ -233,3 +233,68 @@ export function botTurnEnding(turn: {
   if (turn.outcome !== 'completed') return 'other';
   return turn.slept ? 'quiet' : 'unanswered';
 }
+
+/**
+ * The worker a Bot Turn reports, when the Bot started that Turn because the worker
+ * finished a run: the Host marks the Turn's opening message with the worker as its origin.
+ */
+export function reportedWorker(
+  rows: Iterable<{ turnId?: string; origin?: { kind: string; sessionId?: string } }>,
+  turnId: string,
+): string | undefined {
+  for (const row of rows)
+    if (row.turnId === turnId && row.origin?.kind === 'bot_worker') return row.origin.sessionId;
+  return undefined;
+}
+
+type Session = { id: string };
+type Page<S extends Session = Session> = { revision: string; after?: string | null; sessions: S[] };
+
+/**
+ * Every session of one catalog window, following its continuation cursor. The catalog
+ * pages by recency, so a running or waiting worker may sit behind a full page of idle
+ * ones. A page of another revision means the catalog moved; the caller waits for the
+ * window that the subscription pushes next.
+ */
+export async function assembleChildren<S extends Session, P extends Page<S>>(
+  first: P,
+  next: (page: P) => Promise<P>,
+): Promise<S[]> {
+  const rows = new Map(first.sessions.map((session) => [session.id, session]));
+  const seen = new Set<string>();
+  let tail = first;
+  while (tail.after && !seen.has(tail.after)) {
+    seen.add(tail.after);
+    const page = await next(tail);
+    if (page.revision !== first.revision) throw new Error('agent_catalog_changed');
+    if (page.after === tail.after) break;
+    for (const session of page.sessions) rows.set(session.id, session);
+    tail = page;
+  }
+  return [...rows.values()];
+}
+
+export type ActiveWorker = { id: string; title: string; activity: 'working' | 'waiting' };
+/**
+ * The conversations the Bot created that are running, or waiting for the user, now. Such a
+ * conversation has not ended its run, so the Bot is not woken and says nothing about it.
+ */
+export function activeWorkers<
+  T extends {
+    id: string;
+    title: string;
+    parentSessionId: string | null;
+    activity: string;
+    archived: boolean;
+  },
+>(sessions: readonly T[], bot: string | null | undefined): ActiveWorker[] {
+  if (!bot) return [];
+  const found: ActiveWorker[] = [];
+  for (const session of sessions) {
+    if (session.parentSessionId !== bot || session.archived) continue;
+    if (session.activity === 'working' || session.activity === 'waiting')
+      found.push({ id: session.id, title: session.title, activity: session.activity });
+  }
+  // What waits for the user comes first.
+  return found.sort((a, b) => Number(b.activity === 'waiting') - Number(a.activity === 'waiting'));
+}

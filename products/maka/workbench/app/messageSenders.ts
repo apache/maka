@@ -29,7 +29,9 @@ export type MessageSenders = {
 };
 
 export function senderSession(origin: MessageOrigin | null | undefined): string | null {
-  return origin?.kind === 'session' ? origin.invocation.session_id : null;
+  if (origin?.kind === 'session') return origin.invocation.session_id;
+  // A Bot Turn started because a worker finished names that worker.
+  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
 }
 
 /** One mounted history window owns only its currently referenced, unknown sources. */

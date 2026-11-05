@@ -18,7 +18,7 @@
  */
 
 import { View } from 'nsh';
-import { TextView } from 'nsh/base';
+import { Button, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
@@ -31,7 +31,15 @@ export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
+  /** The worker whose finished run this reply reports, when the Turn was started by one. */
+  worker?: { title: () => string; exists: () => boolean; open(): void };
 }) {
+  const recordLabel = () => {
+    const title = props.worker?.title().trim() ?? '';
+    return title
+      ? tr('View the record of {title}', { title })
+      : tr('View the record of the worker');
+  };
   return (
     <View selectable style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
@@ -54,6 +62,72 @@ export function BotReply(props: {
             }}
           />
         )}
+      </Each>
+      <If when={props.worker?.exists()}>
+        <Button
+          accessibilityLabel={recordLabel()}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            alignSelf: 'flex-start',
+            maxWidth: '100%',
+          }}
+          onPress={() => props.worker?.open()}
+        >
+          <Icon name="split" color={C.accent} />
+          <Text
+            style={[{ ...captionTextStyle, color: C.accent, flexShrink: 1 }, { numberOfLines: 1 }]}
+          >
+            {recordLabel()}
+          </Text>
+        </Button>
+      </If>
+    </View>
+  );
+}
+
+/** Shown at the end of the Bot's Chat for a conversation it created that is running or waits. */
+export function BotWaiting(props: {
+  workers: () => readonly { id: string; title: string; activity: 'working' | 'waiting' }[];
+  open?(id: string): void;
+}) {
+  return (
+    <View style={{ width: '100%', paddingVertical: 8, gap: 8 }}>
+      <Each of={props.workers()} key={(worker) => worker.id}>
+        {(worker) => {
+          const label = () =>
+            worker().activity === 'waiting'
+              ? tr('{title} is waiting for your reply. Open it.', { title: worker().title })
+              : tr('{title} is working. See its progress.', { title: worker().title });
+          return (
+            <Button
+              disabled={!props.open}
+              accessibilityLabel={label()}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                alignSelf: 'flex-start',
+                maxWidth: '100%',
+              }}
+              onPress={() => props.open?.(worker().id)}
+            >
+              <Icon
+                name="activity"
+                color={worker().activity === 'waiting' ? C.warning : C.accent}
+              />
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.text, flexShrink: 1 },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {label()}
+              </Text>
+            </Button>
+          );
+        }}
       </Each>
     </View>
   );
