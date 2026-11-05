@@ -59,6 +59,10 @@ pub(super) fn project(db: &RawConnection, sequence: i64) -> Result<Row, StoreErr
     let ts = sequence_number(adopted)?;
     let started = sequence_number(started)?;
     Ok(Row {
+        order: RowPosition {
+            source_sequence: sequence_number(sequence)?,
+            item_index: 0,
+        },
         position: RowPosition {
             source_sequence: sequence_number(sequence)?,
             item_index: 0,

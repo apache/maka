@@ -54,6 +54,7 @@ pub(crate) struct Foreground {
     after: u64,
     history_through: u64,
     parts: HashMap<(String, String), (String, ContentKind)>,
+    message_starts: HashMap<String, u64>,
     user: Vec<HistoryChunk>,
 }
 impl Foreground {
@@ -271,6 +272,7 @@ impl Foreground {
                 self.refresh().await?;
             }
             let mut catchup = false;
+            let mut catchup_from = self.history_through;
             let mut refresh_tools = HashSet::new();
             let mut ended_steps = HashSet::new();
             for event in events {
@@ -282,15 +284,18 @@ impl Foreground {
                     continue;
                 }
                 match event.fact {
-                    DeliveryFact::ExecutorStarted { message_id } => {
+                    DeliveryFact::ExecutorMessageStarted { message_id } => {
                         self.parts.insert(
-                            (event.invocation_id.clone(), "text".into()),
+                            (message_id.clone(), "text".into()),
                             (message_id.clone(), ContentKind::Text),
                         );
                         self.parts.insert(
-                            (event.invocation_id, "thinking".into()),
-                            (message_id, ContentKind::Thinking),
+                            (message_id.clone(), "thinking".into()),
+                            (message_id.clone(), ContentKind::Thinking),
                         );
+                        self.message_starts
+                            .entry(message_id)
+                            .or_insert(event.sequence);
                     }
                     DeliveryFact::Delta {
                         step_id,
@@ -314,6 +319,9 @@ impl Foreground {
                             &step_id,
                             Some(&message_id),
                         );
+                        if let Some(start) = self.message_starts.remove(&message_id) {
+                            catchup_from = catchup_from.min(start.saturating_sub(1));
+                        }
                         catchup = true;
                     }
                     DeliveryFact::StepEnded { step_id, .. } => {
@@ -328,21 +336,26 @@ impl Foreground {
                         }
                         catchup = true;
                     }
+                    DeliveryFact::Ended { .. } => {
+                        for (_, start) in self.message_starts.drain() {
+                            catchup_from = catchup_from.min(start.saturating_sub(1));
+                        }
+                        catchup = true;
+                    }
                     DeliveryFact::TranscriptChanged
                     | DeliveryFact::ToolInputReady { .. }
                     | DeliveryFact::ToolRejected { .. }
                     | DeliveryFact::ToolSettled { .. }
                     | DeliveryFact::ProviderToolResult { .. }
                     | DeliveryFact::ExecutorToolStart { .. }
-                    | DeliveryFact::ExecutorToolResult { .. }
-                    | DeliveryFact::Ended { .. } => {
+                    | DeliveryFact::ExecutorToolResult { .. } => {
                         catchup = true;
                     }
                     _ => {}
                 }
             }
             if catchup {
-                self.catchup(next_after, refresh_tools, Some(&ended_steps))
+                self.catchup(next_after, catchup_from, refresh_tools, Some(&ended_steps))
                     .await?;
                 self.refresh().await?;
             }
@@ -354,16 +367,11 @@ impl Foreground {
     async fn catchup(
         &mut self,
         through: u64,
+        after: u64,
         refresh_tools: HashSet<maka_agent_ports::session::history::RowPosition>,
         ended_steps: Option<&HashSet<String>>,
     ) -> Result<(), Error> {
-        let snapshot = history::since(
-            &self.client,
-            &self.session.id,
-            through,
-            self.history_through,
-        )
-        .await?;
+        let snapshot = history::since(&self.client, &self.session.id, through, after).await?;
         let mut chunks = snapshot.chunks;
         for position in refresh_tools {
             chunks.extend(history::row(&self.client, &self.session.id, through, position).await?);
@@ -388,7 +396,7 @@ impl Foreground {
             }
         }
         self.projection.acknowledge_models(ended_steps);
-        self.history_through = snapshot.through;
+        self.history_through = self.history_through.max(snapshot.through);
         Ok(())
     }
     async fn finish(&mut self) -> Result<acp::StopReason, Error> {
@@ -396,8 +404,12 @@ impl Foreground {
             .client
             .query("agent", "observe", json!({"sessionId":self.session.id}))
             .await?;
+        let mut catchup_from = self.history_through;
+        for (_, start) in self.message_starts.drain() {
+            catchup_from = catchup_from.min(start.saturating_sub(1));
+        }
         let refresh_tools = self.projection.unsettled_tool_positions().collect();
-        self.catchup(observation.through, refresh_tools, None)
+        self.catchup(observation.through, catchup_from, refresh_tools, None)
             .await?;
         if self.cancelled {
             return Ok(acp::StopReason::Cancelled);

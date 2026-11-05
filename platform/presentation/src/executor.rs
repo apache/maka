@@ -24,27 +24,19 @@ use maka_agent_facts::executor::Output;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct Execution {
-    message: Message,
+    model_id: String,
+    messages: Vec<(String, Message)>,
+    started: BTreeSet<String>,
     pending: BTreeMap<String, String>,
     seen: BTreeSet<String>,
     completed: bool,
 }
 impl Execution {
-    pub fn new(event: &RuntimeEvent, ts: u64, binding: &Binding) -> Self {
+    pub fn new(_event: &RuntimeEvent, _ts: u64, binding: &Binding) -> Self {
         Self {
-            message: Message {
-                id: event.id.clone(),
-                turn_id: event.invocation.turn_id.clone(),
-                ts,
-                content: Content::Assistant {
-                    imported: false,
-                    text: String::new(),
-                    model_id: binding.executor_id.as_str().into(),
-                    interrupted: false,
-                    thinking: None,
-                    provider_options: None,
-                },
-            },
+            model_id: binding.executor_id.as_str().into(),
+            messages: Vec::new(),
+            started: BTreeSet::new(),
             pending: BTreeMap::new(),
             seen: BTreeSet::new(),
             completed: false,
@@ -59,23 +51,70 @@ impl Execution {
         if self.completed {
             return Err(ProjectionError::Invalid("output after executor completion"));
         }
-        let Content::Assistant { text, thinking, .. } = &mut self.message.content else {
-            unreachable!()
-        };
         let row = match output {
-            Output::OutputDelta { text: delta } => {
-                text.push_str(delta);
+            Output::MessageStart { message_id } => {
+                if !self.started.insert(message_id.clone()) {
+                    return Err(ProjectionError::Invalid("duplicate executor message start"));
+                }
+                self.messages.push((
+                    message_id.clone(),
+                    Message {
+                        id: crate::executor_message_id(&event.invocation.invocation_id, message_id),
+                        turn_id: event.invocation.turn_id.clone(),
+                        ts,
+                        content: Content::Assistant {
+                            imported: false,
+                            text: String::new(),
+                            model_id: self.model_id.clone(),
+                            interrupted: false,
+                            thinking: None,
+                            provider_options: None,
+                        },
+                    },
+                ));
                 return Ok(vec![]);
             }
-            Output::ThinkingDelta { text: delta } => {
-                thinking
-                    .get_or_insert_with(|| Thinking {
-                        text: String::new(),
-                        provider_options: None,
-                    })
-                    .text
-                    .push_str(delta);
+            Output::OutputDelta {
+                message_id,
+                text: delta,
+            }
+            | Output::ThinkingDelta {
+                message_id,
+                text: delta,
+            } => {
+                let (_, message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|(id, _)| id == message_id)
+                    .ok_or(ProjectionError::Invalid("delta outside executor message"))?;
+                let Content::Assistant { text, thinking, .. } = &mut message.content else {
+                    unreachable!()
+                };
+                if matches!(output, Output::OutputDelta { .. }) {
+                    text.push_str(delta);
+                } else if !delta.is_empty() {
+                    thinking
+                        .get_or_insert_with(|| Thinking {
+                            text: String::new(),
+                            provider_options: None,
+                        })
+                        .text
+                        .push_str(delta);
+                }
                 return Ok(vec![]);
+            }
+            Output::MessageEnd { message_id } => {
+                let index = self
+                    .messages
+                    .iter()
+                    .position(|(id, _)| id == message_id)
+                    .ok_or(ProjectionError::Invalid("end outside executor message"))?;
+                let (_, message) = self.messages.remove(index);
+                return Ok(if has_content(&message) {
+                    vec![message]
+                } else {
+                    vec![]
+                });
             }
             Output::ToolStart {
                 tool_call_id,
@@ -96,7 +135,7 @@ impl Execution {
                     content: Content::ToolCall {
                         tool_name: name.clone(),
                         args: input.clone(),
-                        step_id: Some(self.message.id.clone()),
+                        step_id: None,
                         provider_options: None,
                         provider_executed: Some(true),
                         metadata: metadata(),
@@ -129,39 +168,34 @@ impl Execution {
         &mut self,
         event: &RuntimeEvent,
         ts: u64,
-        text: &str,
+        _message_id: Option<&str>,
     ) -> Result<Vec<Message>, ProjectionError> {
-        if self.completed {
-            return Err(ProjectionError::Invalid("duplicate executor completion"));
+        if self.completed || !self.messages.is_empty() {
+            return Err(ProjectionError::Invalid("invalid executor completion"));
         }
-        let Content::Assistant { text: current, .. } = &mut self.message.content else {
-            unreachable!()
-        };
-        *current = text.into();
         self.completed = true;
-        let mut rows = self.close_tools(event, ts);
-        rows.push(self.message.clone());
-        Ok(rows)
+        Ok(self.close_tools(event, ts))
     }
     pub fn finish(mut self, event: &RuntimeEvent, ts: u64) -> Vec<Message> {
         let mut rows = self.close_tools(event, ts);
-        if !self.completed {
-            if let Content::Assistant { interrupted, .. } = &mut self.message.content {
+        for (_, mut message) in self.messages {
+            if !has_content(&message) {
+                continue;
+            }
+            if let Content::Assistant { interrupted, .. } = &mut message.content {
                 *interrupted = true;
             }
-            rows.extend(self.overlay());
+            rows.push(message);
         }
         rows
     }
     pub fn overlay(&self) -> Vec<Message> {
-        match &self.message.content {
-            Content::Assistant { text, thinking, .. }
-                if !self.completed && (!text.is_empty() || thinking.is_some()) =>
-            {
-                vec![self.message.clone()]
-            }
-            _ => vec![],
-        }
+        self.messages
+            .iter()
+            .map(|(_, message)| message)
+            .filter(|message| has_content(message))
+            .cloned()
+            .collect()
     }
     fn close_tools(&mut self, event: &RuntimeEvent, ts: u64) -> Vec<Message> {
         std::mem::take(&mut self.pending)
@@ -179,6 +213,13 @@ impl Execution {
             })
             .collect()
     }
+}
+fn has_content(message: &Message) -> bool {
+    matches!(
+        &message.content,
+        Content::Assistant { text, thinking, .. }
+            if !text.is_empty() || thinking.as_ref().is_some_and(|thought| !thought.text.is_empty())
+    )
 }
 fn metadata() -> ToolMetadata {
     ToolMetadata::Provider {

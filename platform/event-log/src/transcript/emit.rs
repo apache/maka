@@ -52,7 +52,7 @@ pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR 
                                  AND json_extract(request.event_header, '$.fact.purpose') = 'main'
                                  AND json_extract(request.event_header, '$.fact.item_acceptance') = 1
                                  AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message','continuation','handoff')))
-                       OR (e.kind = 'executor_observed' AND json_extract(e.event_header, '$.fact.output.type') IN ('tool_start','tool_result')))"#;
+                       OR (e.kind = 'executor_observed' AND json_extract(e.event_header, '$.fact.output.type') IN ('message_end','tool_start','tool_result')))"#;
 
 pub(super) async fn source_on_worker(
     connection: &mut SqliteWorkerConnection<'_>,

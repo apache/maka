@@ -230,8 +230,8 @@ async fn run(
     let mut state = Turn {
         thread,
         turn,
-        text: String::new(),
-        delta_items: std::collections::BTreeSet::new(),
+        messages: Default::default(),
+        final_message_id: None,
     };
     loop {
         let event = {
@@ -300,10 +300,38 @@ fn terminal(event: &Value, thread: &str, turn: &str) -> bool {
 struct Turn {
     thread: String,
     turn: String,
+    messages: std::collections::BTreeMap<String, Message>,
+    final_message_id: Option<String>,
+}
+#[derive(Default)]
+struct Message {
     text: String,
-    delta_items: std::collections::BTreeSet<String>,
+    summary: std::collections::BTreeMap<u64, String>,
+    reasoning: std::collections::BTreeMap<u64, String>,
+    active_thinking: Option<(bool, u64)>,
+    has_thinking: bool,
+    ended: bool,
 }
 impl Turn {
+    async fn start_message(&mut self, id: &str, output: &dyn OutputSink) -> Result<(), Error> {
+        match self.messages.entry(id.into()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Message::default());
+                output
+                    .emit(Output::MessageStart {
+                        message_id: id.into(),
+                    })
+                    .await?;
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if entry.get().ended => {
+                return Err(Error::Invalid(
+                    "Codex emitted activity after message completion".into(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     async fn event(
         &mut self,
         event: Value,
@@ -325,34 +353,163 @@ impl Turn {
             return Ok(None);
         }
         match method {
-            "item/agentMessage/delta" => {
+            "item/agentMessage/delta"
+            | "item/reasoning/summaryTextDelta"
+            | "item/reasoning/textDelta" => {
+                let id = string(p, "/itemId")?;
+                self.start_message(id, output).await?;
                 let text = string(p, "/delta")?;
-                self.text.push_str(text);
-                self.delta_items.insert(string(p, "/itemId")?.into());
-                output
-                    .emit(Output::OutputDelta { text: text.into() })
-                    .await?;
-            }
-            "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
-                output
-                    .emit(Output::ThinkingDelta {
-                        text: string(p, "/delta")?.into(),
-                    })
-                    .await?;
+                let message = self.messages.get_mut(id).expect("started native message");
+                let delta = if method == "item/agentMessage/delta" {
+                    message.text.push_str(text);
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
+                    Output::OutputDelta {
+                        message_id: id.into(),
+                        text: text.into(),
+                    }
+                } else {
+                    let (field, is_content, parts) = if method == "item/reasoning/summaryTextDelta"
+                    {
+                        ("summaryIndex", false, &mut message.summary)
+                    } else {
+                        ("contentIndex", true, &mut message.reasoning)
+                    };
+                    let index = p.get(field).and_then(Value::as_u64).ok_or_else(|| {
+                        Error::Invalid("Codex reasoning delta has no nonnegative part index".into())
+                    })?;
+                    parts.entry(index).or_default().push_str(text);
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
+                    let key = (is_content, index);
+                    let emitted = if message.has_thinking && message.active_thinking != Some(key) {
+                        format!("\n\n{text}")
+                    } else {
+                        text.into()
+                    };
+                    message.active_thinking = Some(key);
+                    message.has_thinking = true;
+                    Output::ThinkingDelta {
+                        message_id: id.into(),
+                        text: emitted,
+                    }
+                };
+                output.emit(delta).await?;
             }
             "item/started" | "item/completed" => {
                 let item = &p["item"];
                 let kind = item.get("type").and_then(Value::as_str).unwrap_or_default();
                 let id = string(item, "/id")?.to_owned();
-                if kind == "agentMessage"
-                    && method == "item/completed"
-                    && !self.delta_items.contains(&id)
-                {
-                    let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
-                    self.text.push_str(text);
-                    output
-                        .emit(Output::OutputDelta { text: text.into() })
-                        .await?;
+                if matches!(kind, "agentMessage" | "reasoning") {
+                    self.start_message(&id, output).await?;
+                    if method == "item/completed" {
+                        if kind == "agentMessage" {
+                            let text = string(item, "/text")?;
+                            let message =
+                                self.messages.get_mut(&id).expect("started native message");
+                            let suffix = text.strip_prefix(&message.text).ok_or_else(|| {
+                                Error::Invalid(
+                                    "Codex completed message differs from its streamed text".into(),
+                                )
+                            })?;
+                            if !suffix.is_empty() {
+                                output
+                                    .emit(Output::OutputDelta {
+                                        message_id: id.clone(),
+                                        text: suffix.into(),
+                                    })
+                                    .await?;
+                            }
+                        }
+                        if kind == "reasoning" {
+                            let message =
+                                self.messages.get_mut(&id).expect("started native message");
+                            let mut suffixes = Vec::new();
+                            for (field, is_content, streamed) in [
+                                ("summary", false, &mut message.summary),
+                                ("content", true, &mut message.reasoning),
+                            ] {
+                                let parts = match item.get(field) {
+                                    None => &[][..],
+                                    Some(parts) => {
+                                        parts.as_array().map(Vec::as_slice).ok_or_else(|| {
+                                            Error::Invalid(
+                                                "Codex reasoning snapshot parts must be arrays"
+                                                    .into(),
+                                            )
+                                        })?
+                                    }
+                                };
+                                for (index, part) in parts.iter().enumerate() {
+                                    let text = part.as_str().ok_or_else(|| {
+                                        Error::Invalid(
+                                            "Codex reasoning snapshot part is not text".into(),
+                                        )
+                                    })?;
+                                    let key = (is_content, index as u64);
+                                    let prefix = streamed.remove(&key.1).unwrap_or_default();
+                                    let suffix = text.strip_prefix(&prefix).ok_or_else(|| {
+                                        Error::Invalid(
+                                            "Codex reasoning snapshot differs from its streamed part"
+                                                .into(),
+                                        )
+                                    })?;
+                                    if !suffix.is_empty() {
+                                        suffixes.push((key, suffix.to_owned()));
+                                    }
+                                }
+                                if !streamed.is_empty() {
+                                    return Err(Error::Invalid(
+                                        "Codex reasoning snapshot omitted streamed parts".into(),
+                                    ));
+                                }
+                            }
+                            if let Some(active) = message.active_thinking
+                                && let Some(pos) = suffixes.iter().position(|(k, _)| *k == active)
+                            {
+                                let (_, suffix) = suffixes.remove(pos);
+                                message.has_thinking = true;
+                                output
+                                    .emit(Output::ThinkingDelta {
+                                        message_id: id.clone(),
+                                        text: suffix,
+                                    })
+                                    .await?;
+                            }
+                            for (key, suffix) in suffixes {
+                                let emitted = if message.has_thinking {
+                                    format!("\n\n{suffix}")
+                                } else {
+                                    suffix
+                                };
+                                message.has_thinking = true;
+                                message.active_thinking = Some(key);
+                                output
+                                    .emit(Output::ThinkingDelta {
+                                        message_id: id.clone(),
+                                        text: emitted,
+                                    })
+                                    .await?;
+                            }
+                        }
+                        output
+                            .emit(Output::MessageEnd {
+                                message_id: id.clone(),
+                            })
+                            .await?;
+                        let message = self.messages.get_mut(&id).expect("started native message");
+                        *message = Message {
+                            ended: true,
+                            ..Message::default()
+                        };
+                        if kind == "agentMessage"
+                            && item["text"].as_str().is_some_and(|text| !text.is_empty())
+                        {
+                            self.final_message_id = Some(id);
+                        }
+                    }
                 } else if matches!(
                     kind,
                     "commandExecution"
@@ -385,13 +542,25 @@ impl Turn {
             "turn/completed" => {
                 return Ok(Some(
                     match p.pointer("/turn/status").and_then(Value::as_str) {
-                        Some("completed") => Outcome::Completed {
-                            text: std::mem::take(&mut self.text),
-                        },
+                        Some("completed") => {
+                            if self.messages.values().any(|message| !message.ended) {
+                                return Err(Error::Invalid(
+                                    "Codex succeeded with an unfinished assistant item".into(),
+                                ));
+                            }
+                            Outcome::Completed {
+                                message_id: self.final_message_id.clone(),
+                            }
+                        }
                         Some("interrupted") => return Err(Error::Cancelled),
                         Some("failed") => Outcome::Failed {
                             code: Some("native_turn_failed".into()),
-                            message: "Codex turn failed".into(),
+                            message: p
+                                .pointer("/turn/error/message")
+                                .and_then(Value::as_str)
+                                .filter(|message| !message.is_empty())
+                                .unwrap_or("Codex turn failed")
+                                .into(),
                             recoverable: false,
                         },
                         _ => {
@@ -405,5 +574,233 @@ impl Turn {
             _ => {}
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Collect(std::sync::Mutex<Vec<Output>>);
+    impl OutputSink for Collect {
+        fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            })
+        }
+    }
+    fn turn() -> Turn {
+        Turn {
+            thread: "thread".into(),
+            turn: "turn".into(),
+            messages: Default::default(),
+            final_message_id: None,
+        }
+    }
+    fn event(method: &str, mut params: Value) -> Value {
+        params["threadId"] = "thread".into();
+        params["turnId"] = "turn".into();
+        serde_json::json!({"method":method,"params":params})
+    }
+    #[tokio::test]
+    async fn reasoning_snapshots_reconcile_each_native_part_without_replaying_streamed_summary() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        for (method, params) in [
+            (
+                "item/reasoning/summaryTextDelta",
+                serde_json::json!({"itemId":"r","summaryIndex":0,"delta":"first "}),
+            ),
+            (
+                "item/reasoning/summaryTextDelta",
+                serde_json::json!({"itemId":"r","summaryIndex":0,"delta":"summary"}),
+            ),
+            (
+                "item/reasoning/summaryTextDelta",
+                serde_json::json!({"itemId":"r","summaryIndex":1,"delta":"next"}),
+            ),
+            (
+                "item/reasoning/textDelta",
+                serde_json::json!({"itemId":"r","contentIndex":0,"delta":"raw"}),
+            ),
+            (
+                "item/completed",
+                serde_json::json!({"item":{"id":"r","type":"reasoning","summary":["first summary","next","snapshot only"],"content":["raw content","extra content"]}}),
+            ),
+        ] {
+            turn.event(event(method, params), &sink).await.unwrap();
+        }
+        assert!(matches!(
+            turn.event(
+                event(
+                    "turn/completed",
+                    serde_json::json!({"turn":{"id":"turn","status":"completed"}})
+                ),
+                &sink
+            )
+            .await
+            .unwrap(),
+            Some(Outcome::Completed { message_id: None })
+        ));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"r"},
+                {"type":"thinking_delta","messageId":"r","text":"first "},
+                {"type":"thinking_delta","messageId":"r","text":"summary"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nnext"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nraw"},
+                {"type":"thinking_delta","messageId":"r","text":" content"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nsnapshot only"},
+                {"type":"thinking_delta","messageId":"r","text":"\n\nextra content"},
+                {"type":"message_end","messageId":"r"}
+            ])
+        );
+        let mut failed_turn = super::tests::turn();
+        assert!(matches!(
+            failed_turn
+                .event(
+                    event(
+                        "turn/completed",
+                        serde_json::json!({"turn":{"id":"turn","status":"failed","error":{"message":"rate limit exceeded"}}})
+                    ),
+                    &sink
+                )
+                .await
+                .unwrap(),
+            Some(Outcome::Failed { message, .. }) if message == "rate limit exceeded"
+        ));
+        let mut turn = super::tests::turn();
+        turn.event(
+            event(
+                "item/reasoning/summaryTextDelta",
+                serde_json::json!({"itemId":"bad","summaryIndex":0,"delta":"streamed"}),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(turn.event(event("item/completed", serde_json::json!({"item":{"id":"bad","type":"reasoning","summary":["different"],"content":[]}})), &sink).await.is_err());
+    }
+    #[tokio::test]
+    async fn native_items_preserve_chunks_and_text_tool_text_order_without_aggregate_answer() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        for (method, params) in [
+            (
+                "item/started",
+                serde_json::json!({"item":{"id":"m1","type":"agentMessage","text":""}}),
+            ),
+            (
+                "item/agentMessage/delta",
+                serde_json::json!({"itemId":"m1","delta":"before "}),
+            ),
+            (
+                "item/agentMessage/delta",
+                serde_json::json!({"itemId":"m1","delta":"tool"}),
+            ),
+            (
+                "item/completed",
+                serde_json::json!({"item":{"id":"m1","type":"agentMessage","text":"before tool"}}),
+            ),
+            (
+                "item/started",
+                serde_json::json!({"item":{"id":"t1","type":"commandExecution","command":"true"}}),
+            ),
+            (
+                "item/completed",
+                serde_json::json!({"item":{"id":"t1","type":"commandExecution","status":"completed"}}),
+            ),
+            (
+                "item/completed",
+                serde_json::json!({"item":{"id":"m2","type":"agentMessage","text":"after tool"}}),
+            ),
+            (
+                "item/completed",
+                serde_json::json!({"item":{"id":"reasoning","type":"reasoning","summary":[],"content":[]}}),
+            ),
+        ] {
+            assert!(
+                turn.event(event(method, params), &sink)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            matches!(turn.event(event("turn/completed", serde_json::json!({"turn":{"id":"turn","status":"completed"}})), &sink).await.unwrap(), Some(Outcome::Completed { message_id: Some(id) }) if id == "m2")
+        );
+        let mut events = serde_json::to_value(&*sink.0.lock().unwrap()).unwrap();
+        events[5]["text"] = serde_json::from_str(events[5]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            events,
+            serde_json::json!([
+                {"type":"message_start","messageId":"m1"},
+                {"type":"output_delta","messageId":"m1","text":"before "},
+                {"type":"output_delta","messageId":"m1","text":"tool"},
+                {"type":"message_end","messageId":"m1"},
+                {"type":"tool_start","toolCallId":"thread:turn:t1","name":"commandExecution","input":{"id":"t1","type":"commandExecution","command":"true"}},
+                {"type":"tool_result","toolCallId":"thread:turn:t1","text":{"id":"t1","status":"completed","type":"commandExecution"},"isError":false},
+                {"type":"message_start","messageId":"m2"},
+                {"type":"output_delta","messageId":"m2","text":"after tool"},
+                {"type":"message_end","messageId":"m2"},
+                {"type":"message_start","messageId":"reasoning"},
+                {"type":"message_end","messageId":"reasoning"}
+            ])
+        );
+    }
+    #[tokio::test]
+    async fn completed_item_emits_only_unstreamed_suffix_and_interrupt_does_not_end_open_item() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        turn.event(
+            event(
+                "item/agentMessage/delta",
+                serde_json::json!({"itemId":"m","delta":"partial"}),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        turn.event(
+            event(
+                "item/completed",
+                serde_json::json!({"item":{"id":"m","type":"agentMessage","text":"partial final"}}),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        turn.event(
+            event(
+                "item/reasoning/textDelta",
+                serde_json::json!({"itemId":"thinking","contentIndex":0,"delta":"unfinished"}),
+            ),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            turn.event(
+                event(
+                    "turn/completed",
+                    serde_json::json!({"turn":{"id":"turn","status":"interrupted"}})
+                ),
+                &sink
+            )
+            .await,
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"m"},
+                {"type":"output_delta","messageId":"m","text":"partial"},
+                {"type":"output_delta","messageId":"m","text":" final"},
+                {"type":"message_end","messageId":"m"},
+                {"type":"message_start","messageId":"thinking"},
+                {"type":"thinking_delta","messageId":"thinking","text":"unfinished"}
+            ])
+        );
     }
 }

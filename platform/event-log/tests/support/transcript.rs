@@ -78,8 +78,8 @@ pub async fn materialize_all_rows(
             return Ok(());
         };
         position = Some(RowPosition {
-            source_sequence: last.position.source_sequence,
-            item_index: last.position.item_index + 1,
+            source_sequence: last.order.source_sequence,
+            item_index: last.order.item_index + 1,
         });
     }
 }

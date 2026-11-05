@@ -33,9 +33,10 @@ SELECT MAX(sequence) FROM (
 pub(super) const ROWS: &str = "
 SELECT row.source_sequence,row.item_index,row.turn_id,row.role,source.kind
 FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
-WHERE row.session_id=?1 AND row.source_sequence<=?2
-AND (row.source_sequence,row.item_index)>=(COALESCE(?3,1),COALESCE(?4,0))
-ORDER BY row.source_sequence,row.item_index LIMIT 257";
+WHERE row.session_id=?1 AND row.source_sequence<=?2 AND row.order_sequence<=?2
+AND (row.order_sequence,row.order_item)>=(CASE WHEN ?3 IS NULL THEN 1 ELSE COALESCE((SELECT order_sequence FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?3) END,
+    CASE WHEN ?3 IS NULL THEN 0 ELSE COALESCE((SELECT order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?4) END)
+ORDER BY row.order_sequence,row.order_item LIMIT 257";
 
 pub(super) const LANDMARKS: &str = "
 WITH sources AS (
@@ -73,10 +74,10 @@ pub(super) const BOUNDS: &str = "
 SELECT first.source_sequence, first.item_index, last.source_sequence, last.item_index
 FROM (
  SELECT source_sequence, item_index FROM transcript_directory
- WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
- ORDER BY source_sequence, item_index LIMIT 1
+ WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3 AND order_sequence <= ?3
+ ORDER BY order_sequence, order_item LIMIT 1
 ) first CROSS JOIN (
  SELECT source_sequence, item_index FROM transcript_directory
- WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
- ORDER BY source_sequence DESC, item_index DESC LIMIT 1
+ WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3 AND order_sequence <= ?3
+ ORDER BY order_sequence DESC, order_item DESC LIMIT 1
 ) last";

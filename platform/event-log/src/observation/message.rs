@@ -140,8 +140,18 @@ async fn observe(
             // Blob slicing preserves NUL and bounds bytes, not characters.
             let page: Option<(Vec<u8>, i64)> = sqlx::query_as(
                         "SELECT substr(CAST(text AS BLOB), ?2, 16388), length(CAST(text AS BLOB)) FROM (
-                            SELECT sequence, json_extract(event_header, '$.fact.text') AS text
-                            FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed'
+                            SELECT completed.sequence, (
+                                SELECT group_concat(text, '') FROM (
+                                    SELECT json_extract(delta.event_header, '$.fact.output.text') AS text
+                                    FROM runtime_events delta
+                                    WHERE delta.invocation_id=?1 AND delta.kind='executor_observed'
+                                        AND json_extract(delta.event_header, '$.fact.output.messageId')=json_extract(completed.event_header, '$.fact.message_id')
+                                        AND json_extract(delta.event_header, '$.fact.output.type')='output_delta'
+                                        AND delta.sequence<completed.sequence
+                                    ORDER BY delta.sequence
+                                )
+                            ) AS text FROM runtime_events completed
+                            WHERE completed.invocation_id = ?1 AND completed.kind = 'executor_completed'
                             UNION ALL
                             SELECT event.sequence, (
                                 SELECT group_concat(json_extract(body, '$.text'), '') FROM (

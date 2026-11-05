@@ -500,12 +500,13 @@ async fn native_external_codex_preserves_more_than_128_preack_deltas() {
         f.drained().await;
         let result = work(&f, &session, &accepted).await;
         assert_eq!(result["execution"]["state"], "completed");
+        assert_eq!(result["answer"]["text"], "committed output");
         assert_eq!(
-            result["answer"]["text"],
-            format!(
-                "{}committed output",
-                (0..257).map(|i| format!("{i},")).collect::<String>()
-            )
+            super::external_support::assistant_texts(&f, &session).await,
+            [
+                (0..257).map(|i| format!("{i},")).collect::<String>(),
+                "committed output".into(),
+            ]
         );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();

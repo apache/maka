@@ -83,13 +83,28 @@ impl EventLog {
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::ensure(tx, &session, input.through).await?;
-                    let query = if after.is_some() {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>(?3,?4) ORDER BY source_sequence,item_index LIMIT 65"
+                    let after_order: Option<(i64, i64)> = if let Some((source, item)) = after {
+                        Some(
+                            sqlx::query_as(super::read::ORDER)
+                                .bind(&session)
+                                .bind(source)
+                                .bind(item)
+                                .fetch_optional(&mut *tx)
+                                .await?
+                                .ok_or_else(|| {
+                                    StoreError::InvalidTransition("invalid transcript search".into())
+                                })?,
+                        )
                     } else {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence,item_index LIMIT 65"
+                        None
+                    };
+                    let query = if after_order.is_some() {
+                        "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4) ORDER BY order_sequence,order_item LIMIT 65"
+                    } else {
+                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
                     };
                     let mut query=sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through);
-                    if let Some((source,item))=after { query=query.bind(source).bind(item); }
+                    if let Some((order_sequence,order_item))=after_order { query=query.bind(order_sequence).bind(order_item); }
                     let headers=query.fetch_all(&mut *tx).await?;
                     let mut result = TranscriptSearchBatch {
                         matches: vec![],

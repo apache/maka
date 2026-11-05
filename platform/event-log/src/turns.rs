@@ -38,6 +38,21 @@ pub struct TurnBoundary {
 }
 
 impl TurnBoundary {
+    #[cfg(test)]
+    pub(crate) fn for_test(invocation: Invocation) -> Self {
+        Self {
+            opening_event_id: "opened".into(),
+            invocation,
+            input: InvocationInput::Message {
+                content: "hi".into(),
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+            configuration: None,
+            state: InvocationState::Running,
+            root: None,
+        }
+    }
     /// Stable client identity. Execution and cleanup still use `invocation`.
     pub fn root_invocation(&self) -> &Invocation {
         self.root

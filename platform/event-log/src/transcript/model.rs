@@ -26,8 +26,14 @@ use sqlx::{Row, SqliteConnection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Producer {
-    Model { invocation: String, step: String },
-    Executor { invocation: String },
+    Model {
+        invocation: String,
+        step: String,
+    },
+    Executor {
+        invocation: String,
+        message_id: String,
+    },
 }
 
 pub(super) struct Metadata {
@@ -118,7 +124,16 @@ pub(super) async fn resolve_on_worker(
     if matches!(kind.as_str(), "executor_observed" | "executor_completed") {
         return Ok(Metadata {
             model: None,
-            producer: (kind == "executor_completed").then_some(Producer::Executor { invocation }),
+            producer: if kind == "executor_observed" {
+                let message_id: Option<String> = sqlx::query_scalar("SELECT json_extract(event_header, '$.fact.output.messageId') FROM runtime_events WHERE sequence=?")
+                    .bind(producer_sequence).fetch_one(&mut *tx).await?;
+                message_id.map(|message_id| Producer::Executor {
+                    invocation,
+                    message_id,
+                })
+            } else {
+                None
+            },
         });
     }
     let step: Option<String> = if kind == "invocation_ended" {

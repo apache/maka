@@ -1040,7 +1040,10 @@ export type Access = 'read' | 'write' | 'deny';
 export type ExecutorOutcome =
   | {
       status: 'completed';
-      text: string;
+      /**
+       * Final completed assistant message, or no answer for a tool-only turn.
+       */
+      message_id?: string | null;
     }
   | {
       status: 'cancelled';
@@ -1057,12 +1060,22 @@ export type ExecutorOutcome =
  */
 export type ExecutorOutput =
   | {
+      type: 'message_start';
+      messageId: string;
+    }
+  | {
       type: 'output_delta';
+      messageId: string;
       text: string;
     }
   | {
       type: 'thinking_delta';
+      messageId: string;
       text: string;
+    }
+  | {
+      type: 'message_end';
+      messageId: string;
     }
   | {
       type: 'tool_start';
@@ -4013,6 +4026,9 @@ export type AgentDeliveryFact =
     }
   | {
       kind: 'executor_started';
+    }
+  | {
+      kind: 'executor_message_started';
       messageId: string;
     }
   | {
@@ -4199,7 +4215,7 @@ export type TitleFailureCause =
     };
 /**
  * Row reveals an exact field; Before/After continue at byte boundaries and
- * Event addresses the raw event log. Returned chunks retain ascending source
+ * Event addresses the raw event log. Returned chunks retain ascending presentation
  * order, including a reverse window.
  */
 export type HistoryPosition =
@@ -8819,6 +8835,10 @@ export interface AgentHistoryChunk {
   turnId: string;
   timestamp: number;
   role: Role;
+  /**
+   * Stable display order; position remains the canonical source read address.
+   */
+  order: HistoryRowPosition;
   position: HistoryRowPosition;
   offset: number;
   totalBytes: number;

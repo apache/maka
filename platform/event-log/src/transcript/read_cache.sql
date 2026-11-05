@@ -22,7 +22,8 @@
 
 CREATE TEMP TABLE transcript_directory (
  session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence >= 1),
- item_index INTEGER NOT NULL CHECK(item_index >= 0), turn_id TEXT NOT NULL, message_id TEXT NOT NULL,
+ item_index INTEGER NOT NULL CHECK(item_index >= 0),
+ order_sequence INTEGER NOT NULL CHECK(order_sequence>=1), order_item INTEGER NOT NULL CHECK(order_item>=0), turn_id TEXT NOT NULL, message_id TEXT NOT NULL,
  timestamp INTEGER NOT NULL, role TEXT NOT NULL, has_thinking INTEGER NOT NULL CHECK(has_thinking IN (0,1)),
  user_origin TEXT, state_status TEXT, tool_use_id TEXT, tool_name TEXT, tool_origin TEXT,
  parent_tool_call_id TEXT, parent_operation_id TEXT, has_args INTEGER, result_valid INTEGER,
@@ -30,7 +31,9 @@ CREATE TEMP TABLE transcript_directory (
  context_eligible INTEGER NOT NULL CHECK(context_eligible IN (0,1)),
  PRIMARY KEY(session_id,source_sequence,item_index), UNIQUE(session_id,message_id)
 );
-CREATE INDEX temp.transcript_context_eligible ON transcript_directory(session_id,source_sequence,item_index)
+CREATE UNIQUE INDEX temp.directory_order ON transcript_directory(session_id,order_sequence,order_item);
+CREATE INDEX temp.directory_turn_order ON transcript_directory(session_id,turn_id,order_sequence,order_item);
+CREATE INDEX temp.transcript_context_eligible ON transcript_directory(session_id,order_sequence,order_item)
     WHERE context_eligible=1;
 
 CREATE TEMP TABLE transcript_failures (
