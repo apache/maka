@@ -89,7 +89,10 @@ fn executor_start() -> Fact {
 
 fn delta(text: &str) -> Fact {
     Fact::ExecutorObserved {
-        output: maka_agent_facts::executor::Output::OutputDelta { text: text.into() },
+        output: maka_agent_facts::executor::Output::OutputDelta {
+            message_id: "answer".into(),
+            text: text.into(),
+        },
     }
 }
 
@@ -273,6 +276,19 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
         .append(&EventWrite::plain((event("session", executor_start())).clone()).unwrap())
         .await
         .unwrap();
+    log.append(
+        &EventWrite::plain(event(
+            "session",
+            Fact::ExecutorObserved {
+                output: maka_agent_facts::executor::Output::MessageStart {
+                    message_id: "answer".into(),
+                },
+            },
+        ))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
     let first = log
         .append(&EventWrite::plain((event("session", delta("😀"))).clone()).unwrap())
         .await
@@ -315,10 +331,10 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
     assert_eq!(old.next_after, Some(requested));
     assert_eq!(old.through_sequence, gap);
     let limited = log
-        .session_stream_events("session", opened, last, 512, 1024)
+        .session_stream_events("session", opened, last, 512, 2048)
         .await
         .unwrap();
-    assert_eq!(limited.events.len(), 2);
+    assert_eq!(limited.events.len(), 3);
     assert_eq!(limited.next_after, Some(first));
     let soft = log
         .session_stream_events("session", first, last, 512, 1024)
@@ -329,6 +345,7 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
     assert_eq!(
         soft.events[0].fact,
         StreamFact::ExecutorDelta {
+            message_id: "answer".into(),
             text_kind: TextKind::Text,
             text: "中".repeat(4096),
         }
@@ -348,6 +365,7 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
     assert_eq!(
         tail.events[0].fact,
         StreamFact::ExecutorDelta {
+            message_id: "answer".into(),
             text_kind: TextKind::Text,
             text: "last".into(),
         }

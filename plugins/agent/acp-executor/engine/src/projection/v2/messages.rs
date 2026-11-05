@@ -85,11 +85,73 @@ mod tests {
         ] {
             update(&mut projection, &sink, value).await;
         }
-        assert_eq!(projection.text(), "first!");
+        assert_eq!(projection.last_body_message_id(), None);
         assert!(sink.0.lock().unwrap().is_empty());
         projection.finish(&sink, true).await.unwrap();
-        assert!(
-            matches!(&sink.0.lock().unwrap()[0], Output::OutputDelta {text} if text == "first!")
+        assert_eq!(projection.last_body_message_id().as_deref(), Some("z"));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start", "messageId":"z"},
+                {"type":"output_delta", "messageId":"z", "text":"first!"},
+                {"type":"message_end", "messageId":"z"}
+            ])
         );
+    }
+    #[tokio::test]
+    async fn final_pointer_selects_last_body_native_id_not_trailing_thought() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        for value in [
+            serde_json::json!({"sessionUpdate":"agent_message", "messageId":"commentary", "content":[{"type":"text","text":"checking"}]}),
+            serde_json::json!({"sessionUpdate":"agent_message", "messageId":"answer", "content":[{"type":"text","text":"final"}]}),
+            serde_json::json!({"sessionUpdate":"agent_thought_chunk", "messageId":"thought", "content":{"type":"text","text":"done"}}),
+        ] {
+            update(&mut projection, &sink, value).await;
+        }
+        projection.finish(&sink, true).await.unwrap();
+        projection.finish(&sink, true).await.unwrap();
+        assert_eq!(projection.last_body_message_id().as_deref(), Some("answer"));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start", "messageId":"commentary"},
+                {"type":"output_delta", "messageId":"commentary", "text":"checking"},
+                {"type":"message_end", "messageId":"commentary"},
+                {"type":"message_start", "messageId":"answer"},
+                {"type":"output_delta", "messageId":"answer", "text":"final"},
+                {"type":"message_end", "messageId":"answer"},
+                {"type":"message_start", "messageId":"thought"},
+                {"type":"thinking_delta", "messageId":"thought", "text":"done"},
+                {"type":"message_end", "messageId":"thought"}
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_snapshots_are_not_completed_and_thought_only_has_no_final_body() {
+        for confirmed in [false, true] {
+            let sink = Sink::default();
+            let mut projection = Projection::new("s".into(), "turn".into());
+            projection.finish(&sink, confirmed).await.unwrap();
+            assert_eq!(projection.last_body_message_id(), None);
+            assert!(sink.0.lock().unwrap().is_empty());
+            update(&mut projection, &sink, serde_json::json!({"sessionUpdate":"agent_thought", "messageId":"thought", "content":[{"type":"text","text":"thinking"}]})).await;
+            projection.finish(&sink, confirmed).await.unwrap();
+            assert_eq!(projection.last_body_message_id(), None);
+            let events = sink.0.lock().unwrap();
+            if confirmed {
+                assert_eq!(
+                    serde_json::to_value(&*events).unwrap(),
+                    serde_json::json!([
+                        {"type":"message_start", "messageId":"thought"},
+                        {"type":"thinking_delta", "messageId":"thought", "text":"thinking"},
+                        {"type":"message_end", "messageId":"thought"}
+                    ])
+                );
+            } else {
+                assert!(events.is_empty());
+            }
+        }
     }
 }

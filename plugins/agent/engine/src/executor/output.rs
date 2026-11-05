@@ -29,7 +29,10 @@ use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::Outcome;
 use maka_agent_ports::executor::OutputSink;
 use maka_event_log::root_store::SessionStore;
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -42,9 +45,15 @@ pub(super) struct Recorder {
 #[derive(Default)]
 struct State {
     closed: bool,
+    messages: HashMap<String, Message>,
+    last_body: Option<String>,
     calls: HashSet<String>,
     pending: HashSet<String>,
     failure: Option<CommitError>,
+}
+enum Message {
+    Open { has_body: bool },
+    Closed,
 }
 impl Recorder {
     pub fn new(
@@ -62,8 +71,8 @@ impl Recorder {
     pub async fn finish(
         &self,
         result: &Result<Outcome, Error>,
-        outcome: &InvocationOutcome,
-    ) -> Result<(), crate::RunError> {
+        mut outcome: InvocationOutcome,
+    ) -> Result<InvocationOutcome, crate::RunError> {
         // Drain accepted writes before sealing, then reject even retained sinks.
         let mut state = self.state.lock().await;
         state.closed = true;
@@ -71,9 +80,25 @@ impl Recorder {
             return Err(error.into());
         }
         let mut facts = vec![];
-        if let (InvocationOutcome::Completed, Ok(Outcome::Completed { text })) = (&outcome, result)
+        if let (InvocationOutcome::Completed, Ok(Outcome::Completed { message_id })) =
+            (&outcome, result)
         {
-            facts.push(Fact::ExecutorCompleted { text: text.clone() });
+            if state
+                .messages
+                .values()
+                .any(|message| matches!(message, Message::Open { .. }))
+                || message_id != &state.last_body
+            {
+                outcome = InvocationOutcome::Failed {
+                    class: "executor".into(),
+                    model_failure: None,
+                    message: Some("executor completed without a settled final body message".into()),
+                };
+            } else {
+                facts.push(Fact::ExecutorCompleted {
+                    message_id: message_id.clone(),
+                });
+            }
         }
         facts.push(Fact::InvocationEnded {
             outcome: outcome.clone(),
@@ -83,7 +108,7 @@ impl Recorder {
             .map(|fact| EventWrite::plain(RuntimeEvent::new(self.invocation.clone(), fact)))
             .collect::<Result<Vec<_>, _>>()?;
         self.log.append_batch(&writes).await?;
-        Ok(())
+        Ok(outcome)
     }
 }
 impl OutputSink for Recorder {
@@ -97,6 +122,18 @@ impl OutputSink for Recorder {
                 .validate()
                 .map_err(|reason| Error::Invalid(reason.into()))?;
             match &output {
+                Output::MessageStart { message_id } if state.messages.contains_key(message_id) => {
+                    return Err(Error::Invalid("duplicate assistant message ID".into()));
+                }
+                Output::OutputDelta { message_id, .. }
+                | Output::ThinkingDelta { message_id, .. }
+                | Output::MessageEnd { message_id }
+                    if !matches!(state.messages.get(message_id), Some(Message::Open { .. })) =>
+                {
+                    return Err(Error::Invalid(
+                        "assistant output has no open message".into(),
+                    ));
+                }
                 Output::ToolStart { tool_call_id, .. } if state.calls.contains(tool_call_id) => {
                     return Err(Error::Invalid("duplicate tool activity ID".into()));
                 }
@@ -124,6 +161,34 @@ impl OutputSink for Recorder {
                 return Err(Error::Persistence(message));
             }
             match output {
+                Output::MessageStart { message_id } => {
+                    state
+                        .messages
+                        .insert(message_id, Message::Open { has_body: false });
+                }
+                Output::OutputDelta { message_id, text } if !text.is_empty() => {
+                    let Message::Open { has_body } = state
+                        .messages
+                        .get_mut(&message_id)
+                        .expect("validated open message")
+                    else {
+                        unreachable!()
+                    };
+                    *has_body = true;
+                }
+                Output::MessageEnd { message_id } => {
+                    let message = state
+                        .messages
+                        .get_mut(&message_id)
+                        .expect("validated open message");
+                    let Message::Open { has_body } = *message else {
+                        unreachable!()
+                    };
+                    *message = Message::Closed;
+                    if has_body {
+                        state.last_body = Some(message_id);
+                    }
+                }
                 Output::ToolStart { tool_call_id, .. } => {
                     state.calls.insert(tool_call_id.clone());
                     state.pending.insert(tool_call_id);

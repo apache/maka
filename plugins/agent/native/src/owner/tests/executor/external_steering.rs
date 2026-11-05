@@ -62,7 +62,9 @@ async fn native_external_steering_delivers_inside_the_original_invocation_and_ke
             f.drained().await;
             let final_work = work(&f, &session, &original).await;
             assert_eq!(final_work["execution"]["state"], "completed", "{runtime}: {final_work}");
-            let expected = if runtime == "codex" { "steering: 改为只报告结论;committed output" } else { "committed outputsteering: 改为只报告结论;" };
+            let expected = if runtime == "codex" { "committed output" } else { "steering: 改为只报告结论;" };
+            let all_text = if runtime == "codex" { vec!["steering: 改为只报告结论;", "committed output"] } else { vec!["committed output", "steering: 改为只报告结论;"] };
+            assert_eq!(super::external_support::assistant_texts(&f, &session).await, all_text);
             assert_eq!(final_work["answer"]["text"], expected);
             let delivered = f.query("work", json!({"sessionId":session,"target":{"kind":"message","messageId":accepted["messageId"]}})).await.unwrap();
             assert_eq!(delivered["execution"]["invocationId"], original["invocationId"]);
@@ -216,14 +218,14 @@ async fn native_external_steering_closes_obsolete_host_question_without_answerin
         f.drained().await;
         let result = work(&f, &session, &original).await;
         assert_eq!(result["execution"]["state"], "completed", "{result}");
-        assert!(
-            matches!(
-                result["answer"]["text"].as_str(),
-                Some(
-                    "steering: 不要旧选项，改为报告结论;committed output"
-                        | "committed outputsteering: 不要旧选项，改为报告结论;"
-                )
-            ),
+        let messages = super::external_support::assistant_texts(&f, &session).await;
+        assert!(matches!(messages.as_slice(), [a, b] if
+            (a == "steering: 不要旧选项，改为报告结论;" && b == "committed output") ||
+            (a == "committed output" && b == "steering: 不要旧选项，改为报告结论;")
+        ));
+        assert_eq!(
+            result["answer"]["text"].as_str(),
+            messages.last().map(String::as_str),
             "{result}"
         );
         f.app.shutdown().await.unwrap();

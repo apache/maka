@@ -213,7 +213,13 @@ export class TranscriptOverlay {
     const run = observed.run;
     this.activeInvocation = run?.invocationId ?? null;
     // Reconnect starts after this snapshot: terminal facts while offline are not replayed.
-    this.close(observed.through, (row) => row.invocationId !== this.activeInvocation);
+    const openMessages = new Set(observed.parts.map((part) => part.messageId));
+    this.close(
+      observed.through,
+      (row) =>
+        row.invocationId !== this.activeInvocation ||
+        (!row.preview && !openMessages.has(row.messageId)),
+    );
     this.tools = this.tools.filter((tool) => tool.invocationId === this.activeInvocation);
     this.parts = run
       ? observed.parts.map((part) => ({
@@ -264,12 +270,14 @@ export class TranscriptOverlay {
           this.tools = this.tools.filter((tool) => tool.invocationId === invocationId);
         }
         break;
-      case 'executor_started':
+      case 'executor_message_started':
         this.parts = [
-          ...this.parts.filter((part) => part.invocationId !== invocationId),
+          ...this.parts.filter(
+            (part) => part.invocationId !== invocationId || part.messageId !== fact.messageId,
+          ),
           ...(['body', 'thinking'] as const).map((field) => ({
             invocationId,
-            stepId: invocationId,
+            stepId: fact.messageId,
             partId: field === 'body' ? 'text' : 'thinking',
             messageId: fact.messageId,
             field,
@@ -305,6 +313,12 @@ export class TranscriptOverlay {
       }
       case 'part_committed':
         this.assembly.commit(invocationId, fact.stepId, fact.messageId);
+        this.parts = this.parts.filter(
+          (part) =>
+            part.invocationId !== invocationId ||
+            part.stepId !== fact.stepId ||
+            part.messageId !== fact.messageId,
+        );
         this.close(
           sequence,
           (row) =>
@@ -350,7 +364,8 @@ export class TranscriptOverlay {
     const rows = this.rows.filter(
       (row) =>
         !this.canonical.has(`${row.messageId}/${row.field}`) &&
-        (row.closedAt === null || (this.tailThrough !== null && row.closedAt > this.tailThrough)),
+        (row.closedAt === null ||
+          (this.tailThrough !== null && (!row.preview || row.closedAt > this.tailThrough))),
     );
     if (rows.length !== this.rows.length) this.rows = rows;
   }

@@ -155,6 +155,13 @@ impl EventWrite {
             Fact::ExecutorObserved { output } => output
                 .validate()
                 .map_err(|reason| CommitError::Rejected(reason.into()))?,
+            Fact::ExecutorCompleted {
+                message_id: Some(id),
+            } if id.is_empty() || id.chars().any(char::is_control) => {
+                return Err(CommitError::Rejected(
+                    "invalid final executor message identity".into(),
+                ));
+            }
             _ => {}
         }
         let operation = match &event.fact {

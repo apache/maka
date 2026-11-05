@@ -29,7 +29,7 @@ pub struct AssistantStreamSeed {
     pub start_sequence: u64,
     pub step_id: String,
     pub part_id: String,
-    /// Canonical executor start event ID.
+    /// Canonical invocation-scoped native message ID.
     pub message_id: String,
     pub text_kind: TextKind,
 }
@@ -49,29 +49,38 @@ pub(super) async fn read(
     {
         return Ok(Vec::new());
     }
-    let external: Option<(i64, String)> = sqlx::query_as(
-        "SELECT sequence, event_id FROM runtime_events started WHERE invocation_id = ?1 AND kind = 'executor_started'
-         AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id = started.invocation_id AND done.kind = 'executor_completed')"
-    ).bind(&root.invocation.invocation_id).fetch_optional(&mut *connection).await?;
-    if let Some((sequence, message)) = external {
+    let external: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT sequence, json_extract(event_header, '$.fact.output.messageId') FROM runtime_events started
+         WHERE invocation_id = ?1 AND kind = 'executor_observed'
+         AND json_extract(event_header, '$.fact.output.type')='message_start'
+         AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id = started.invocation_id
+             AND done.kind='executor_observed'
+             AND json_extract(done.event_header, '$.fact.output.messageId')=json_extract(started.event_header, '$.fact.output.messageId')
+             AND json_extract(done.event_header, '$.fact.output.type')='message_end')"
+    ).bind(&root.invocation.invocation_id).fetch_all(&mut *connection).await?;
+    let mut streams = Vec::new();
+    for (sequence, message) in external {
         let sequence = crate::sequence_number(sequence)?;
-        return Ok([TextKind::Text, TextKind::Thinking]
-            .into_iter()
-            .map(|text_kind| AssistantStreamSeed {
-                start_sequence: sequence,
-                step_id: root.invocation.invocation_id.clone(),
-                part_id: if text_kind == TextKind::Text {
-                    "text"
-                } else {
-                    "thinking"
-                }
-                .into(),
-                message_id: message.clone(),
-                text_kind,
-            })
-            .collect());
+        let message =
+            maka_presentation::executor_message_id(&root.invocation.invocation_id, &message);
+        streams.extend(
+            [TextKind::Text, TextKind::Thinking]
+                .into_iter()
+                .map(|text_kind| AssistantStreamSeed {
+                    start_sequence: sequence,
+                    step_id: message.clone(),
+                    part_id: if text_kind == TextKind::Text {
+                        "text"
+                    } else {
+                        "thinking"
+                    }
+                    .into(),
+                    message_id: message.clone(),
+                    text_kind,
+                }),
+        );
     }
-    Ok(Vec::new())
+    Ok(streams)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -84,9 +84,9 @@ impl EventLog {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::ensure(tx, &session, input.through).await?;
                     let query = if after.is_some() {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>(?3,?4) ORDER BY source_sequence,item_index LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4) ORDER BY order_sequence,order_item LIMIT 65"
                     } else {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence,item_index LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
                     };
                     let mut query=sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through);
                     if let Some((source,item))=after { query=query.bind(source).bind(item); }

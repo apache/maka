@@ -417,6 +417,28 @@ impl Coordinator {
                     execution.operator_id.clone(),
                     execution.observation.clone(),
                 );
+                if matches!(
+                    event.event.fact,
+                    maka_agent_facts::event::Fact::ExecutorCompleted { .. }
+                ) {
+                    // Rebuild the selected final message from this accepted Turn only.
+                    // Normal observation already has these bounded fragments in memory.
+                    projection.observation.through_sequence = event.sequence;
+                    while projection.after < event.sequence {
+                        let page = self
+                            .commands
+                            .events(intent.request.operation(), projection.after, event.sequence)
+                            .await?;
+                        projection
+                            .apply_page(page, self.commands.as_ref(), &intent.request.operation())
+                            .await?;
+                    }
+                    return Ok(projection
+                        .recent
+                        .iter()
+                        .find(|record| record.record_id == id)
+                        .cloned());
+                }
                 return projection
                     .observe(event, self.commands.as_ref(), &intent.request.operation())
                     .await;

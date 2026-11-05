@@ -126,7 +126,7 @@ pub enum Fact {
         output: crate::executor::Output,
     },
     ExecutorCompleted {
-        text: String,
+        message_id: Option<String>,
     },
     InvocationOpened {
         input: InvocationInput,

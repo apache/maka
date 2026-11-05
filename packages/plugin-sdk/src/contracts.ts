@@ -6758,7 +6758,7 @@ export const contracts = {
             $defs: {
               HistoryPosition: {
                 description:
-                  'Row reveals an exact field; Before/After continue at byte boundaries and\nEvent addresses the raw event log. Returned chunks retain ascending source\norder, including a reverse window.',
+                  'Row reveals an exact field; Before/After continue at byte boundaries and\nEvent addresses the raw event log. Returned chunks retain ascending presentation\norder, including a reverse window.',
                 oneOf: [
                   {
                     type: 'object',
@@ -7042,6 +7042,11 @@ export const contracts = {
                   role: {
                     $ref: '#/$defs/Role',
                   },
+                  order: {
+                    description:
+                      'Stable display order; position remains the canonical source read address.',
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
                   position: {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
@@ -7076,6 +7081,7 @@ export const contracts = {
                   'turnId',
                   'timestamp',
                   'role',
+                  'order',
                   'position',
                   'offset',
                   'totalBytes',
@@ -24434,13 +24440,27 @@ export const contracts = {
                     additionalProperties: false,
                   },
                   {
-                    description:
-                      'Both external text streams share the original ExecutorStarted message.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'executor_started',
+                      },
+                      messageId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'messageId'],
+                  },
+                  {
+                    description:
+                      'The original native assistant message starts here, not at executor admission.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor_message_started',
                       },
                       messageId: {
                         type: 'string',
@@ -27009,12 +27029,14 @@ export const contracts = {
                     type: 'string',
                     const: 'completed',
                   },
-                  text: {
-                    type: 'string',
+                  message_id: {
+                    description:
+                      'Final completed assistant message, or no answer for a tool-only turn.',
+                    type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['status', 'text'],
+                required: ['status'],
               },
               {
                 type: 'object',
@@ -27061,13 +27083,30 @@ export const contracts = {
                 properties: {
                   type: {
                     type: 'string',
+                    const: 'message_start',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                },
+                required: ['type', 'messageId'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  type: {
+                    type: 'string',
                     const: 'output_delta',
+                  },
+                  messageId: {
+                    type: 'string',
                   },
                   text: {
                     type: 'string',
                   },
                 },
-                required: ['type', 'text'],
+                required: ['type', 'messageId', 'text'],
               },
               {
                 type: 'object',
@@ -27077,11 +27116,28 @@ export const contracts = {
                     type: 'string',
                     const: 'thinking_delta',
                   },
+                  messageId: {
+                    type: 'string',
+                  },
                   text: {
                     type: 'string',
                   },
                 },
-                required: ['type', 'text'],
+                required: ['type', 'messageId', 'text'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  type: {
+                    type: 'string',
+                    const: 'message_end',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                },
+                required: ['type', 'messageId'],
               },
               {
                 type: 'object',

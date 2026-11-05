@@ -45,6 +45,7 @@ pub(crate) struct Projection {
     pub session_id: String,
     invocation_id: String,
     messages: Vec<Message>,
+    last_body: Option<String>,
     tools: BTreeMap<String, Tool>,
     users: Vec<String>,
     accepted: Option<String>,
@@ -60,6 +61,7 @@ impl Projection {
             session_id,
             invocation_id,
             messages: vec![],
+            last_body: None,
             tools: BTreeMap::new(),
             users: vec![],
             accepted: None,
@@ -81,12 +83,26 @@ impl Projection {
                 .as_ref()
                 .is_some_and(|id| self.users.contains(id))
     }
-    pub(crate) fn text(&self) -> String {
-        self.messages
-            .iter()
-            .filter(|message| !message.thought)
-            .map(|message| message.text.as_str())
-            .collect()
+    pub(crate) fn last_body_message_id(&self) -> Option<String> {
+        self.last_body.clone()
+    }
+
+    async fn observation(&self, text: String, sink: &dyn OutputSink) -> Result<(), Error> {
+        let message_id = uuid::Uuid::new_v4().to_string();
+        emit(
+            sink,
+            Output::MessageStart {
+                message_id: message_id.clone(),
+            },
+        )
+        .await?;
+        emit_text(&text, sink, |text| Output::ThinkingDelta {
+            message_id: message_id.clone(),
+            text,
+        })
+        .await?;
+        emit(sink, Output::MessageEnd { message_id }).await?;
+        Ok(())
     }
 
     pub(crate) async fn update(
@@ -154,31 +170,23 @@ impl Projection {
                 .await?
             }
             acp::SessionUpdate::PlanUpdate(plan) => {
-                emit_text(&serde_json::to_string(&plan)?, sink, |text| {
-                    Output::ThinkingDelta { text }
-                })
-                .await?
+                self.observation(serde_json::to_string(&plan)?, sink)
+                    .await?
             }
             acp::SessionUpdate::TerminalUpdate(terminal) => {
-                emit_text(&serde_json::to_string(&terminal)?, sink, |text| {
-                    Output::ThinkingDelta { text }
-                })
-                .await?
+                self.observation(serde_json::to_string(&terminal)?, sink)
+                    .await?
             }
             acp::SessionUpdate::TerminalOutputChunk(chunk) => {
-                emit_text(&serde_json::to_string(&chunk)?, sink, |text| {
-                    Output::ThinkingDelta { text }
-                })
-                .await?
+                self.observation(serde_json::to_string(&chunk)?, sink)
+                    .await?
             }
             acp::SessionUpdate::AvailableCommandsUpdate(_)
             | acp::SessionUpdate::SessionInfoUpdate(_)
             | acp::SessionUpdate::UsageUpdate(_) => {}
             other => {
-                emit_text(&serde_json::to_string(&other)?, sink, |text| {
-                    Output::ThinkingDelta { text }
-                })
-                .await?
+                self.observation(serde_json::to_string(&other)?, sink)
+                    .await?
             }
         }
         Ok(())
@@ -226,15 +234,42 @@ impl Projection {
             }
         }
         if confirmed {
-            for message in &self.messages {
+            for message in &mut self.messages {
+                if message.text.is_empty() {
+                    continue;
+                }
+                emit(
+                    sink,
+                    Output::MessageStart {
+                        message_id: message.id.clone(),
+                    },
+                )
+                .await?;
                 emit_text(&message.text, sink, |text| {
                     if message.thought {
-                        Output::ThinkingDelta { text }
+                        Output::ThinkingDelta {
+                            message_id: message.id.clone(),
+                            text,
+                        }
                     } else {
-                        Output::OutputDelta { text }
+                        Output::OutputDelta {
+                            message_id: message.id.clone(),
+                            text,
+                        }
                     }
                 })
                 .await?;
+                emit(
+                    sink,
+                    Output::MessageEnd {
+                        message_id: message.id.clone(),
+                    },
+                )
+                .await?;
+                if !message.thought {
+                    self.last_body = Some(message.id.clone());
+                }
+                message.text.clear();
             }
         }
         Ok(())

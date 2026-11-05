@@ -21,6 +21,8 @@
 
 [English](README.md)
 
+Transcript 行分别暴露 `position` 和 `order`：前者定位规范原文，后者按原生 assistant 消息真正开始的位置排序，即使消息结束记录晚于工具调用。历史分页、导航与复制历史按显示顺序使用索引，原文读取和 fence 仍保留规范来源。原生消息正文按 invocation／message 专用索引重建，不逐条重扫此前所有工具输出。
+
 仅历史 checkpoint 使用 `RootStore::history_checkpoints` 和
 [`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与版本化 Manifest
 先验证并持久保存在私有 Root 内，再创建或条件更新独立的 checkpoint Head。

@@ -128,7 +128,7 @@ fn closing(invocation: &Invocation) -> EventWrite {
     write(
         invocation,
         Fact::ExecutorCompleted {
-            text: "final executor answer".into(),
+            message_id: Some("answer".into()),
         },
     )
 }
@@ -157,8 +157,29 @@ async fn start_executor(
     log.append(&write(
         owner,
         Fact::ExecutorObserved {
+            output: Output::MessageStart {
+                message_id: "answer".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&write(
+        owner,
+        Fact::ExecutorObserved {
             output: Output::OutputDelta {
+                message_id: "answer".into(),
                 text: "partial executor answer".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&write(
+        owner,
+        Fact::ExecutorObserved {
+            output: Output::MessageEnd {
+                message_id: "answer".into(),
             },
         },
     ))
@@ -321,8 +342,8 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                 write(
                     &executor,
                     Fact::ExecutorObserved {
-                        output: Output::OutputDelta {
-                            text: "must roll back".into(),
+                        output: Output::MessageStart {
+                            message_id: "must-roll-back".into(),
                         },
                     },
                 ),

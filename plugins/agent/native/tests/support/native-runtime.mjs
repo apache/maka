@@ -270,33 +270,138 @@ async function mcp(method, params = {}, id = 1, signal) {
     }
   );
 }
+let messageIndex = 0;
 function output(text) {
-  if (claude)
+  const id = 'message-' + messageIndex++;
+  const chars = Array.from(text);
+  const middle = Math.floor(chars.length / 2);
+  const chunks = [chars.slice(0, middle).join(''), chars.slice(middle).join('')];
+  if (claude) {
+    for (const chunk of chunks)
+      append({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        message: { id, content: [{ type: 'text', text: chunk }] },
+      });
+  } else if (agy) {
+    agyResponse += text;
+    const index = agyStep++;
+    for (const [i, chunk] of chunks.entries())
+      send({
+        event: 'step_update',
+        step_update: {
+          conversation_id: thread,
+          step_index: index,
+          state: i === 0 ? 'ACTIVE' : 'DONE',
+          step_type: 'agent_response',
+          text_delta: chunk,
+        },
+      });
+  } else {
+    event('item/started', {
+      threadId: thread,
+      turnId: turn,
+      item: { id, type: 'agentMessage', text: '' },
+    });
+    for (const chunk of chunks)
+      event('item/agentMessage/delta', {
+        threadId: thread,
+        turnId: turn,
+        itemId: id,
+        delta: chunk,
+      });
+    event('item/completed', {
+      threadId: thread,
+      turnId: turn,
+      item: { id, type: 'agentMessage', text },
+    });
+  }
+  return id;
+}
+function nativeThinking(text, streaming) {
+  if (agy) return;
+  const id = 'reasoning-' + messageIndex++;
+  const chunks = streaming ? [text.slice(0, 7), text.slice(7)] : [text];
+  if (claude) {
+    for (const thinking of chunks)
+      append({
+        type: 'assistant',
+        uuid: crypto.randomUUID(),
+        message: {
+          id,
+          content: [{ type: 'thinking', thinking }],
+        },
+      });
+  } else {
+    if (streaming) {
+      event('item/started', {
+        threadId: thread,
+        turnId: turn,
+        item: { id, type: 'reasoning', summary: [], content: [] },
+      });
+      for (const delta of chunks)
+        event('item/reasoning/summaryTextDelta', {
+          threadId: thread,
+          turnId: turn,
+          itemId: id,
+          summaryIndex: 0,
+          delta,
+        });
+    }
+    event('item/completed', {
+      threadId: thread,
+      turnId: turn,
+      item: { id, type: 'reasoning', summary: [text], content: [] },
+    });
+  }
+}
+function boundaryTool(messageId) {
+  const id = 'boundary-tool';
+  const name = 'native-boundary-tool';
+  if (claude) {
     append({
       type: 'assistant',
       uuid: crypto.randomUUID(),
-      message: { id: crypto.randomUUID(), content: [{ type: 'text', text }] },
-    });
-  else if (agy) {
-    agyResponse += text;
-    send({
-      event: 'step_update',
-      step_update: {
-        conversation_id: thread,
-        step_index: agyStep++,
-        state: 'DONE',
-        step_type: 'agent_response',
-        text_delta: text,
+      message: {
+        id: messageId,
+        content: [{ type: 'tool_use', id, name, input: {} }],
       },
     });
-  } else
-    event('item/agentMessage/delta', {
-      threadId: thread,
-      turnId: turn,
-      itemId: 'answer',
-      delta: text,
+    append({
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'tool done' }],
+      },
     });
+  } else if (agy) {
+    const index = agyStep++;
+    for (const state of ['ACTIVE', 'DONE'])
+      send({
+        event: 'step_update',
+        step_update: {
+          conversation_id: thread,
+          step_index: index,
+          state,
+          step_type: 'tool',
+          tool_name: name,
+          tool_info: { parameters: {}, output: 'tool done' },
+        },
+      });
+  } else {
+    for (const state of ['started', 'completed'])
+      event('item/' + state, {
+        threadId: thread,
+        turnId: turn,
+        item: {
+          id,
+          type: 'commandExecution',
+          command: name,
+          status: state === 'started' ? 'inProgress' : 'completed',
+        },
+      });
+  }
 }
+
 function terminal(cancelled = false) {
   if (claude) {
     if (!cancelled) append({ type: 'system', subtype: 'turn_duration', durationMs: 1 });
@@ -382,6 +487,10 @@ async function prompt() {
     plan = JSON.parse(first);
   } catch {}
   activePlan = plan;
+  if (plan?.messageBoundaries) {
+    nativeThinking('native summary', true);
+    boundaryTool(output('before tool'));
+  }
   if (plan?.calls) {
     const calls = plan.calls.map(async (call) => {
       const signal = new AbortController();
@@ -437,7 +546,10 @@ async function prompt() {
         content: [{ type: 'text', text: 'API Error: 400 FIXTURE_API_FAILURE' }],
       },
     });
-  else output('committed output');
+  else {
+    output(plan?.messageBoundaries ? 'after tool' : 'committed output');
+    if (plan?.messageBoundaries) nativeThinking('native snapshot', false);
+  }
   trace('output');
   if (agy && request.message.startsWith('soft-interrupt')) {
     await new Promise(() => {});
@@ -881,13 +993,21 @@ if (claude) {
         instructionOrder: [...instructionOrder],
       };
       if (process.env.MAKA_NATIVE_FIXTURE_EARLY_EVENTS) {
-        for (let i = 0; i < 257; i++)
+        let text = '';
+        for (let i = 0; i < 257; i++) {
+          text += i + ',';
           event('item/agentMessage/delta', {
             threadId: thread,
             turnId: turn,
             itemId: 'early',
             delta: i + ',',
           });
+        }
+        event('item/completed', {
+          threadId: thread,
+          turnId: turn,
+          item: { id: 'early', type: 'agentMessage', text },
+        });
       }
       reply(id, { turn: { id: turn, status: 'inProgress' } });
       void prompt();

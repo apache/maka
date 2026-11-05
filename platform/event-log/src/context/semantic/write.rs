@@ -24,7 +24,7 @@ use super::source::{
     CanonicalModelPartSpan, CanonicalToolProjectionSpan, SemanticPayloadSource, locate_model_parts,
 };
 use crate::StoreError;
-use futures_util::FutureExt;
+use futures_util::{FutureExt, TryStreamExt};
 use maka_agent_facts::{
     event::{Fact, StoredEvent},
     history::{
@@ -605,13 +605,45 @@ pub(crate) async fn record(
         _ => None,
     };
     let hidden = reopen_notifications(db, stored, &mut frontier).await?;
-    let transition = match semantic::reduce(&mut frontier, stored) {
+    let mut transition = match semantic::reduce(&mut frontier, stored) {
         Ok(transition) => transition,
         Err(reason) => {
             unavailable(db, owner, sequence, reason).await?;
             return Ok(());
         }
     };
+    if let Fact::ExecutorObserved {
+        output: maka_agent_facts::executor::Output::MessageEnd { message_id },
+    } = &stored.event.fact
+    {
+        let mut start = None;
+        let mut text = String::new();
+        let mut observations = sqlx::query_as::<_, (i64, String, Option<String>)>(
+            "SELECT sequence,json_extract(event_header,'$.fact.output.type'),json_extract(event_header,'$.fact.output.text')
+             FROM event_log INDEXED BY executor_message_observations
+             WHERE kind='executor_observed' AND invocation_id=?1
+               AND json_extract(event_header,'$.fact.output.messageId')=?2 AND sequence<=?3
+               AND json_extract(event_header,'$.fact.output.type') IN ('message_start','output_delta')
+             ORDER BY sequence"
+        ).bind(&stored.event.invocation.invocation_id).bind(message_id).bind(sequence).fetch(&mut *db);
+        while let Some((sequence, kind, delta)) = observations.try_next().await? {
+            if kind == "message_start" {
+                start = Some(crate::sequence_number(sequence)?);
+            } else {
+                text.push_str(
+                    delta
+                        .as_deref()
+                        .ok_or_else(|| invalid("executor body delta lacks text"))?,
+                );
+            }
+        }
+        semantic::append_executor_message(
+            &mut transition,
+            stored,
+            start.ok_or_else(|| invalid("executor message lacks canonical start"))?,
+            text,
+        );
+    }
     let canonical_projection = match &stored.event.fact {
         Fact::ToolSettled {
             outcome:

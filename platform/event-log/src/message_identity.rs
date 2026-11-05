@@ -87,6 +87,13 @@ pub(crate) async fn validate(
             reject_claim(tx, session, &tool_use_id(invocation, operation_id)).await?;
         }
         Fact::ExecutorObserved {
+            output: maka_agent_facts::executor::Output::MessageStart { message_id },
+        } => {
+            let canonical = maka_presentation::executor_message_id(invocation, message_id);
+            validate_recorded_id(tx, session, &canonical).await?;
+            reject_claim(tx, session, &canonical).await?;
+        }
+        Fact::ExecutorObserved {
             output: maka_agent_facts::executor::Output::ToolStart { tool_call_id, .. },
         } => {
             reject_claim(tx, session, &tool_use_id(invocation, tool_call_id)).await?;
@@ -176,6 +183,21 @@ pub(crate) async fn validate_source_id(
     message_id: &str,
 ) -> Result<(), StoreError> {
     validate_recorded_id(tx, session, message_id).await?;
+    if let Some(rest) = message_id.strip_prefix("executor:") {
+        if let Some((length, rest)) = rest.split_once(':') {
+            if let Ok(length) = length.parse::<usize>() {
+                if let Some((invocation, message)) = rest.split_at_checked(length) {
+                    if let Some(message) = message.strip_prefix(':') {
+                        let used: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_history_events WHERE owner_session_id=?1 AND invocation_id=?2 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?3)")
+                            .bind(session).bind(invocation).bind(message).fetch_one(&mut *tx).await?;
+                        if used {
+                            return Err(conflict());
+                        }
+                    }
+                }
+            }
+        }
+    }
     if let Some(event_id) = maka_agent_facts::tool_call::parse_metered_usage_id(message_id) {
         let used: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM session_history_events WHERE event_id = ?1

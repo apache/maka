@@ -26,29 +26,43 @@ use sqlx::sqlite::SqliteWorkerConnection;
 
 const HIGH: &str = r#"SELECT COALESCE(MAX(sequence), 0) FROM event_log"#;
 const EXEC_BOUNDARY: &str = r#"SELECT sequence FROM runtime_events
-             WHERE invocation_id = ?1 AND sequence <= ?2 AND kind = 'invocation_opened'
-             UNION
-             SELECT sequence FROM runtime_events
-             WHERE invocation_id = ?1 AND sequence <= ?2 AND kind = 'executor_started'
-             UNION
-             SELECT sequence FROM runtime_events
-             WHERE invocation_id = ?1 AND sequence <= ?2 AND ?3 AND sequence = ?2
-             UNION
-             SELECT sequence FROM runtime_events
-             WHERE invocation_id = ?1 AND sequence <= ?2
-               AND kind IN ('executor_observed','executor_completed')
-               AND json_extract(event_header, '$.fact.output.toolCallId') =
-                   (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2)
-             ORDER BY sequence"#;
+WHERE invocation_id=?1 AND sequence<=?2 AND kind='invocation_opened'
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence<=?2 AND kind='executor_started'
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence=?2 AND ?3
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence<=?2
+    AND kind='executor_observed'
+    AND json_extract(event_header, '$.fact.output.messageId') =
+        (SELECT json_extract(event_header, '$.fact.output.messageId') FROM runtime_events WHERE sequence=?2)
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence<=?2
+    AND kind IN ('executor_observed','executor_completed')
+    AND json_extract(event_header, '$.fact.output.toolCallId') =
+        (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence=?2)
+ORDER BY sequence"#;
 const EXEC_REST: &str = r#"SELECT sequence FROM runtime_events
-             WHERE invocation_id = ?1 AND sequence <= ?2 AND (
-                 kind IN ('invocation_opened','executor_started')
-                 OR (?3 AND sequence = ?2)
-                 OR (kind IN ('executor_observed','executor_completed') AND (
-                     NOT ?3 OR NOT EXISTS(SELECT 1 FROM runtime_events boundary WHERE boundary.sequence = ?2 AND boundary.kind = 'executor_observed')
-                     OR json_extract(event_header, '$.fact.output.toolCallId') =
-                         (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2))))
-             ORDER BY sequence"#;
+WHERE invocation_id=?1 AND sequence<=?2 AND kind='invocation_opened'
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence<=?2 AND kind='executor_started'
+UNION SELECT sequence FROM runtime_events WHERE invocation_id=?1 AND sequence=?2 AND ?3
+UNION SELECT e.sequence FROM runtime_events e
+WHERE e.invocation_id=?1 AND e.sequence<=?2 AND e.kind='executor_observed'
+    AND json_extract(e.event_header, '$.fact.output.messageId') IN (
+        SELECT json_extract(start.event_header, '$.fact.output.messageId') FROM runtime_events start
+        WHERE start.invocation_id=?1 AND start.sequence<=?2 AND start.kind='executor_observed'
+            AND json_extract(start.event_header, '$.fact.output.type')='message_start'
+            AND NOT EXISTS(SELECT 1 FROM runtime_events done
+                WHERE done.invocation_id=?1 AND done.sequence<=?2 AND done.kind='executor_observed'
+                    AND json_extract(done.event_header, '$.fact.output.messageId')=json_extract(start.event_header, '$.fact.output.messageId')
+                    AND json_extract(done.event_header, '$.fact.output.type')='message_end'))
+UNION SELECT start.sequence FROM runtime_events start
+WHERE start.invocation_id=?1 AND start.sequence<=?2
+    AND start.kind='executor_observed'
+    AND json_extract(start.event_header, '$.fact.output.type')='tool_start'
+    AND NOT EXISTS(SELECT 1 FROM runtime_events done
+        WHERE done.invocation_id=?1 AND done.sequence<=?2 AND done.kind IN ('executor_observed','executor_completed')
+            AND json_extract(done.event_header, '$.fact.output.toolCallId')=json_extract(start.event_header, '$.fact.output.toolCallId')
+            AND json_extract(done.event_header, '$.fact.output.type')='tool_result')
+    AND NOT EXISTS(SELECT 1 FROM runtime_events done
+        WHERE done.invocation_id=?1 AND done.sequence<?2 AND done.kind='executor_completed')
+ORDER BY sequence"#;
 const STEP: &str = r#"SELECT sequence FROM runtime_events
 WHERE invocation_id = ?1 AND sequence <= ?3 AND kind = 'invocation_opened'
 UNION
@@ -434,5 +448,81 @@ impl Selection {
                     .await?
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+    use sqlx::Connection;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    async fn boundary_cost(prior_deltas: usize) -> [usize; 2] {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+            INSERT INTO event_log(event_id,invocation_id,kind,event_header)
+            SELECT printf('delta-%08d',x),'invocation','executor_observed',
+                json_object('fact',json_object('output',json_object('type','output_delta','messageId','old','text','chunk')))
+            FROM n").bind(prior_deltas as i64).execute(&mut db).await.unwrap();
+        let mut boundaries = Vec::new();
+        for output in [
+            serde_json::json!({"type":"message_start","messageId":"current"}),
+            serde_json::json!({"type":"output_delta","messageId":"current","text":"current"}),
+            serde_json::json!({"type":"message_end","messageId":"current"}),
+            serde_json::json!({"type":"tool_start","toolCallId":"current-tool"}),
+        ] {
+            let index = boundaries.len();
+            let sequence = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES(?1,'invocation','executor_observed',?2)")
+                .bind(format!("boundary-{index}")).bind(serde_json::json!({"fact":{"output":output}}).to_string())
+                .execute(&mut db).await.unwrap().last_insert_rowid();
+            boundaries.push(sequence);
+        }
+        let mut costs = [0; 2];
+        for (index, (sequence, expected)) in [(boundaries[2], 3), (boundaries[3], 1)]
+            .into_iter()
+            .enumerate()
+        {
+            let steps = Arc::new(AtomicUsize::new(0));
+            let observed = steps.clone();
+            db.lock_handle()
+                .await
+                .unwrap()
+                .set_progress_handler(1, move || {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    true
+                });
+            let selected: Vec<i64> = sqlx::query_scalar(EXEC_BOUNDARY)
+                .bind("invocation")
+                .bind(sequence)
+                .bind(true)
+                .fetch_all(&mut db)
+                .await
+                .unwrap();
+            db.lock_handle().await.unwrap().remove_progress_handler();
+            assert_eq!(selected.len(), expected);
+            costs[index] = steps.load(Ordering::Relaxed);
+        }
+        costs
+    }
+
+    #[tokio::test]
+    async fn message_and_tool_rows_do_not_replay_prior_executor_text() {
+        let small = boundary_cost(256).await;
+        let large = boundary_cost(16_384).await;
+        for (small, large) in small.into_iter().zip(large) {
+            assert!(
+                small > 0 && large < small * 2,
+                "prior unrelated output caused a sweep: {small} -> {large}"
+            );
+        }
     }
 }

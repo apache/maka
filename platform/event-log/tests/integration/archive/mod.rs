@@ -638,9 +638,7 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
     log.append(&settled).await.unwrap();
     log.append(&event(
         "exec-run",
-        Fact::ExecutorCompleted {
-            text: "done".into(),
-        },
+        Fact::ExecutorCompleted { message_id: None },
     ))
     .await
     .unwrap();

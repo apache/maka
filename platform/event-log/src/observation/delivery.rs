@@ -41,7 +41,14 @@ pub struct StoreStreamEvent {
 pub enum StreamFact {
     ContextChanged,
     ExecutorStarted,
+    ExecutorMessageStarted {
+        message_id: String,
+    },
+    ExecutorMessageEnded {
+        message_id: String,
+    },
     ExecutorDelta {
+        message_id: String,
         text_kind: TextKind,
         text: String,
     },
@@ -250,8 +257,11 @@ SELECT json_object(
                 AND json_extract(request.event_header, '$.fact.purpose') = 'summary'))
             THEN json_object('kind', 'context_changed')
         WHEN kind IN ('executor_started', 'executor_completed') THEN json_object('kind', kind)
+        WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') IN ('message_start','message_end') THEN
+            json_object('kind', CASE json_extract(event_header, '$.fact.output.type') WHEN 'message_start' THEN 'executor_message_started' ELSE 'executor_message_ended' END,
+                'message_id', json_extract(event_header, '$.fact.output.messageId'))
         WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') IN ('output_delta','thinking_delta') THEN
-            json_object('kind', 'executor_delta',
+            json_object('kind', 'executor_delta', 'message_id', json_extract(event_header, '$.fact.output.messageId'),
                 'text_kind', CASE WHEN json_extract(event_header, '$.fact.output.type') = 'thinking_delta' THEN 'thinking' ELSE 'text' END,
                 'text', json_extract(event_header, '$.fact.output.text'))
         WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') = 'tool_start' THEN

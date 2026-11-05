@@ -79,6 +79,7 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import {
   acceptedSend,
+  historyFollowPosition,
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
@@ -822,7 +823,7 @@ export function Conversation(props: ConversationProps) {
   let transcriptTask: Promise<void> | null = null;
   let wakeReconnect: (() => void) | null = null;
   let readFailure: { stream: Subscription; reason: unknown } | null = null;
-  let refreshFrom: { position: Position; field: string } | null = null;
+  let refreshFrom: { position: Position; order: Position; field: string } | null = null;
   let latestKnown = 0;
   let watchLast = 0;
   let runThrough = 0;
@@ -883,13 +884,11 @@ export function Conversation(props: ConversationProps) {
     });
     hydrateAttachmentMetadata();
   };
-  const requestMetadata = (row: { position?: Position; field: string } | undefined) => {
+  const requestMetadata = (row: Pick<Row, 'position' | 'order' | 'field'> | undefined) => {
     if (!row?.position) return;
-    const next = { position: row.position, field: row.field };
+    const next = { position: row.position, order: row.order!, field: row.field };
     const order = (a: typeof next, b: typeof next) =>
-      a.position.sourceSequence - b.position.sourceSequence ||
-      a.position.itemIndex - b.position.itemIndex ||
-      Number(a.field === 'body') - Number(b.field === 'body');
+      comparePosition(a.order, b.order) || Number(a.field === 'body') - Number(b.field === 'body');
     if (refreshFrom === null || order(next, refreshFrom) < 0) refreshFrom = next;
     followAgain = true;
   };
@@ -1133,17 +1132,7 @@ export function Conversation(props: ConversationProps) {
         followAgain = false;
         const fence = latestKnown;
         if (historyWindow()?.after === null) {
-          const last = rows().at(-1);
-          let position: HistoryPosition = last
-            ? {
-                kind: 'after',
-                cursor: {
-                  position: last.position!,
-                  field: last.field as 'body' | 'thinking',
-                  offset: last.fragments!.at(-1)!.offset,
-                },
-              }
-            : { kind: 'start' };
+          let position = historyFollowPosition(rows().at(-1), overlay.snapshot().rows);
           const chunks: AgentHistoryChunk[] = [];
           for (;;) {
             const page = await history(fence, position);
@@ -1175,7 +1164,7 @@ export function Conversation(props: ConversationProps) {
               if (
                 page.after === null ||
                 page.chunks.some((chunk) => {
-                  const order = comparePosition(chunk.position, last.position!);
+                  const order = comparePosition(chunk.order, last.order!);
                   return (
                     order > 0 ||
                     (order === 0 && (chunk.field === 'body' || last.field === 'thinking'))

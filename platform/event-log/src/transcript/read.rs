@@ -21,6 +21,8 @@ use crate::{EventLog, StoreError, sequence_number, sessions};
 use maka_agent_facts::history::RowPosition;
 use sqlx::Row;
 
+pub(super) const ORDER: &str = "SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3";
+
 #[derive(Clone, Copy, Debug)]
 pub enum TranscriptDirection {
     Older,
@@ -28,13 +30,14 @@ pub enum TranscriptDirection {
 }
 pub struct TranscriptRead {
     pub through: u64,
-    /// Inclusive row position; None starts at the beginning or tail.
+    /// Inclusive display-order anchor (header.order); None starts at the beginning or tail.
     pub position: Option<RowPosition>,
     pub direction: TranscriptDirection,
     pub limit: usize,
 }
 #[derive(Debug)]
 pub struct TranscriptRowHeader {
+    pub order: RowPosition,
     pub position: RowPosition,
     pub turn_id: String,
     pub total_bytes: u64,
@@ -69,8 +72,8 @@ impl EventLog {
                             "SELECT EXISTS(SELECT 1 FROM transcript_directory
                  WHERE session_id = ?1 AND source_sequence <= ?2
                  GROUP BY turn_id HAVING
-                    SUM((source_sequence,item_index) <= (?3,?4)) > 0
-                    AND SUM((source_sequence,item_index) > (?3,?4)) > 0)",
+                    SUM((order_sequence,order_item) <= (SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4)) > 0
+                    AND SUM((order_sequence,order_item) > (SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4)) > 0)",
                         )
                         .bind(session)
                         .bind(fence)
@@ -111,18 +114,15 @@ impl EventLog {
         let limit = read.limit as i64;
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::ensure(tx, &session, fence).await?;
-            let query = match (direction, position.is_some()) {
-                (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<=(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2",
-                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>=(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3",
-                (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence DESC,item_index DESC LIMIT ?3",
-                (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence,item_index LIMIT ?3",
+            let order_position = position;
+            let query = match (direction, order_position.is_some()) {
+                (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
+                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3",
+                (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
+                (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3",
             };
-            let mut query = sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session);
-            if !(matches!(direction, TranscriptDirection::Older) && position.is_some()) {
-                query=query.bind(through);
-            }
-            query=query.bind(limit);
-            if let Some((source,item))=position { query=query.bind(source).bind(item); }
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through).bind(limit);
+            if let Some((source,item))=order_position { query=query.bind(source).bind(item); }
             let selected = query.fetch_all(&mut *tx).await?;
             let mut result = Vec::with_capacity(selected.len());
             for row in selected {
@@ -130,7 +130,7 @@ impl EventLog {
                 super::bodycache::ensure(tx, &session, position).await?;
                 let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                     .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
-                result.push(TranscriptRowHeader { position, turn_id: row.try_get(2)?, total_bytes: sequence_number(bytes)?, digest });
+                result.push(TranscriptRowHeader { position, order: row_position(row.try_get(3)?,row.try_get(4)?)?, turn_id: row.try_get(2)?, total_bytes: sequence_number(bytes)?, digest });
             }
 
             Ok(result)
@@ -184,21 +184,21 @@ impl EventLog {
         let turn = turn.to_owned();
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::ensure(tx,&session,through).await?;
-            let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 ORDER BY source_sequence,item_index LIMIT 1")
+            let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence,order_item LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_optional(&mut *tx).await?;
             let Some((source,item))=first else {  return Ok(None) };
-            let (last_source,last_item):(i64,i64)=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 ORDER BY source_sequence DESC,item_index DESC LIMIT 1")
+            let (last_source,last_item):(i64,i64)=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence DESC,order_item DESC LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
             // Exact serialized bytes intentionally visit the whole requested Turn.
             // Page locators at the existing header batch size, rather than retaining
             // an unbounded Turn's positions while its selected bodies are generated.
-            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3")
+            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3")
                 .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
             let rows=sequence_number(rows)?;
             let mut bytes=0u64;
             let mut cursor=(0i64,0i64);
             loop {
-                let selected: Vec<(i64,i64)> = sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")
+                let selected: Vec<(i64,i64)> = sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")
                     .bind(&session).bind(&turn).bind(fence).bind(cursor.0).bind(cursor.1).fetch_all(&mut *tx).await?;
                 if selected.is_empty() { break; }
                 for (source,item) in selected {

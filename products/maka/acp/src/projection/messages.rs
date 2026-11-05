@@ -273,6 +273,10 @@ mod tests {
             turn_id: "t".into(),
             timestamp: 0,
             role: Role::Assistant,
+            order: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
             position: maka_agent_ports::session::history::RowPosition {
                 source_sequence: 1,
                 item_index: 0,
@@ -329,6 +333,10 @@ mod tests {
             turn_id: "t".into(),
             timestamp: 0,
             role: Role::Assistant,
+            order: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
             position: maka_agent_ports::session::history::RowPosition {
                 source_sequence: 1,
                 item_index: 0,
@@ -364,6 +372,10 @@ mod tests {
             turn_id: "t".into(),
             timestamp: 0,
             role: Role::User,
+            order: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
             position: maka_agent_ports::session::history::RowPosition {
                 source_sequence: 1,
                 item_index: 0,
@@ -411,6 +423,10 @@ mod tests {
             turn_id: "turn".into(),
             timestamp: 0,
             role: Role::Failure,
+            order: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
             position: maka_agent_ports::session::history::RowPosition {
                 source_sequence: 1,
                 item_index: 0,
@@ -443,6 +459,7 @@ mod tests {
         let mut projection = Projection::default();
         let mut chunk: HistoryChunk = serde_json::from_value(json!({
             "messageId":"accepted", "turnId":"turn", "timestamp":1,
+            "order":{"sourceSequence":10,"itemIndex":0},
             "position":{"sourceSequence":10,"itemIndex":0},
             "field":"body","role":"assistant","offset":0,"totalBytes":7,"text":"你好!",
             "modelPart":{"stepId":"step","ordinal":0},

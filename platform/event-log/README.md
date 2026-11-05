@@ -47,6 +47,8 @@ compatibility bundle. Immutable objects are conservatively retained; only owned
 temporary files are cleaned. Storage usage is therefore not automatically bounded,
 and object retention/GC remains separate work.
 
+Transcript rows expose separate `position` and `order` addresses. `position` locates canonical source content; `order` places a native assistant message at its actual start even when its end arrives after a tool call. Indexed history paging, navigation and copied history use display order while source reads and fences retain canonical provenance. Native message bodies are reconstructed through invocation/message-specific indexes, not by rescanning all earlier tool output.
+
 Stores initialize through the current SQL migrations. Unsupported internal layouts and record formats are rejected. Canonical facts and their acceptance, ownership, recovery and budget indexes share the original transaction. Transcript and Recall read models belong to the disposable observation cache.
 
 Owns the SQLite event store and State Root lease. It persists application sources and packages, operation receipts, sessions, turns and recovery records. Start with `root` for exclusive ownership, `applications` for committed compositions, and `recovery` for interrupted work. Opening a Root establishes the durable owner before services activate; plugins keep their own policy while this crate records canonical facts.

@@ -32,7 +32,7 @@ use maka_agent_ports::execution::Observation;
 use maka_agent_ports::execution::Progress;
 use maka_agent_ports::execution::{Commands, EventPage, SessionOperation};
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 const RECENT_RECORDS: usize = 32;
 const OUTPUT_BYTES: usize = 16 * 1024;
@@ -71,6 +71,8 @@ pub struct Execution {
     pub recent: VecDeque<Record>,
     pub record_count: u64,
     pub terminal: Option<Record>,
+    messages: BTreeMap<String, (String, bool)>,
+    last_answer_id: Option<String>,
     last_answer: String,
     answer_truncated: bool,
 }
@@ -85,6 +87,8 @@ impl Execution {
             recent: VecDeque::new(),
             record_count: 0,
             terminal: None,
+            messages: BTreeMap::new(),
+            last_answer_id: None,
             last_answer: String::new(),
             answer_truncated: false,
         }
@@ -143,13 +147,56 @@ impl Execution {
             ));
         }
         let (facets, text, truncated, terminal) = match &row.event.fact {
-            Fact::ExecutorCompleted { text: value } => {
-                let mut text = String::new();
-                let mut truncated = false;
-                append(&mut text, value, &mut truncated);
-                self.last_answer = text.clone();
-                self.answer_truncated = truncated;
-                (vec![Facet::Text], text, truncated, false)
+            Fact::ExecutorObserved { output } => {
+                use maka_agent_facts::executor::Output;
+                match output {
+                    Output::MessageStart { message_id } => {
+                        if self
+                            .messages
+                            .insert(message_id.clone(), (String::new(), false))
+                            .is_some()
+                        {
+                            return Err(Error::Persistence("duplicate executor message".into()));
+                        }
+                    }
+                    Output::OutputDelta { message_id, text } => {
+                        let (body, truncated) =
+                            self.messages.get_mut(message_id).ok_or_else(|| {
+                                Error::Persistence("executor delta has no message".into())
+                            })?;
+                        append(body, text, truncated);
+                    }
+                    Output::MessageEnd { message_id } => {
+                        let (text, truncated) =
+                            self.messages.remove(message_id).ok_or_else(|| {
+                                Error::Persistence("executor message ended without start".into())
+                            })?;
+                        if !text.is_empty() {
+                            self.last_answer_id = Some(message_id.clone());
+                            self.last_answer = text;
+                            self.answer_truncated = truncated;
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(None);
+            }
+            Fact::ExecutorCompleted { message_id } => {
+                if message_id.is_some() && message_id != &self.last_answer_id {
+                    return Err(Error::Persistence(
+                        "executor final message is unavailable".into(),
+                    ));
+                }
+                if message_id.is_none() {
+                    self.last_answer.clear();
+                    self.answer_truncated = false;
+                }
+                (
+                    vec![Facet::Text],
+                    self.last_answer.clone(),
+                    self.answer_truncated,
+                    false,
+                )
             }
             Fact::ModelCompleted { step_id, output } => {
                 let mut text = String::new();

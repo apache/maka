@@ -856,8 +856,11 @@ pub struct Delivery {
 #[schemars(rename = "AgentDeliveryFact")]
 pub enum DeliveryFact {
     Opened,
-    /// Both external text streams share the original ExecutorStarted message.
     ExecutorStarted {
+        message_id: String,
+    },
+    /// The original native assistant message starts here, not at executor admission.
+    ExecutorMessageStarted {
         message_id: String,
     },
     /// Canonical transcript facts changed; clients query bounded history.
@@ -1326,6 +1329,8 @@ pub struct HistoryChunk {
     pub turn_id: String,
     pub timestamp: u64,
     pub role: Role,
+    /// Stable display order; position remains the canonical source read address.
+    pub order: RowPosition,
     pub position: RowPosition,
     pub offset: u64,
     pub total_bytes: u64,
@@ -2075,10 +2080,20 @@ mod tests {
         assert!(validator.is_valid(&page));
         page["chunks"] = json!([{
             "messageId":"result", "field":"body", "turnId":"turn", "timestamp":1, "role":"tool_result",
-            "position":{"sourceSequence":1,"itemIndex":0}, "offset":0, "totalBytes":0, "text":"",
+            "order":{"sourceSequence":1,"itemIndex":0}, "position":{"sourceSequence":1,"itemIndex":0}, "offset":0, "totalBytes":0, "text":"",
             "tool":{"toolUseId":"call", "call":null, "result":{"position":{"sourceSequence":1,"itemIndex":0},"isError":true, "image":false,"images":0,"settlement":null}}
         }]);
         assert!(validator.is_valid(&page));
+        let order = page["chunks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("order")
+            .unwrap();
+        assert!(
+            !validator.is_valid(&page),
+            "display order is required, not inferred from source position"
+        );
+        page["chunks"][0]["order"] = order;
         let tool = page["chunks"][0]
             .as_object_mut()
             .unwrap()

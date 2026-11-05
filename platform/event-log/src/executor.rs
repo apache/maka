@@ -21,6 +21,7 @@ use crate::StoreError;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
+use maka_agent_facts::executor::Output;
 use sqlx::SqliteConnection;
 
 pub(crate) async fn validate(
@@ -64,7 +65,7 @@ pub(crate) async fn validate(
             }
             let native: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ? AND kind IN ('model_requested','tool_dispatched','message_steered'))"
-            ).bind(id).fetch_one(connection).await?;
+            ).bind(id).fetch_one(&mut *connection).await?;
             if native {
                 return Err(invalid(
                     "cannot replace an already executing native backend",
@@ -97,6 +98,42 @@ pub(crate) async fn validate(
             return Err(invalid(
                 "executor completion requires a durable final result",
             ));
+        }
+        _ => {}
+    }
+    match &event.fact {
+        Fact::ExecutorObserved { output } => match output {
+            Output::MessageStart { message_id } => {
+                let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?2)")
+                        .bind(id).bind(message_id).fetch_one(&mut *connection).await?;
+                if exists {
+                    return Err(invalid("executor reused a message ID"));
+                }
+            }
+            Output::OutputDelta { message_id, .. }
+            | Output::ThinkingDelta { message_id, .. }
+            | Output::MessageEnd { message_id } => {
+                let state: Option<String> = sqlx::query_scalar("SELECT json_extract(event_header, '$.fact.output.type') FROM runtime_events WHERE invocation_id=?1 AND kind='executor_observed' AND json_extract(event_header, '$.fact.output.messageId')=?2 ORDER BY sequence DESC LIMIT 1")
+                        .bind(id).bind(message_id).fetch_optional(&mut *connection).await?;
+                if state.is_none() || state.as_deref() == Some("message_end") {
+                    return Err(invalid("executor output outside its message"));
+                }
+            }
+            _ => {}
+        },
+        Fact::ExecutorCompleted { message_id } => {
+            let unfinished: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events start WHERE start.invocation_id=?1 AND start.kind='executor_observed' AND json_extract(start.event_header, '$.fact.output.type')='message_start' AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id=?1 AND done.kind='executor_observed' AND json_extract(done.event_header, '$.fact.output.messageId')=json_extract(start.event_header, '$.fact.output.messageId') AND json_extract(done.event_header, '$.fact.output.type')='message_end'))")
+                .bind(id).fetch_one(&mut *connection).await?;
+            if unfinished {
+                return Err(invalid("executor completion with unfinished messages"));
+            }
+            let last: Option<String> = sqlx::query_scalar("SELECT json_extract(ended.event_header, '$.fact.output.messageId') FROM runtime_events ended WHERE ended.invocation_id=?1 AND ended.kind='executor_observed' AND json_extract(ended.event_header, '$.fact.output.type')='message_end' AND EXISTS(SELECT 1 FROM runtime_events delta WHERE delta.invocation_id=?1 AND delta.kind='executor_observed' AND json_extract(delta.event_header, '$.fact.output.messageId')=json_extract(ended.event_header, '$.fact.output.messageId') AND json_extract(delta.event_header, '$.fact.output.type')='output_delta' AND json_extract(delta.event_header, '$.fact.output.text')!='') ORDER BY ended.sequence DESC LIMIT 1")
+                .bind(id).fetch_optional(&mut *connection).await?;
+            if last.as_ref() != message_id.as_ref() {
+                return Err(invalid(
+                    "executor final pointer is not its last completed body message",
+                ));
+            }
         }
         _ => {}
     }

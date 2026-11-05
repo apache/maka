@@ -642,6 +642,7 @@ impl Handler for Agent {
                                     turn_id: chunk.turn_id,
                                     timestamp: chunk.timestamp,
                                     role: chunk.role,
+                                    order: chunk.order,
                                     position: chunk.position,
                                     offset: chunk.offset,
                                     total_bytes: chunk.total_bytes,
@@ -1426,8 +1427,32 @@ fn delivery(event: StoreStreamEvent) -> Delivery {
         StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted {
             message_id: event.id,
         },
-        StreamFact::ExecutorDelta { text_kind, text } => DeliveryFact::Delta {
-            step_id: event.invocation.invocation_id.clone(),
+        StreamFact::ExecutorMessageStarted { message_id } => DeliveryFact::ExecutorMessageStarted {
+            message_id: maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            ),
+        },
+        StreamFact::ExecutorMessageEnded { message_id } => {
+            let id = maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            );
+            DeliveryFact::PartCommitted {
+                step_id: id.clone(),
+                message_id: id,
+                ordinal: 0,
+            }
+        }
+        StreamFact::ExecutorDelta {
+            message_id,
+            text_kind,
+            text,
+        } => DeliveryFact::Delta {
+            step_id: maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            ),
             part_id: match text_kind {
                 maka_agent_facts::model::TextKind::Text => "text",
                 maka_agent_facts::model::TextKind::Thinking => "thinking",

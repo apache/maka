@@ -151,7 +151,7 @@ pub struct Cursor {
 }
 
 /// Row reveals an exact field; Before/After continue at byte boundaries and
-/// Event addresses the raw event log. Returned chunks retain ascending source
+/// Event addresses the raw event log. Returned chunks retain ascending presentation
 /// order, including a reverse window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -420,6 +420,8 @@ pub struct ModelPartIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    /// Chronological display anchor; position remains the source/read address.
+    pub order: RowPosition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.

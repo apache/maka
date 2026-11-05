@@ -28,6 +28,7 @@ enum Behavior {
     Unsettled,
     Streaming,
     Attachments,
+    InvalidSuccess { message_id: Option<&'static str> },
 }
 struct Probe {
     behavior: Behavior,
@@ -72,20 +73,27 @@ impl Handler for Probe {
         );
         Box::pin(async move {
             entered.add_permits(1);
-            match behavior {
+            let answer = match behavior {
                 Behavior::Streaming => {
                     context
-                        .emit(json!({"type":"thinking_delta","text":"checking"}))
+                        .emit(json!({"type":"message_start","messageId":"commentary"}))
+                        .await?;
+                    context
+                        .emit(json!({"type":"thinking_delta","messageId":"commentary","text":"checking"}))
                         .await?;
                     for index in 0..35 {
                         context
-                            .emit(json!({"type":"output_delta","text":format!("part {index}\n")}))
+                            .emit(json!({"type":"output_delta","messageId":"commentary","text":format!("part {index}\n")}))
                             .await?;
                     }
                     tokio::select! {
                         permit=release.acquire() => permit.unwrap().forget(),
                         ()=context.scope().cancellation.cancelled() => return Ok(json!({"status":"cancelled","reason":"stopped"})),
                     }
+                    context
+                        .emit(json!({"type":"message_end","messageId":"commentary"}))
+                        .await?;
+                    input["message"].clone()
                 }
 
                 Behavior::Attachments => {
@@ -123,17 +131,30 @@ impl Handler for Probe {
                         resource.bytes(),
                         "manifest must cover the entire original bundle"
                     );
-                    return Ok(
-                        json!({"status":"completed","text":serde_json::to_string(&files).unwrap()}),
-                    );
+                    json!(serde_json::to_string(&files).unwrap())
                 }
                 Behavior::Unsettled => {
                     context.scope().cancellation.cancelled().await;
                     cancelled.add_permits(1);
                     release.acquire().await.unwrap().forget();
+                    return Ok(json!({"status":"completed","message_id":null}));
                 }
+                Behavior::InvalidSuccess { message_id } => {
+                    context
+                        .emit(json!({"type":"message_start","messageId":"partial"}))
+                        .await?;
+                    context.emit(json!({"type":"output_delta","messageId":"partial","text":"partial answer"})).await?;
+                    return Ok(json!({"status":"completed","message_id":message_id}));
+                }
+            };
+            for output in [
+                json!({"type":"message_start","messageId":"answer"}),
+                json!({"type":"output_delta","messageId":"answer","text":answer}),
+                json!({"type":"message_end","messageId":"answer"}),
+            ] {
+                context.emit(output).await?;
             }
-            Ok(json!({"status":"completed","text":input["message"]}))
+            Ok(json!({"status":"completed","message_id":"answer"}))
         })
     }
 }
@@ -331,13 +352,18 @@ async fn activate_backend(
         if probe.is_none() && acp.is_none() {
             files.insert("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input, observation, context){{
                 for (const value of [
-                    {{type:'thinking_delta',text:'思考'}},
-                    {{type:'output_delta',text:'live 外部'}},
+                    {{type:'message_start',messageId:'commentary'}},
+                    {{type:'thinking_delta',messageId:'commentary',text:'思考'}},
+                    {{type:'output_delta',messageId:'commentary',text:'live 外部'}},
+                    {{type:'message_end',messageId:'commentary'}},
                     {{type:'tool_start',toolCallId:'observed-tool',name:'external.read',input:{{path:'source.txt'}}}},
                     {{type:'tool_progress',toolCallId:'observed-tool',text:'reading'}},
-                    {{type:'tool_result',toolCallId:'observed-tool',text:'done',isError:false}}
+                    {{type:'tool_result',toolCallId:'observed-tool',text:'done',isError:false}},
+                    {{type:'message_start',messageId:'answer'}},
+                    {{type:'output_delta',messageId:'answer',text:input.message+' / '+input.settings.model+' / '+input.settings.thinkingLevel}},
+                    {{type:'message_end',messageId:'answer'}}
                 ]) await context.invoke({{operation:'emit',value}});
-                return {{status:'completed',text:input.message+' / '+input.settings.model+' / '+input.settings.thinkingLevel}};
+                return {{status:'completed',message_id:'answer'}};
             }}}};"#,serde_json::to_string(&executor::contract()).unwrap()).into_bytes());
         }
         let package = Package::new(files).unwrap();
@@ -695,11 +721,16 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             _=>None,
         }).collect::<Vec<_>>();
         assert_eq!(outputs,vec![
-            json!({"type":"thinking_delta","text":"思考"}),
-            json!({"type":"output_delta","text":"live 外部"}),
+            json!({"type":"message_start","messageId":"commentary"}),
+            json!({"type":"thinking_delta","messageId":"commentary","text":"思考"}),
+            json!({"type":"output_delta","messageId":"commentary","text":"live 外部"}),
+            json!({"type":"message_end","messageId":"commentary"}),
             json!({"type":"tool_start","toolCallId":"observed-tool","name":"external.read","input":{"path":"source.txt"}}),
             json!({"type":"tool_progress","toolCallId":"observed-tool","text":"reading"}),
             json!({"type":"tool_result","toolCallId":"observed-tool","text":"done","isError":false}),
+            json!({"type":"message_start","messageId":"answer"}),
+            json!({"type":"output_delta","messageId":"answer","text":"original 外部 text / backend-model / high"}),
+            json!({"type":"message_end","messageId":"answer"}),
         ]);
         let binding = prefix
             .events
@@ -869,7 +900,7 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
                 maka_agent_facts::event::Fact::InvocationEnded { .. }
                     | maka_agent_facts::event::Fact::ExecutorCompleted { .. }
             )));
-            if outputs == 36 {
+            if outputs == 37 {
                 break;
             }
             commits.changed().await.unwrap();
@@ -901,9 +932,9 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
                 for event in events {
                     let fact = &event["fact"];
                     match fact["kind"].as_str().unwrap() {
-                        "executor_started" => started = Some(fact["messageId"].clone()),
+                        "executor_message_started" => started = Some(fact["messageId"].clone()),
                         "delta" => {
-                            assert_eq!(fact["stepId"], accepted["invocationId"]);
+                            assert_eq!(fact["stepId"], parts[0]["messageId"]);
                             deltas.push((fact["partId"].clone(), fact["text"].clone()));
                         }
                         "ended" => panic!("watch ended before actual backend completion"),
@@ -945,9 +976,101 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
             work(&fixture, &session, &accepted).await["answer"]["text"],
             "final canonical answer"
         );
+        let history = fixture
+            .query(
+                "history",
+                json!({"sessionId":session,"position":{"kind":"start"}}),
+            )
+            .await
+            .unwrap();
+        let chunks = history["chunks"].as_array().unwrap();
+        let commentary = chunks
+            .iter()
+            .find(|chunk| chunk["messageId"] == parts[0]["messageId"])
+            .unwrap();
+        assert_eq!(
+            commentary["text"],
+            (0..35)
+                .map(|index| format!("part {index}\n"))
+                .collect::<String>()
+        );
+        assert_ne!(commentary["finalOutput"], true);
+        let final_answer = chunks
+            .iter()
+            .find(|chunk| chunk["finalOutput"] == true)
+            .unwrap();
+        assert_eq!(final_answer["text"], "final canonical answer");
+        assert_ne!(final_answer["messageId"], commentary["messageId"]);
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn executor_service_invalid_success_fails_durably_and_preserves_interrupted_body() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        for message_id in [None, Some("unknown")] {
+            let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+            let probe = Probe::new(Behavior::InvalidSuccess { message_id });
+            activate(&mut fixture, true, Some(probe.clone()), true).await;
+            let session = fixture.create("Invalid executor completion").await;
+            let accepted = fixture
+                .mutation(2, "send", input_for(&session, "answer"), Uuid::new_v4())
+                .await
+                .unwrap();
+            assert_eq!(accepted["kind"], "started");
+            fixture.drained().await;
+            let observed = work(&fixture, &session, &accepted).await;
+            assert_eq!(observed["execution"]["state"], "failed", "{observed}");
+            let stored = super::service_tools::stored_facts(&fixture, &session).await;
+            assert!(!stored.iter().any(|row| matches!(
+                row.event.fact,
+                maka_agent_facts::event::Fact::ExecutorCompleted { .. }
+            )));
+            assert!(stored.iter().any(|row| matches!(&row.event.fact,
+                maka_agent_facts::event::Fact::InvocationEnded {
+                    outcome: maka_agent_facts::event::InvocationOutcome::Failed { class, .. }
+                } if class == "executor"
+            )));
+            let mut view = maka_presentation::InvocationView::new();
+            let mut rows = Vec::new();
+            for row in stored.iter().filter(|row| {
+                row.event.invocation.invocation_id == accepted["invocationId"].as_str().unwrap()
+            }) {
+                rows.extend(view.push(row).unwrap());
+            }
+            let bodies: Vec<_> = rows
+                .iter()
+                .filter_map(|row| match &row.message.content {
+                    maka_presentation::Content::Assistant {
+                        text, interrupted, ..
+                    } => Some((text.as_str(), *interrupted)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bodies, vec![("partial answer", true)]);
+            let history = fixture
+                .query(
+                    "history",
+                    json!({"sessionId":session,"position":{"kind":"start"}}),
+                )
+                .await
+                .unwrap();
+            let partial = history["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|chunk| chunk["role"] == "assistant")
+                .unwrap();
+            assert_eq!(partial["text"], "partial answer");
+            assert_ne!(partial["finalOutput"], true);
+            assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+            fixture.app.shutdown().await.unwrap();
+            fixture.config.shutdown().await.unwrap();
+        }
     })
     .await
     .unwrap();
