@@ -21991,7 +21991,7 @@ export const contracts = {
                   },
                   {
                     description:
-                      'Steer an active model, native Codex or Claude turn; other executors queue the next turn.',
+                      'Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.',
                     type: 'string',
                     const: 'steer',
                   },

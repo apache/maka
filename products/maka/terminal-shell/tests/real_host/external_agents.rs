@@ -63,6 +63,14 @@ fn worker_state(directory: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(directory.join("external-state.json")).unwrap()).unwrap()
 }
 
+fn update_worker_state(directory: &Path, update: impl FnOnce(&mut Value)) {
+    let mut state = worker_state(directory);
+    update(&mut state);
+    let temporary = directory.join("external-state.next");
+    std::fs::write(&temporary, serde_json::to_vec(&state).unwrap()).unwrap();
+    std::fs::rename(temporary, directory.join("external-state.json")).unwrap();
+}
+
 fn requests(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("external-requests.jsonl"))
         .unwrap()
