@@ -270,6 +270,51 @@ test('preparation failure returns its held pause and preserves the original erro
   assert.equal(manager.runtime.reloading(), false);
 });
 
+test('new catalogs survive a pending pause or preparation rejection', async (t) => {
+  const pause = Promise.withResolvers();
+  const preparation = Promise.withResolvers();
+  let begins = 0;
+  const { fixture, manager } = await setup(t, {
+    begin: () => (++begins === 1 ? pause.promise : Promise.resolve()),
+    prepare: () => preparation.promise,
+  });
+  const original = manager.entries()[0];
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  fixture.publish(catalog(3));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 0);
+  assert.equal(manager.runtime.source().revision, 1);
+  pause.reject(new Error('the original native pause was refused'));
+  await setImmediate();
+  assert.equal(manager.runtime.source().revision, 3);
+  assert.equal(manager.runtime.updateError(), null);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.cancels, 0);
+
+  fixture.publish(catalog(4, 'other'));
+  await setImmediate();
+  fixture.publish(catalog(5));
+  await setImmediate();
+  assert.equal(fixture.begins, 2);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(manager.runtime.source().revision, 3);
+  preparation.reject(new Error('the original reload preparation failed'));
+  await setImmediate();
+  assert.equal(manager.runtime.source().revision, 5);
+  assert.equal(manager.runtime.updateError(), null);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(manager.entries()[0], original);
+  assert.equal(original.state().kind, 'active');
+  assert.equal(fixture.begins, 2);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 1);
+  assert.deepEqual(fixture.reloads, []);
+});
+
 test('an accepted reload keeps its original snapshot and cannot resume or reconcile again', async (t) => {
   const { fixture, manager } = await setup(t);
   fixture.publish(catalog(2, 'other'));

@@ -248,6 +248,13 @@ pub(super) async fn finish(
     if let Err(error) = &result {
         inner.cleanup.observe(error);
     }
+    let result = if !inner.cleanup.confirmed()
+        && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
+    {
+        crate::model_attempt::additional_failure(result, inner.cleanup.unconfirmed())
+    } else {
+        result
+    };
     if let Ok((steps::StepExit::Parked(receipt), _)) = &result {
         return Ok(crate::ActivationExit::Parked(receipt.clone()));
     }
@@ -350,13 +357,17 @@ fn failure_class(error: &RunError) -> &'static str {
         }
         RunError::Model(maka_model::ModelError::Provider(_)) => "model_provider",
         RunError::Model(maka_model::ModelError::ContextOverflow { .. }) => "context_overflow",
-        RunError::Tool(_) => "tool_execution",
         RunError::Internal(_) => "runtime_internal",
         RunError::Checkpoint(_) => "activation_checkpoint",
         RunError::Preparation(_) => "model_preparation",
         RunError::CleanupUnconfirmed
         | RunError::PreparationCleanup(_)
-        | RunError::Model(maka_model::ModelError::CleanupUnconfirmed) => "cleanup_unconfirmed",
+        | RunError::Model(maka_model::ModelError::CleanupUnconfirmed)
+        | RunError::Tool(
+            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(_)
+            | maka_agent_facts::tools::ToolError::OperationCleanupUnconfirmed { .. },
+        ) => "cleanup_unconfirmed",
+        RunError::Tool(_) => "tool_execution",
     }
 }
 

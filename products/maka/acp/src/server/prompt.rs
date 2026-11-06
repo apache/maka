@@ -76,7 +76,7 @@ pub(super) fn dispatch(
         )
         .await
         {
-            Ok((id, foreground)) => {
+            Ok((id, mut foreground)) => {
                 if responder
                     .respond(v2::schema::PromptResponse::new(id))
                     .is_err()
@@ -151,7 +151,7 @@ pub(super) fn v1(
         )
         .await;
         let result = match prepared {
-            Ok((_, foreground)) => {
+            Ok((_, mut foreground)) => {
                 let result = foreground.run().await;
                 peer.reset(&session_id);
                 let response = match result {

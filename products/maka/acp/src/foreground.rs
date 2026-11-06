@@ -83,7 +83,8 @@ impl WorkObservation {
 }
 
 impl Foreground {
-    pub async fn run(mut self) -> Result<Completion, Error> {
+    /// Retain session admission until the caller publishes protocol completion.
+    pub async fn run(&mut self) -> Result<Completion, Error> {
         let result = self.observe().await;
         if let Err(error) = &result
             && let Err(cleanup) = self.stop().await

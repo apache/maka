@@ -114,10 +114,13 @@ fn rename_error_after_moving_previous_skill_preserves_both_recovery_directories(
     let temporary = tempfile::tempdir().unwrap();
     let mut stage = stage(temporary.path());
     previous_skill(&stage);
-    child(&stage.directory, "next")
-        .unwrap()
-        .write("content.txt", "prepared")
-        .unwrap();
+    {
+        let directory = stage.parent.open_dir_nofollow(&stage.name).unwrap();
+        child(&directory, "next")
+            .unwrap()
+            .write("content.txt", "prepared")
+            .unwrap();
+    }
     let prepared = temporary.path().join(".maka").join(&stage.name);
 
     let error = stage

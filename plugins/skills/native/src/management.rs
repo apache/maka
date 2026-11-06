@@ -90,7 +90,6 @@ fn rename(root: &Dir, from: &str, to: &str) -> Result<(), String> {
 struct Stage {
     parent: Dir,
     name: String,
-    directory: Dir,
     target: String,
     publication: Publication,
 }
@@ -117,17 +116,23 @@ impl Stage {
         parent
             .create_dir(&name)
             .map_err(|error| error.to_string())?;
-        let directory = parent
-            .open_dir_nofollow(&name)
-            .map_err(|error| error.to_string())?;
-        child(&parent, "skills")?;
-        Ok(Self {
+        let stage = Self {
             parent,
             name,
-            directory,
             target: format!("skills/{id}"),
             publication: Publication::Prepared,
-        })
+        };
+        child(&stage.parent, "skills")?;
+        Ok(stage)
+    }
+    fn prepare(&self, source: &Dir, cancellation: &CancellationToken) -> Result<(), String> {
+        // Windows directory handles must close before publication or cleanup.
+        let directory = self
+            .parent
+            .open_dir_nofollow(&self.name)
+            .map_err(|error| error.to_string())?;
+        let next = child(&directory, "next")?;
+        copy_tree(source, &next, cancellation)
     }
     fn publish(&mut self, replace: bool) -> Result<(), String> {
         self.publish_using(replace, rename)
@@ -428,8 +433,7 @@ impl Library {
                         return Err("Skill name must be a directory name".into());
                     }
                     let mut stage = Stage::new(target, &id)?;
-                    let next = child(&stage.directory, "next")?;
-                    copy_tree(&source, &next, &scope.cancellation)?;
+                    stage.prepare(&source, &scope.cancellation)?;
                     let _lock = managed.lock()?;
                     if scope.cancellation.is_cancelled() {
                         return Err("Skill installation cancelled".into());
@@ -522,11 +526,7 @@ impl Library {
                     )
                     .map_err(|_| "Invalid SKILL.md")?;
                     let stage = Stage::new(target, id)?;
-                    copy_tree(
-                        &source,
-                        &child(&stage.directory, "next")?,
-                        &scope.cancellation,
-                    )?;
+                    stage.prepare(&source, &scope.cancellation)?;
                     (
                         stage,
                         Some(Installation {

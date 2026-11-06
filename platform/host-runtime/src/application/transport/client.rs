@@ -436,8 +436,15 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
             return Err("remote cleanup remains unconfirmed".into());
         };
         let reply = tokio::select! {
-            reply = channel.reader.read::<Reply>() => reply?,
-            _ = channel.writer.shutdown() => channel.reader.read::<Reply>().await?,
+            reply = channel.reader.read::<Reply>() => reply,
+            _ = channel.writer.shutdown() => channel.reader.read::<Reply>().await,
+        };
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(reason) => {
+                self.connection.unconfirm();
+                return Err(reason);
+            }
         };
         if let Err(reason) = self.accept_reply(&reply) {
             self.connection.unconfirm();
@@ -805,6 +812,64 @@ mod tests {
             }
             assert_eq!(call.cleanup_confirmed(), confirmed);
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_settlement_frame_cannot_release_original_caller_custody() {
+        let CallerFixture {
+            _directory,
+            log,
+            source,
+            reference,
+            recorded,
+        } = caller_fixture().await;
+        let mut incoming = replies(&[
+            Reply::Ready,
+            Reply::Prepared {
+                reference: Box::new(reference),
+            },
+        ])
+        .await;
+        incoming.extend_from_slice(&1u32.to_be_bytes());
+        incoming.push(b'{');
+        incoming.extend_from_slice(
+            &replies(&[Reply::Aborted {
+                reason: "original request cancelled".into(),
+                cleanup: Ok(()),
+            }])
+            .await,
+        );
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut call = call(
+            incoming.as_slice(),
+            Partial {
+                written: written.clone(),
+                released: released.clone(),
+            },
+            source,
+        );
+        call.start().await.unwrap();
+        assert!(matches!(
+            call.receive().await.unwrap(),
+            Reply::Prepared { .. }
+        ));
+        written.lock().unwrap().clear();
+        released.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut committing = Box::pin(call.commit(recorded));
+        assert!(futures_util::poll!(&mut committing).is_pending());
+        drop(committing);
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(call.drain().await.is_err());
+        assert!(call.holds_caller_intent());
+        assert!(!call.cleanup_confirmed());
+        assert!(call.drain().await.is_err());
+        assert!(call.holds_caller_intent());
+        assert!(!call.cleanup_confirmed());
+        assert_eq!(written.lock().unwrap().len(), 2);
+        drop(call);
+        log.close().await.unwrap();
     }
 
     #[tokio::test]

@@ -241,10 +241,11 @@ export function createPlugins() {
   });
   const reconcile = async () => {
     if (phase().kind !== 'idle' || !alive || !desired) return;
+    const target = desired;
     phase.set({ kind: 'adopting' });
     try {
-      validate(desired);
-      if (needsReload(desired)) {
+      validate(target);
+      if (needsReload(target)) {
         phase.set({ kind: 'pause_requested' });
         await nativeHost.beginUiReload();
         const held: Extract<ReconcilePhase, { kind: 'preparing_reload' }> = {
@@ -286,6 +287,7 @@ export function createPlugins() {
           }
         }
         phase.set({ kind: 'idle' });
+        if (desired && desired !== target) void reconcile();
       }
     }
   };

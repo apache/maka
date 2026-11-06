@@ -77,8 +77,7 @@ impl ConfigurationStore {
     }
     /// Reads the root policy without materializing defaults into persistence.
     pub async fn runtime_policy(&self) -> Result<RuntimePolicySnapshot> {
-        self.transaction(TransactionMode::Deferred, |connection| read(connection))
-            .await
+        self.transaction(TransactionMode::Deferred, read).await
     }
 
     /// Replaces chat defaults in the same root-owned transaction as its CAS.

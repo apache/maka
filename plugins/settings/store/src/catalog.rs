@@ -25,8 +25,7 @@ use crate::{ConfigError, ConfigurationStore, Result, TransactionMode};
 
 impl ConfigurationStore {
     pub async fn catalog(&self) -> Result<ConnectionCatalogSnapshot> {
-        self.transaction(TransactionMode::Deferred, |tx| read(tx))
-            .await
+        self.transaction(TransactionMode::Deferred, read).await
     }
 
     /// Reads model choices for one connection and preserves the global default model.

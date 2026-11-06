@@ -720,7 +720,12 @@ pub(super) async fn execute_once(
     if let Err(error) = &prepared_wire {
         inner.cleanup.observe(error);
     }
-    if steering.is_cancelled() && !cancellation.is_cancelled() {
+    if steering.is_cancelled()
+        && !cancellation.is_cancelled()
+        && !prepared_wire
+            .as_ref()
+            .is_err_and(RunError::is_cleanup_unconfirmed)
+    {
         if purpose == ModelPurpose::Main {
             prompt
                 .close()
@@ -884,7 +889,10 @@ pub(super) async fn execute_once(
         Err(error) => {
             inner.cleanup.observe_model(&error);
             close_materialization(&inner.cleanup, &cleanup).await?;
-            if steering.is_cancelled() && !cancellation.is_cancelled() {
+            if steering.is_cancelled()
+                && !cancellation.is_cancelled()
+                && !error.cleanup_unconfirmed()
+            {
                 drop(writer);
                 record_steered(inner, &finalizer).await?;
                 return Ok(AttemptOutput::Steered);
@@ -1337,12 +1345,13 @@ where
             Ok(())
         }
         Ok(None) => Ok(()),
-        Err(error) => Err(
-            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+        Err(error) => {
+            let error = maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
                 "model prefix could not be confirmed: {error}"
-            ))
-            .into(),
-        ),
+            ));
+            inner.cleanup.observe_tool(&error);
+            Err(error.into())
+        }
     };
     if execution.is_err() {
         preparing.clear();
@@ -1440,7 +1449,7 @@ where
                     Err(error) => {
                         tool_cancellation.cancel();
                         preparing.clear();
-                        if cleanup.is_ok() { cleanup = Err(error); }
+                        cleanup = additional_failure(cleanup, error);
                     }
                 }
             }
@@ -1448,7 +1457,7 @@ where
                 if let Err(error) = tool_result(result.expect("nonempty completion set")) {
                     tool_cancellation.cancel();
                     preparing.clear();
-                    if cleanup.is_ok() { cleanup = Err(error); }
+                    cleanup = additional_failure(cleanup, error);
                 }
             }
         }
@@ -2009,7 +2018,7 @@ async fn finish(
                         Err(error) => {
                             tool_cancellation.cancel();
                             preparing.clear();
-                            if cleanup.is_ok() { cleanup = Err(error); }
+                            cleanup = additional_failure(cleanup, error);
                         }
                     }
                 }
@@ -2017,7 +2026,7 @@ async fn finish(
                     if let Err(error) = tool_result(result.expect("nonempty completion set")) {
                         tool_cancellation.cancel();
                         preparing.clear();
-                        if cleanup.is_ok() { cleanup = Err(error); }
+                        cleanup = additional_failure(cleanup, error);
                     }
                 }
             }
@@ -2130,10 +2139,11 @@ where
         Ok(Some(cut)) => inner.attempts.publish(finalizer, cut),
         Ok(None) => {}
         Err(seal) => {
-            return maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+            let error = maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
                 "{error}; model prefix could not be confirmed: {seal}"
-            ))
-            .into();
+            ));
+            inner.cleanup.observe_tool(&error);
+            return error.into();
         }
     }
     let Some(cut) = finalizer.unconfirmed_snapshot() else {

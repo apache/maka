@@ -308,12 +308,18 @@ pub async fn seed_due_model_retry(
     };
     let result = match tools.shutdown().await {
         Ok(()) => result,
-        Err(error) => model_attempt::additional_failure(result, error.into()),
+        Err(error) => {
+            inner.cleanup.observe_tool(&error);
+            model_attempt::additional_failure(result, error.into())
+        }
     };
     drop(tools);
     let result = match effects.settle().await {
         Ok(()) => result,
-        Err(error) => model_attempt::additional_failure(result, error.into()),
+        Err(error) => {
+            inner.cleanup.observe_tool(&error);
+            model_attempt::additional_failure(result, error.into())
+        }
     };
     let cleanup_confirmed = inner.cleanup.confirmed();
     drop(inner);

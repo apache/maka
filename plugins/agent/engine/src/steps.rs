@@ -276,7 +276,7 @@ async fn run_from(
                                 .ok()?;
                             // Read the live source, but project from the successor's point of
                             // view: manual replay cuts distinguish current from inherited work.
-                            let prompt = model_attempt::prompt(
+                            let prompt = match model_attempt::prompt(
                                 inner,
                                 input,
                                 &context,
@@ -288,7 +288,15 @@ async fn run_from(
                                 maka_agent_facts::context::ModelPurpose::Main,
                             )
                             .await
-                            .ok()?;
+                            {
+                                Ok(prompt) => prompt,
+                                Err(error) => {
+                                    if error.is_cleanup_unconfirmed() {
+                                        handoff_cleanup = Some(error);
+                                    }
+                                    return None;
+                                }
+                            };
                             let checkpoint = match tools.checkpoint() {
                                 Ok(checkpoint) => checkpoint,
                                 Err(error) => {
@@ -299,7 +307,7 @@ async fn run_from(
                                     return None;
                                 }
                             };
-                            let replay = crate::continuation::replay(
+                            let replay = match crate::continuation::replay(
                                 &inner.cleanup,
                                 input,
                                 prompt,
@@ -308,7 +316,15 @@ async fn run_from(
                                 cancellation,
                             )
                             .await
-                            .ok()?;
+                            {
+                                Ok(replay) => replay,
+                                Err(error) => {
+                                    if error.is_cleanup_unconfirmed() {
+                                        handoff_cleanup = Some(error);
+                                    }
+                                    return None;
+                                }
+                            };
                             let pause = maka_agent_facts::handoff::HandoffPause {
                                 intent,
                                 execution: Box::new(maka_agent_facts::handoff::HandoffExecution {
@@ -635,18 +651,18 @@ async fn run_from(
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err(inner.cleanup.unconfirmed()));
+    if let Err(error) = &result {
+        inner.cleanup.observe(error);
+    }
     let summary_cleanup = auto_context::drain(inner, &mut pending).await;
+    if let Err(error) = &summary_cleanup {
+        inner.cleanup.observe(error);
+    }
     let tool_cleanup = tools.shutdown().await;
     if let Err(error) = &tool_cleanup {
         inner.cleanup.observe_tool(error);
     }
-    if matches!(&result, Err(error) if error.is_cleanup_unconfirmed())
-        || matches!(&summary_cleanup, Err(error) if error.is_cleanup_unconfirmed())
-        || matches!(
-            &tool_cleanup,
-            Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(_))
-        )
-    {
+    if !inner.cleanup.confirmed() {
         tracing::error!(execution_error = ?result.as_ref().err(), summary_error = ?summary_cleanup.as_ref().err(), tool_error = ?tool_cleanup.as_ref().err(), "step cleanup unconfirmed");
         return Err(inner.cleanup.unconfirmed());
     }
@@ -758,7 +774,7 @@ async fn approval_frontier(
         .log
         .subscribe_session_commits(&input.invocation.session_id)?;
     let mut running = FuturesUnordered::new();
-    let mut failure = None;
+    let mut outcome = Ok(());
     // Summary cleanup may await physical provider work. Keep answering the
     // original calls while that independent owner confirms its cleanup.
     {
@@ -769,7 +785,7 @@ async fn approval_frontier(
                 result = &mut cleanup => {
                     if let Err(error) = result {
                         cancellation.cancel();
-                        failure = Some(error);
+                        outcome = model_attempt::additional_failure(outcome, error);
                     }
                     break;
                 }
@@ -779,7 +795,7 @@ async fn approval_frontier(
                 result = running.next(), if !running.is_empty() => {
                     if let Err(error) = model_attempt::tool_result(result.expect("nonempty native execution set")) {
                         cancellation.cancel();
-                        failure = Some(error);
+                        outcome = model_attempt::additional_failure(outcome, error);
                     }
                 }
             }
@@ -792,13 +808,13 @@ async fn approval_frontier(
             running.push(model_attempt::catch_tool(inner.cleanup.clone(), execution));
         }
         if approvals.is_empty() && running.is_empty() {
-            return failure.map_or(Ok(None), Err);
+            return outcome.map(|()| None);
         }
-        if failure.is_none() && cancellation.is_cancelled() {
-            failure = Some(RunError::Cancelled);
+        if outcome.is_ok() && cancellation.is_cancelled() {
+            outcome = Err(RunError::Cancelled);
         }
         if reconsider
-            && failure.is_none()
+            && outcome.is_ok()
             && running.is_empty()
             && tools.is_idle()
             && effects.is_idle()
@@ -871,7 +887,7 @@ async fn approval_frontier(
                 Ok(None) => reconsider = false,
                 Err(error) => {
                     cancellation.cancel();
-                    failure = Some(error);
+                    outcome = model_attempt::additional_failure(outcome, error);
                 }
             }
         }
@@ -883,19 +899,19 @@ async fn approval_frontier(
             result = running.next(), if !running.is_empty() => {
                 if let Err(error) = model_attempt::tool_result(result.expect("nonempty native execution set")) {
                     cancellation.cancel();
-                    failure = Some(error);
+                    outcome = model_attempt::additional_failure(outcome, error);
                 }
                 reconsider = true;
             }
-            changed = changes.changed(), if failure.is_none() => {
+            changed = changes.changed(), if outcome.is_ok() => {
                 if let Err(error) = changed {
                     cancellation.cancel();
-                    failure = Some(RunError::Internal(error.to_string()));
+                    outcome = Err(RunError::Internal(error.to_string()));
                 }
                 reconsider = true;
             }
-            _ = cancellation.cancelled(), if failure.is_none() => {
-                failure = Some(RunError::Cancelled);
+            _ = cancellation.cancelled(), if outcome.is_ok() => {
+                outcome = Err(RunError::Cancelled);
             }
         }
     }

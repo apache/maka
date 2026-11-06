@@ -2665,16 +2665,29 @@ impl Tab {
         self.refresh_info(call).await?;
         self.connect_metadata().await?;
         if matches!(self.connection, Some(TabConnection::Unprepared(_))) {
-            let socket = self
+            // Partial setup must retain this socket's subscriptions and queued events.
+            if self
                 .connection
-                .as_mut()
-                .map(TabConnection::socket_mut)
-                .expect("connected metadata channel");
-            let controller = dialogs::Controller::start(socket.clone());
-            controller.host_effects(self.dialog_host.clone());
-            socket.dialogs = Some(controller.link.clone());
-            self.dialogs = Some(controller);
-            self.frames = frames::Frames::default();
+                .as_ref()
+                .map(TabConnection::socket)
+                .expect("connected metadata channel")
+                .dialogs
+                .is_none()
+            {
+                if let Some(controller) = self.dialogs.as_mut() {
+                    controller.close().await?;
+                }
+                let socket = self
+                    .connection
+                    .as_mut()
+                    .map(TabConnection::socket_mut)
+                    .expect("connected metadata channel");
+                let controller = dialogs::Controller::start(socket.clone());
+                controller.host_effects(self.dialog_host.clone());
+                socket.dialogs = Some(controller.link.clone());
+                self.dialogs = Some(controller);
+                self.frames = frames::Frames::default();
+            }
             self.request("Page.enable", json!({})).await?;
             if self
                 .dialogs
@@ -4124,28 +4137,70 @@ mod tests {
             serve_inventory(&listener, &tabs).await;
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            metadata_reply(&mut socket, "Page.enable", json!({})).await;
             let request: Value =
                 serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
                     .unwrap();
-            assert_eq!(request["method"], "Page.enable");
-            socket
-                .send(tokio_tungstenite::tungstenite::Message::Text(
-                    json!({"id":request["id"],"error":{"code":-32000,"message":"fixture Page.enable failure"}})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
+            assert_eq!(request["method"], "Target.setAutoAttach");
+            for event in [
+                json!({"method":"Target.attachedToTarget","params":{
+                    "sessionId":"child-session", "targetInfo":{"type":"iframe","targetId":"child-target"}
+                }}),
+                json!({"method":"Page.javascriptDialogOpening","params":{
+                    "type":"alert", "message":"retained setup dialog", "url":"https://source.example/"
+                }}),
+                json!({"id":request["id"],"error":{"code":-32000,"message":"fixture Target.setAutoAttach failure"}}),
+            ] {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        event.to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            serve_inventory(&listener, &tabs).await;
+            let request: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(request["method"], "Page.handleJavaScriptDialog");
+            assert_eq!(request["params"]["accept"], true);
+            for event in [
+                json!({"method":"Page.javascriptDialogClosed","params":{}}),
+                json!({"id":request["id"],"result":{}}),
+            ] {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        event.to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
 
             serve_inventory(&listener, &tabs).await;
             metadata_reply(&mut socket, "Page.enable", json!({})).await;
             metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
+            let child = metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
+            assert_eq!(child["sessionId"], "child-session");
+            let child = metadata_reply(&mut socket, "Page.enable", json!({})).await;
+            assert_eq!(child["sessionId"], "child-session");
             metadata_reply(
                 &mut socket,
                 "Page.getFrameTree",
                 source_frame("retry-loader"),
             )
             .await;
+            let child = metadata_reply(&mut socket, "Page.getFrameTree", json!({"frameTree":{"frame":{
+                "id":"iframe", "loaderId":"iframe-loader", "parentId":"main", "url":"https://frame.example/"
+            }}})).await;
+            assert_eq!(child["sessionId"], "child-session");
+            let owner = metadata_reply(
+                &mut socket,
+                "DOM.getFrameOwner",
+                json!({"backendNodeId":42}),
+            )
+            .await;
+            assert_eq!(owner["params"]["frameId"], "iframe");
             let _ = released.await;
         });
         let mut browsers = Browsers::default();
@@ -4185,14 +4240,28 @@ mod tests {
             tab.verify(BrowserCall::new(&context, &cancellation, Language::En)),
         )
         .await
-        .expect("the actual Page.enable failure must be observable");
+        .expect("the actual partial setup failure must be observable");
         assert!(matches!(failed, Err(ToolError::Failed(message))
-            if message.contains("fixture Page.enable failure")));
+            if message.contains("fixture Target.setAutoAttach failure")));
         tokio::time::timeout(Duration::from_secs(5), async {
+            let dialog = tab.active_dialog().await.expect("the one-time dialog event must remain visible");
+            assert_eq!(dialog.message, "retained setup dialog");
+            assert!(matches!(
+                tab.verify(BrowserCall::new(&context, &cancellation, Language::En)).await,
+                Err(ToolError::Failed(message)) if message.contains("JavaScript dialog is active")
+            ));
+            assert_eq!(tab.active_dialog().await.unwrap().metadata.id, dialog.metadata.id);
+            tab.handle_dialog(&dialog.metadata.id, DialogAction::Dismiss, None, &context, &cancellation)
+                .await
+                .unwrap();
+            assert!(tab.active_dialog().await.is_none());
             tab.verify(BrowserCall::new(&context, &cancellation, Language::En))
                 .await
                 .unwrap();
-            assert_eq!(tab.frame().await.unwrap(), "main:retry-loader");
+            assert_eq!(serde_json::to_value(tab.frames().await.unwrap()).unwrap(), json!([
+                {"id":"main","loader":"retry-loader","session":null,"parent":null},
+                {"id":"iframe","loader":"iframe-loader","session":"child-session","parent":"main"}
+            ]));
             tab.disconnect().await.unwrap();
         })
         .await
