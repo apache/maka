@@ -19,7 +19,7 @@
 
 pub(crate) mod files;
 mod projects;
-pub(crate) use projects::{Catalog, Prepared, Projects};
+pub(crate) use projects::{Catalog, ClientGeneration, Prepared, Projects};
 
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::{

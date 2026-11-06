@@ -448,6 +448,13 @@ impl EventLog {
             tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
         })).await
     }
+    pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
+        self.validate_root()?;
+        let session = self.expected_session.clone();
+        self.connection.read(move |db| Box::pin(async move {
+            Ok(sqlx::query_scalar("SELECT session_id FROM native_approval_checkpoints WHERE active=1 AND (?1 IS NULL OR session_id=?1) AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=native_approval_checkpoints.session_id) ORDER BY session_id").bind(session).fetch_all(db).await?)
+        })).await
+    }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
         self.validate_root()?;
         let session = self.expected_session.clone();

@@ -17,13 +17,15 @@
  * under the License.
  */
 
+mod protocol;
 mod provider;
 mod public_client;
 mod support;
 
 use agent_client_protocol::{
-    Agent, ByteStreams, Client, V2ConnectionTo,
-    schema::{ProtocolVersion, v2 as acp},
+    Agent, ByteStreams, Client,
+    schema::ProtocolVersion,
+    v2::{self, schema as acp},
 };
 use serde_json::json;
 use std::time::Duration;
@@ -32,8 +34,8 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_published_directory_depth_uses_path_progress() {
+    let fixture = support::Fixture::open().await;
     tokio::time::timeout(Duration::from_secs(40), async {
-        let fixture = support::Fixture::open().await;
         let root = fixture.workspace.clone();
         let marker = maka_fs_tools::workspace::MARKER_FILE;
         let original_root_marker = std::fs::read(root.join(marker)).unwrap();
@@ -134,31 +136,33 @@ async fn sdk_published_directory_depth_uses_path_progress() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_acceptance_precedes_model_completion_and_resume_replays_canonical_ids() {
-    tokio::time::timeout(Duration::from_secs(40), scenario(false))
+    let fixture = support::Fixture::open().await;
+    tokio::time::timeout(Duration::from_secs(40), scenario(fixture, false))
         .await
         .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_cancel_settles_the_admitted_turn_without_accepting_a_busy_prompt() {
-    tokio::time::timeout(Duration::from_secs(40), scenario(true))
+    let fixture = support::Fixture::open().await;
+    tokio::time::timeout(Duration::from_secs(40), scenario(fixture, true))
         .await
         .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sdk_form_answer_is_durable_before_the_model_receives_its_tool_result() {
-    tokio::time::timeout(Duration::from_secs(40), form_scenario())
+    let fixture = support::Fixture::open().await;
+    tokio::time::timeout(Duration::from_secs(40), form_scenario(fixture))
         .await
         .unwrap();
 }
 
-async fn form_scenario() {
+async fn form_scenario(fixture: support::Fixture) {
     use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
     use std::collections::BTreeMap;
     use tokio::sync::oneshot;
 
-    let fixture = support::Fixture::open().await;
     let session_database = fixture
         .database_containing(
             "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)",
@@ -191,7 +195,7 @@ async fn form_scenario() {
         oneshot::Sender<acp::CreateElicitationResponse>,
     )>(1);
     Client.v2().on_receive_notification(
-        async move |notification: acp::UpdateSessionNotification, _: V2ConnectionTo<Agent>| {
+        async move |notification: acp::UpdateSessionNotification, _: v2::ConnectionTo<Agent>| {
             updates.send(notification.update).await.map_err(agent_client_protocol::Error::into_internal_error)
         }, agent_client_protocol::on_receive_notification!(),
     ).on_receive_request(
@@ -263,8 +267,7 @@ async fn form_scenario() {
     drop(provider);
 }
 
-async fn scenario(cancel: bool) {
-    let fixture = support::Fixture::open().await;
+async fn scenario(fixture: support::Fixture, cancel: bool) {
     let (provider, mut model_requests) = (fixture.provider, fixture.model_requests);
     let mut native = fixture.native;
     let session = fixture.session.clone();
@@ -280,7 +283,7 @@ async fn scenario(cancel: bool) {
     let (sdk_read, sdk_write) = tokio::io::split(sdk);
     let (send, mut receive) = mpsc::channel::<acp::SessionUpdate>(128);
     Client.v2().on_receive_notification(
-        async move |notification: acp::UpdateSessionNotification, _: V2ConnectionTo<Agent>| {
+        async move |notification: acp::UpdateSessionNotification, _: v2::ConnectionTo<Agent>| {
             send.send(notification.update).await.map_err(agent_client_protocol::Error::into_internal_error)
         },
         agent_client_protocol::on_receive_notification!(),
@@ -291,6 +294,8 @@ async fn scenario(cancel: bool) {
         assert_eq!(initialized.protocol_version, ProtocolVersion::V2);
         connection.send_request(acp::ResumeSessionRequest::new(session.as_str(), workspace.clone()))
             .block_task().await?;
+        connection.send_request(acp::ListSessionsRequest::new()).block_task().await?;
+        while receive.try_recv().is_ok() {}
         let accepted = tokio::time::timeout(Duration::from_secs(5), connection.send_request(
             acp::PromptRequest::new(session.as_str(), vec![acp::ContentBlock::Text(acp::TextContent::new("Explain the fixture."))]),
         ).block_task()).await.expect("prompt acceptance waited for model completion")?;
@@ -307,7 +312,7 @@ async fn scenario(cancel: bool) {
         assert!(busy.is_err(), "a foreground prompt must exclude another admission");
         let mut live = Vec::new();
         while let Ok(update) = receive.try_recv() {
-            assert!(!matches!(update, acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(_))), "idle arrived while model response remained gated");
+            assert!(!matches!(&update, acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle)) if idle.stop_reason.is_some()), "idle arrived while model response remained gated");
             live.push(update);
         }
         if cancel {

@@ -84,8 +84,8 @@ impl Connection {
     }
     pub fn request<R: sdk::JsonRpcRequest>(&self, request: R) -> sdk::SentRequest<R::Response> {
         match self.peer.as_ref().expect("initialized SDK connection") {
-            Peer::V1(peer, _) => peer.send_request(request),
-            Peer::V2(peer, _) => peer.send_request(request),
+            Peer::V1(peer, _) => peer.clone().into_raw().send_request(request),
+            Peer::V2(peer, _) => peer.clone().into_raw().send_request(request),
         }
     }
 }

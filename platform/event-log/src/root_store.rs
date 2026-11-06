@@ -428,6 +428,16 @@ async fn pin_partition(
 }
 
 impl RootStore {
+    pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut sessions = Vec::new();
+        for partition in &self.partitions {
+            sessions.extend(partition.activation_checkpoint_sessions().await?);
+        }
+        sessions.sort();
+        sessions.dedup();
+        Ok(sessions)
+    }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
         let mut sessions = Vec::new();

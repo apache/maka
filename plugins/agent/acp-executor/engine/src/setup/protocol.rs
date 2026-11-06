@@ -23,7 +23,7 @@ use crate::{
     ports::Ports,
     transport::{Connection, Peer},
 };
-use agent_client_protocol::schema::{v1 as acp, v2};
+use agent_client_protocol::{v1::schema as acp, v2::schema as v2};
 use futures_util::future::BoxFuture;
 use maka_agent_ports::remote::Error;
 use maka_capabilities::call::Scope;

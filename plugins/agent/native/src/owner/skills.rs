@@ -178,8 +178,12 @@ impl Owner {
                 .available(&session.configuration.workspace)
                 .await?
         };
+        let selected_catalog = self
+            .mcp_projects
+            .with_client(&input.session_id, selected_catalog)?;
         let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog),
             language: Language::En,
             compaction_prompt: None,

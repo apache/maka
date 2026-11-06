@@ -21,6 +21,9 @@
 
 Maka 使用官方 Rust MCP SDK（`rmcp`）接入 stdio 与 Streamable HTTP 工具服务器。原生 Agent 发现已配置的工具，再通过同一工具目录、审批流程和持久化日志提供直接调用、工具发现及两种 Code Mode 语言的访问。
 
+
+ACP 客户端也可为一个 Session 提供 stdio 和 Streamable HTTP 服务器。连接由 Host 的 `sessionMcp` 订阅持有，遵循原有工作区权限和审批流程，在客户端加载或恢复该 Session 时替换。环境变量和请求头不会保存为 MCP 配置。
+
 ## 通用配置文件
 
 在**设置 → MCP 服务器**中选择全局配置或项目，然后通过表单添加本地命令或 Streamable HTTP 地址。参数逐项填写；高级选项包括工作目录、环境变量和 HTTP 请求头。对应文件里的已有服务器均可编辑和删除，不要求由 Maka 添加。保存会保留其他服务器和未知 JSON 字段；文件已被其他操作修改时，需要刷新后再保存。

@@ -16,10 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-mod list;
+pub(crate) mod list;
 use crate::client::Client;
 use crate::{Error, configuration, history, projection::Projection, transport::Peer};
-use agent_client_protocol::schema::v2 as acp;
+
 use maka_agent_api::contract::{Created, Observation};
 use maka_capabilities::call::Attachments;
 use serde_json::json;
@@ -34,6 +34,11 @@ use std::{
 };
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
+pub(crate) struct Setup {
+    pub id: String,
+    pub options: Vec<configuration::Select>,
+}
+
 #[derive(Default)]
 pub(crate) struct Registry {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -43,6 +48,7 @@ pub(crate) struct Session {
     pub id: String,
     pub gate: Arc<AsyncMutex<()>>,
     pub preferences: AsyncMutex<configuration::Preferences>,
+    mcp: AsyncMutex<Option<crate::client::Subscription>>,
     active: Mutex<Option<CancellationToken>>,
     closed: AtomicBool,
 }
@@ -57,6 +63,7 @@ impl Session {
             id,
             gate: Arc::default(),
             preferences: AsyncMutex::default(),
+            mcp: AsyncMutex::default(),
             active: Mutex::default(),
             closed: AtomicBool::new(false),
         })
@@ -97,13 +104,17 @@ impl Registry {
         }
     }
     /// The caller supplies the shutdown deadline; retain every gate until drained.
-    pub async fn drained(&self) {
+    pub async fn drained(&self) -> Result<(), Error> {
         let _creation = self.creation.lock().await;
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut guards = Vec::with_capacity(sessions.len());
         for session in sessions {
             guards.push(session.gate.clone().lock_owned().await);
+            if let Some(lease) = session.mcp.lock().await.take() {
+                lease.close().await?;
+            }
         }
+        Ok(())
     }
     pub fn get(&self, id: &str) -> Result<Arc<Session>, Error> {
         self.sessions
@@ -118,10 +129,10 @@ impl Registry {
         &self,
         client: &Client,
         peer: &Peer,
-        request: acp::NewSessionRequest,
-    ) -> Result<acp::NewSessionResponse, Error> {
-        unsupported_roots(&request.additional_directories, &request.mcp_servers)?;
-        let cwd = list::directory(request.cwd.as_ref())?;
+        cwd: &Path,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+    ) -> Result<Setup, Error> {
+        let cwd = list::directory(cwd)?;
         let _creation = self.creation.lock().await;
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
@@ -137,29 +148,23 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Session::new(id.clone()));
-        Ok(acp::NewSessionResponse::new(id).config_options(options))
+        let local = Session::new(id.clone());
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        self.sessions.lock().unwrap().insert(id.clone(), local);
+        Ok(Setup { id, options })
     }
     pub async fn resume(
         &self,
         client: &Client,
         peer: &Peer,
-        request: acp::ResumeSessionRequest,
-    ) -> Result<acp::ResumeSessionResponse, Error> {
-        unsupported_roots(&request.additional_directories, &request.mcp_servers)?;
-        if request
-            .replay_from
-            .as_ref()
-            .is_some_and(|replay| !matches!(replay, acp::ReplayFrom::Start(_)))
-        {
-            return Err("Unsupported replay cursor".into());
-        }
-        let cwd = list::directory(request.cwd.as_ref())?;
+        id: &str,
+        cwd: &Path,
+        replay_history: bool,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+    ) -> Result<Setup, Error> {
+        let cwd = list::directory(cwd)?;
         let _creation = self.creation.lock().await;
-        let id = request.session_id.to_string();
+        let id = id.to_owned();
         let existing = self.sessions.lock().unwrap().get(&id).cloned();
         let local = existing.unwrap_or_else(|| Session::new(id.clone()));
         let active = local.enter(&peer.stop)?;
@@ -167,35 +172,47 @@ impl Registry {
             .query("agent", "observe", json!({"sessionId":id}))
             .await?;
         let session = observation.session;
-        list::ensure_idle(&session)?;
         if list::directory(Path::new(&session.workspace.path))? != cwd {
             return Err("Resume cwd differs from Host session workspace".into());
         }
+        if let Some(lease) = local.mcp.lock().await.take() {
+            lease.close().await?;
+        }
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        let observation: Observation = client
+            .query("agent", "observe", json!({"sessionId":id}))
+            .await?;
+        let session = observation.session;
+        list::ensure_idle(&session)?;
         let options =
             configuration::options(client, &session, &local.preferences.lock().await.clone())
                 .await?;
-        if request.replay_from.is_some() {
+        if replay_history {
+            peer.reset(&id);
             replay(client, peer, &id, &active.cancel).await?;
         }
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        self.sessions.lock().unwrap().insert(id, local.clone());
-        Ok(acp::ResumeSessionResponse::new().config_options(options))
+        peer.synchronize(&session).await?;
+        peer.reset(&id);
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), local.clone());
+        Ok(Setup { id, options })
     }
     pub async fn list(
         &self,
         client: &Client,
-        request: acp::ListSessionsRequest,
-    ) -> Result<acp::ListSessionsResponse, Error> {
-        list::read(client, request).await
+        cwd: Option<std::path::PathBuf>,
+        cursor: Option<String>,
+    ) -> Result<list::Page, Error> {
+        list::read(client, cwd, cursor).await
     }
-    pub async fn close(
-        &self,
-        request: acp::CloseSessionRequest,
-    ) -> Result<acp::CloseSessionResponse, Error> {
+    pub async fn close(&self, id: &str) -> Result<(), Error> {
         let _creation = self.creation.lock().await;
-        let id = request.session_id.to_string();
+        let id = id.to_owned();
         let session = self
             .sessions
             .lock()
@@ -209,41 +226,39 @@ impl Registry {
             tokio::time::timeout(Duration::from_secs(20), session.gate.clone().lock_owned())
                 .await
                 .map_err(|_| "ACP session cancellation has not settled")?;
+        if let Some(lease) = session.mcp.lock().await.take() {
+            lease.close().await?;
+        }
         self.sessions.lock().unwrap().remove(&id);
-        Ok(acp::CloseSessionResponse::new())
+        Ok(())
     }
     pub async fn set_config(
         &self,
         client: &Client,
         peer: &Peer,
-        request: acp::SetSessionConfigOptionRequest,
-    ) -> Result<acp::SetSessionConfigOptionResponse, Error> {
-        let local = self.get(&request.session_id.to_string())?;
+        id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<Vec<configuration::Select>, Error> {
+        let local = self.get(id)?;
         let _active = local.enter(&peer.stop)?;
         let observation: Observation = client
             .query("agent", "observe", json!({"sessionId":local.id}))
             .await?;
         list::ensure_idle(&observation.session)?;
         let mut preferences = local.preferences.lock().await;
-        let options =
-            configuration::set(client, &observation.session, &mut preferences, request).await?;
-        drop(preferences);
-        peer.update(
-            &local.id,
-            acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options.clone())),
+        let options = configuration::set(
+            client,
+            &observation.session,
+            &mut preferences,
+            config_id,
+            value,
         )
         .await?;
-        Ok(acp::SetSessionConfigOptionResponse::new(options))
+        drop(preferences);
+        peer.config(&local.id, options.clone()).await?;
+        Ok(options)
     }
-}
-fn unsupported_roots(
-    directories: &[acp::AbsolutePath],
-    servers: &[acp::McpServer],
-) -> Result<(), Error> {
-    if !directories.is_empty() || !servers.is_empty() {
-        return Err("Additional directories and client MCP servers are unsupported".into());
-    }
-    Ok(())
 }
 async fn replay(
     client: &Client,

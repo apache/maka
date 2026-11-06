@@ -150,6 +150,14 @@ impl Owner {
         self: &Arc<Self>,
         cutoff: u64,
     ) -> Result<(), RunError> {
+        // Keep recovery parked until the cleanup waiter injects shutdown.
+        #[cfg(test)]
+        if self
+            .mcp_shutdown_at_parked_wait
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         let mut sessions = self.store.ready_native_approval_sessions().await?;
         sessions.extend(self.store.due_model_retry_sessions(cutoff).await?);
         let mut seen = std::collections::HashSet::new();
@@ -379,6 +387,9 @@ impl Owner {
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),
@@ -394,9 +405,28 @@ impl Owner {
             let session = running.invocation().session_id.clone();
             loop {
                 let invocation = running.invocation().clone();
+                let settlement = self
+                    .runs
+                    .state()
+                    .await
+                    .controls
+                    .get(&session)
+                    .filter(|control| control.invocation == invocation)
+                    .and_then(|control| control.settlement.clone())
+                    .map(Settlement);
                 let completion = std::panic::AssertUnwindSafe(running.completion())
                     .catch_unwind()
                     .await;
+                if let Some(settlement) = &settlement {
+                    settlement.0.send_replace(Some(
+                        if matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
+                            Ok(())
+                        } else {
+                            Err("agent_execution_cleanup_unconfirmed".into())
+                        },
+                    ));
+                }
+                drop(settlement);
                 if !matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
                     let mut runs = self.runs.state().await;
                     let stage = if completion.is_err() {
@@ -607,11 +637,13 @@ impl Owner {
             serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
                 |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
             )?;
-        basis.mcp_catalog = Some(
-            self.mcp_projects
-                .catalog(basis.mcp_revision.as_deref())
-                .map_err(RunError::InvalidInput)?,
-        );
+        if !checkpoint.revoked && !checkpoint.stop_requested {
+            basis.mcp_catalog = Some(
+                self.mcp_projects
+                    .catalog(basis.mcp_revision.as_deref())
+                    .map_err(RunError::InvalidInput)?,
+            );
+        }
         let basis = Arc::new(basis);
         let store = self.store.session(&invocation.session_id).await?;
         let mut configuration = store
@@ -637,12 +669,15 @@ impl Owner {
         } else {
             ApprovalPolicy::Never
         };
-        let tool_names = self
-            .mcp_projects
-            .catalog(basis.mcp_revision.as_deref())
-            .map_err(RunError::InvalidInput)?
-            .tools
-            .names()
+        let names = match &basis.mcp_catalog {
+            Some(catalog) => catalog.tools.names(),
+            None => basis
+                .internal_tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
+        };
+        let tool_names = names
             .into_iter()
             .filter(|name| {
                 basis
@@ -1220,6 +1255,17 @@ impl Owner {
         invocation: &str,
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<bool, String> {
+        let goal = self.goals.gate.lock().await;
+        self.stop_run_id(session, invocation, self.operation_id(operation), &goal)
+            .await
+    }
+    pub(super) async fn stop_run_id(
+        &self,
+        session: &str,
+        invocation: &str,
+        interrupt_id: String,
+        _goal: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<bool, String> {
         self.session(session).await?;
         let physical = {
             let runs = self.runs.state().await;
@@ -1254,7 +1300,6 @@ impl Owner {
             }
         };
         {
-            let _gate = self.goals.gate.lock().await;
             if let Some(mut saved) = self
                 .goals
                 .repository
@@ -1278,7 +1323,7 @@ impl Owner {
         let command = InterruptCommand {
             host_epoch: self.revision.activation.clone(),
             session_id: session.into(),
-            interrupt_id: self.operation_id(operation),
+            interrupt_id,
             turn_id: original.turn_id.clone(),
             run_id: original.run_id.clone(),
         };
@@ -1319,6 +1364,17 @@ impl Owner {
                 Err(StoreError::RevisionConflict { .. }) => continue,
                 Err(_) => return Err("agent_queue_unavailable".into()),
             }
+        }
+    }
+}
+
+struct Settlement(tokio::sync::watch::Sender<Option<Result<(), String>>>);
+impl Drop for Settlement {
+    fn drop(&mut self) {
+        let pending = self.0.borrow().is_none();
+        if pending {
+            self.0
+                .send_replace(Some(Err("agent_execution_owner_disappeared".into())));
         }
     }
 }

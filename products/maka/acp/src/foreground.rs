@@ -25,7 +25,10 @@ use crate::{
     session::{Active, Session},
     transport::Peer,
 };
-use agent_client_protocol::schema::v2 as acp;
+use crate::{
+    interaction::Capabilities,
+    presentation::{Completion, State},
+};
 use maka_agent_api::contract::*;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_capabilities::call::Attachments;
@@ -38,7 +41,7 @@ use std::{
 use tokio::task::JoinSet;
 mod admission;
 pub(crate) struct Prompt {
-    pub content: Vec<acp::ContentBlock>,
+    pub content: Vec<crate::content::Input>,
 }
 pub(crate) struct Foreground {
     client: Client,
@@ -50,7 +53,7 @@ pub(crate) struct Foreground {
     shared: bool,
     cancelled: bool,
     projection: Projection,
-    capabilities: acp::ClientCapabilities,
+    capabilities: Capabilities,
     after: u64,
     history_through: u64,
     parts: HashMap<(String, String), (String, ContentKind)>,
@@ -58,33 +61,15 @@ pub(crate) struct Foreground {
     user: Vec<HistoryChunk>,
 }
 impl Foreground {
-    pub async fn run(mut self) {
+    pub async fn run(&mut self) -> Result<Completion, Error> {
         let result = self.observe().await;
-        let reason = match result {
-            Ok(reason) => reason,
-            Err(error) => {
-                eprintln!("ACP session {}: {error}", self.session.id);
-                if let Err(cleanup) = self.stop().await {
-                    eprintln!("ACP original work cleanup unresolved: {cleanup}");
-                    self.peer.stop.cancel();
-                    return;
-                }
-                acp::StopReason::Other(acp::OtherStopReason::new(
-                    "_maka_failed",
-                    Default::default(),
-                ))
-            }
-        };
-        drop(self.active);
-        let _ = self
-            .peer
-            .update(
-                &self.session.id,
-                acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(
-                    acp::IdleStateUpdate::new().stop_reason(reason),
-                )),
-            )
-            .await;
+        if let Err(error) = &result
+            && let Err(cleanup) = self.stop().await
+        {
+            self.peer.stop.cancel();
+            return Err(format!("{}; original work cleanup: {cleanup}", error).into());
+        }
+        result
     }
     async fn refresh(&mut self) -> Result<(), Error> {
         let work: Work = self
@@ -112,7 +97,7 @@ impl Foreground {
         }
         Ok(())
     }
-    async fn observe(&mut self) -> Result<acp::StopReason, Error> {
+    async fn observe(&mut self) -> Result<Completion, Error> {
         let mut subscription = self
             .client
             .subscribe(
@@ -128,13 +113,12 @@ impl Foreground {
     async fn observe_stream(
         &mut self,
         subscription: &mut Subscription,
-    ) -> Result<acp::StopReason, Error> {
+    ) -> Result<Completion, Error> {
         for chunk in std::mem::take(&mut self.user) {
             let updates = self.projection.chunk(&chunk)?;
             self.publish(updates).await?;
         }
-        self.state(acp::StateUpdate::Running(acp::RunningStateUpdate::new()))
-            .await?;
+        self.state(State::Running).await?;
         self.refresh().await?;
         let mut callbacks = JoinSet::<Result<(), Error>>::new();
         let mut seen = HashSet::new();
@@ -189,10 +173,7 @@ impl Foreground {
                     match result { InteractionResult::Recorded { record } if record.outcome.is_some() => Ok(()), _ => Err("Host rejected interaction response".into()) }
                 });
                 live.insert(request_id, handle);
-                self.state(acp::StateUpdate::RequiresAction(
-                    acp::RequiresActionStateUpdate::new(),
-                ))
-                .await?;
+                self.state(State::RequiresAction).await?;
             }
             // Pull writes once; retain this future across callbacks and heartbeats.
             let next = subscription.next::<DeliveryPage>();
@@ -214,7 +195,7 @@ impl Foreground {
                             Err(error) if error.is_cancelled() => {}
                             Err(error) => return Err(error.into()),
                         }
-                        if callbacks.is_empty() { self.state(acp::StateUpdate::Running(acp::RunningStateUpdate::new())).await?; }
+                        if callbacks.is_empty() { self.state(State::Running).await?; }
                     },
                     _ = heartbeat.tick() => {
                         self.refresh().await?;
@@ -399,7 +380,7 @@ impl Foreground {
         self.history_through = self.history_through.max(snapshot.through);
         Ok(())
     }
-    async fn finish(&mut self) -> Result<acp::StopReason, Error> {
+    async fn finish(&mut self) -> Result<Completion, Error> {
         let observation: Observation = self
             .client
             .query("agent", "observe", json!({"sessionId":self.session.id}))
@@ -412,7 +393,7 @@ impl Foreground {
         self.catchup(observation.through, catchup_from, refresh_tools, None)
             .await?;
         if self.cancelled {
-            return Ok(acp::StopReason::Cancelled);
+            return Ok(Completion::Cancelled);
         }
         let execution = self
             .execution
@@ -424,16 +405,10 @@ impl Foreground {
         )?;
         self.publish(updates).await?;
         Ok(match execution.state {
-            ExecutionState::Completed => acp::StopReason::EndTurn,
-            ExecutionState::Cancelled => acp::StopReason::Cancelled,
-            ExecutionState::Failed => acp::StopReason::Other(acp::OtherStopReason::new(
-                "_maka_failed",
-                Default::default(),
-            )),
-            ExecutionState::Paused => acp::StopReason::Other(acp::OtherStopReason::new(
-                "_maka_paused",
-                Default::default(),
-            )),
+            ExecutionState::Completed => Completion::Completed,
+            ExecutionState::Cancelled => Completion::Cancelled,
+            ExecutionState::Failed => Completion::Failed,
+            ExecutionState::Paused => Completion::Paused,
             _ => return Err("Agent work is not physically settled".into()),
         })
     }
@@ -459,12 +434,10 @@ impl Foreground {
             }
         }).await.map_err(|_| "Agent cancellation has not physically settled")?
     }
-    async fn state(&self, state: acp::StateUpdate) -> Result<(), Error> {
-        self.peer
-            .update(&self.session.id, acp::SessionUpdate::StateUpdate(state))
-            .await
+    async fn state(&self, state: State) -> Result<(), Error> {
+        self.peer.state(&self.session.id, state).await
     }
-    async fn publish(&self, updates: Vec<acp::SessionUpdate>) -> Result<(), Error> {
+    async fn publish(&self, updates: Vec<crate::presentation::Update>) -> Result<(), Error> {
         for update in updates {
             self.peer.update(&self.session.id, update).await?;
         }
