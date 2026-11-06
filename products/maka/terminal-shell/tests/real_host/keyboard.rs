@@ -296,15 +296,37 @@ async fn model_and_source_search_preserves_focus_and_keyboard_selection() {
     );
     shortcut(&mut view, 'a');
     view.handle_event(Event::Paste("fixture-model-alt".into()));
-    // The editor shows pasted text before asynchronous model results arrive.
-    support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
+    commit_native_events(&mut view).await;
+    // The ALT row already existed before this edit; wait for the filtered frame.
+    wait_view_state(&mut view, |view, screen| {
+        let nodes = view.accessibility_snapshot();
+        !screen.contains("Loading…")
+            && !nodes
+                .iter()
+                .any(|node| node.label == "Use fixture-model · NSH fixture")
+            && nodes.iter().any(|node| {
+                node.label == "Use fixture-model-alt · NSH fixture" && !node.state.disabled
+            })
+            && view.surface().input_context().is_some_and(|input| {
+                input.text.as_deref() == Some("fixture-model-alt")
+                    && nodes.iter().any(|node| {
+                        node.id == input.node
+                            && node.focused
+                            && node.label == "Search models and sources"
+                    })
+            })
+    })
+    .await;
     wait_focused_input(&mut view, "Search models and sources").await;
     assert_eq!(
         view.surface().input_context().unwrap().text.as_deref(),
         Some("fixture-model-alt")
     );
-    view.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-    view.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
+    for key in [KeyCode::Down, KeyCode::Up] {
+        view.handle_event(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        commit_native_events(&mut view).await;
+        wait_focused_input(&mut view, "Search models and sources").await;
+    }
     view.handle_event(Event::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,

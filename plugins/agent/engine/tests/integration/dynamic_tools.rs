@@ -89,94 +89,178 @@ pub(super) async fn respond_tools(socket: &mut TcpStream, mut calls: Vec<Value>,
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_mode() {
-    tokio::time::timeout(std::time::Duration::from_secs(45), async {
-        for mode in [ToolMode::Direct, ToolMode::CodeMode] {
-            for compact in [false, true] {
-                let directory = tempfile::tempdir().unwrap();
-                let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
-                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let base = format!("http://{}/v1", listener.local_addr().unwrap());
-                let effects = Arc::new(AtomicUsize::new(0));
-                let observed = effects.clone();
-                let server = tokio::spawn(async move {
-                    let (mut socket, _) = listener.accept().await.unwrap();
-                    let first = fixture::read_request(&mut socket).await;
-                    assert_eq!(visible(&first, mode), if mode == ToolMode::Direct { vec!["tool_search".to_string()] } else { vec![] });
-                    let calls = if mode == ToolMode::Direct {
-                        vec![call("search", "tool_search", json!({"query":"echo"})),
-                             call("premature", "echo", json!({"n":1}))]
+    for mode in [ToolMode::Direct, ToolMode::CodeMode] {
+        for compact in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let log = Arc::new(
+                SessionFixture::open(&directory.path().join("events.sqlite"))
+                    .await
+                    .unwrap(),
+            );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let effects = Arc::new(AtomicUsize::new(0));
+            let observed = effects.clone();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let first = fixture::read_request(&mut socket).await;
+                assert_eq!(
+                    visible(&first, mode),
+                    if mode == ToolMode::Direct {
+                        vec!["tool_search".to_string()]
                     } else {
-                        vec![call("search", "exec", json!({"code":"const tool = ALL_TOOLS.find(t => t.name === 'echo'); text(tool.description); text(await tools[tool.name]({n:1}));"}))]
-                    };
-                    respond_tools(&mut socket, calls, 1_000).await;
+                        vec![]
+                    }
+                );
+                let calls = if mode == ToolMode::Direct {
+                    vec![
+                        call("search", "tool_search", json!({"query":"echo"})),
+                        call("premature", "echo", json!({"n":1})),
+                    ]
+                } else {
+                    vec![call(
+                        "search",
+                        "exec",
+                        json!({"code":"const tool = ALL_TOOLS.find(t => t.name === 'echo'); text(tool.description); text(await tools[tool.name]({n:1}));"}),
+                    )]
+                };
+                respond_tools(&mut socket, calls, 1_000).await;
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let second = fixture::read_request(&mut socket).await;
+                let definitions = visible(&second, mode);
+                assert_eq!(
+                    definitions.iter().any(|name| name == "echo"),
+                    mode == ToolMode::Direct
+                );
+                assert_eq!(
+                    observed.load(Ordering::SeqCst),
+                    usize::from(mode == ToolMode::CodeMode)
+                );
+                if mode == ToolMode::CodeMode {
+                    let result = second["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|m| m["role"] == "tool")
+                        .unwrap();
+                    assert!(result["content"].as_str().unwrap().contains("echo(input:"));
+                }
+                let call = if mode == ToolMode::Direct {
+                    call("use", "echo", json!({"n":2}))
+                } else {
+                    call(
+                        "use",
+                        "exec",
+                        json!({"code":"text(await tools.echo({n:2}));"}),
+                    )
+                };
+                respond_tools(&mut socket, vec![call], 100_000).await;
+                let mut summaries = 0;
+                let mut main = None;
+                while summaries < 1 || main.is_none() {
                     let (mut socket, _) = listener.accept().await.unwrap();
-                    let second = fixture::read_request(&mut socket).await;
-                    let definitions = visible(&second, mode);
-                    assert_eq!(definitions.iter().any(|name| name == "echo"), mode == ToolMode::Direct);
-                    assert_eq!(observed.load(Ordering::SeqCst), usize::from(mode == ToolMode::CodeMode));
-                    if mode == ToolMode::CodeMode {
-                        let result = second["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
-                        assert!(result["content"].as_str().unwrap().contains("echo(input:"));
+                    let request = fixture::read_request(&mut socket).await;
+                    if request["messages"].to_string().contains(
+                        maka_agent_facts::context::default_compaction_prompt(
+                            maka_agent_facts::language::Language::En,
+                        )
+                        .lines()
+                        .next()
+                        .unwrap(),
+                    ) {
+                        summaries += 1;
+                        assert_eq!(request["max_tokens"], 8000);
+                        assert_eq!(request["tools"], second["tools"]);
+                        fixture::respond(
+                            &mut socket,
+                            if compact {
+                                fixture::SUMMARY
+                            } else {
+                                "incomplete summary"
+                            },
+                            if compact { "stop" } else { "length" },
+                        )
+                        .await;
+                    } else {
+                        assert!(main.is_none());
+                        main = Some((socket, request));
                     }
-                    let call = if mode == ToolMode::Direct {
-                        call("use", "echo", json!({"n":2}))
-                    } else { call("use", "exec", json!({"code":"text(await tools.echo({n:2}));"})) };
-                    respond_tools(&mut socket, vec![call], 100_000).await;
-                    let mut summaries = 0;
-                    let mut main = None;
-                    while summaries < 1 || main.is_none() {
-                        let (mut socket, _) = listener.accept().await.unwrap();
-                        let request = fixture::read_request(&mut socket).await;
-                        if request["messages"].to_string().contains(maka_agent_facts::context::default_compaction_prompt(maka_agent_facts::language::Language::En).lines().next().unwrap()) {
-                            summaries += 1;
-                            assert_eq!(request["max_tokens"], 8000);
-                            assert_eq!(request["tools"], second["tools"]);
-                            fixture::respond(&mut socket, if compact { fixture::SUMMARY } else { "incomplete summary" }, if compact { "stop" } else { "length" }).await;
-                        } else {
-                            assert!(main.is_none());
-                            main = Some((socket, request));
-                        }
-                    }
-                    let (mut socket, mut final_request) = main.unwrap();
-                    if compact {
-                        // A threshold only starts background work. Provider
-                        // overflow makes adoption mandatory before another send.
-                        let body = json!({"error":{"message":"request exceeds context","type":"invalid_request_error","code":"context_length_exceeded"}}).to_string();
-                        socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-                        (socket, _) = listener.accept().await.unwrap();
-                        final_request = fixture::read_request(&mut socket).await;
-                    }
-                    let definitions = visible(&final_request, mode);
-                    assert_eq!(definitions.iter().any(|name| name == "echo"), !compact && mode == ToolMode::Direct);
-                    assert_eq!(definitions.iter().any(|name| name == "tool_search"), mode == ToolMode::Direct);
-                    fixture::respond(&mut socket, "done", "stop").await;
-                });
-                let catalog = ToolCatalog::new([ToolRegistration {
+                }
+                let (mut socket, mut final_request) = main.unwrap();
+                if compact {
+                    // A threshold only starts background work. Provider
+                    // overflow makes adoption mandatory before another send.
+                    let body = json!({"error":{"message":"request exceeds context","type":"invalid_request_error","code":"context_length_exceeded"}}).to_string();
+                    socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    (socket, _) = listener.accept().await.unwrap();
+                    final_request = fixture::read_request(&mut socket).await;
+                }
+                let definitions = visible(&final_request, mode);
+                assert_eq!(
+                    definitions.iter().any(|name| name == "echo"),
+                    !compact && mode == ToolMode::Direct
+                );
+                assert_eq!(
+                    definitions.iter().any(|name| name == "tool_search"),
+                    mode == ToolMode::Direct
+                );
+                fixture::respond(&mut socket, "done", "stop").await;
+            });
+            let catalog = ToolCatalog::new([ToolRegistration {
                     definition: ToolDefinition { freeform: None, output_schema: None, provider: None, name: "echo".into(), description: "Echo an integer".into(),
                         input_schema: json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false}) },
                     nesting: ToolNesting::Nestable, semantics: ToolSemantics::Parallel,
                     handler: ToolHandler::Immediate(Arc::new(Echo(effects.clone()))),
                 }]).unwrap().with_discovery();
-                let mut input = fixture::input(&base, "discovery", false);
-                input.configuration.tool_mode = mode;
-                // Exercise measured-usage compaction, without making the
-                // discovery prompt itself exceed the provider input capacity.
-                input.context = Some(ModelRequestContext { operation: maka_agent_facts::context::ModelOperation::Inference, codex: None, provider_id:"openai".into(), context_window:Some(170_000), declared_window:Some(110_000), model_context_window:Some(200_000) });
-                input.work = RunWork::Message { source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
-                let engine = fixture::engine();
-                engine.run(log.store(), input, CancellationToken::new()).await.unwrap();
+            let mut input = fixture::input(&base, "discovery", false);
+            input.configuration.tool_mode = mode;
+            // Exercise measured-usage compaction, without making the
+            // discovery prompt itself exceed the provider input capacity.
+            input.context = Some(ModelRequestContext {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
+                codex: None,
+                provider_id: "openai".into(),
+                context_window: Some(170_000),
+                declared_window: Some(110_000),
+                model_context_window: Some(200_000),
+            });
+            input.work = RunWork::Message {
+                source_messages: Vec::new(),
+                message: "Use echo".into(),
+                tools: catalog,
+            };
+            let engine = fixture::engine();
+            tokio::time::timeout(std::time::Duration::from_secs(45), async {
+                engine
+                    .run(log.store(), input, CancellationToken::new())
+                    .await
+                    .unwrap();
                 engine.drain().await;
                 server.await.unwrap();
-                assert_eq!(effects.load(Ordering::SeqCst), if mode == ToolMode::Direct { 1 } else { 2 });
-                let prefix = log.prefix(200, 1024 * 1024).await.unwrap();
-                assert_eq!(prefix.events.iter().filter(|e| matches!(e.event.fact, Fact::ContextCheckpointRecorded { .. })).count(), usize::from(compact));
-                assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolDispatched { name, .. } if name == "tool_search")).count(), usize::from(mode == ToolMode::Direct));
-                if mode == ToolMode::Direct {
-                    assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolRejected { name, .. } if name == "echo")).count(), 1);
-                }
-                drop(engine);
-                Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("dynamic tool protocol must settle (mode={mode:?}, compact={compact})")
+            });
+            assert_eq!(
+                effects.load(Ordering::SeqCst),
+                if mode == ToolMode::Direct { 1 } else { 2 }
+            );
+            let prefix = log.prefix(200, 1024 * 1024).await.unwrap();
+            assert_eq!(
+                prefix
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.event.fact, Fact::ContextCheckpointRecorded { .. }))
+                    .count(),
+                usize::from(compact)
+            );
+            assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolDispatched { name, .. } if name == "tool_search")).count(), usize::from(mode == ToolMode::Direct));
+            if mode == ToolMode::Direct {
+                assert_eq!(prefix.events.iter().filter(|e| matches!(&e.event.fact, Fact::ToolRejected { name, .. } if name == "echo")).count(), 1);
             }
+            drop(engine);
+            Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         }
-    }).await.expect("dynamic tool lifecycle must make bounded progress");
+    }
 }
