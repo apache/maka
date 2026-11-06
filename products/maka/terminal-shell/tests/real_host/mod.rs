@@ -93,7 +93,9 @@ async fn editable(view: &mut AppView, label: &str) {
 }
 
 async fn wait_editable_composer(view: &mut AppView) {
+    wait_enabled_node(view, "Focus message composer").await;
     editable(view, "Message composer").await;
+    commit_native_events(view).await;
 }
 
 async fn commit_native_events(view: &mut AppView) {
