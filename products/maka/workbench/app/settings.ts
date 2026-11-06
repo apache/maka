@@ -802,7 +802,8 @@ export function createModelSettings(
         generation !== read ||
         editor()?.instance !== form.instance ||
         dirty() ||
-        confirmation()
+        confirmation() ||
+        model()
       )
         return;
       editor.set({ ...editor()!, baseline: detail, ...fields(detail) });

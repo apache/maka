@@ -358,6 +358,25 @@ test('server-side compaction applies on change, rediscovers models and survives 
   assert.equal(owner.dirty(), false);
 });
 
+test('a foreground read that lands after a model draft opens keeps the draft on its basis', async () => {
+  const { owner, api, changeElsewhere } = connectionEditor();
+  const query = api.query.bind(api);
+  let release;
+  api.query = (endpoint, method, input) =>
+    method === 'connection' && input.revision === undefined
+      ? new Promise((resolve) => {
+          release = () => resolve(query(endpoint, method, { ...input, revision: 2 }));
+        })
+      : query(endpoint, method, input);
+  owner.refresh();
+  owner.editModel({ ...owner.action(), id: null });
+  assert.equal(owner.page(), 'model');
+  changeElsewhere();
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(owner.editor().baseline.target.revision, 1);
+});
+
 test('a switch flipped with unsaved typing joins that draft instead of saving alone', async () => {
   const { owner, calls } = connectionEditor({ supportsCompaction: true });
   owner.edit('name', 'A personal name');
