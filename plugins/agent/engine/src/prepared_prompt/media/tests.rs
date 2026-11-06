@@ -38,10 +38,7 @@ use maka_event_log::{
 };
 use maka_model::{ModelPreparationResources, ModelRequest, ProviderKind};
 use serde_json::{Value, json};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Mutex;
 
 const WIDTH: u32 = 390;
 const HEIGHT: u32 = 45480;
