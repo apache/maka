@@ -5442,6 +5442,184 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
   });
 
+  test('manual compactHistory folds coverage past a host-sealed unknown call (#6254)', async () => {
+    // The issue's crash shape: a tool call dispatched (T1) but killed before
+    // its response, recovered by the Host as outcome_unknown. The seal is the
+    // terminal evidence that the response will never arrive, so coverage may
+    // pass the call — together with the seal event itself.
+    const callEvent: RuntimeEvent = {
+      id: 'sealed-call',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      sessionId: 'session-1',
+      turnId: 'turn-crash',
+      ts: 1,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'function_call', id: 'tool-call-1', name: 'AskUserQuestion', args: {} },
+    };
+    const sealEvent: RuntimeEvent = {
+      id: 'sealed-call-seal',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      sessionId: 'session-1',
+      turnId: 'turn-crash',
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      content: {
+        kind: 'error',
+        code: 'outcome_unknown',
+        reason: 'outcome_unknown',
+        message: 'outcome_unknown',
+      },
+      actions: {
+        endInvocation: true,
+        stateDelta: {
+          recovered: true,
+          recoveryReason: 'outcome_unknown',
+          failureClass: 'outcome_unknown',
+          unresolvedToolCalls: [{ toolCallId: 'tool-call-1', toolName: 'AskUserQuestion' }],
+        },
+      },
+    };
+    const foldedIds: string[][] = [];
+    let recordCalls = 0;
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: { name: 'sealed-call-advance-test', charsPerToken: 1 },
+      summarizeHistoryCompact: async ({ source }) => {
+        foldedIds.push(source.foldedRuntimeEvents.map((event) => event.id));
+        return structuredSummary('SEAL_ADVANCE_SENTINEL');
+      },
+      recordHistoryCompactCheckpoint: () => {
+        recordCalls += 1;
+      },
+    });
+
+    const result = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-1',
+      runtimeContext: [
+        runtimeTextEvent({
+          id: 'user-old',
+          turnId: 'turn-old',
+          role: 'user',
+          author: 'user',
+          text: 'old alpha '.repeat(12),
+        }),
+        callEvent,
+        sealEvent,
+        runtimeTextEvent({
+          id: 'user-new',
+          turnId: 'turn-new',
+          role: 'user',
+          author: 'user',
+          text: 'new alpha '.repeat(12),
+        }),
+        runtimeTextEvent({
+          id: 'model-new',
+          turnId: 'turn-new',
+          role: 'model',
+          author: 'agent',
+          text: 'new beta '.repeat(12),
+        }),
+      ],
+    });
+
+    assert.equal(result.outcome.kind, 'compacted');
+    assert.deepEqual(foldedIds, [
+      ['user-old', 'sealed-call', 'sealed-call-seal', 'user-new', 'model-new'],
+    ]);
+    assert.equal(recordCalls, 1);
+  });
+
+  test('manual compactHistory reports unchanged when a live pending call pins coverage (#6254)', async () => {
+    // No seal closed this call, so the boundary retreats to exactly the
+    // previous checkpoint's coverage. Re-summarizing would only re-read the
+    // old summary and mint a duplicate checkpoint that reports compacted
+    // without coverage advancing; the fold must report unchanged instead.
+    const coveredEvents = [
+      runtimeTextEvent({
+        id: 'pin-user-old',
+        turnId: 'pin-turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'pin old alpha '.repeat(12),
+      }),
+      runtimeTextEvent({
+        id: 'pin-model-old',
+        turnId: 'pin-turn-old',
+        role: 'model',
+        author: 'agent',
+        text: 'pin old beta '.repeat(12),
+      }),
+    ];
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: coveredEvents,
+      summary: structuredSummary('PINNED_COVERAGE_SUMMARY'),
+      charsPerToken: 1,
+    });
+    let summarizeCalls = 0;
+    let recordCalls = 0;
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: { name: 'sealed-call-pin-test', charsPerToken: 1 },
+      loadHistoryCompactCheckpoint: () => previous,
+      summarizeHistoryCompact: async () => {
+        summarizeCalls += 1;
+        return structuredSummary('must not resummarize a fold that cannot advance');
+      },
+      recordHistoryCompactCheckpoint: () => {
+        recordCalls += 1;
+        throw new Error('a no-progress fold must not reach the recorder');
+      },
+    });
+
+    const result = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-1',
+      runtimeContext: [
+        ...coveredEvents,
+        {
+          id: 'pin-live-call',
+          invocationId: 'inv-1',
+          runId: 'run-prev',
+          sessionId: 'session-1',
+          turnId: 'pin-turn-new',
+          ts: 1,
+          partial: false,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: 'tool-call-live', name: 'Bash', args: {} },
+        },
+        runtimeTextEvent({
+          id: 'pin-user-new',
+          turnId: 'pin-turn-new',
+          role: 'user',
+          author: 'user',
+          text: 'pin new alpha '.repeat(12),
+        }),
+      ],
+    });
+
+    assert.equal(summarizeCalls, 0);
+    assert.equal(recordCalls, 0);
+    assert.deepEqual(result.outcome, { kind: 'unchanged', reason: 'already_compacted' });
+    assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'unchanged');
+    assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
+  });
+
   test('manual compactHistory re-folds when a transition drifted the covered effective history (#5929)', async () => {
     // The reuse fast path matches the RAW prefix; a projection transition
     // committed after the fold rewrites a covered event's effective view

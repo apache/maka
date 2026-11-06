@@ -81,7 +81,9 @@ export type SafePrefixBoundary =
  *
  *  - it ends on an immutable, non-partial event (a partial streaming snapshot is
  *    later replaced/deleted, so a digest over it can never replay);
- *  - it never straddles a tool call/result pair (a provider protocol unit);
+ *  - it never straddles a tool call/result pair (a provider protocol unit),
+ *    except that a call sealed by Host recovery as outcome_unknown may be
+ *    covered together with its seal event (#6254);
  *  - it leaves at least `reserveTailEvents` trailing events as the verbatim tail.
  *
  * Returns `no_safe_completed_span` when no such cut exists (e.g. the remaining
@@ -116,8 +118,59 @@ export function selectSafeCompactionPrefix(
 }
 
 interface ToolPairSpan {
+  callId: string;
+  invocationId?: string;
   callIndex?: number;
   responseIndex?: number;
+  /** Index of the Host seal that closed this call; a cut must cover it too. */
+  sealedThroughIndex?: number;
+}
+
+export interface HostSealedUnknownCall {
+  sealIndex: number;
+  invocationId: string;
+}
+
+/**
+ * Tool calls a Host recovery seal closed as outcome_unknown: the invocation
+ * ended failed with `endInvocation`, `recovered: true`, failureClass
+ * `outcome_unknown`, and an `unresolvedToolCalls` list naming exactly the
+ * calls dispatched without a response. Only this seal closes an unmatched
+ * call for coverage (#6254): a live pending call still blocks, seals that are
+ * partial/completed/malformed do not count, and a toolCallId named by more
+ * than one seal is ambiguous evidence that keeps blocking.
+ */
+function hostSealedUnknownCalls(
+  events: readonly RuntimeEvent[],
+): Map<string, HostSealedUnknownCall> {
+  const byToolCallId = new Map<string, HostSealedUnknownCall>();
+  const ambiguous = new Set<string>();
+  events.forEach((event, index) => {
+    if (event.partial || event.status !== 'failed') return;
+    if (event.actions?.endInvocation !== true) return;
+    const stateDelta = event.actions.stateDelta;
+    if (
+      stateDelta?.failureClass !== 'outcome_unknown' ||
+      stateDelta.recovered !== true ||
+      !Array.isArray(stateDelta.unresolvedToolCalls)
+    ) {
+      return;
+    }
+    const invocationId = event.invocationId;
+    if (!invocationId) return;
+    for (const entry of stateDelta.unresolvedToolCalls) {
+      if (!entry || typeof entry !== 'object') continue;
+      const toolCallId = (entry as { toolCallId?: unknown }).toolCallId;
+      if (typeof toolCallId !== 'string' || toolCallId.length === 0) continue;
+      if (byToolCallId.has(toolCallId)) {
+        ambiguous.add(toolCallId);
+        continue;
+      }
+      byToolCallId.set(toolCallId, { sealIndex: index, invocationId });
+    }
+  });
+  for (const toolCallId of ambiguous) byToolCallId.delete(toolCallId);
+  return byToolCallId;
 }
 
 function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
@@ -125,15 +178,24 @@ function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
   events.forEach((event, index) => {
     const content = event.content;
     if (content?.kind === 'function_call') {
-      const span = byCallId.get(content.id) ?? {};
+      const span = byCallId.get(content.id) ?? { callId: content.id };
       span.callIndex = index;
+      span.invocationId = event.invocationId;
       byCallId.set(content.id, span);
     } else if (content?.kind === 'function_response') {
-      const span = byCallId.get(content.id) ?? {};
+      const span = byCallId.get(content.id) ?? { callId: content.id };
       span.responseIndex = index;
       byCallId.set(content.id, span);
     }
   });
+  const seals = hostSealedUnknownCalls(events);
+  for (const span of byCallId.values()) {
+    if (span.callIndex === undefined || span.responseIndex !== undefined) continue;
+    const seal = seals.get(span.callId);
+    if (seal && seal.invocationId === span.invocationId) {
+      span.sealedThroughIndex = seal.sealIndex;
+    }
+  }
   return [...byCallId.values()];
 }
 
@@ -141,15 +203,19 @@ function toolPairSpans(events: readonly RuntimeEvent[]): ToolPairSpan[] {
  * A cut at exclusive index `cut` straddles a pair if exactly one side is
  * covered. A call whose response is not in the pool yet is an OPEN span:
  * covering it would orphan the response that arrives later (a result with no
- * call in the projection), so any cut past the call is unsafe. A response
- * without a call is inert — its call lives before the pool, so no cut inside
- * the pool can split that pair.
+ * call in the projection), so any cut past the call is unsafe — unless a Host
+ * recovery seal closed that call as outcome_unknown (#6254): the response will
+ * never arrive, and coverage may pass the call, but only through the seal
+ * event itself so the terminal evidence stays inside the covered span. A
+ * response without a call is inert — its call lives before the pool, so no cut
+ * inside the pool can split that pair.
  */
 function straddlesToolPair(spans: readonly ToolPairSpan[], cut: number): boolean {
   for (const span of spans) {
     if (span.callIndex !== undefined && span.responseIndex === undefined) {
-      if (span.callIndex < cut) return true;
-      continue;
+      if (span.callIndex >= cut) continue;
+      if (span.sealedThroughIndex !== undefined && cut > span.sealedThroughIndex) continue;
+      return true;
     }
     if (span.callIndex === undefined || span.responseIndex === undefined) continue;
     const callCovered = span.callIndex < cut;
@@ -233,7 +299,10 @@ export type PlanHistoryCompactionResult =
       estimatedTokensAfter: number;
     };
 
-export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer_failed';
+export type HistoryCompactionFailReason =
+  | 'no_safe_completed_span'
+  | 'summarizer_failed'
+  | 'already_compacted';
 
 /**
  * Execute a triggered compaction command by deterministically folding the
@@ -383,6 +452,14 @@ export async function planHistoryCompaction(
       }
     }
     const newlyFoldedRuntimeEvents = successorRuntimeEvents ?? coveredRuntimeEvents;
+    // Roll-forward matched the whole covered span: nothing new to fold. The
+    // summarizer would only hand back the previous summary, so re-recording
+    // would mint a duplicate checkpoint and report compacted without coverage
+    // advancing (#6254). Surface the no-progress result instead; the manual
+    // path maps it to `unchanged`, the automatic path treats it as a skip.
+    if (successorRuntimeEvents !== undefined && successorRuntimeEvents.length === 0) {
+      return { decision: 'fail_open', reason: 'already_compacted' };
+    }
 
     // The model-visible summary reads the effective (transition-folded) view
     // of the covered span; the raw events keep the coverage identity.

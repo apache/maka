@@ -136,6 +136,33 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
+      // A covered call whose result never landed is dropped from the replay
+      // items (a tool_use without tool_result is a provider 400); that only
+      // happens for calls a Host recovery seal closed as outcome_unknown, since
+      // a live pending call blocks coverage. The summary must carry that
+      // uncertainty forward instead of silently forgetting the call (#6254).
+      const unknownOutcomeCalls = plan.diagnostics.filter(
+        (diagnostic) => diagnostic.code === 'unmatched_tool_call',
+      );
+      if (unknownOutcomeCalls.length > 0) {
+        projectedMessages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                'The following tool calls were dispatched but their outcomes are unknown (recovery sealed them as outcome_unknown).',
+                'Their effects may have happened; they must not be automatically retried.',
+                'State this uncertainty explicitly in the summary:',
+                ...unknownOutcomeCalls.map(
+                  (diagnostic) =>
+                    `- tool call \`${diagnostic.detail?.toolCallId ?? diagnostic.eventId ?? 'unknown id'}\``,
+                ),
+              ].join('\n'),
+            },
+          ],
+        });
+      }
       // Nothing is trimmed on a local estimate: whether this input fits the
       // summarizer's window is its provider's answer (`input_too_large`, which
       // the planner retreats on), and the output is capped outright (#4559).
