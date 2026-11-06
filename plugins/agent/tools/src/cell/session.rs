@@ -218,6 +218,7 @@ impl Cells {
         let nested = Arc::new(NestedTools {
             execution: self.0.execution.clone(),
             catalog: tool.catalog,
+            direct: tool.direct,
             journal: tool.journal.clone(),
             origin: ToolOrigin::CodeMode {
                 parent_operation_id: id.clone(),

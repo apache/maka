@@ -38,6 +38,7 @@ pub enum CellDiagnosticKind {
     ParseError,
     ExecutionError,
     UnknownTool,
+    DirectOnlyTool,
     LimitExceeded,
     ToolFailure,
 }

@@ -171,6 +171,7 @@ async fn run_cell(
         return Err(CellAbort::Cancelled);
     }
     let names = executor.names();
+    let direct = executor.direct_names();
     let scope = ToolScope::new(
         context.clone(),
         executor,
@@ -233,6 +234,7 @@ async fn run_cell(
                &mut runtime,
                &source,
                &names,
+               &direct,
                context.metadata(),
                module,
            ))

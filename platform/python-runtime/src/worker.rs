@@ -109,7 +109,7 @@ fn execute(
     inputs.push(MontyObject::module(
         "tools",
         MontyUuid::from_bytes(*uuid::Uuid::new_v4().as_bytes()),
-        start.names.into_iter().map(|name| {
+        start.names.into_iter().chain(start.direct).map(|name| {
             (
                 MontyObject::string(crate::tool_identifier(&name)),
                 MontyObject::function(format!("tool:{name}"), None),

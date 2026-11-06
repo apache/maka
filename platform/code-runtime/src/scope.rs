@@ -31,6 +31,7 @@ pub struct ToolScope {
     context: CellContext,
     executor: Arc<dyn ToolExecutor>,
     names: HashSet<String>,
+    direct: HashSet<String>,
     cancellation: CancellationToken,
     tasks: TaskTracker,
     host: Handle,
@@ -46,6 +47,7 @@ impl ToolScope {
     ) -> Arc<Self> {
         Arc::new(Self {
             names: executor.names().into_iter().collect(),
+            direct: executor.direct_names().into_iter().collect(),
             context,
             executor,
             cancellation,
@@ -77,6 +79,12 @@ impl ToolScope {
             return Err(CellDiagnostic::new(
                 CellDiagnosticKind::ExecutionError,
                 "cell cancelled",
+            ));
+        }
+        if !self.names.contains(&name) && self.direct.contains(&name) {
+            return Err(CellDiagnostic::new(
+                CellDiagnosticKind::DirectOnlyTool,
+                format!("{name} is a direct tool; call it outside exec, not through tools"),
             ));
         }
         if !self.names.contains(&name) {

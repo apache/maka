@@ -261,6 +261,82 @@ async fn a_throwing_cell_settles_as_an_error_result() {
     fixture::close(log).await;
 }
 
+struct Unreachable(Arc<std::sync::atomic::AtomicUsize>);
+impl ToolExecutor for Unreachable {
+    fn names(&self) -> Vec<String> {
+        vec!["SessionCreate".into()]
+    }
+    fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(Value::Null) })
+    }
+}
+
+#[tokio::test]
+async fn a_direct_only_tool_called_from_a_cell_names_its_calling_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let invocation = fixture::invocation("direct-only");
+    log.create_session(&invocation.session_id, "create", &json!({}), 1)
+        .await
+        .unwrap();
+    fixture::accepted(&log, &invocation, &[]).await;
+    let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let catalog = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            name: "SessionCreate".into(),
+            description: "create".into(),
+            input_schema: json!({"type":"object"}),
+            freeform: None,
+            output_schema: None,
+            provider: None,
+        },
+        handler: ToolHandler::Immediate(Arc::new(Unreachable(effects.clone()))),
+        nesting: ToolNesting::DirectOnly,
+        semantics: ToolSemantics::Parallel,
+    }])
+    .unwrap();
+    let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
+    let run = RunTools::new(
+        maka_agent_facts::language::Language::En,
+        log.clone(),
+        invocation.clone(),
+        catalog,
+        ToolMode::CodeMode,
+        CodeExecutor::new(CellLimits::default()).unwrap(),
+        loaded.clone(),
+    );
+    let mut results = Vec::new();
+    for (step, code) in [
+        ("direct", "await tools.SessionCreate({});"),
+        ("unknown", "await tools.UnknownTool({});"),
+        ("hidden", "text(Object.keys(tools));"),
+    ] {
+        results.push(invoke(&log, &run, &invocation, step, "exec", json!({"code":code})).await);
+    }
+    assert_eq!(results[0]["result"]["error"]["kind"], "direct_only_tool");
+    let direct = results[0]["result"]["error"]["message"].as_str().unwrap();
+    assert!(
+        direct.contains("SessionCreate") && direct.contains("outside exec"),
+        "{direct}"
+    );
+    assert_eq!(
+        results[1]["result"]["error"],
+        json!({"kind":"execution_error","message":"TypeError: tools.UnknownTool is not a function"}),
+        "unknown names keep the generic JavaScript error"
+    );
+    assert_eq!(results[2]["content"], json!([{"kind":"text","text":"[]"}]));
+    assert_eq!(effects.load(std::sync::atomic::Ordering::SeqCst), 0);
+    run.shutdown().await.unwrap();
+    loaded.clear().unwrap();
+    drop(run);
+    fixture::close(log).await;
+}
+
 #[tokio::test]
 async fn collected_cell_recovery_uses_the_original_run_language_and_keeps_user_output() {
     use maka_agent_facts::{language::Language, tools::ToolError};
