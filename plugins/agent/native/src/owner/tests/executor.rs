@@ -523,80 +523,81 @@ async fn work(fixture: &Fixture, session: &str, accepted: &Value) -> Value {
 
 #[tokio::test]
 async fn executor_service_selects_the_exact_authorized_import_member() {
-    let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    activate(&mut f, true, None, true).await;
-    let loaded = f
-        .store
-        .load_application(f.app.source().unwrap().deployment)
-        .await
-        .unwrap()
-        .unwrap();
-    let (loaded_source, loaded_packages, _, _) = loaded.into_parts();
-    let mut input = loaded_source.input;
-    let mut packages = loaded_packages;
-    let mut manifest = packages
-        .iter()
-        .find(|p| p.manifest().id == "agent")
-        .unwrap()
-        .manifest()
-        .clone();
-    let executor_name = format!("external-{}", "x".repeat(160));
-    let import_name = format!("executor-{}", "r".repeat(300));
-    let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    let imports = &mut manifest_application.host.as_mut().unwrap().imports;
-    let mut selected_import = imports.remove("executor").unwrap();
-    selected_import.cardinality = Cardinality::Many { min: 0, max: 8 };
-    imports.insert(import_name.clone(), selected_import);
-    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
-        manifest.application =
-            Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
-        serde_json::to_vec(&manifest).unwrap()
-    })]))
-    .unwrap();
-    let mut decoy = input.instances["executor"].clone();
-    decoy.key = Uuid::from_u128(25);
-    input.instances.insert("decoy".into(), decoy);
-    let agent = input.instances.get_mut("provider").unwrap();
-    agent.package = package.application_ref().into();
-    let configured = &mut agent.configuration.values.get_mut("executors").unwrap()[0];
-    configured["member"] = json!(1);
-    configured["name"] = json!(executor_name);
-    configured["import"] = json!(import_name);
-    let validator = jsonschema::validator_for(&maka_agent_api::configuration_schema()).unwrap();
-    let configuration = serde_json::to_value(&agent.configuration.values).unwrap();
-    for (field, invalid) in [("name", "bad name"), ("name", ""), ("import", "")] {
-        let mut malformed = configuration.clone();
-        malformed["executors"][0][field] = json!(invalid);
-        assert!(!validator.is_valid(&malformed));
-    }
-    let mut targets = agent.bindings.remove("executor").unwrap();
-    targets.insert(
-        0,
-        Target::Instance {
-            path: vec!["decoy".into()],
-            export: "executor".into(),
-        },
-    );
-    agent.bindings.insert(import_name.clone(), targets);
-    packages.push(package);
-    let source = f
-        .store
-        .commit_application(
-            loaded_source.reference.deployment,
-            loaded_source.reference.revision,
-            input,
-            vec![],
-            packages,
-        )
-        .await
-        .unwrap();
-    f.app.adopt_committed(source).await.unwrap();
-    f.app.ready().await.unwrap();
-    let session = f.create("Selected member").await;
-    let mut changes = f.session(&session).await.subscribe_commits().unwrap();
-    let mut execution = input_for(&session, "second binding");
-    execution["backend"]["selection"]["executor"] = json!(executor_name);
     tokio::time::timeout(Duration::from_secs(40), async {
+        let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        activate(&mut f, true, None, true).await;
+        let loaded = f
+            .store
+            .load_application(f.app.source().unwrap().deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        let (loaded_source, loaded_packages, _, _) = loaded.into_parts();
+        let mut input = loaded_source.input;
+        let mut packages = loaded_packages;
+        let mut manifest = packages
+            .iter()
+            .find(|p| p.manifest().id == "agent")
+            .unwrap()
+            .manifest()
+            .clone();
+        let executor_name = format!("external-{}", "x".repeat(160));
+        let import_name = format!("executor-{}", "r".repeat(300));
+        let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
+        let imports = &mut manifest_application.host.as_mut().unwrap().imports;
+        let mut selected_import = imports.remove("executor").unwrap();
+        selected_import.cardinality = Cardinality::Many { min: 0, max: 8 };
+        imports.insert(import_name.clone(), selected_import);
+        let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
+            manifest.application = Some(
+                maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
+            );
+            serde_json::to_vec(&manifest).unwrap()
+        })]))
+        .unwrap();
+        let mut decoy = input.instances["executor"].clone();
+        decoy.key = Uuid::from_u128(25);
+        input.instances.insert("decoy".into(), decoy);
+        let agent = input.instances.get_mut("provider").unwrap();
+        agent.package = package.application_ref().into();
+        let configured = &mut agent.configuration.values.get_mut("executors").unwrap()[0];
+        configured["member"] = json!(1);
+        configured["name"] = json!(executor_name);
+        configured["import"] = json!(import_name);
+        let validator = jsonschema::validator_for(&maka_agent_api::configuration_schema()).unwrap();
+        let configuration = serde_json::to_value(&agent.configuration.values).unwrap();
+        for (field, invalid) in [("name", "bad name"), ("name", ""), ("import", "")] {
+            let mut malformed = configuration.clone();
+            malformed["executors"][0][field] = json!(invalid);
+            assert!(!validator.is_valid(&malformed));
+        }
+        let mut targets = agent.bindings.remove("executor").unwrap();
+        targets.insert(
+            0,
+            Target::Instance {
+                path: vec!["decoy".into()],
+                export: "executor".into(),
+            },
+        );
+        agent.bindings.insert(import_name.clone(), targets);
+        packages.push(package);
+        let source = f
+            .store
+            .commit_application(
+                loaded_source.reference.deployment,
+                loaded_source.reference.revision,
+                input,
+                vec![],
+                packages,
+            )
+            .await
+            .unwrap();
+        f.app.adopt_committed(source).await.unwrap();
+        f.app.ready().await.unwrap();
+        let session = f.create("Selected member").await;
+        let mut changes = f.session(&session).await.subscribe_commits().unwrap();
+        let mut execution = input_for(&session, "second binding");
+        execution["backend"]["selection"]["executor"] = json!(executor_name);
         let accepted = f
             .mutation(2, "send", execution, Uuid::new_v4())
             .await
@@ -629,29 +630,25 @@ async fn executor_service_selects_the_exact_authorized_import_member() {
             id(21),
             "member zero has no grant and must never be invoked"
         );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("the selected authorized executor member must complete and retain its exact intent");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn executor_service_javascript_uses_original_engine_and_read_only_restart() {
-    let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    activate(&mut fixture, true, None, true).await;
-    let initial = input_for("unused", "")["backend"].clone();
-    let mut create = fixture.create_input("External").await;
-    create["backend"] = initial.clone();
-    let created = fixture
-        .mutation(2, "create", create, Uuid::new_v4())
-        .await
-        .unwrap();
-    assert_eq!(created["session"]["backend"], initial);
-    let session = created["session"]["id"].as_str().unwrap().to_owned();
-    let mut input = input_for(&session, "original 外部 text");
-    let operation = Uuid::new_v4();
-    let (accepted, observed) = tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        activate(&mut fixture, true, None, true).await;
+        let initial = input_for("unused", "")["backend"].clone();
+        let mut create = fixture.create_input("External").await;
+        create["backend"] = initial.clone();
+        let created = fixture.mutation(2, "create", create, Uuid::new_v4()).await.unwrap();
+        assert_eq!(created["session"]["backend"], initial);
+        let session = created["session"]["id"].as_str().unwrap().to_owned();
+        let mut input = input_for(&session, "original 外部 text");
         *fixture.owner.catalog.snapshot.write().await =
             Err("fixture_public_catalog_unavailable".into());
         let backend = input["backend"].clone();
@@ -671,6 +668,7 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             .unwrap();
         assert_eq!(selected["session"]["backend"], backend);
         input.as_object_mut().unwrap().remove("backend");
+        let operation = Uuid::new_v4();
         let accepted = fixture
             .mutation(2, "send", input.clone(), operation)
             .await
@@ -753,16 +751,13 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             .1[0]
             .clone();
         assert_eq!(binding.activation, current.provider().epoch().to_string());
-        (accepted, observed)
-    })
-    .await
-    .expect("the original JavaScript executor must complete through its selected binding");
-    // Reactivation prepares the read-only replay; it is not executor progress.
-    activate(&mut fixture, false, None, true).await;
-    tokio::time::timeout(Duration::from_secs(40), async {
+        activate(&mut fixture, false, None, true).await;
         assert_eq!(work(&fixture, &session, &accepted).await, observed);
         assert_eq!(
-            fixture.mutation(2, "send", input, operation).await.unwrap(),
+            fixture
+                .mutation(2, "send", input, operation)
+                .await
+                .unwrap(),
             accepted
         );
         fixture.drained().await;
@@ -775,20 +770,20 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
                 .len(),
             1
         );
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
     })
     .await
-    .expect("read-only restart must preserve the original result without a new executor intent");
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
-    let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    let probe = Probe::new(Behavior::Unsettled);
-    activate(&mut fixture, true, Some(probe.clone()), true).await;
-    let session = fixture.create("Unsettled").await;
     tokio::time::timeout(Duration::from_secs(40), async {
+        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::Unsettled);
+        activate(&mut fixture, true, Some(probe.clone()), true).await;
+        let session = fixture.create("Unsettled").await;
         let accepted = fixture
             .mutation(2, "send", input_for(&session, "blocked"), Uuid::new_v4())
             .await
@@ -845,20 +840,20 @@ async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
             tokio::task::yield_now().await;
         }
         assert!(fixture.app.shutdown().await.is_err());
+        fixture.config.shutdown().await.unwrap();
     })
     .await
-    .expect("executor cancellation must retain the actual owner until its callback is released");
-    fixture.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn executor_service_progress_is_canonical_before_original_backend_finishes() {
-    let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    let probe = Probe::new(Behavior::Streaming);
-    activate(&mut fixture, true, Some(probe.clone()), true).await;
-    let session = fixture.create("Live output").await;
-    let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
     tokio::time::timeout(Duration::from_secs(40), async {
+        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::Streaming);
+        activate(&mut fixture, true, Some(probe.clone()), true).await;
+        let session = fixture.create("Live output").await;
+        let mut commits = fixture.session(&session).await.subscribe_commits().unwrap();
         let accepted = fixture
             .mutation(
                 2,
@@ -1008,21 +1003,21 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         assert_eq!(final_answer["text"], "final canonical answer");
         assert_ne!(final_answer["messageId"], commentary["messageId"]);
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
     })
     .await
-    .expect("executor progress must become canonical before release and settle after completion");
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn executor_service_invalid_success_fails_durably_and_preserves_interrupted_body() {
-    let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    let probe = Probe::new(Behavior::InvalidSuccess);
-    activate(&mut fixture, true, Some(probe.clone()), true).await;
-    for expected_calls in 1..=2 {
-        let session = fixture.create("Invalid executor completion").await;
-        tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::InvalidSuccess);
+        activate(&mut fixture, true, Some(probe.clone()), true).await;
+        for expected_calls in 1..=2 {
+            let session = fixture.create("Invalid executor completion").await;
             let accepted = fixture
                 .mutation(2, "send", input_for(&session, "answer"), Uuid::new_v4())
                 .await
@@ -1057,12 +1052,12 @@ async fn executor_service_invalid_success_fails_durably_and_preserves_interrupte
             assert_eq!(partial["text"], "partial answer");
             assert_ne!(partial["finalOutput"], true);
             assert_eq!(probe.calls.load(Ordering::SeqCst), expected_calls);
-        })
-        .await
-        .unwrap_or_else(|_| panic!("invalid executor completion case {expected_calls} must fail durably and preserve its partial body"));
-    }
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
+        }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[cfg(target_os = "macos")]
@@ -1070,12 +1065,12 @@ mod acp;
 
 #[tokio::test]
 async fn executor_attachments_use_only_owned_immutable_uploads_and_original_receipts() {
-    let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    let probe = Probe::new(Behavior::Attachments);
-    activate(&mut f, true, Some(probe.clone()), true).await;
-    let session = f.create("Attachments").await;
-    let other = f.create("Other").await;
     tokio::time::timeout(Duration::from_secs(45), async {
+        let mut f = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let probe = Probe::new(Behavior::Attachments);
+        activate(&mut f, true, Some(probe.clone()), true).await;
+        let session = f.create("Attachments").await;
+        let other = f.create("Other").await;
         let files = [
             ("notes.md".to_owned(), "original immutable content\n".repeat(3000)),
             ("utf8.txt".to_owned(), "distinct executor file\n中\0tail".to_owned()),
@@ -1149,11 +1144,11 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
         assert!(f.owner.runs.lock().await.controls.is_empty());
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("immutable attachment upload, authorization and original-receipt replay must settle");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 mod external;

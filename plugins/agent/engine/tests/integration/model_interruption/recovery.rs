@@ -188,117 +188,62 @@ impl Socket for FaultSocket {
 async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_and_protocol_errors_stop()
  {
     for fault in [Fault::Send, Fault::Idle, Fault::OpaqueIdle, Fault::Protocol] {
-        let recover = matches!(fault, Fault::Send | Fault::Idle);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let sent = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
-        let closed = Arc::new(AtomicBool::new(false));
-        let requests = Arc::new(AtomicUsize::new(0));
-        let server_sent = sent.clone();
-        let server = tokio::spawn(async move {
-            if !recover {
-                return;
-            }
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let body = read_request(&mut socket).await;
-            assert_eq!(body["input"], server_sent.lock().unwrap()[0]["input"]);
-            assert!(body.get("previous_response_id").is_none());
-            let completed = json!({"type":"response.completed","response":{"id":"recovered","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"recovered answer"}]}]}});
-            let body = format!("data: {completed}\n\n");
-            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-        });
-        let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            SessionFixture::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        let mut input = input(&base, "recovery");
-        input.provider.kind = ProviderKind::OpenaiResponses;
-        // Exercise the subscription adapter, including timeout ownership forwarding.
-        input.provider.adapter = Some("codex-responses".into());
-        let executor = ModelExecutor::new(Duration::from_millis(150)).unwrap();
-        let inner = executor.binding(&input.provider).unwrap();
-        let binding = Binding::new(
-            Arc::new(Injected {
-                inner: inner.clone(),
-                fault,
-                sent: sent.clone(),
-                closed: closed.clone(),
-                requests: requests.clone(),
-            }),
-            inner.source().clone(),
-        );
-        let engine = Engine::new(
-            executor.with_adapters(BTreeMap::from([("codex-responses".into(), binding)])),
-            CodeExecutor::new(CellLimits::default()).unwrap(),
-        )
-        .unwrap();
-        let running = engine
-            .start(log.store(), input, CancellationToken::new())
-            .await
-            .unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(15), async {
-            let result = running.wait().await;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let recover = matches!(fault, Fault::Send | Fault::Idle);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let sent = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let closed = Arc::new(AtomicBool::new(false));
+            let requests = Arc::new(AtomicUsize::new(0));
+            let server_sent = sent.clone();
+            let server = tokio::spawn(async move {
+                if !recover { return; }
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let body = read_request(&mut socket).await;
+                assert_eq!(body["input"], server_sent.lock().unwrap()[0]["input"]);
+                assert!(body.get("previous_response_id").is_none());
+                let completed = json!({"type":"response.completed","response":{"id":"recovered","output":[{"type":"message","id":"answer","content":[{"type":"output_text","text":"recovered answer"}]}]}});
+                let body = format!("data: {completed}\n\n");
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            let directory = tempfile::tempdir().unwrap();
+            let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
+            let mut input = input(&base, "recovery");
+            input.provider.kind = ProviderKind::OpenaiResponses;
+            // Exercise the subscription adapter, including timeout ownership forwarding.
+            input.provider.adapter = Some("codex-responses".into());
+            let executor = ModelExecutor::new(Duration::from_millis(150)).unwrap();
+            let inner = executor.binding(&input.provider).unwrap();
+            let binding = Binding::new(Arc::new(Injected { inner: inner.clone(), fault, sent: sent.clone(), closed: closed.clone(), requests: requests.clone() }), inner.source().clone());
+            let engine = Engine::new(executor.with_adapters(BTreeMap::from([("codex-responses".into(), binding)])), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+            let result = engine.run(log.store(), input, CancellationToken::new()).await;
             engine.drain().await;
             server.await.unwrap();
-            result
-        })
-        .await
-        .unwrap_or_else(|_| panic!("{fault:?} recovery and terminal boundaries must settle"));
-        assert!(closed.load(Ordering::SeqCst));
-        assert_eq!(
-            sent.lock().unwrap().len(),
-            1,
-            "transport never replays a failed send"
-        );
-        assert_eq!(requests.load(Ordering::SeqCst), usize::from(recover));
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        let expected_interruption = match fault {
-            Fault::Send | Fault::Idle => {
-                maka_agent_facts::event::ModelInterruption::RetryableFailure
-            }
-            Fault::OpaqueIdle => maka_agent_facts::event::ModelInterruption::TimedOut,
-            Fault::Protocol => maka_agent_facts::event::ModelInterruption::Failed,
-        };
-        assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelInterrupted { status, .. } if *status == expected_interruption)));
-        let attempts: Vec<_> = prefix
-            .events
-            .iter()
-            .filter_map(|event| match &event.event.fact {
-                Fact::ModelRequested {
-                    input_digest,
-                    source_high_water,
-                    ..
-                } => Some((input_digest, source_high_water)),
-                _ => None,
-            })
-            .collect();
-        if recover {
-            result.unwrap();
-            assert_eq!(attempts.len(), 2);
-            assert_eq!(
-                attempts[0], attempts[1],
-                "no accepted progress preserves the frozen source"
-            );
-            assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelCompleted { output, .. } if crate::support::model_records::parts(output, &prefix.events).filter_map(|part| match part { maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Text, text, .. } => Some(text.chunks().collect::<String>()), _ => None }).collect::<Vec<_>>() == ["recovered answer"])));
-            assert!(matches!(
-                &prefix.events.last().unwrap().event.fact,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Completed
-                }
-            ));
-        } else {
-            assert!(result.is_err());
-            assert_eq!(attempts.len(), 1);
-            let expected = if fault == Fault::OpaqueIdle {
-                "model_timeout"
-            } else {
-                "model_adapter"
+            assert!(closed.load(Ordering::SeqCst));
+            assert_eq!(sent.lock().unwrap().len(), 1, "transport never replays a failed send");
+            assert_eq!(requests.load(Ordering::SeqCst), usize::from(recover));
+            let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+            let expected_interruption = match fault {
+                Fault::Send | Fault::Idle => maka_agent_facts::event::ModelInterruption::RetryableFailure,
+                Fault::OpaqueIdle => maka_agent_facts::event::ModelInterruption::TimedOut,
+                Fault::Protocol => maka_agent_facts::event::ModelInterruption::Failed,
             };
-            assert!(
-                matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == expected)
-            );
-        }
+            assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelInterrupted { status, .. } if *status == expected_interruption)));
+            let attempts: Vec<_> = prefix.events.iter().filter_map(|event| match &event.event.fact {
+                Fact::ModelRequested { input_digest, source_high_water, .. } => Some((input_digest, source_high_water)), _ => None,
+            }).collect();
+            if recover {
+                result.unwrap();
+                assert_eq!(attempts.len(), 2);
+                assert_eq!(attempts[0], attempts[1], "no accepted progress preserves the frozen source");
+                assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelCompleted { output, .. } if crate::support::model_records::parts(output, &prefix.events).filter_map(|part| match part { maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Text, text, .. } => Some(text.chunks().collect::<String>()), _ => None }).collect::<Vec<_>>() == ["recovered answer"])));
+                assert!(matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Completed }));
+            } else {
+                assert!(result.is_err());
+                assert_eq!(attempts.len(), 1);
+                let expected = if fault == Fault::OpaqueIdle { "model_timeout" } else { "model_adapter" };
+                assert!(matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == expected));
+            }
+        }).await.unwrap_or_else(|_| panic!("{fault:?} recovery and terminal boundaries must settle"));
     }
 }

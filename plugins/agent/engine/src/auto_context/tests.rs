@@ -71,24 +71,20 @@ async fn filtered_summary(
 }
 
 #[tokio::test]
-async fn background_cleanup_failure_retains_root_after_business_error_is_filtered() {
-    let (completion, closed) = filtered_summary(ModelError::CleanupUnconfirmed).await;
-    assert!(matches!(completion.result, Ok(ActivationExit::Terminal(_))));
-    assert!(completion.cleanup.is_err());
-    assert!(
-        closed.is_err(),
-        "ignoring a background summary failure cannot acknowledge physical cleanup"
-    );
-}
-
-#[tokio::test]
-async fn ordinary_background_provider_failure_releases_root() {
-    let (completion, closed) = filtered_summary(ModelError::Http {
-        status: 503,
-        message: Some("provider unavailable".into()),
-    })
-    .await;
-    assert!(matches!(completion.result, Ok(ActivationExit::Terminal(_))));
-    assert!(completion.cleanup.is_ok());
-    closed.expect("a failed optional summary with confirmed cleanup releases its Root");
+async fn background_error_filter_preserves_cleanup_evidence() {
+    for (error, clean) in [
+        (ModelError::CleanupUnconfirmed, false),
+        (
+            ModelError::Http {
+                status: 503,
+                message: Some("provider unavailable".into()),
+            },
+            true,
+        ),
+    ] {
+        let (completion, closed) = filtered_summary(error).await;
+        assert!(matches!(completion.result, Ok(ActivationExit::Terminal(_))));
+        assert_eq!(completion.cleanup.is_ok(), clean);
+        assert_eq!(closed.is_ok(), clean);
+    }
 }

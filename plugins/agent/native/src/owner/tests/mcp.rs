@@ -133,50 +133,51 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
         revoke,
     } = scenario;
     let decision = if deny { "deny" } else { "allow" };
-    let directory = tempfile::tempdir().unwrap();
-    let record = directory.path().join("record");
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let fixture = Fixture::configured(
-        &format!("http://{}/v1", listener.local_addr().unwrap()),
-        None,
-        None,
-        None,
-        |settings| {
-            let mut config = server(&record, preapproved);
-            if enveloped {
-                let maka_mcp::TransportConfiguration::Stdio { args, .. } = &mut config.transport
-                else {
-                    unreachable!("the MCP fixture uses stdio");
-                };
-                args[1] = "object-union".into();
-            }
-            if trusted_readonly {
-                config.read_only_tools = vec!["echo".into()];
-            }
-            settings.mcp_servers = vec![config];
-        },
-    )
-    .await;
-    selection::edit(&fixture, |changes| {
-        changes.model_overrides = Patch::Set(BTreeMap::from([(
-            "fixture-model".into(),
-            ModelOverride {
-                code_mode: Some(code),
-                ..Default::default()
-            },
-        )]))
-    })
-    .await;
-    let session = fixture.create("MCP permissions").await;
-    if read_only {
-        files::change(&fixture, &session, "read_only", false, true).await;
-    }
-    fixture.send(&session).await.unwrap();
-
-    let (mut first, _) = listener.accept().await.unwrap();
-    let prompt = request(&mut first).await;
-
     tokio::time::timeout(Duration::from_secs(60), async {
+        let directory = tempfile::tempdir().unwrap();
+        let record = directory.path().join("record");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                let mut config = server(&record, preapproved);
+                if enveloped {
+                    let maka_mcp::TransportConfiguration::Stdio { args, .. } =
+                        &mut config.transport
+                    else {
+                        unreachable!("the MCP fixture uses stdio");
+                    };
+                    args[1] = "object-union".into();
+                }
+                if trusted_readonly {
+                    config.read_only_tools = vec!["echo".into()];
+                }
+                settings.mcp_servers = vec![config];
+            },
+        )
+        .await;
+        selection::edit(&fixture, |changes| {
+            changes.model_overrides = Patch::Set(BTreeMap::from([(
+                "fixture-model".into(),
+                ModelOverride {
+                    code_mode: Some(code),
+                    ..Default::default()
+                },
+            )]))
+        })
+        .await;
+        let session = fixture.create("MCP permissions").await;
+        if read_only {
+            files::change(&fixture, &session, "read_only", false, true).await;
+        }
+        fixture.send(&session).await.unwrap();
+
+        let (mut first, _) = listener.accept().await.unwrap();
+        let prompt = request(&mut first).await;
+
         if code {
             assert!(
                 prompt["tools"]
@@ -264,11 +265,11 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
                 |fact| matches!(fact,Fact::ToolRejected{name,..} if name=="mcp__fixture__echo")
             ));
         }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
     })
     .await
     .expect("MCP permission scenario completes");
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
 }
 
 fn portable(record: &std::path::Path) -> Value {

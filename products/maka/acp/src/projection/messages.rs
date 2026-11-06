@@ -211,7 +211,7 @@ mod tests {
         let mut projection = Projection::default();
         let preview = projection.preview(&preview_page(1, 0, 5, "draft")).unwrap();
         assert_eq!(
-            serde_json::to_value(&preview[0]).unwrap()["content"][0]["text"],
+            crate::presentation::wire(&preview[0]).unwrap()["content"][0]["text"],
             "draft"
         );
         let mut chunk = HistoryChunk {
@@ -251,7 +251,7 @@ mod tests {
         chunk.offset = 3;
         chunk.text = "onical".into();
         let complete = projection.chunk(&chunk).unwrap();
-        let complete = serde_json::to_value(&complete[0]).unwrap();
+        let complete = crate::presentation::wire(&complete[0]).unwrap();
         assert_eq!(complete["sessionUpdate"], "agent_message");
         assert_eq!(complete["messageId"], "message");
         assert_eq!(complete["content"][0]["text"], "canonical");

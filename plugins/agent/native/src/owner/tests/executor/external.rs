@@ -24,53 +24,32 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[tokio::test]
 async fn native_external_all_protocols_persist_before_prompt_and_resume_original_identity() {
-    let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-        settings.tools = vec![super::external_support::host_tool("observe", "SessionRead")];
-        let home = settings.workspace_roots[0].path.clone();
-        std::fs::create_dir(home.join(".maka")).unwrap();
-        std::fs::write(
-            home.join(".maka/AGENTS.md"),
-            "CAPTURED EXTERNAL GUIDANCE 中文",
-        )
-        .unwrap();
-        for name in ["CLAUDE.md", "GEMINI.md"] {
-            std::fs::write(home.join(".maka").join(name), "CLI GLOBAL RULES").unwrap();
-        }
-        settings.assistant = Some(crate::contract::AssistantConfiguration {
-            home: Some(home.to_str().unwrap().into()),
-        });
-        settings
-            .external
-            .as_mut()
-            .unwrap()
-            .commands
-            .antigravity
-            .as_mut()
-            .unwrap()
-            .env
-            .insert("MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL".into(), "1".into());
-    })
-    .await;
-    for runtime in ["codex", "antigravity", "claude"] {
-        let session = f.create(&format!("Native {runtime}")).await;
-        let mut original = None;
-        let mut original_mcp = None;
-        let mut original_tools = None;
-        let mut original_operation = None;
-        for round in 0..4 {
-            let guidance = if round < 2 {
-                "CAPTURED EXTERNAL GUIDANCE 中文"
-            } else {
-                "UPDATED EXTERNAL GUIDANCE 中文"
-            };
-            std::fs::write(f.workspace.join(".maka/AGENTS.md"), guidance).unwrap();
-            for name in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
-                std::fs::write(f.workspace.join(name), format!("CLI PROJECT RULES {round}"))
-                    .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.tools = vec![super::external_support::host_tool("observe", "SessionRead")];
+            let home = settings.workspace_roots[0].path.clone();
+            std::fs::create_dir(home.join(".maka")).unwrap();
+            std::fs::write(home.join(".maka/AGENTS.md"), "CAPTURED EXTERNAL GUIDANCE 中文").unwrap();
+            for name in ["CLAUDE.md", "GEMINI.md"] {
+                std::fs::write(home.join(".maka").join(name), "CLI GLOBAL RULES").unwrap();
             }
-            let operation = Uuid::new_v4();
-            let input = input_runtime(&session, runtime, "complete");
-            tokio::time::timeout(Duration::from_secs(60), async {
+            settings.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.to_str().unwrap().into()) });
+            settings.external.as_mut().unwrap().commands.antigravity.as_mut().unwrap().env.insert("MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL".into(), "1".into());
+        }).await;
+        for runtime in ["codex", "antigravity", "claude"] {
+            let session = f.create(&format!("Native {runtime}")).await;
+            let mut original = None;
+            let mut original_mcp = None;
+            let mut original_tools = None;
+            let mut original_operation = None;
+            for round in 0..4 {
+                let guidance = if round < 2 { "CAPTURED EXTERNAL GUIDANCE 中文" } else { "UPDATED EXTERNAL GUIDANCE 中文" };
+                std::fs::write(f.workspace.join(".maka/AGENTS.md"), guidance).unwrap();
+                for name in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
+                    std::fs::write(f.workspace.join(name), format!("CLI PROJECT RULES {round}")).unwrap();
+                }
+                let operation = Uuid::new_v4();
+                let input = input_runtime(&session, runtime, "complete");
                 let accepted = f.mutation(2,"send",input.clone(),operation).await.unwrap();
                 assert_eq!(accepted["kind"],"started","{accepted}");
                 eprintln!("native fixture {runtime}: admitted");
@@ -190,11 +169,8 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
 
                 assert!(super::external_support::record_runtime(&f,&session,runtime).await["running"].is_null());
                 assert_eq!(f.mutation(2,"send",input,operation).await.unwrap(),accepted);
-                f.drained().await;
                 assert!(listener.accept().now_or_never().is_none());
-                }).await.unwrap_or_else(|_| panic!("native {runtime} round {round} must persist, execute and settle without replay"));
-        }
-        tokio::time::timeout(Duration::from_secs(60), async {
+            }
             let mcp = original_mcp.unwrap();
             let url = mcp["url"].as_str().unwrap();
             let address = url.strip_prefix("http://").unwrap().strip_suffix("/mcp").unwrap();
@@ -212,20 +188,19 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
             if let Some(path) = mcp.get("configPath").and_then(Value::as_str) {
                 assert!(!std::path::Path::new(path).exists(), "deleted session must release native MCP configuration");
             }
-            }).await.unwrap_or_else(|_| panic!("native {runtime} session removal must release its listener and configuration"));
-    }
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn native_external_eof_exit_zero_malformed_and_unrelated_turn_never_complete_or_replay() {
-    for message in ["crash", "exit0", "malformed", "wrong-turn"] {
-        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-        let session = f.create("Native terminal correlation").await;
-        let operation = Uuid::new_v4();
-        let request = input(&session, message);
-        tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for message in ["crash", "exit0", "malformed", "wrong-turn"] {
+            let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+            let session = f.create("Native terminal correlation").await;
+            let operation = Uuid::new_v4();
+            let request = input(&session, message);
             let accepted = f
                 .mutation(2, "send", request.clone(), operation)
                 .await
@@ -279,21 +254,19 @@ async fn native_external_eof_exit_zero_malformed_and_unrelated_turn_never_comple
                     "proxy exit cannot prove a shared daemon turn has stopped"
                 );
             }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("native {message} must fail without replay or false cleanup confirmation")
-        });
-        f.config.shutdown().await.unwrap();
-    }
+            f.config.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_stop_never_relabels_cancelled_turn_as_completed() {
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    for runtime in ["codex", "antigravity", "claude"] {
-        let session = f.create("Native cancellation").await;
-        tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        for runtime in ["codex", "antigravity", "claude"] {
+            let session = f.create("Native cancellation").await;
             let accepted = f
                 .mutation(
                     2,
@@ -343,24 +316,22 @@ async fn native_external_stop_never_relabels_cancelled_turn_as_completed() {
                 super::external_support::record_runtime(&f, &session, runtime).await["running"]
                     .is_null()
             );
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("native {runtime} cancellation must settle without completing the turn")
-        });
-    }
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_discovery_keeps_native_models_and_reports_unsupported_claude_capabilities()
 {
-    let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-        settings.external.as_mut().unwrap().runtimes.antigravity = false;
-    })
-    .await;
     tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.external.as_mut().unwrap().runtimes.antigravity = false;
+        })
+        .await;
         let page = f
             .query("models", json!({"kind":"start","query":"External codex"}))
             .await
@@ -430,11 +401,11 @@ async fn native_external_discovery_keeps_native_models_and_reports_unsupported_c
                 .await
                 .is_err()
         );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("native discovery must preserve models and report unsupported capabilities");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
@@ -506,21 +477,21 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
 #[tokio::test]
 async fn native_external_codex_preserves_more_than_128_preack_deltas() {
     use super::external_support::configured;
-    let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-        settings
-            .external
-            .as_mut()
-            .unwrap()
-            .commands
-            .codex
-            .as_mut()
-            .unwrap()
-            .env
-            .insert("MAKA_NATIVE_FIXTURE_EARLY_EVENTS".into(), "1".into());
-    })
-    .await;
-    let session = f.create("Native early events").await;
     tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .codex
+                .as_mut()
+                .unwrap()
+                .env
+                .insert("MAKA_NATIVE_FIXTURE_EARLY_EVENTS".into(), "1".into());
+        })
+        .await;
+        let session = f.create("Native early events").await;
         let accepted = f
             .mutation(
                 2,
@@ -548,11 +519,11 @@ async fn native_external_codex_preserves_more_than_128_preack_deltas() {
                 "committed output".into(),
             ]
         );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("native Codex must preserve every preack delta through completion");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 async fn complete_instruction_turn(
@@ -627,50 +598,50 @@ async fn native_external_skill_instructions_arrive_after_none_and_clear_without_
 
 #[tokio::test]
 async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_digest() {
-    let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-        let home = settings.workspace_roots[0].path.clone();
-        std::fs::create_dir(home.join(".maka")).unwrap();
-        settings.assistant = Some(crate::contract::AssistantConfiguration {
-            home: Some(home.to_str().unwrap().into()),
-        });
-        let commands = &mut settings.external.as_mut().unwrap().commands;
-        for command in [
-            &mut commands.codex,
-            &mut commands.antigravity,
-            &mut commands.claude,
-        ] {
-            command
-                .as_mut()
-                .unwrap()
-                .env
-                .insert("MAKA_NATIVE_FIXTURE_PAUSE_INSTRUCTIONS".into(), "1".into());
-        }
-    })
-    .await;
-    for runtime in ["codex", "antigravity", "claude"] {
-        std::fs::write(f.workspace.join(".maka/AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
-        let session = f
-            .create("Native instruction acknowledgement cancellation")
-            .await;
-        let first = f
-            .mutation(
-                2,
-                "send",
-                input_runtime(&session, runtime, "complete"),
-                Uuid::new_v4(),
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            let home = settings.workspace_roots[0].path.clone();
+            std::fs::create_dir(home.join(".maka")).unwrap();
+            settings.assistant = Some(crate::contract::AssistantConfiguration {
+                home: Some(home.to_str().unwrap().into()),
+            });
+            let commands = &mut settings.external.as_mut().unwrap().commands;
+            for command in [
+                &mut commands.codex,
+                &mut commands.antigravity,
+                &mut commands.claude,
+            ] {
+                command
+                    .as_mut()
+                    .unwrap()
+                    .env
+                    .insert("MAKA_NATIVE_FIXTURE_PAUSE_INSTRUCTIONS".into(), "1".into());
+            }
+        })
+        .await;
+        for runtime in ["codex", "antigravity", "claude"] {
+            std::fs::write(f.workspace.join(".maka/AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
+            let session = f
+                .create("Native instruction acknowledgement cancellation")
+                .await;
+            let first = f
+                .mutation(
+                    2,
+                    "send",
+                    input_runtime(&session, runtime, "complete"),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut control, "opened").await;
+            complete_instruction_turn(&f, &session, &first, &mut control).await;
+            let before = super::external_support::record_runtime(&f, &session, runtime).await;
+            std::fs::write(
+                f.workspace.join(".maka/AGENTS.md"),
+                "CANCEL_UNCONFIRMED_GUIDANCE",
             )
-            .await
             .unwrap();
-        let mut control = BufReader::new(listener.accept().await.unwrap().0);
-        packet(&mut control, "opened").await;
-        complete_instruction_turn(&f, &session, &first, &mut control).await;
-        let before = super::external_support::record_runtime(&f, &session, runtime).await;
-        std::fs::write(
-            f.workspace.join(".maka/AGENTS.md"),
-            "CANCEL_UNCONFIRMED_GUIDANCE",
-        )
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(90), async {
             let cancelled = f
                 .mutation(
                     2,
@@ -725,10 +696,10 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
                 before["instructionsDigest"]
             );
             assert_eq!(confirmed["nativeSession"], before["nativeSession"]);
-            })
-            .await
-            .unwrap_or_else(|_| panic!("native {runtime} instruction cancellation and retry must preserve confirmed identity and digest"));
-    }
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

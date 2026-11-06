@@ -163,47 +163,17 @@ async fn close(f: &Fixture) {
 
 #[tokio::test]
 async fn native_files_reuse_actual_read_search_write_edit_and_patch_executors() {
-    for (method, input, expected, title) in [
-        (
-            "readText",
-            json!({"path":"original.txt"}),
-            "alpha needle\n",
-            "Read file · original.txt",
-        ),
-        (
-            "glob",
-            json!({"pattern":"*.txt","cwd":"."}),
-            "original.txt",
-            "Find files · *.txt",
-        ),
-        (
-            "grep",
-            json!({"pattern":"needle","path":"."}),
-            "needle",
-            "Search files · needle",
-        ),
-        (
-            "write",
-            json!({"path":"original.txt","content":"changed\n"}),
-            "changed\n",
-            "Write file · original.txt",
-        ),
-        (
-            "edit",
-            json!({"path":"original.txt","old_string":"alpha","new_string":"changed"}),
-            "changed needle\n",
-            "Edit file · original.txt",
-        ),
-        (
-            "applyPatch",
-            json!({"callId":"patch","operation":{"type":"create_file","path":"new.txt","diff":"+created\n"}}),
-            "created",
-            "Patch file · new.txt",
-        ),
-    ] {
-        let (listener, f, session) = fixture(method).await;
-        std::fs::write(f.workspace.join("original.txt"), "alpha needle\n").unwrap();
-        tokio::time::timeout(Duration::from_secs(90), async {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        for (method, input, expected, title) in [
+            ("readText", json!({"path":"original.txt"}), "alpha needle\n", "Read file · original.txt"),
+            ("glob", json!({"pattern":"*.txt","cwd":"."}), "original.txt", "Find files · *.txt"),
+            ("grep", json!({"pattern":"needle","path":"."}), "needle", "Search files · needle"),
+            ("write", json!({"path":"original.txt","content":"changed\n"}), "changed\n", "Write file · original.txt"),
+            ("edit", json!({"path":"original.txt","old_string":"alpha","new_string":"changed"}), "changed needle\n", "Edit file · original.txt"),
+            ("applyPatch", json!({"callId":"patch","operation":{"type":"create_file","path":"new.txt","diff":"+created\n"}}), "created", "Patch file · new.txt"),
+        ] {
+            let (listener, f, session) = fixture(method).await;
+            std::fs::write(f.workspace.join("original.txt"), "alpha needle\n").unwrap();
             call(&listener, &f, &session, input.clone()).await;
             let result = finish(&listener, &f).await;
             assert_eq!(result["kind"], "completed", "{method}: {result}");
@@ -256,18 +226,16 @@ async fn native_files_reuse_actual_read_search_write_edit_and_patch_executors() 
                 }
                 }
             }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("native file executor {method} must complete and preserve its recorded bytes and history"));
-        close(&f).await;
-    }
+            close(&f).await;
+        }
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn native_file_permission_decisions_recover_first_winner_and_obey_turn_scope() {
-    for scope in [None, Some("once"), Some("turn"), Some("session")] {
-        let (listener, f, session) = fixture("write").await;
-        tokio::time::timeout(Duration::from_secs(90), async {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        for scope in [None, Some("once"), Some("turn"), Some("session")] {
+            let (listener, f, session) = fixture("write").await;
             assert_eq!(
                 change(&f, &session, "read_only", true, false).await["session"]["boundaryRevision"],
                 1
@@ -350,11 +318,11 @@ async fn native_file_permission_decisions_recover_first_winner_and_obey_turn_sco
                 assert_eq!(finish(&listener, &f).await["kind"], "failed");
                 assert!(!f.workspace.join("sibling.txt").exists());
             }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("file permission scope {scope:?} must preserve its first decision and enforce turn and path boundaries"));
-        close(&f).await;
-    }
+            close(&f).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

@@ -43,44 +43,30 @@ fn image_path(packet: &Value, bytes: &[u8]) -> PathBuf {
 
 #[tokio::test]
 async fn native_external_attachments_deliver_immutable_utf8_and_image_bytes_on_send_and_resume() {
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    let session = f.create("External uploads").await;
-    let text = "Original UTF-8 attachment: 中文\n".repeat(3000);
-    let note = upload(&f, &session, "notes.md", text.as_bytes(), Uuid::new_v4())
-        .await
-        .unwrap();
-    let bytes = png();
-    let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
-        .await
-        .unwrap();
-    // The selected paths are not the admitted input. Only the immutable uploads are.
-    std::fs::write(f._dir.path().join("notes.md"), "changed after upload").unwrap();
-    std::fs::write(f._dir.path().join("image.png"), b"changed after upload").unwrap();
-    let store = f.session(&session).await;
-    let record = store
-        .get_artifact(&session, note["attachment"]["id"].as_str().unwrap())
-        .await
-        .unwrap()
-        .record
-        .unwrap();
-    let mut replacement = record.clone();
-    replacement.summary = Some(maka_agent_facts::artifact::content_digest(b"replacement"));
-    replacement.size_bytes = 11;
-    assert!(
-        store
-            .commit_artifact(replacement, b"replacement")
-            .await
-            .is_err()
-    );
-    let mut previous = None;
-    for index in 0..2 {
-        let mut request = input(&session, "inspect");
-        request["attachments"] = if index == 0 {
-            json!([note["attachment"]["id"], image["attachment"]["id"]])
-        } else {
-            json!([image["attachment"]["id"]])
-        };
-        tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("External uploads").await;
+        let text = "Original UTF-8 attachment: 中文\n".repeat(3000);
+        let note = upload(&f, &session, "notes.md", text.as_bytes(), Uuid::new_v4()).await.unwrap();
+        let bytes = png();
+        let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4()).await.unwrap();
+        // The selected paths are not the admitted input. Only the immutable uploads are.
+        std::fs::write(f._dir.path().join("notes.md"), "changed after upload").unwrap();
+        std::fs::write(f._dir.path().join("image.png"), b"changed after upload").unwrap();
+        let store = f.session(&session).await;
+        let record = store.get_artifact(&session, note["attachment"]["id"].as_str().unwrap()).await.unwrap().record.unwrap();
+        let mut replacement = record.clone();
+        replacement.summary = Some(maka_agent_facts::artifact::content_digest(b"replacement"));
+        replacement.size_bytes = 11;
+        assert!(store.commit_artifact(replacement, b"replacement").await.is_err());
+        let mut previous = None;
+        for index in 0..2 {
+            let mut request = input(&session, "inspect");
+            request["attachments"] = if index == 0 {
+                json!([note["attachment"]["id"], image["attachment"]["id"]])
+            } else {
+                json!([image["attachment"]["id"]])
+            };
             let accepted = f.mutation(2, "send", request, Uuid::new_v4()).await.unwrap();
             assert_eq!(accepted["kind"], "started", "{accepted}");
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
@@ -104,34 +90,24 @@ async fn native_external_attachments_deliver_immutable_utf8_and_image_bytes_on_s
             assert_eq!(work(&f, &session, &accepted).await["execution"]["state"], "completed");
             assert!(!path.parent().unwrap().exists(), "confirmed disposal and exit release the material directory");
             previous = Some(path);
-            })
-            .await
-            .unwrap_or_else(|_| panic!("attachment turn {index} must settle its original materials"));
-    }
-    assert_eq!(
-        store
-            .get_artifact(&session, &record.id)
-            .await
-            .unwrap()
-            .record
-            .unwrap(),
-        record
-    );
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        assert_eq!(store.get_artifact(&session, &record.id).await.unwrap().record.unwrap(), record);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn native_external_attachments_stop_retains_images_until_disposal_and_root_exit() {
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    let session = f.create("External stop with image").await;
-    let bytes = png();
-    let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
-        .await
-        .unwrap();
-    let mut request = input(&session, "wait");
-    request["attachments"] = json!([image["attachment"]["id"]]);
     tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("External stop with image").await;
+        let bytes = png();
+        let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut request = input(&session, "wait");
+        request["attachments"] = json!([image["attachment"]["id"]]);
         let accepted = f
             .mutation(2, "send", request, Uuid::new_v4())
             .await
@@ -157,25 +133,25 @@ async fn native_external_attachments_stop_retains_images_until_disposal_and_root
             "cancelled"
         );
         assert!(!path.parent().unwrap().exists());
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("stopped external attachment must await disposal and root exit");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_attachments_unconfirmed_cleanup_keeps_materials_and_original_receipt() {
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    let session = f.create("External uncertain image custody").await;
-    let bytes = png();
-    let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
-        .await
-        .unwrap();
-    let mut request = input(&session, "pipe-holder-crash");
-    request["attachments"] = json!([image["attachment"]["id"]]);
-    let operation = Uuid::new_v4();
-    let (pid, path) = tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("External uncertain image custody").await;
+        let bytes = png();
+        let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut request = input(&session, "pipe-holder-crash");
+        request["attachments"] = json!([image["attachment"]["id"]]);
+        let operation = Uuid::new_v4();
         let accepted = f
             .mutation(2, "send", request.clone(), operation)
             .await
@@ -210,46 +186,35 @@ async fn native_external_attachments_unconfirmed_cleanup_keeps_materials_and_ori
             bytes,
             "retiring an owner must not delete uncertain materials"
         );
-        (pid, path)
+        f.config.shutdown().await.unwrap();
+        assert!(
+            tokio::process::Command::new("/bin/kill")
+                .args(["-KILL", &pid])
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        // Only the test knows the escaped fixture is now gone.
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     })
     .await
-    .expect("unknown cleanup must retain original materials and receipt after owner retirement");
-    f.config.shutdown().await.unwrap();
-    assert!(
-        tokio::process::Command::new("/bin/kill")
-            .args(["-KILL", &pid])
-            .status()
-            .await
-            .unwrap()
-            .success()
-    );
-    // Only the test knows the escaped fixture is now gone.
-    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_attachments_reject_unsupported_media_and_non_upload_sources() {
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    let session = f.create("External attachment refusals").await;
-    for (name, bytes, mime) in [
-        (
-            "binary.bin",
-            &b"\xff\x00binary"[..],
-            "application/octet-stream",
-        ),
-        (
-            "document.pdf",
-            &b"%PDF-1.7\n\x00binary"[..],
-            "application/pdf",
-        ),
-    ] {
-        let uploaded = upload(&f, &session, name, bytes, Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(uploaded["attachment"]["mimeType"], mime);
-        let mut request = input(&session, "must not drop attachment");
-        request["attachments"] = json!([uploaded["attachment"]["id"]]);
-        tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("External attachment refusals").await;
+        for (name, bytes, mime) in [
+            ("binary.bin", &b"\xff\x00binary"[..], "application/octet-stream"),
+            ("document.pdf", &b"%PDF-1.7\n\x00binary"[..], "application/pdf"),
+        ] {
+            let uploaded = upload(&f, &session, name, bytes, Uuid::new_v4()).await.unwrap();
+            assert_eq!(uploaded["attachment"]["mimeType"], mime);
+            let mut request = input(&session, "must not drop attachment");
+            request["attachments"] = json!([uploaded["attachment"]["id"]]);
             let accepted = f.mutation(2, "send", request, Uuid::new_v4()).await.unwrap();
             f.drained().await;
             assert_eq!(work(&f, &session, &accepted).await["execution"]["state"], "failed");
@@ -258,113 +223,90 @@ async fn native_external_attachments_reject_unsupported_media_and_non_upload_sou
             assert!(prefix.events.iter().any(|row| matches!(&row.event.fact,
                 maka_agent_facts::event::Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { message: Some(message), .. }, .. }
                 if message.contains(&expected))));
-            })
-            .await
-            .unwrap_or_else(|_| panic!("unsupported {mime} attachment must fail before launching a worker"));
-    }
-    let uploaded = upload(&f, &session, "text.txt", b"owned", Uuid::new_v4())
-        .await
-        .unwrap();
-    let store = f.session(&session).await;
-    let mut generated = store
-        .get_artifact(&session, uploaded["attachment"]["id"].as_str().unwrap())
-        .await
-        .unwrap()
-        .record
-        .unwrap();
-    generated.id = Uuid::new_v4().to_string();
-    generated.source = maka_agent_facts::artifact::ArtifactSource::ToolResult;
-    let generated = store.commit_artifact(generated, b"owned").await.unwrap();
-    let other = f.create("Other owner").await;
-    for (target, id) in [
-        (&session, json!(generated.id)),
-        (&other, uploaded["attachment"]["id"].clone()),
-    ] {
-        let mut request = input(target, "cannot attach");
-        request["attachments"] = json!([id]);
-        tokio::time::timeout(Duration::from_secs(40), async {
-            assert!(
-                f.mutation(2, "send", request, Uuid::new_v4())
-                    .await
-                    .is_err()
-            );
-        })
-        .await
-        .expect("foreign or generated attachment must be rejected before execution");
-    }
-    assert!(
-        listener.accept().now_or_never().is_none(),
-        "unsupported materials never launch the worker"
-    );
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        let uploaded = upload(&f, &session, "text.txt", b"owned", Uuid::new_v4()).await.unwrap();
+        let store = f.session(&session).await;
+        let mut generated = store.get_artifact(&session, uploaded["attachment"]["id"].as_str().unwrap()).await.unwrap().record.unwrap();
+        generated.id = Uuid::new_v4().to_string();
+        generated.source = maka_agent_facts::artifact::ArtifactSource::ToolResult;
+        let generated = store.commit_artifact(generated, b"owned").await.unwrap();
+        let other = f.create("Other owner").await;
+        for (target, id) in [(&session, json!(generated.id)), (&other, uploaded["attachment"]["id"].clone())] {
+            let mut request = input(target, "cannot attach");
+            request["attachments"] = json!([id]);
+            assert!(f.mutation(2, "send", request, Uuid::new_v4()).await.is_err());
+        }
+        assert!(listener.accept().now_or_never().is_none(), "unsupported materials never launch the worker");
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
 async fn native_external_claude_trust_and_multiple_images_use_native_input_on_send_and_resume() {
     use super::external_support::{configured, input_runtime, record_runtime};
-    let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-        settings
-            .external
-            .as_mut()
-            .unwrap()
-            .commands
-            .claude
-            .as_mut()
-            .unwrap()
-            .env
-            .insert("MAKA_NATIVE_FIXTURE_TRUST".into(), "1".into());
-    })
-    .await;
-    let session = f.create("Claude native multi-image input").await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .claude
+                .as_mut()
+                .unwrap()
+                .env
+                .insert("MAKA_NATIVE_FIXTURE_TRUST".into(), "1".into());
+        })
+        .await;
+        let session = f.create("Claude native multi-image input").await;
 
-    let mut noisy = image::RgbImage::new(1536, 1536);
-    let mut state = 0x9179_3375u32;
-    for byte in noisy.as_flat_samples_mut().samples {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        *byte = state as u8;
-    }
-    let mut encoded = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgb8(noisy)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .unwrap();
-    let one = encoded.into_inner();
-    assert!(
-        one.len() * 4 / 3 > 8 * 1024 * 1024,
-        "native base64 JSONL must exceed the old limit"
-    );
-    let mut second = image::RgbImage::new(3, 2);
-    second.fill(123);
-    let mut two = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgb8(second)
-        .write_to(&mut two, image::ImageFormat::Png)
-        .unwrap();
-    let two = two.into_inner();
-    let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
-        .await
-        .unwrap();
-    let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
-        .await
-        .unwrap();
-    let text = "current attachment context 中文\n".repeat(4096);
-    let note = upload(&f, &session, "context.txt", text.as_bytes(), Uuid::new_v4())
-        .await
-        .unwrap();
-    let mut original = None;
-    for turn in 0..2 {
-        let mut input = input_runtime(&session, "claude", "inspect both images");
-        input["attachments"] = if turn == 0 {
-            json!([
-                first["attachment"]["id"],
-                second["attachment"]["id"],
-                note["attachment"]["id"]
-            ])
-        } else {
-            json!([second["attachment"]["id"], first["attachment"]["id"]])
-        };
-        tokio::time::timeout(Duration::from_secs(60), async {
+        let mut noisy = image::RgbImage::new(1536, 1536);
+        let mut state = 0x9179_3375u32;
+        for byte in noisy.as_flat_samples_mut().samples {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state as u8;
+        }
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(noisy)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let one = encoded.into_inner();
+        assert!(
+            one.len() * 4 / 3 > 8 * 1024 * 1024,
+            "native base64 JSONL must exceed the old limit"
+        );
+        let mut second = image::RgbImage::new(3, 2);
+        second.fill(123);
+        let mut two = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(second)
+            .write_to(&mut two, image::ImageFormat::Png)
+            .unwrap();
+        let two = two.into_inner();
+        let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
+            .await
+            .unwrap();
+        let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
+            .await
+            .unwrap();
+        let text = "current attachment context 中文\n".repeat(4096);
+        let note = upload(&f, &session, "context.txt", text.as_bytes(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut original = None;
+        for turn in 0..2 {
+            let mut input = input_runtime(&session, "claude", "inspect both images");
+            input["attachments"] = if turn == 0 {
+                json!([
+                    first["attachment"]["id"],
+                    second["attachment"]["id"],
+                    note["attachment"]["id"]
+                ])
+            } else {
+                json!([second["attachment"]["id"], first["attachment"]["id"]])
+            };
             let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
             let opened = packet(&mut control, "opened").await;
@@ -421,40 +363,38 @@ async fn native_external_claude_trust_and_multiple_images_use_native_input_on_se
             for image in images {
                 assert!(!std::path::Path::new(image["path"].as_str().unwrap()).exists());
             }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("Claude attachment turn {turn} must settle native input and image custody")
-        });
-    }
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_claude_cancel_before_enter_retires_images_and_allocates_a_new_native_id() {
     use super::external_support::{configured, input_runtime, record_runtime};
-    for stage in ["startup", "image", "text"] {
-        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-            settings
-                .external
-                .as_mut()
-                .unwrap()
-                .commands
-                .claude
-                .as_mut()
-                .unwrap()
-                .env
-                .insert("MAKA_NATIVE_FIXTURE_PAUSE_INPUT".into(), stage.into());
-        })
-        .await;
-        let session = f.create("Claude pre-submission cancellation").await;
-        let uploaded = upload(&f, &session, "held.png", &png(), Uuid::new_v4())
-            .await
-            .unwrap();
-        let mut input = input_runtime(&session, "claude", "an image still being composed");
-        input["attachments"] = json!([uploaded["attachment"]["id"]]);
-        let original = tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for stage in ["startup", "image", "text"] {
+            let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+                settings
+                    .external
+                    .as_mut()
+                    .unwrap()
+                    .commands
+                    .claude
+                    .as_mut()
+                    .unwrap()
+                    .env
+                    .insert("MAKA_NATIVE_FIXTURE_PAUSE_INPUT".into(), stage.into());
+            })
+            .await;
+            let session = f.create("Claude pre-submission cancellation").await;
+            let uploaded = upload(&f, &session, "held.png", &png(), Uuid::new_v4())
+                .await
+                .unwrap();
+            let mut input = input_runtime(&session, "claude", "an image still being composed");
+            input["attachments"] = json!([uploaded["attachment"]["id"]]);
             let accepted = f
                 .mutation(2, "send", input.clone(), Uuid::new_v4())
                 .await
@@ -484,13 +424,6 @@ async fn native_external_claude_cancel_before_enter_retires_images_and_allocates
             if let Some(path) = image {
                 assert!(!std::path::Path::new(path).exists());
             }
-            original
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("Claude cancellation at {stage} must retire input materials and native identity")
-        });
-        tokio::time::timeout(Duration::from_secs(60), async {
             let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
             let opened = packet(&mut control, "opened").await;
@@ -509,36 +442,34 @@ async fn native_external_claude_cancel_before_enter_retires_images_and_allocates
                 work(&f, &session, &accepted).await["execution"]["state"],
                 "completed"
             );
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("Claude input after cancellation at {stage} must start a fresh native session")
-        });
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    }
+            f.app.shutdown().await.unwrap();
+            f.config.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn native_external_agy_image_paths_preserve_upload_order_until_physical_settlement() {
     use super::external_support::input_runtime;
-    let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-    let session = f.create("agy image paths").await;
-    let one = png();
-    let mut second = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::new_rgba8(1, 2)
-        .write_to(&mut second, image::ImageFormat::Png)
-        .unwrap();
-    let two = second.into_inner();
-    let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
-        .await
-        .unwrap();
-    let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
-        .await
-        .unwrap();
-    let mut input = input_runtime(&session, "antigravity", "比较图片");
-    input["attachments"] = json!([first["attachment"]["id"], second["attachment"]["id"]]);
     tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("agy image paths").await;
+        let one = png();
+        let mut second = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 2)
+            .write_to(&mut second, image::ImageFormat::Png)
+            .unwrap();
+        let two = second.into_inner();
+        let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
+            .await
+            .unwrap();
+        let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut input = input_runtime(&session, "antigravity", "比较图片");
+        input["attachments"] = json!([first["attachment"]["id"], second["attachment"]["id"]]);
         let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
         let mut control = BufReader::new(listener.accept().await.unwrap().0);
         let opened = packet(&mut control, "opened").await;
@@ -567,9 +498,9 @@ async fn native_external_agy_image_paths_preserve_upload_order_until_physical_se
             "completed"
         );
         assert!(paths.iter().all(|path| !path.exists()));
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
     })
     .await
-    .expect("agy attachment order and custody must survive until confirmed physical settlement");
-    f.app.shutdown().await.unwrap();
-    f.config.shutdown().await.unwrap();
+    .unwrap();
 }

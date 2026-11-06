@@ -910,28 +910,20 @@ mod tests {
     use maka_agent_api::workhub::contract::{PreparationStage, PreparationState};
 
     #[test]
-    fn graph_write_during_scan_prevents_retirement_until_a_clean_rescan() {
-        let awake = WakeHint::new(false);
-        let scan = awake.begin_scan();
-        awake.written();
-        awake.end_scan(scan, false);
-        assert!(awake.keeps_host_awake());
+    fn pending_work_or_a_write_during_scan_requires_a_clean_rescan_before_retirement() {
+        for (written, pending) in [(true, false), (false, true)] {
+            let awake = WakeHint::new(false);
+            let scan = awake.begin_scan();
+            if written {
+                awake.written();
+            }
+            awake.end_scan(scan, pending);
+            assert!(awake.keeps_host_awake());
 
-        let scan = awake.begin_scan();
-        awake.end_scan(scan, false);
-        assert!(!awake.keeps_host_awake());
-    }
-
-    #[test]
-    fn pending_graph_work_keeps_host_awake_until_a_clean_scan() {
-        let awake = WakeHint::new(false);
-        let scan = awake.begin_scan();
-        awake.end_scan(scan, true);
-        assert!(awake.keeps_host_awake());
-
-        let scan = awake.begin_scan();
-        awake.end_scan(scan, false);
-        assert!(!awake.keeps_host_awake());
+            let scan = awake.begin_scan();
+            awake.end_scan(scan, false);
+            assert!(!awake.keeps_host_awake());
+        }
     }
 
     #[test]

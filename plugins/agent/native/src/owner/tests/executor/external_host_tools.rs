@@ -218,18 +218,18 @@ async fn native_external_host_questions_wait_inline_while_native_stream_remains_
 
 #[tokio::test]
 async fn native_external_host_excludes_third_party_aliases_and_local_shell_services() {
-    for tooling in [
-        service_tools::Setup::javascript().named("SessionRead"),
-        service_tools::Setup::processes(),
-    ] {
-        let (f, listener) = with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;
-        let session = f.create("Host provenance").await;
-        f.mutation(2, "send", input(&session, "provenance"), Uuid::new_v4())
-            .await
-            .unwrap();
-        let mut control = BufReader::new(listener.accept().await.unwrap().0);
-        let opened = packet(&mut control, "opened").await;
-        tokio::time::timeout(Duration::from_secs(45), async {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        for tooling in [
+            service_tools::Setup::javascript().named("SessionRead"),
+            service_tools::Setup::processes(),
+        ] {
+            let (f, listener) = with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;
+            let session = f.create("Host provenance").await;
+            f.mutation(2, "send", input(&session, "provenance"), Uuid::new_v4())
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let opened = packet(&mut control, "opened").await;
             assert_eq!(opened["request"]["tools"], json!([]));
             plan(
                 &mut control,
@@ -250,12 +250,12 @@ async fn native_external_host_excludes_third_party_aliases_and_local_shell_servi
                     .any(|row| matches!(row.event.fact, Fact::ToolDispatched { .. }))
             );
             finish(&f, &mut control).await;
-        })
-        .await
-        .expect("unavailable Host aliases and local shell calls must be rejected");
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    }
+            f.app.shutdown().await.unwrap();
+            f.config.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

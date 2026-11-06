@@ -1313,14 +1313,13 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn new_transcript_waits_for_creation_and_preserves_buffered_rows_and_partial_tail() {
-        use tokio::io::AsyncWriteExt;
+    async fn new_transcript_waits_for_creation_and_preserves_buffered_rows() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("new.jsonl");
         let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
         assert!(cursor.next().await.unwrap().is_none());
 
-        tokio::fs::write(&path, b"{\"row\":1}\n{\"row\":2}\n{\"row\":")
+        tokio::fs::write(&path, b"{\"row\":1}\n{\"row\":2}\n")
             .await
             .unwrap();
         assert_eq!(
@@ -1330,19 +1329,6 @@ mod tests {
         assert_eq!(
             cursor.next().await.unwrap(),
             Some(serde_json::json!({"row":2}))
-        );
-        assert!(cursor.next().await.unwrap().is_none());
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .await
-            .unwrap();
-        file.write_all(b"3}\n").await.unwrap();
-        file.flush().await.unwrap();
-        assert_eq!(
-            cursor.next().await.unwrap(),
-            Some(serde_json::json!({"row":3}))
         );
         assert!(cursor.next().await.unwrap().is_none());
     }

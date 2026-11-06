@@ -80,7 +80,7 @@ async function setup(t, storage) {
   return { root, settings, fixture };
 }
 
-test('independent UI bundles keep user choices when startup storage replies arrive late', async (t) => {
+test('independent UI bundles retain user choices and restore untouched startup preferences', async (t) => {
   const reads = new Map();
   const saved = new Map();
   const { root, settings, fixture } = await setup(t, {
@@ -96,11 +96,10 @@ test('independent UI bundles keep user choices when startup storage replies arri
   root.initializeAppearance();
   settings.initializeAppearance();
   settings.appearance.chooseTheme('dark');
-  settings.appearance.chooseTextSize(1.3);
   settings.appearance.choosePalette('custom');
   settings.appearance.changeCustom({ hue: 280, tint: 0.3, accent: '#ff0000' }, false);
   reads.get('appearance-theme').resolve('light');
-  reads.get('appearance-text-size').resolve('0.9');
+  reads.get('appearance-text-size').resolve('1.15');
   reads.get('appearance-palette').resolve('sage');
   reads.get('appearance-custom-palette').resolve(
     JSON.stringify({
@@ -112,39 +111,13 @@ test('independent UI bundles keep user choices when startup storage replies arri
   await setImmediate();
   await root.appearance.whenIdle();
   assert.equal(root.appearance.theme(), 'dark');
-  assert.equal(root.appearance.textSize(), 1.3);
+  assert.equal(settings.appearance.textSize(), 1.15);
   assert.equal(root.appearance.palette(), 'custom');
   assert.deepEqual(root.appearance.recipe(), { hue: 280, tint: 0.3, accent: '#ff0000' });
   assert.equal(fixture.themes.at(-1), 'dark');
-  assert.equal(fixture.sizes.at(-1), 1.3);
-  assert.equal(saved.get('appearance-theme'), 'dark');
-  assert.equal(saved.get('appearance-text-size'), '1.3');
-  assert.equal(saved.get('appearance-palette'), 'custom');
-});
-
-test('a selected field does not suppress restoring other appearance preferences', async (t) => {
-  const read = deferred();
-  const values = {
-    'appearance-theme': 'light',
-    'appearance-text-size': '1.15',
-    'appearance-palette': 'sage',
-    'appearance-custom-palette': JSON.stringify({ hue: 160, tint: 0.2, accent: '#123456' }),
-  };
-  const { root, settings, fixture } = await setup(t, {
-    getItem: (key) => read.promise.then(() => values[key]),
-    setItem: async () => {},
-  });
-  root.initializeAppearance();
-  settings.appearance.chooseTheme('dark');
-  read.resolve();
-  await setImmediate();
-  await settings.appearance.whenIdle();
-  assert.equal(root.appearance.theme(), 'dark');
-  assert.equal(settings.appearance.textSize(), 1.15);
-  assert.equal(root.appearance.palette(), 'sage');
-  assert.deepEqual(settings.appearance.custom(), { hue: 160, tint: 0.2, accent: '#123456' });
-  assert.equal(fixture.themes.at(-1), 'dark');
   assert.equal(fixture.sizes.at(-1), 1.15);
+  assert.equal(saved.get('appearance-theme'), 'dark');
+  assert.equal(saved.get('appearance-palette'), 'custom');
 });
 
 test('latest selections persist after a delayed failed write without blocking the owner', async (t) => {

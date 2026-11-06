@@ -556,88 +556,58 @@ mod tests {
     }
 
     #[test]
-    fn canonical_replacement_retires_the_remaining_old_cut() {
-        let original = "old prefix".repeat(20_000);
-        let mut writer = writer(&original, "provider-part");
-        let current = writer.snapshot();
-        let CutPart::Text { message_id, .. } = &current.parts[0] else {
-            panic!("missing text")
-        };
-        let mut delivery = Delivery::new("epoch");
-        delivery.current(Some(current.clone()));
-        assert!(delivery.next(4).unwrap().is_some());
-        delivery.committed(&[StoreStreamEvent {
-            sequence: 5,
-            id: "canonical-part".into(),
-            invocation: current.binding.invocation.clone(),
-            root_run_id: "run".into(),
-            recorded_at: UNIX_EPOCH,
-            fact: StreamFact::ModelPartCommitted {
-                step_id: "step".into(),
-                message_id: message_id.clone(),
-                ordinal: 0,
-            },
-        }]);
-        let PreviewPage::Cut { last, parts, .. } = delivery.next(5).unwrap().unwrap() else {
-            panic!("missing cut completion")
-        };
-        assert!(last);
-        assert!(parts.is_empty());
-        append(&mut writer, "obsolete tail");
-        delivery.current(Some(writer.snapshot()));
-        let PreviewPage::Cut { parts, .. } = delivery.next(5).unwrap().unwrap() else {
-            panic!("missing newer cut")
-        };
-        assert!(parts.is_empty());
-    }
-
-    #[test]
-    fn late_part_receipt_after_last_page_prevents_old_message_from_reappearing() {
-        let mut writer = writer("old", "provider-part");
-        let cut = writer.snapshot();
-        let CutPart::Text { message_id, .. } = &cut.parts[0] else {
-            panic!("missing text")
-        };
-        let mut delivery = Delivery::new("epoch");
-        delivery.current(Some(cut.clone()));
-        let first = drain(&mut delivery, 4);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].text, "old");
-
-        delivery.committed(&[receipt(
-            &cut,
-            5,
-            StreamFact::ModelPartCommitted {
-                step_id: "step".into(),
-                message_id: message_id.clone(),
-                ordinal: 0,
-            },
-        )]);
-        append(&mut writer, " obsolete tail");
-        for event in [
-            ModelEvent::PartFinished {
-                id: "provider-part".into(),
-                provider_options: None,
-            },
-            ModelEvent::PartStarted {
-                id: "fresh-part".into(),
-                text_kind: maka_agent_facts::model::TextKind::Text,
-                provider_options: None,
-            },
-            ModelEvent::PartDelta {
-                id: "fresh-part".into(),
-                text: "fresh".into(),
-                provider_options: None,
-            },
-        ] {
-            writer.push(event, UNIX_EPOCH).unwrap();
+    fn canonical_receipts_retire_old_text_before_and_after_pagination() {
+        for committed_before_last_page in [true, false] {
+            let original = "old prefix".repeat(20_000);
+            let mut writer = writer(&original, "provider-part");
+            let cut = writer.snapshot();
+            let CutPart::Text { message_id, .. } = &cut.parts[0] else {
+                panic!("missing text")
+            };
+            let mut delivery = Delivery::new("epoch");
+            delivery.current(Some(cut.clone()));
+            if committed_before_last_page {
+                assert!(delivery.next(4).unwrap().is_some());
+            } else {
+                let seed = drain(&mut delivery, 4);
+                let text: String = seed.iter().map(|part| part.text.as_str()).collect();
+                assert_eq!(text, original);
+            }
+            delivery.committed(&[receipt(
+                &cut,
+                5,
+                StreamFact::ModelPartCommitted {
+                    step_id: "step".into(),
+                    message_id: message_id.clone(),
+                    ordinal: 0,
+                },
+            )]);
+            append(&mut writer, " obsolete tail");
+            for event in [
+                ModelEvent::PartFinished {
+                    id: "provider-part".into(),
+                    provider_options: None,
+                },
+                ModelEvent::PartStarted {
+                    id: "fresh-part".into(),
+                    text_kind: maka_agent_facts::model::TextKind::Text,
+                    provider_options: None,
+                },
+                ModelEvent::PartDelta {
+                    id: "fresh-part".into(),
+                    text: "fresh".into(),
+                    provider_options: None,
+                },
+            ] {
+                writer.push(event, UNIX_EPOCH).unwrap();
+            }
+            delivery.current(Some(writer.snapshot()));
+            let remaining = drain(&mut delivery, 5);
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].text, "fresh");
+            assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
+            assert_eq!(remaining[0].offset, 0);
         }
-        delivery.current(Some(writer.snapshot()));
-        let remaining = drain(&mut delivery, 5);
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].text, "fresh");
-        assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
-        assert_eq!(remaining[0].offset, 0);
     }
 
     #[test]

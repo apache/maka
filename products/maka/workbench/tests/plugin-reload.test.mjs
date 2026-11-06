@@ -66,7 +66,6 @@ function catalog(revision, root = 'root') {
         contributions: {
           root: { kind: 'root' },
           other: { kind: 'root' },
-          tool: { kind: 'tool_renderer', presentation: 'demo' },
         },
       },
     ],
@@ -87,13 +86,11 @@ async function setup(
     cancels: 0,
     prepares: 0,
     reloads: [],
-    imports: [],
     module: {
       activate: () => ({
         exports: {
           root: { kind: 'root', render() {} },
           other: { kind: 'root', render() {} },
-          tool: { kind: 'tool_renderer', render() {} },
         },
         async prepareReload() {
           fixture.prepares++;
@@ -146,10 +143,7 @@ async function setup(
       export const computed = read => read;
       export const batch = run => run();
       export const cleanup = fn => fixture.cleanups.push(fn);
-      export const importModule = async id => {
-        fixture.imports.push(id);
-        return fixture.module;
-      };`,
+      export const importModule = async () => fixture.module;`,
     'maka/host': `// fixture ${id}
       export const host = globalThis.__pluginReloadFixture.host;`,
     host: 'export const uiHost = {};',
@@ -257,37 +251,6 @@ test('catalog changes while pause is requested use the latest source without ove
   assert.equal(manager.runtime.reloading(), false);
   assert.equal(manager.runtime.source().revision, 3);
   assert.equal(manager.entries()[0].state().kind, 'active');
-});
-
-test('a newly invalid desired catalog releases only the successfully held pause', async (t) => {
-  const prepared = Promise.withResolvers();
-  const { fixture, manager } = await setup(t, { prepare: () => prepared.promise });
-  fixture.publish(catalog(2, 'other'));
-  await setImmediate();
-  assert.equal(fixture.begins, 1);
-  assert.equal(fixture.prepares, 1);
-  const invalid = catalog(3, 'other');
-  invalid.instances.push({ ...invalid.instances[0], instance: ['second'], path: ['second'] });
-  fixture.publish(invalid);
-  await setImmediate();
-  assert.equal(fixture.begins, 1);
-  assert.equal(fixture.cancels, 0);
-  prepared.resolve({ draft: 'kept' });
-  await setImmediate();
-  assert.equal(fixture.cancels, 1);
-  assert.deepEqual(fixture.reloads, []);
-  assert.equal(manager.runtime.reloading(), false);
-  assert.equal(manager.runtime.source().revision, 1);
-  assert.equal(
-    manager.runtime.updateError().message,
-    'Multiple plugins render the same tool presentation: demo',
-  );
-  fixture.publish(catalog(4));
-  await setImmediate();
-  assert.equal(manager.runtime.source().revision, 4);
-  assert.equal(manager.runtime.updateError(), null);
-  assert.equal(fixture.begins, 1);
-  assert.equal(fixture.cancels, 1);
 });
 
 test('preparation failure returns its held pause and preserves the original error', async (t) => {

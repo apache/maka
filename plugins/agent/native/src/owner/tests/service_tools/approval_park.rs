@@ -509,46 +509,34 @@ async fn native_approval_releases_worker_and_resumes_original_operation_once() {
 }
 
 async fn stopped_parked_approval(disable_model: bool) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let counter = Counter::new(Behavior::Returned);
-    let mut setup = Setup::native(counter.clone(), true);
-    setup.confirmation = contract::ToolConfirmation::Required;
-    let fixture = Fixture::with_services(
-        &format!("http://{}/v1", listener.local_addr().unwrap()),
-        None,
-        None,
-        Some(setup),
-    )
-    .await;
-    let session = fixture.create("Stop parked native approval").await;
-    let accepted = fixture.send(&session).await.unwrap();
-    let mut socket = next_model_socket(&listener, &fixture, &session).await;
-    request(&mut socket).await;
-    tool_response(&mut socket).await;
-    eprintln!("approval fixture: waiting pending interaction session={session}");
-    let approval = pending_approval(&fixture, &session).await;
-    eprintln!("approval fixture: pending interaction established session={session}");
-    eprintln!("approval fixture: waiting physical park session={session}");
-    let checkpoint = parked(&fixture, &session).await;
-    eprintln!("approval fixture: physical park confirmed session={session}");
-    if disable_model {
-        super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
-        let basis: MessageBasis =
-            serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).unwrap();
-        let source = crate::model::Source::restore(
-            fixture.owner.configuration.clone(),
-            fixture.owner.credentials.clone(),
-            basis.model.unwrap(),
-            session.clone(),
-            fixture.owner.revision.clone(),
-        )
-        .unwrap();
-        assert!(
-            source.capture().await.is_err(),
-            "fixture must withdraw model preparation"
-        );
-    }
     tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let counter = Counter::new(Behavior::Returned);
+        let mut setup = Setup::native(counter.clone(), true);
+        setup.confirmation = contract::ToolConfirmation::Required;
+        let fixture = Fixture::with_services(
+            &format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup),
+        ).await;
+        let session = fixture.create("Stop parked native approval").await;
+        let accepted = fixture.send(&session).await.unwrap();
+        let mut socket = next_model_socket(&listener, &fixture, &session).await;
+        request(&mut socket).await;
+        tool_response(&mut socket).await;
+        eprintln!("approval fixture: waiting pending interaction session={session}");
+        let approval = pending_approval(&fixture, &session).await;
+        eprintln!("approval fixture: pending interaction established session={session}");
+        eprintln!("approval fixture: waiting physical park session={session}");
+        let checkpoint = parked(&fixture, &session).await;
+        eprintln!("approval fixture: physical park confirmed session={session}");
+        if disable_model {
+            super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;
+            let basis: MessageBasis = serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).unwrap();
+            let source = crate::model::Source::restore(
+                fixture.owner.configuration.clone(), fixture.owner.credentials.clone(),
+                basis.model.unwrap(), session.clone(), fixture.owner.revision.clone(),
+            ).unwrap();
+            assert!(source.capture().await.is_err(), "fixture must withdraw model preparation");
+        }
         let stopped = fixture.mutation(2, "stop", json!({"sessionId":session,
             "invocationId":accepted["invocationId"]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(stopped, json!({"requested":true}));
@@ -574,11 +562,11 @@ async fn stopped_parked_approval(disable_model: bool) {
         assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
         assert_eq!(counter.entered.available_permits(), 0);
         assert!(store.native_approval_checkpoint(&session).await.unwrap().is_none());
-    }).await.expect("stop must settle the parked original operation without executing late approval");
-    eprintln!("approval fixture: waiting Host shutdown session={session}");
-    fixture.app.shutdown().await.unwrap();
-    eprintln!("approval fixture: Host shutdown complete session={session}");
-    fixture.config.shutdown().await.unwrap();
+        eprintln!("approval fixture: waiting Host shutdown session={session}");
+        fixture.app.shutdown().await.unwrap();
+        eprintln!("approval fixture: Host shutdown complete session={session}");
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
