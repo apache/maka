@@ -310,3 +310,135 @@ async fn close_with_withheld_opening(acknowledge: bool) {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_releases_preparation_before_a_delayed_open_observer_resumes() {
+    use maka_host_runtime::{
+        application::{
+            host::protocol::{Opening, Request as HostRequest, Response},
+            transport::wire,
+        },
+        ipc,
+    };
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new().await;
+        let recovering = fixture.client().await;
+        #[cfg(unix)]
+        let address = fixture.directory.path().join("preparation-open-gate.sock");
+        #[cfg(windows)]
+        let address = PathBuf::from(format!(
+            r"\\.\pipe\maka-preparation-open-gate-{}",
+            Uuid::new_v4()
+        ));
+        let mut listener = LocalListener::bind(&address).unwrap();
+        let (accepted, entered) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let proxy = tokio::spawn({
+            let target = fixture.address.clone();
+            let epoch = fixture.host.epoch();
+            async move {
+                let mut workers = tokio::task::JoinSet::new();
+                let mut gate = Some((accepted, released));
+                let mut session = None;
+                for index in 0..2 {
+                    let mut downstream = wire::Reader::new(listener.accept().await.unwrap());
+                    let opening: Opening = downstream.read().await.unwrap();
+                    assert_eq!(opening.epoch, Some(epoch));
+                    match &opening.request {
+                        HostRequest::Connect => assert_eq!(index, 0),
+                        HostRequest::Call { session: actual } => assert_eq!(Some(*actual), session),
+                        _ => panic!("unexpected preparation opening"),
+                    }
+                    let mut upstream = wire::Reader::new(ipc::connect(&target).await.unwrap());
+                    wire::write(&mut upstream.inner, &opening).await.unwrap();
+                    let response: Response = upstream.read().await.unwrap();
+                    let opening_gate = if index == 0 {
+                        let Response::Connected(connected) = &response else {
+                            panic!("missing original anchor");
+                        };
+                        session = Some(connected.session);
+                        None
+                    } else {
+                        assert!(matches!(response, Response::Accepted));
+                        gate.take()
+                    };
+                    workers.spawn(async move {
+                        if let Some((accepted, released)) = opening_gate {
+                            accepted.send(()).unwrap();
+                            released.await.unwrap();
+                        }
+                        wire::write(&mut downstream.inner, &response).await.unwrap();
+                        if let Err(error) = tokio::io::copy_bidirectional(
+                            &mut downstream.inner,
+                            &mut upstream.inner,
+                        )
+                        .await
+                        {
+                            assert!(
+                                matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::ConnectionReset
+                                        | std::io::ErrorKind::BrokenPipe
+                                ),
+                                "preparation relay failed: {error}"
+                            );
+                        }
+                    });
+                }
+                drop(listener);
+                while let Some(worker) = workers.join_next().await {
+                    worker.unwrap();
+                }
+            }
+        });
+        let host = HostClient::connect(&address, Some(fixture.host.epoch()))
+            .await
+            .unwrap();
+        let journal = Journal::open(&fixture.directory.path().join("client.db"))
+            .await
+            .unwrap();
+        let client = Client::new(host, journal, "receipts".into()).unwrap();
+        let id = Uuid::new_v4();
+        let mut opening = Box::pin(client.control(id, "create", Value::Null));
+        tokio::select! {
+            result = &mut opening => panic!("opening bypassed Accepted gate: {}", result.is_ok()),
+            ready = entered => ready.unwrap(),
+        }
+        release.send(()).unwrap();
+        // The original observer remains unpolled while its independently owned
+        // channel opening registers the request and hands it to scope cleanup.
+        while client.pending_requests().await == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            recovering.recover(id).await.unwrap_err(),
+            "client journal still has active preparation"
+        );
+        client.close().await.unwrap();
+        assert_eq!(client.pending_requests().await, 0);
+        let delayed = opening.await.unwrap();
+        assert_eq!(
+            recovering.recover(id).await.unwrap_err(),
+            "client operation ended before dispatch",
+            "resuming an old observer must not reacquire its released preparation lease"
+        );
+        assert!(recovering.operation(id).await.unwrap().abandoned);
+        assert_eq!(fixture.counter.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            client
+                .query("agent", "read", Value::Null)
+                .await
+                .unwrap_err(),
+            "client scope is closing"
+        );
+        drop(delayed);
+        recovering.close().await.unwrap();
+        drop(recovering);
+        drop(client);
+        proxy.await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .unwrap();
+}

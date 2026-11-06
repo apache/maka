@@ -591,6 +591,32 @@ impl Journal {
         rows.into_iter().map(decode_operation).collect()
     }
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextRef<'a> {
+    id: Uuid,
+    host: &'a DeploymentRef,
+    endpoint: &'a str,
+    method: &'a str,
+    session_id: Option<&'a str>,
+    correlation: &'a Value,
+    draft: Option<&'a DraftReference>,
+    upload: Option<&'a UploadReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredContext {
+    id: Uuid,
+    host: DeploymentRef,
+    endpoint: String,
+    method: String,
+    session_id: Option<String>,
+    correlation: Value,
+    draft: Option<DraftReference>,
+    upload: Option<UploadReference>,
+}
+
 fn encode_operation(operation: &Operation) -> Result<String> {
     if operation.id.is_nil()
         || operation
@@ -601,25 +627,47 @@ fn encode_operation(operation: &Operation) -> Result<String> {
         return Err("invalid client operation identity".into());
     }
     maka_plugin_core::json::exact_numbers(&operation.correlation)?;
-    serde_json::to_string(operation).map_err(error)
+    serde_json::to_string(&ContextRef {
+        id: operation.id,
+        host: &operation.host,
+        endpoint: &operation.endpoint,
+        method: &operation.method,
+        session_id: operation.session_id.as_deref(),
+        correlation: &operation.correlation,
+        draft: operation.draft.as_ref(),
+        upload: operation.upload.as_ref(),
+    })
+    .map_err(error)
 }
 fn decode_operation(row: SqliteRow) -> Result<Operation> {
-    let mut operation: Operation =
+    let context: StoredContext =
         serde_json::from_str(row.try_get("context").map_err(error)?).map_err(error)?;
-    operation.reference = row
+    let reference = row
         .try_get::<Option<&str>, _>("reference")
         .map_err(error)?
         .map(serde_json::from_str)
         .transpose()
         .map_err(error)?;
-    operation.receipt = row
+    let receipt = row
         .try_get::<Option<&str>, _>("receipt")
         .map_err(error)?
         .map(serde_json::from_str)
         .transpose()
         .map_err(error)?;
-    operation.abandoned = row.try_get::<i64, _>("abandoned").map_err(error)? != 0;
-    Ok(operation)
+    let abandoned = row.try_get::<i64, _>("abandoned").map_err(error)? != 0;
+    Ok(Operation {
+        id: context.id,
+        host: context.host,
+        endpoint: context.endpoint,
+        method: context.method,
+        session_id: context.session_id,
+        correlation: context.correlation,
+        draft: context.draft,
+        upload: context.upload,
+        abandoned,
+        reference,
+        receipt,
+    })
 }
 fn accepted_send(receipt: &Receipt, session: &str) -> bool {
     let Receipt::Recorded {
@@ -744,8 +792,136 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_plugin_core::operation::OperationCleanup;
+    use maka_plugin_core::{
+        contract::Transport,
+        operation::{OperationCleanup, RecoveryContract, RecoveryProtocol},
+    };
     use sqlx::{Connection, SqliteConnection};
+
+    #[tokio::test]
+    async fn execution_observations_survive_reopen_without_changing_reservation_context() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.db");
+        let journal = Journal::open(&path).await.unwrap();
+        let host = DeploymentRef {
+            state_domain: "a".repeat(64),
+            deployment: Uuid::from_u128(9),
+            revision: 1,
+        };
+        let mut originals = Vec::new();
+        for operation_id in [1, 2] {
+            let operation = Operation {
+                id: Uuid::from_u128(operation_id),
+                host: host.clone(),
+                endpoint: "agent".into(),
+                method: "create".into(),
+                session_id: Some("session".into()),
+                correlation: serde_json::json!({"editor":"composer"}),
+                draft: None,
+                upload: None,
+                abandoned: false,
+                reference: None,
+                receipt: None,
+            };
+            journal.reserve(&operation).await.unwrap();
+            let context: String = sqlx::query_scalar("SELECT context FROM operations WHERE id=?")
+                .bind(operation.id.to_string())
+                .fetch_one(&journal.pool)
+                .await
+                .unwrap();
+            let stored: Value = serde_json::from_str(&context).unwrap();
+            assert_eq!(
+                stored["correlation"],
+                serde_json::json!({"editor":"composer"})
+            );
+            for field in ["reference", "receipt", "abandoned"] {
+                assert!(
+                    stored.get(field).is_none(),
+                    "execution observation {field} must not be copied into reservation context"
+                );
+            }
+            let reference = RecoveryRef {
+                source: host.clone(),
+                namespace: InstanceId(vec![Uuid::from_u128(3)]),
+                export: "Agent".into(),
+                method: "create".into(),
+                operation: operation.id,
+                fingerprint: format!("sha256-{}", "f".repeat(64)),
+                contract: RecoveryContract {
+                    name: "test.Agent".into(),
+                    version: 1,
+                    transport: Transport::Remote,
+                    digest: format!("sha256-{}", "c".repeat(64)),
+                },
+                recovery: RecoveryProtocol::JournalV1,
+            };
+            journal.prepared(operation.id, &reference).await.unwrap();
+            if operation_id == 1 {
+                journal
+                    .observe(
+                        &operation,
+                        &Receipt::Recorded {
+                            outcome: OperationOutcome::Returned {
+                                value: serde_json::json!({"accepted":1}),
+                            },
+                            cleanup: OperationCleanup::Confirmed,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                journal
+                    .abandon_undispatched(&host, operation.id, &reference)
+                    .await
+                    .unwrap();
+            }
+            originals.push((operation.id, reference, context));
+        }
+        journal.pool.close().await;
+        drop(journal);
+
+        let reopened = Journal::open(&path).await.unwrap();
+        for (id, reference, context) in originals {
+            let loaded = reopened.load(&host, id).await.unwrap();
+            assert_eq!(loaded.id, id);
+            assert_eq!(loaded.host, host);
+            assert_eq!(
+                (
+                    loaded.endpoint.as_str(),
+                    loaded.method.as_str(),
+                    loaded.session_id.as_deref(),
+                ),
+                ("agent", "create", Some("session"))
+            );
+            assert_eq!(loaded.reference.as_ref(), Some(&reference));
+            if id == Uuid::from_u128(1) {
+                assert!(!loaded.abandoned);
+                assert_eq!(
+                    loaded.receipt,
+                    Some(Receipt::Recorded {
+                        outcome: OperationOutcome::Returned {
+                            value: serde_json::json!({"accepted":1}),
+                        },
+                        cleanup: OperationCleanup::Confirmed,
+                    })
+                );
+            } else {
+                assert!(loaded.abandoned);
+                assert_eq!(loaded.receipt, None);
+                assert_eq!(
+                    reopened.prepared(id, &reference).await.unwrap_err(),
+                    "original client preparation was already recorded or is unavailable"
+                );
+            }
+            let after: String = sqlx::query_scalar("SELECT context FROM operations WHERE id=?")
+                .bind(id.to_string())
+                .fetch_one(&reopened.pool)
+                .await
+                .unwrap();
+            assert_eq!(after, context);
+        }
+        reopened.pool.close().await;
+    }
 
     #[tokio::test]
     async fn reopened_terminal_recovery_lists_every_unsettled_original_for_its_session() {
