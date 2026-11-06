@@ -534,7 +534,9 @@ export function createGeneralSettings(
     },
     recovered,
     refresh() {
-      if (visible() && !editor() && !operations.busy() && !loading()) void load();
+      if (!visible() || editor() || operations.busy() || loading()) return;
+      operations.error.set('');
+      void load();
     },
     cancel(request: GeneralAction) {
       if (current(request)) back();

@@ -222,6 +222,9 @@ function PluginDetail(props: { owner: PluginSettingsOwner; request: PluginAction
           </If>
         </SettingsSection>
       </If>
+      <If when={!plugin().structural && !owner.fields() && !owner.loading()}>
+        <SettingsProblem retry={inputAction(owner.reload, request)} />
+      </If>
     </SettingsBody>
   );
 }

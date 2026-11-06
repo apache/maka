@@ -310,7 +310,9 @@ export function createMcpSettings(
     remove,
     back,
     refresh: () => {
-      if (!editor() && !deleting() && !scope.busy()) void load();
+      if (editor() || deleting() || scope.busy()) return;
+      operations.error.set('');
+      void load();
     },
     addArgument: () => {
       const draft = editor();

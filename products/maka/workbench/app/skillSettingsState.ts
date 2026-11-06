@@ -130,7 +130,10 @@ export function createSkillSettings(
       }
       document.set(result);
     } catch (error) {
-      if (alive && request === read) operations.report(error);
+      if (alive && request === read) {
+        if (!document()) screen.set('library');
+        operations.report(error);
+      }
     } finally {
       if (alive && request === read) loading.set(false);
     }
@@ -223,7 +226,9 @@ export function createSkillSettings(
     busy: scope.busy,
     back,
     refresh: () => {
-      if (screen() === 'library' && !deleting() && !scope.busy()) refresh();
+      if (screen() !== 'library' || deleting() || scope.busy()) return;
+      operations.error.set('');
+      refresh();
     },
     open,
     readDocument,
