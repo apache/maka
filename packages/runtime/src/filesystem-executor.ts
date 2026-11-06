@@ -666,6 +666,15 @@ function createWorkspaceFilesystemExecutor(
           const { files, truncated } = await workspace.globFiles({
             cwd: base,
             pattern: operation.pattern,
+            // Brace expansion can walk above the session cwd without the
+            // pattern text ever containing a `..` segment, so the lexical
+            // guard alone cannot contain workspace globs; results are
+            // filtered against the session cwd instead. The root shares the
+            // canonical spelling of the search base (the walker's cwd), or a
+            // symlinked workspace root (/var → /private/var) would reject
+            // every legitimate entry. Host scope has no boundary to escape
+            // and keeps raw results.
+            ...(scope === 'workspace' ? { containmentRoot: await canonicalExistingPath(cwd) } : {}),
             ...(operation.limit !== undefined ? { limit: operation.limit } : {}),
             ...(abortSignal ? { abortSignal } : {}),
           });
