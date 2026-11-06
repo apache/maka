@@ -57,6 +57,10 @@ async fn exact_load_reads_frozen_history_and_artifacts_without_changing_live_ses
         let bytes=vec![73;65539];
         attachments::upload(&f,&session,"before.txt",&bytes,Uuid::new_v4()).await.unwrap();
         turn(&f,&listener,&session,"frozen response").await;
+        let before = f.query("history", json!({"sessionId":session,"position":{"kind":"start"}})).await.unwrap();
+        let chunks = before["chunks"].as_array().unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|chunk| chunk["order"]["sourceSequence"].is_u64()));
         let checkpoint=published(publish(&f,input(&f,&session,Value::Null).await,Uuid::new_v4()).await.1);
         let head=checkpoint["state"]["head"].clone();
         turn(&f,&listener,&session,"later live response").await;
@@ -67,6 +71,7 @@ async fn exact_load_reads_frozen_history_and_artifacts_without_changing_live_ses
         assert_eq!(result["head"],head);
         let inspection=result["inspection"].clone();
         let page=f.query("loadedHistoryCheckpointHistory",json!({"inspection":inspection,"sessionId":session,"position":{"kind":"start"}})).await.unwrap();
+        assert_eq!(page["chunks"], before["chunks"]);
         let text=page.to_string();assert!(text.contains("frozen response"));assert!(!text.contains("later live response"));
         let live=f.query("history",json!({"sessionId":session,"position":{"kind":"tail"}})).await.unwrap();
         assert!(live.to_string().contains("later live response"));

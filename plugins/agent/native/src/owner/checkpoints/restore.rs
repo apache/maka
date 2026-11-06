@@ -108,55 +108,39 @@ impl Owner {
                     return Err("agent_checkpoint_backend_unavailable".into());
                 }
                 let root = owner.store.owned_root().map_err(failure)?;
-                let path = std::path::PathBuf::from(&input.parent);
-                if !path.is_absolute() {
-                    return Err("agent_directory_unavailable".into());
-                }
-                let path = tokio::task::spawn_blocking(move || path.canonicalize())
-                    .await
-                    .map_err(|_| "agent_directory_unavailable")?
-                    .map_err(|_| "agent_directory_unavailable")?;
+                let parent = workspace::observed(
+                    owner.workspace_roots.clone(),
+                    &input.parent,
+                    None,
+                    root.canonical_path().to_owned(),
+                )
+                .await?
+                .ok_or("agent_directory_unavailable")?;
+                let path = std::path::PathBuf::from(parent.path);
                 if path.starts_with(root.control_directory())
                     || path.starts_with(&owner.managed_worktrees)
                 {
                     return Err("agent_directory_unavailable".into());
                 }
-                let selection = workspace::selection_at(
-                    owner.workspace_roots.clone(),
-                    path.to_string_lossy().into_owned(),
-                    root.canonical_path().to_owned(),
-                )
-                .await?
-                .ok_or("agent_directory_unavailable")?;
-                let parent = workspace::observed(
-                    owner.workspace_roots.clone(),
-                    selection,
-                    root.canonical_path().to_owned(),
-                )
-                .await?
-                .ok_or("agent_directory_unavailable")?;
                 let request = storage::RestoreOperation {
                     operation: operation.operation,
                     fingerprint,
                     revision: storage::Revision(input.checkpoint.revision),
-                    parent: parent.path.into(),
-                    parent_identity: parent.selection.directory_identity,
+                    parent: path,
+                    parent_identity: parent.identity,
                 };
                 let prepared = repository
                     .prepare_workspace_restore(request.clone())
                     .await
                     .map_err(failure)?;
                 let root = owner.store.owned_root().map_err(failure)?;
-                let selection = workspace::selection_at(
-                    owner.workspace_roots.clone(),
-                    prepared.path.to_string_lossy().into_owned(),
-                    root.canonical_path().to_owned(),
-                )
-                .await?
-                .ok_or("agent_directory_unavailable")?;
                 let selected = workspace::initialize(
                     &owner.workspace_roots,
-                    selection,
+                    prepared
+                        .path
+                        .to_str()
+                        .ok_or("agent_directory_unavailable")?,
+                    None,
                     &owner.managed_worktrees,
                     root.canonical_path(),
                     root.control_directory(),

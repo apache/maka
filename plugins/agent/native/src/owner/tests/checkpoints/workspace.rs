@@ -226,7 +226,7 @@ async fn checkpoint_admission_excludes_shared_workspaces_without_stalling_other_
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let b = f.mutation(2,"create",json!({"title":"Unrelated B","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+    let b = f.mutation(2,"create",json!({"title":"Unrelated B","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
     let shared_producer = f.owner.runs.ordered(&shared).await;
     assert!(f.owner.checkpoint_admission(&a).await.is_err());
     drop(shared_producer);

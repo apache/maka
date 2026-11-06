@@ -175,7 +175,7 @@ export type AgentLoadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
 /**
  * Row reveals an exact field; Before/After continue at byte boundaries and
- * Event addresses the raw event log. Returned chunks retain ascending source
+ * Event addresses the raw event log. Returned chunks retain ascending presentation
  * order, including a reverse window.
  */
 export type AgentLoadedHistoryCheckpointHistoryInput_HistoryPosition =
