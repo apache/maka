@@ -94,13 +94,14 @@ pub(super) fn spawn(
     config: EngineConfig,
     pending: Arc<AtomicBool>,
     driver: thread::Thread,
+    tmux: bool,
 ) -> io::Result<(mpsc::SyncSender<Advance>, Frames)> {
     let (send, commands) = mpsc::sync_channel::<Advance>(1);
     let (frames, receive) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name("maka-nsh-ui".into())
         .spawn(move || {
-            let mut session = match Session::new(config) {
+            let mut session = match Session::new(config, tmux) {
                 Ok(session) => session,
                 Err(error) => {
                     let _ = frames.send(Err(error));
@@ -146,6 +147,7 @@ struct Session {
     dirty: bool,
     started: Instant,
     effects: Vec<u8>,
+    tmux: bool,
     deadline: Option<Instant>,
     frame_requested: bool,
     last_sent_focus_path: Option<Vec<nsh_core::NodeId>>,
@@ -153,7 +155,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(mut config: EngineConfig) -> Result<Self, String> {
+    fn new(mut config: EngineConfig, tmux: bool) -> Result<Self, String> {
         let metrics = CellMetrics::default();
         let columns = (config.viewport.width / metrics.width()).round() as u16;
         let rows = (config.viewport.height / metrics.height()).round() as u16;
@@ -201,6 +203,7 @@ impl Session {
             dirty: false,
             started: Instant::now(),
             effects: Vec::new(),
+            tmux,
             // The first advance obtains the engine's actual timer deadline.
             deadline: Some(Instant::now()),
             frame_requested: false,
@@ -416,8 +419,7 @@ impl Session {
                 SurfaceEvent::Zoom(id, scale) => control.zoom(id, scale),
                 SurfaceEvent::RootSize(id, size, insets) => control.set_root_size(id, size, insets),
                 SurfaceEvent::Service(ServiceRequest::ClipboardWrite(text)) => {
-                    let sequence = ServiceOutput::Clipboard(text)
-                        .terminal_sequence(std::env::var_os("TMUX").is_some());
+                    let sequence = ServiceOutput::Clipboard(text).terminal_sequence(self.tmux);
                     self.effects.extend_from_slice(sequence.as_bytes());
                 }
                 SurfaceEvent::Service(ServiceRequest::ClipboardRead { id, has_only }) => {
@@ -628,7 +630,7 @@ mod tests {
         options.environment.idiom = Idiom::Desktop;
         options.environment.native_focus_scopes = true;
         options.ui_sets.push(registry);
-        let mut session = Session::new(options).unwrap();
+        let mut session = Session::new(options, false).unwrap();
         session.initial_frame().unwrap();
         wait(&mut session, "DESKTOP_BRANCH");
         let events = click(&session.surface, "Collapse A");
@@ -695,7 +697,7 @@ mod tests {
         host.handle("observed", move |call| {
             received.lock().unwrap().push(call.data().clone())
         });
-        let mut session = Session::new(options).unwrap();
+        let mut session = Session::new(options, false).unwrap();
         let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
         session.reloading = Some(receiver);
         session.initial_frame().unwrap();
@@ -813,7 +815,7 @@ mod tests {
                 };
                 let pending = Arc::new(AtomicBool::new(false));
                 let (commands, frames) =
-                    super::spawn(options, pending.clone(), thread::current()).unwrap();
+                    super::spawn(options, pending.clone(), thread::current(), false).unwrap();
                 let mut output = super::super::output::Output::new(Capture {
                     bytes: Vec::new(),
                     flushed,
@@ -855,8 +857,9 @@ mod tests {
 
     #[test]
     fn unchanged_and_cleared_native_focus_settle_without_idle_engine_work() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount } from "nsh";
             import { element, prop } from "nsh:rt";
             mount(() => {
@@ -866,7 +869,9 @@ mod tests {
                 return input;
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         let editor = session.surface.input_context().unwrap();
@@ -909,7 +914,7 @@ mod tests {
             "#,
         );
         options.environment.window = options.viewport;
-        let mut session = Session::new(options).unwrap();
+        let mut session = Session::new(options, false).unwrap();
         session.initial_frame().unwrap();
         assert!(session.surface.snapshot().contains("NARROW_WINDOW"));
         for (columns, rows, expected, absent) in [
@@ -965,7 +970,7 @@ mod tests {
         "#,
         );
         options.assets = Some(Arc::new(ImageAssets));
-        let mut session = Session::new(options).unwrap();
+        let mut session = Session::new(options, false).unwrap();
         let mut bytes = session.initial_frame().unwrap().bytes.unwrap_or_default();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1211,7 +1216,7 @@ mod tests {
                 "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
                 "requestAnimationFrame(() => current.set(\"B\"));",
             );
-        let mut session = Session::new(config(&source)).unwrap();
+        let mut session = Session::new(config(&source), false).unwrap();
         session.initial_frame().unwrap();
         let events = click(&session.surface, "row:A");
         let row = session
@@ -1250,7 +1255,7 @@ mod tests {
                 "onPress: () => selected.set(row().id),",
                 "onPress: () => { selected.set(row().id); rows.set([{ id: \"B\" }]); },",
             );
-        let mut session = Session::new(config(&source)).unwrap();
+        let mut session = Session::new(config(&source), false).unwrap();
         session.initial_frame().unwrap();
         let mut events = click(&session.surface, "row:A");
         events.extend(events.clone());
@@ -1260,8 +1265,9 @@ mod tests {
 
     #[test]
     fn press_up_and_press_callbacks_from_one_release_both_reach_the_application() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount, signal } from "nsh";
             import { Button } from "nsh/base";
             import { element, prop, insert, append } from "nsh:rt";
@@ -1283,7 +1289,9 @@ mod tests {
                 return root;
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         let events = click(&session.surface, "Run");
@@ -1293,8 +1301,9 @@ mod tests {
 
     #[test]
     fn ordinary_actions_continue_while_frame_callbacks_wait_for_drawing() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { inputAction, mount, signal } from "nsh";
             import { Button } from "nsh/base";
             import { element, prop, insert, append } from "nsh:rt";
@@ -1321,7 +1330,9 @@ mod tests {
                 });
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         assert!(session.surface.snapshot().contains("before closed:0"));
@@ -1390,8 +1401,9 @@ mod tests {
                 Ok(())
             }
         }
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount, signal } from "nsh";
             import { Button } from "nsh/base";
             import { element, prop, bindProp, insert, append } from "nsh:rt";
@@ -1418,7 +1430,9 @@ mod tests {
                 return root;
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         let initial = session.initial_frame().unwrap();
         let initial_bytes = initial.bytes.clone().unwrap();
@@ -1583,7 +1597,7 @@ mod tests {
         "#;
         for text in [true, false] {
             let source = APP.replace("USE_TEXT", if text { "true" } else { "false" });
-            let mut session = Session::new(config(&source)).unwrap();
+            let mut session = Session::new(config(&source), false).unwrap();
             session.initial_frame().unwrap();
             assert_eq!(
                 session.surface.input_context().unwrap().text.as_deref(),
@@ -1638,7 +1652,7 @@ mod tests {
         for (drag, selected, expected, caret) in
             [(false, 2..2, "heXllo", 3..3), (true, 1..4, "hXo", 2..2)]
         {
-            let mut session = Session::new(config(APP)).unwrap();
+            let mut session = Session::new(config(APP), false).unwrap();
             session.initial_frame().unwrap();
             assert_eq!(
                 session.surface.input_context().unwrap().text.as_deref(),
@@ -1691,8 +1705,9 @@ mod tests {
 
     #[test]
     fn bracketed_cjk_paste_preserves_the_literal_text_and_utf16_caret() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount, signal } from "nsh";
             import { element, prop, bindProp } from "nsh:rt";
             const draft = signal("a😀中z");
@@ -1705,7 +1720,9 @@ mod tests {
                 return input;
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         let mut input = command([
@@ -1731,8 +1748,9 @@ mod tests {
 
     #[test]
     fn wheels_then_a_click_use_the_current_viewport_in_fifo_order() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount, signal } from "nsh";
             import { element, prop, insert, append } from "nsh:rt";
             const offset = signal(0);
@@ -1760,7 +1778,9 @@ mod tests {
                 return root;
             });
             "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         let mut events = vec![mouse(&session.surface, "row:0", MouseEventKind::ScrollDown, 0); 3];
@@ -1822,7 +1842,7 @@ mod tests {
         "#;
         for replace_owner in [false, true] {
             let source = APP.replace("REPLACE_OWNER", &replace_owner.to_string());
-            let mut session = Session::new(config(&source)).unwrap();
+            let mut session = Session::new(config(&source), false).unwrap();
             session.initial_frame().unwrap();
             assert!(session.surface.snapshot().contains("Row A:9"));
             let editor = session.surface.input_context().unwrap();
@@ -1850,7 +1870,7 @@ mod tests {
             "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
             "",
         );
-        let mut session = Session::new(config(&source)).unwrap();
+        let mut session = Session::new(config(&source), false).unwrap();
         session.initial_frame().unwrap();
         let down = mouse(
             &session.surface,
@@ -1879,7 +1899,7 @@ mod tests {
 
     #[test]
     fn mount_deltas_are_applied_in_order_including_create_and_later_value() {
-        let mut session = Session::new(config("import { mount } from 'nsh'; import { element } from 'nsh:rt'; mount(() => element('view')); ")).unwrap();
+        let mut session = Session::new(config("import { mount } from 'nsh'; import { element } from 'nsh:rt'; mount(() => element('view')); "), false).unwrap();
         session.initial_frame().unwrap();
         session.sink.submit(MountBatch {
             items: vec![
@@ -1920,8 +1940,13 @@ mod tests {
 
     #[test]
     fn ctrl_c_copies_selected_unicode_through_the_same_output_frame() {
-        let mut session = Session::new(config(
-            r#"
+        for (tmux, sequence) in [
+            (false, "\x1b]52;c;5L2g5aW9QQ==\x1b\\"),
+            (true, "\x1bPtmux;\x1b\x1b]52;c;5L2g5aW9QQ==\x1b\x1b\\\x1b\\"),
+        ] {
+            let mut session = Session::new(
+                config(
+                    r#"
             import { mount } from "nsh";
             import { element, prop, insert } from "nsh:rt";
             mount(() => {
@@ -1931,37 +1956,39 @@ mod tests {
                 return node;
             });
         "#,
-        ))
-        .unwrap();
-        session.initial_frame().unwrap();
-        let command = |key| Advance {
-            image_protocol: None,
-            inputs: vec![Event::Key(KeyEvent::new(
-                KeyCode::Char(key),
-                KeyModifiers::CONTROL,
-            ))],
-            resize: None,
-            cancel_pointer: false,
-            draw: true,
-        };
-        session.advance(command('a')).unwrap();
-        let copied = session.advance(command('c')).unwrap();
-        assert!(!copied.quit);
-        let sequence = ServiceOutput::Clipboard("你好A".into())
-            .terminal_sequence(std::env::var_os("TMUX").is_some());
-        assert!(
-            copied
-                .bytes
-                .unwrap()
-                .windows(sequence.len())
-                .any(|bytes| bytes == sequence.as_bytes())
-        );
+                ),
+                tmux,
+            )
+            .unwrap();
+            session.initial_frame().unwrap();
+            let command = |key| Advance {
+                image_protocol: None,
+                inputs: vec![Event::Key(KeyEvent::new(
+                    KeyCode::Char(key),
+                    KeyModifiers::CONTROL,
+                ))],
+                resize: None,
+                cancel_pointer: false,
+                draw: true,
+            };
+            session.advance(command('a')).unwrap();
+            let copied = session.advance(command('c')).unwrap();
+            assert!(!copied.quit);
+            assert!(
+                copied
+                    .bytes
+                    .unwrap()
+                    .windows(sequence.len())
+                    .any(|bytes| bytes == sequence.as_bytes())
+            );
+        }
     }
 
     #[test]
     fn large_copy_preserves_the_draft_and_cut_delivers_the_complete_text_once() {
-        let mut session = Session::new(config(
-            r#"
+        let mut session = Session::new(
+            config(
+                r#"
             import { mount, signal } from "nsh";
             import { element, prop, bindProp } from "nsh:rt";
             const value = signal("x".repeat(1048577) + "😀");
@@ -1974,7 +2001,9 @@ mod tests {
                 return input;
             });
         "#,
-        ))
+            ),
+            false,
+        )
         .unwrap();
         session.initial_frame().unwrap();
         let command = |key, modifiers| Advance {
@@ -2002,8 +2031,7 @@ mod tests {
                 })
             );
             let bytes = frame.bytes.unwrap();
-            let sequence = ServiceOutput::Clipboard(original.clone())
-                .terminal_sequence(std::env::var_os("TMUX").is_some());
+            let sequence = ServiceOutput::Clipboard(original.clone()).terminal_sequence(false);
             assert!(
                 bytes
                     .windows(sequence.len())
@@ -2025,8 +2053,7 @@ mod tests {
             session.surface.input_context().unwrap().text.as_deref(),
             Some("")
         );
-        let sequence = ServiceOutput::Clipboard("z".into())
-            .terminal_sequence(std::env::var_os("TMUX").is_some());
+        let sequence = ServiceOutput::Clipboard("z".into()).terminal_sequence(false);
         assert!(
             cut.bytes
                 .unwrap()
