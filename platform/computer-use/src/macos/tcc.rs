@@ -112,7 +112,7 @@ pub(crate) fn raw_present(grant: Grant) -> bool {
 /// Requests one grant in a finite process; the budget belongs to this Host.
 pub(crate) fn ask(grant: Grant, cancelled: &(dyn Fn() -> bool + Sync)) -> Result<(), String> {
     let subject = crate::system_permission::process::Subject::current()?;
-    crate::system_permission::application_identity::validate(&subject.bundle_path)?;
+    subject.require_application()?;
     request_once(grant.asked(), || {
         crate::system_permission::process::request(&subject, grant.into(), cancelled)
     })

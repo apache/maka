@@ -240,7 +240,13 @@ export const suites = {
     workspace: 'root',
     packages: ['maka-computer-use'],
     cargoArgs: ['--locked', '-p', 'maka-computer-use', '--lib', '--features', 'native-desktop'],
-    filter: 'test(macos::controller::tests::) | test(macos::tcc::tests::)',
+    filter: [
+      'test(macos::controller::tests::)',
+      'test(macos::tcc::tests::)',
+      'test(system_permission::process::tests::)',
+      'test(desktop::worker::macos::tests::)',
+      'test(driver::tests::fresh_binding_replaces_failed_controller_without_restarting_old_owner)',
+    ].join(' | '),
   },
 };
 

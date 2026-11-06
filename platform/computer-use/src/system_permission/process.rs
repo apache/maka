@@ -31,7 +31,14 @@ use std::path::PathBuf;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Subject {
     responsible_pid: libc::pid_t,
-    pub(crate) bundle_path: PathBuf,
+    executable_path: PathBuf,
+    application: Option<ApplicationIdentity>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplicationIdentity {
+    path: PathBuf,
     identifier: String,
 }
 
@@ -42,18 +49,35 @@ impl Subject {
 
     fn for_process(pid: libc::pid_t) -> Result<Self, String> {
         let (responsible_pid, executable) = tcc::responsible_process(pid)?;
-        let bundle_path = tcc::application_bundle(&executable)
-            .ok_or_else(|| {
-                format!("Responsible process PID {responsible_pid} has no application bundle")
-            })?
+        Self::from_executable(responsible_pid, executable)
+    }
+
+    fn from_executable(responsible_pid: libc::pid_t, executable: PathBuf) -> Result<Self, String> {
+        let executable_path = executable
             .canonicalize()
-            .map_err(|error| format!("Cannot resolve responsible application bundle: {error}"))?;
-        let identifier = application_identity::identifier(&bundle_path)?;
+            .map_err(|error| format!("Cannot resolve responsible executable: {error}"))?;
+        let application = tcc::application_bundle(&executable_path)
+            .map(|path| {
+                Ok::<_, String>(ApplicationIdentity {
+                    path: path.to_owned(),
+                    identifier: application_identity::identifier(path)?,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             responsible_pid,
-            bundle_path,
-            identifier,
+            executable_path,
+            application,
         })
+    }
+
+    pub(crate) fn require_application(&self) -> Result<(), String> {
+        if self.application.is_none() {
+            return Err(
+                "System permission prompts require a responsible application bundle".into(),
+            );
+        }
+        Ok(())
     }
 
     fn finite_child() -> Result<Self, String> {
@@ -170,7 +194,7 @@ pub(crate) fn finite_status() -> Result<Value, String> {
 
 pub(crate) fn finite_request(grant: SystemPermissionGrant) -> Result<Value, String> {
     let subject = Subject::finite_child()?;
-    application_identity::validate(&subject.bundle_path)?;
+    subject.require_application()?;
     if !tcc::raw_present(grant.into()) {
         Grant::from(grant).request();
     }
@@ -188,12 +212,18 @@ mod tests {
 
     #[test]
     fn fresh_grants_require_host_confirmation_without_probing_denied_grants() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("host");
+        std::fs::write(&executable, "fixture executable").unwrap();
+        let subject = Subject::from_executable(41, executable.clone()).unwrap();
+        assert_eq!(subject.executable_path, executable.canonicalize().unwrap());
+        assert!(subject.application.is_none());
+        assert_eq!(
+            subject.require_application().unwrap_err(),
+            "System permission prompts require a responsible application bundle"
+        );
         let mut observed = Snapshot {
-            subject: Subject {
-                responsible_pid: 41,
-                bundle_path: "/installed/Host.app".into(),
-                identifier: "test.host".into(),
-            },
+            subject,
             grants: Grants {
                 accessibility: false,
                 screen_recording: false,

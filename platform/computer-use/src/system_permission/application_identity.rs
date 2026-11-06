@@ -18,12 +18,8 @@
  */
 
 use objc2::rc::{Retained, autoreleasepool};
-use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSBundle, NSString, NSURL};
-use std::{
-    ffi::c_void,
-    path::{Path, PathBuf},
-};
+use std::{ffi::c_void, path::Path};
 
 #[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
@@ -31,6 +27,7 @@ unsafe extern "C" {
 }
 
 pub(super) fn register(bundle: &Path) -> Result<(), String> {
+    identifier(bundle)?;
     autoreleasepool(|_| {
         let url = file_url(bundle)?;
         // SAFETY: NSURL is toll-free bridged to CFURLRef. The retained URL
@@ -42,11 +39,10 @@ pub(super) fn register(bundle: &Path) -> Result<(), String> {
                 bundle.display()
             ));
         }
-        validate(bundle)
+        Ok(())
     })
 }
 
-#[cfg(feature = "native-desktop")]
 pub(crate) fn identifier(bundle: &Path) -> Result<String, String> {
     autoreleasepool(|_| {
         let url = file_url(bundle)?;
@@ -59,51 +55,6 @@ pub(crate) fn identifier(bundle: &Path) -> Result<String, String> {
                     bundle.display()
                 )
             })
-    })
-}
-
-pub(crate) fn validate(bundle: &Path) -> Result<(), String> {
-    autoreleasepool(|_| {
-        let url = file_url(bundle)?;
-        let application = NSBundle::bundleWithURL(&url)
-            .ok_or_else(|| format!("macOS cannot read application bundle {}", bundle.display()))?;
-        let identifier = application.bundleIdentifier().ok_or_else(|| {
-            format!(
-                "Application bundle {} has no bundle identifier",
-                bundle.display()
-            )
-        })?;
-        let resolved = NSWorkspace::sharedWorkspace()
-            .URLForApplicationWithBundleIdentifier(&identifier)
-            .and_then(|url| url.path())
-            .map(|path| PathBuf::from(path.to_string()));
-        let identifier = identifier.to_string();
-        let resolved = resolved.ok_or_else(|| {
-            format!(
-                "LaunchServices cannot resolve application {identifier} at {}",
-                bundle.display()
-            )
-        })?;
-        let actual = resolved.canonicalize().map_err(|error| {
-            format!(
-                "Cannot resolve registered application {identifier} at {}: {error}",
-                resolved.display()
-            )
-        })?;
-        let expected = bundle.canonicalize().map_err(|error| {
-            format!(
-                "Cannot resolve application bundle {}: {error}",
-                bundle.display()
-            )
-        })?;
-        if actual != expected {
-            return Err(format!(
-                "LaunchServices resolves application {identifier} to {}, not {}",
-                actual.display(),
-                expected.display()
-            ));
-        }
-        Ok(())
     })
 }
 
