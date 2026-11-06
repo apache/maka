@@ -28,7 +28,7 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-use nsh_platform_macos::{AppOptions, quit_app, run_resident_app_with_config, with_running_view};
+use nsh_platform_macos::{AppOptions, run_resident_app_with_config, with_running_view};
 use tokio::{runtime::Runtime, sync::watch};
 
 pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
@@ -94,8 +94,12 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         mut notices,
     } = requests;
     runtime.spawn(async move {
-        if exits.recv().await.is_some() {
-            quit_app();
+        while exits.recv().await.is_some() {
+            with_running_view(|view| {
+                if let Some(window) = view.view().window() {
+                    window.performClose(None);
+                }
+            });
         }
     });
     runtime.spawn(async move {
