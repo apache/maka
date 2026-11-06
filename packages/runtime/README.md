@@ -42,6 +42,22 @@ The main integration points are:
 
 Shared execution composition — where `BackendRegistry` and `SessionManager` are constructed — lives in the Runtime Host at [`packages/runtime-host/src/server/execution-composition.ts`](../runtime-host/src/server/execution-composition.ts). Clients, including Desktop, execute Maka through Runtime Host rather than composing Runtime directly.
 
+## Searching retained tool results
+
+When the tool-result archive capability is bound, `Grep` accepts the same
+`maka://runtime/tool-results/<event-id>` addresses as `Read`. For example,
+`Grep({ path: resultAddress, pattern: 'timeout|ECONNRESET' })` searches the
+Session's retained readable text without repeating the source operation.
+Use `Read` with a zero-based line offset to expand a match; `readHints` supplies
+digest-bound Read parameters when a long matching line is shown as an excerpt.
+
+Searches use ripgrep regex semantics, count matching lines rather than regex
+occurrences, and retain at most 50 matching lines in a complete JSON response
+of at most 7,500 bytes. `omittedLines` reports matching lines left out of the
+response; `truncated` also covers clipped excerpts. Execution metadata preserves
+known upstream output truncation, so counts describe retained content. Missing
+evidence and interrupted searches are errors, not evidence of zero matches.
+
 ## Background-task readiness
 
 `Bash` background runs return a durable runtime-task ref and expose the native

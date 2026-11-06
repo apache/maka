@@ -31,7 +31,8 @@ import {
   bindToolResultArchiveDecoder,
   type ToolResultArchiveCapability,
 } from '../tool-result-archive-capability.js';
-import type { MakaToolContext } from '../tool-runtime.js';
+import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
+import { grepParameters } from '../grep-search.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
@@ -40,7 +41,7 @@ const ZERO_USAGE: LanguageModelV4Usage = {
 };
 
 describe('AiSdkBackend tool-result archive capability', () => {
-  test('advertises Read when the session archives tool results', async () => {
+  test('advertises Read and Grep when the session archives tool results', async () => {
     const capturedTools: string[][] = [];
     const model = capturingModel(capturedTools);
 
@@ -56,6 +57,7 @@ describe('AiSdkBackend tool-result archive capability', () => {
       capturedTools[0]?.includes('Read'),
       'a session that archives tool results must advertise the tool its placeholders name',
     );
+    assert.ok(capturedTools[0]?.includes('Grep'));
   });
 
   test('advertises no Read when the session archives nothing', async () => {
@@ -75,6 +77,7 @@ describe('AiSdkBackend tool-result archive capability', () => {
       !capturedTools[0]?.includes('Read'),
       'a session that never archives has nothing to decode, so the CLI stays free of the tool',
     );
+    assert.ok(!capturedTools[0]?.includes('Grep'));
   });
 
   test('resource-only Read preserves Session scope and grants no file access', async () => {
@@ -101,6 +104,59 @@ describe('AiSdkBackend tool-result archive capability', () => {
       bindToolResultArchiveDecoder([read], archive).filter((tool) => tool.name === 'Read').length,
       1,
     );
+  });
+
+  test('resource-only Grep uses authenticated Session scope and cannot grant file access', async () => {
+    const seen: string[] = [];
+    const archive = createToolResultArchiveCapability({
+      archiveToolResult: async () => ({ ledger: true }),
+      readArchivedToolResultResource: async (input) => {
+        seen.push(input.sessionId);
+        return input.sessionId === 'session-1'
+          ? { ok: true, serializedResult: JSON.stringify({ content: 'first\nsecond timeout' }) }
+          : { ok: false, reason: 'session_mismatch' };
+      },
+    });
+    const bound = bindToolResultArchiveDecoder([], archive);
+    const grep = bound.find((tool) => tool.name === 'Grep')!;
+    const input = { path: 'maka://runtime/tool-results/event-1', pattern: 'timeout' };
+    const result = await grep.impl(input, toolContext());
+    assert.deepEqual((result as { matches: string[] }).matches, [`${input.path}:2:second timeout`]);
+    assert.deepEqual(seen, ['session-1']);
+    const foreign = await grep.impl(input, { ...toolContext(), sessionId: 'foreign' });
+    assert.equal((foreign as { error: string }).error, 'session_mismatch');
+    for (const invalid of [
+      { pattern: 'timeout' },
+      { path: '/etc/passwd', pattern: 'timeout' },
+      { path: 'maka://archive/old', pattern: 'timeout' },
+      { path: 'maka://runtime/tool-results/%ZZ', pattern: 'timeout' },
+      { ...input, glob: '*.txt' },
+    ]) {
+      await assert.rejects(async () => grep.impl(invalid, toolContext()));
+    }
+    assert.equal(
+      bindToolResultArchiveDecoder(bound, archive).filter((tool) => tool.name === 'Grep').length,
+      1,
+    );
+  });
+
+  test('binding result search preserves ordinary filesystem Grep dispatch', async () => {
+    const calls: unknown[] = [];
+    const fileGrep: MakaTool = {
+      name: 'Grep',
+      parameters: grepParameters,
+      description: 'Search files.',
+      impl: async (input) => {
+        calls.push(input);
+        return { matches: ['file:1:timeout'] };
+      },
+    };
+    const grep = bindToolResultArchiveDecoder([fileGrep], capability()).find(
+      (tool) => tool.name === 'Grep',
+    )!;
+    const input = { pattern: 'timeout', path: 'src', glob: '*.ts' };
+    assert.deepEqual(await grep.impl(input, toolContext()), { matches: ['file:1:timeout'] });
+    assert.deepEqual(calls, [input]);
   });
 });
 

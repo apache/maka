@@ -20,6 +20,7 @@
 import type { ToolResultArchiveReadResult } from './tool-result-archive.js';
 import { TOOL_RESULT_ARCHIVE_EVIDENCE_MAX_BYTES } from '@maka/core/tool-result-archive-evidence';
 import { readToolResultPage, resolveReadInput, type ReadInput } from './read-page.js';
+import { searchToolResultText } from './tool-result-search.js';
 
 export const TOOL_RESULT_ARCHIVE_RESOURCE_PROTOCOL = 'maka:';
 export const TOOL_RESULT_ARCHIVE_RESOURCE_HOST = 'archive';
@@ -208,6 +209,35 @@ export async function readToolResultArchiveResource(
   abortSignal?: AbortSignal,
 ): Promise<unknown> {
   const { path } = resolveReadInput(input);
+  const result = await loadToolResultArchiveResource(reader, sessionId, path, abortSignal);
+  if (!result.ok) return toolResultReadFailure(result.reason);
+  return readToolResultPage(result.serializedResult, input);
+}
+
+export async function searchToolResultArchiveResource(
+  reader: ToolResultArchiveResourceReader,
+  sessionId: string,
+  input: { path: string; pattern: string; glob?: string },
+  abortSignal?: AbortSignal,
+): Promise<unknown> {
+  if (input.glob !== undefined)
+    throw new Error('glob applies to filesystem searches, not Maka tool-result addresses.');
+  const result = await loadToolResultArchiveResource(reader, sessionId, input.path, abortSignal);
+  if (!result.ok) return toolResultReadFailure(result.reason);
+  return searchToolResultText({
+    path: input.path,
+    pattern: input.pattern,
+    serializedResult: result.serializedResult,
+    abortSignal,
+  });
+}
+
+async function loadToolResultArchiveResource(
+  reader: ToolResultArchiveResourceReader,
+  sessionId: string,
+  path: string,
+  abortSignal?: AbortSignal,
+): Promise<ToolResultArchiveReadResult> {
   const runtimeEventId = parseToolResultEventAddress(path);
   if (!runtimeEventId)
     throw new Error('Invalid Maka address. Copy the complete path returned by the tool.');
@@ -219,13 +249,15 @@ export async function readToolResultArchiveResource(
     maxBytes: TOOL_RESULT_ARCHIVE_MAX_BYTES,
   });
   abortSignal?.throwIfAborted();
-  if (!result.ok)
-    return {
-      error: result.reason,
-      message:
-        'This Maka content could not be read. Changing offset or limit will not restore it. Use the original source if it is still available.',
-    };
-  return readToolResultPage(result.serializedResult, input);
+  return result;
+}
+
+function toolResultReadFailure(reason: string): unknown {
+  return {
+    error: reason,
+    message:
+      'This Maka content could not be read. Changing offset or limit will not restore it. Use the original source if it is still available.',
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

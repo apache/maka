@@ -3571,7 +3571,7 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
   }
 });
 
-test('conversation copy re-authenticates a rewritten paging Read against its dispatch', async () => {
+async function assertCopiedResourceDispatch(toolName: 'Read' | 'Grep'): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-paging-read-copy-'));
   try {
     const runStore = createSqliteAgentRunStore(root);
@@ -3580,6 +3580,15 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
     // Session's tool-result event directly, and a T1 dispatch authenticated
     // those exact args.
     const sourcePath = 'maka://runtime/tool-results/event-result';
+    const args = { path: sourcePath, ...(toolName === 'Grep' ? { pattern: 'paged' } : {}) };
+    const grepResult = {
+      matches: [`${sourcePath}:1:paged body with opaque ${sourcePath}`],
+      matchedLines: 1,
+      returnedLines: 1,
+      omittedLines: 0,
+      truncated: false,
+      readHints: [{ matchIndex: 0, read: { path: sourcePath, offset: 0, limit: 1 } }],
+    };
     const sourceEvents = [
       invocationOpenedEvent({
         runId: 'run-first',
@@ -3602,7 +3611,7 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
         ts: 1.5,
         role: 'model',
         author: 'agent',
-        content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: { path: sourcePath } },
+        content: { kind: 'function_call', id: 'tool-1', name: toolName, args },
       }),
       runtimeEvent({
         id: 'event-dispatch',
@@ -3614,8 +3623,8 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
             protocol: 't1_after_preflight_v1',
             operationId: 'operation-1',
             providerToolCallId: 'tool-1',
-            toolName: 'Read',
-            canonicalArgsHash: canonicalToolArgsHash('Read', { path: sourcePath }),
+            toolName,
+            canonicalArgsHash: canonicalToolArgsHash(toolName, args),
             recoveryMode: 'reconcile',
           },
         },
@@ -3631,8 +3640,20 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
         content: {
           kind: 'function_response',
           id: 'tool-1',
-          name: 'Read',
-          result: { kind: 'text', text: 'paged body' },
+          name: toolName,
+          result:
+            toolName === 'Grep'
+              ? { kind: 'json', value: grepResult }
+              : { kind: 'text', text: 'paged body' },
+          ...(toolName === 'Grep'
+            ? {
+                modelProjection: {
+                  version: 1 as const,
+                  kind: 'json' as const,
+                  value: grepResult,
+                },
+              }
+            : {}),
         },
         refs: { operationId: 'operation-1', toolCallId: 'tool-1' },
       }),
@@ -3697,13 +3718,28 @@ test('conversation copy re-authenticates a rewritten paging Read against its dis
     assert.ok(dispatch);
     assert.equal(
       dispatch.canonicalArgsHash,
-      canonicalToolArgsHash('Read', copiedArgs),
+      canonicalToolArgsHash(toolName, copiedArgs),
       'the paired dispatch authenticates the rewritten args',
     );
+    if (toolName === 'Grep') {
+      const result = targetEvents.find((event) => event.content?.kind === 'function_response');
+      assert.ok(
+        result?.content?.kind === 'function_response' &&
+          result.content.modelProjection?.kind === 'json',
+      );
+      const copied = result.content.modelProjection.value as typeof grepResult;
+      assert.equal(copied.matches[0], `${copiedArgs.path}:1:paged body with opaque ${sourcePath}`);
+      assert.equal(copied.readHints[0]?.read.path, copiedArgs.path);
+    }
   } finally {
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
-});
+}
+
+for (const toolName of ['Read', 'Grep'] as const) {
+  test(`conversation copy re-authenticates a rewritten resource ${toolName} against its dispatch`, () =>
+    assertCopiedResourceDispatch(toolName));
+}
 
 test('conversation copy preserves a corrupt paging dispatch hash for the re-scan to reject', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-corrupt-paging-copy-'));
