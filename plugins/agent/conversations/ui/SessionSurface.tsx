@@ -2031,6 +2031,11 @@ export function createConversationUi(
             if (workspace() !== next) workspace.set(next);
           },
         },
+        {
+          get loading() {
+            return input.surface !== 'overlays';
+          },
+        },
       );
     },
     session(input: ConversationSessionInput) {

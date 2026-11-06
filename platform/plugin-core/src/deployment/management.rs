@@ -263,126 +263,131 @@ pub enum ManagementRejection {
 }
 
 pub fn deployment_manager_contract() -> Contract {
-    fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
-        Method {
-            progress: None,
-            mode,
-            input: serde_json::to_value(schemars::schema_for!(I))
-                .expect("management input schema")
-                .into(),
-            output: serde_json::to_value(schemars::schema_for!(O))
-                .expect("management output schema")
-                .into(),
-            resources: BTreeMap::new(),
+    static CONTRACT: std::sync::LazyLock<Contract> = std::sync::LazyLock::new(|| {
+        fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
+            Method {
+                progress: None,
+                mode,
+                input: serde_json::to_value(schemars::schema_for!(I))
+                    .expect("management input schema")
+                    .into(),
+                output: serde_json::to_value(schemars::schema_for!(O))
+                    .expect("management output schema")
+                    .into(),
+                resources: BTreeMap::new(),
+            }
         }
-    }
-    let mut install =
-        method::<PackageInstall, ManagementResult<PackageInstalled>>(MethodMode::Mutation);
-    install
-        .resources
-        .insert("package".into(), binary_resource_type().required());
-    let mut replace =
-        method::<DeploymentReplace, ManagementResult<DeploymentRef>>(MethodMode::Mutation);
-    replace.resources.insert(
-        "document".into(),
-        crate::contract::text_resource_type().required(),
-    );
-    // Optional JSON array of existing package bundle objects. The document's
-    // package references select the exact resulting set in the same CAS commit.
-    replace
-        .resources
-        .insert("packages".into(), binary_resource_type().optional());
-    Contract {
-        name: "maka.application.DeploymentManager".into(),
-        version: 1,
-        transport: Transport::Remote,
-        interface: Interface::Service {
-            methods: BTreeMap::from([
-                (
-                    "read".into(),
-                    method::<DeploymentRead, ManagedDeployment>(MethodMode::Query),
-                ),
-                (
-                    "readUi".into(),
-                    method::<UiRead, UiCatalog>(MethodMode::Query),
-                ),
-                (
-                    "watch".into(),
-                    method::<UiWatch, DeploymentRef>(MethodMode::Subscription),
-                ),
-                ("install".into(), install),
-                (
-                    "installUrl".into(),
-                    method::<PackageUrlInstall, ManagementResult<PackageInstalled>>(
-                        MethodMode::Mutation,
+        let mut install =
+            method::<PackageInstall, ManagementResult<PackageInstalled>>(MethodMode::Mutation);
+        install
+            .resources
+            .insert("package".into(), binary_resource_type().required());
+        let mut replace =
+            method::<DeploymentReplace, ManagementResult<DeploymentRef>>(MethodMode::Mutation);
+        replace.resources.insert(
+            "document".into(),
+            crate::contract::text_resource_type().required(),
+        );
+        // Optional JSON array of existing package bundle objects. The document's
+        // package references select the exact resulting set in the same CAS commit.
+        replace
+            .resources
+            .insert("packages".into(), binary_resource_type().optional());
+        Contract {
+            name: "maka.application.DeploymentManager".into(),
+            version: 1,
+            transport: Transport::Remote,
+            interface: Interface::Service {
+                methods: BTreeMap::from([
+                    (
+                        "read".into(),
+                        method::<DeploymentRead, ManagedDeployment>(MethodMode::Query),
                     ),
-                ),
-                (
-                    "installSource".into(),
-                    method::<PackageSourceInstall, ManagementResult<PackageInstalled>>(
-                        MethodMode::Mutation,
+                    (
+                        "readUi".into(),
+                        method::<UiRead, UiCatalog>(MethodMode::Query),
                     ),
-                ),
-                (
-                    "readPackage".into(),
-                    method::<PackageSourceRead, PackageSourceChunk>(MethodMode::Query),
-                ),
-                (
-                    "exportPackage".into(),
-                    method::<PackageBundleRead, PackageBundleExport>(MethodMode::Subscription),
-                ),
-                (
-                    "replaceSource".into(),
-                    method::<DeploymentSourceReplace, ManagementResult<DeploymentRef>>(
-                        MethodMode::Mutation,
+                    (
+                        "watch".into(),
+                        method::<UiWatch, DeploymentRef>(MethodMode::Subscription),
                     ),
-                ),
-                (
-                    "bindingCandidates".into(),
-                    method::<BindingCandidatesRead, BindingCandidatesPage>(MethodMode::Query),
-                ),
-                (
-                    "packageSettings".into(),
-                    method::<PackageSettingsRead, PackageSettingsPage>(MethodMode::Query),
-                ),
-                (
-                    "editComposition".into(),
-                    method::<CompositionEdit, ManagementResult<DeploymentRef>>(
-                        MethodMode::Mutation,
+                    ("install".into(), install),
+                    (
+                        "installUrl".into(),
+                        method::<PackageUrlInstall, ManagementResult<PackageInstalled>>(
+                            MethodMode::Mutation,
+                        ),
                     ),
-                ),
-                (
-                    "readSettings".into(),
-                    method::<InstanceSettingsRead, InstanceSettingsPage>(MethodMode::Query),
-                ),
-                (
-                    "configure".into(),
-                    method::<InstanceConfigure, ManagementResult<DeploymentRef>>(
-                        MethodMode::Mutation,
+                    (
+                        "installSource".into(),
+                        method::<PackageSourceInstall, ManagementResult<PackageInstalled>>(
+                            MethodMode::Mutation,
+                        ),
                     ),
-                ),
-                (
-                    "configureBatch".into(),
-                    method::<InstanceConfigureBatch, ManagementResult<DeploymentRef>>(
-                        MethodMode::Mutation,
+                    (
+                        "readPackage".into(),
+                        method::<PackageSourceRead, PackageSourceChunk>(MethodMode::Query),
                     ),
-                ),
-                (
-                    "readDocument".into(),
-                    method::<DeploymentDocumentRead, DeploymentDocumentChunk>(MethodMode::Query),
-                ),
-                (
-                    "instances".into(),
-                    method::<DeploymentInstances, ManagedInstancesPage>(MethodMode::Query),
-                ),
-                (
-                    "setEnabled".into(),
-                    method::<InstanceSetEnabled, ManagementResult<DeploymentRef>>(
-                        MethodMode::Mutation,
+                    (
+                        "exportPackage".into(),
+                        method::<PackageBundleRead, PackageBundleExport>(MethodMode::Subscription),
                     ),
-                ),
-                ("replace".into(), replace),
-            ]),
-        },
-    }
+                    (
+                        "replaceSource".into(),
+                        method::<DeploymentSourceReplace, ManagementResult<DeploymentRef>>(
+                            MethodMode::Mutation,
+                        ),
+                    ),
+                    (
+                        "bindingCandidates".into(),
+                        method::<BindingCandidatesRead, BindingCandidatesPage>(MethodMode::Query),
+                    ),
+                    (
+                        "packageSettings".into(),
+                        method::<PackageSettingsRead, PackageSettingsPage>(MethodMode::Query),
+                    ),
+                    (
+                        "editComposition".into(),
+                        method::<CompositionEdit, ManagementResult<DeploymentRef>>(
+                            MethodMode::Mutation,
+                        ),
+                    ),
+                    (
+                        "readSettings".into(),
+                        method::<InstanceSettingsRead, InstanceSettingsPage>(MethodMode::Query),
+                    ),
+                    (
+                        "configure".into(),
+                        method::<InstanceConfigure, ManagementResult<DeploymentRef>>(
+                            MethodMode::Mutation,
+                        ),
+                    ),
+                    (
+                        "configureBatch".into(),
+                        method::<InstanceConfigureBatch, ManagementResult<DeploymentRef>>(
+                            MethodMode::Mutation,
+                        ),
+                    ),
+                    (
+                        "readDocument".into(),
+                        method::<DeploymentDocumentRead, DeploymentDocumentChunk>(
+                            MethodMode::Query,
+                        ),
+                    ),
+                    (
+                        "instances".into(),
+                        method::<DeploymentInstances, ManagedInstancesPage>(MethodMode::Query),
+                    ),
+                    (
+                        "setEnabled".into(),
+                        method::<InstanceSetEnabled, ManagementResult<DeploymentRef>>(
+                            MethodMode::Mutation,
+                        ),
+                    ),
+                    ("replace".into(), replace),
+                ]),
+            },
+        }
+    });
+    CONTRACT.clone()
 }
