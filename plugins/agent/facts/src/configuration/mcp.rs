@@ -21,8 +21,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Explicit installation trust for an external MCP server. Tool annotations
-/// never expand these permissions. Changes require reactivating the Agent.
+/// Explicit trust for an external MCP server; tool annotations never expand it.
+/// Installation changes require reactivation; client subscriptions own their scope.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "McpServerConfiguration")]
@@ -45,6 +45,20 @@ pub struct ServerConfiguration {
     #[serde(default = "call_timeout")]
     pub call_timeout_ms: u64,
 }
+impl ServerConfiguration {
+    /// Start with per-call confirmation and no grant to execute in read-only workspaces.
+    pub fn new(name: String, transport: Transport) -> Self {
+        Self {
+            name,
+            transport,
+            tools: None,
+            read_only_tools: Vec::new(),
+            preapproved: false,
+            startup_timeout_ms: startup_timeout(),
+            call_timeout_ms: call_timeout(),
+        }
+    }
+}
 fn startup_timeout() -> u64 {
     10_000
 }
@@ -61,7 +75,7 @@ fn call_timeout() -> u64 {
 )]
 #[schemars(rename = "McpTransport")]
 pub enum Transport {
-    /// Trusted installation process. Runs outside the session filesystem sandbox.
+    /// Explicitly trusted process. Runs outside the session filesystem sandbox.
     Stdio {
         command: String,
         #[serde(default)]

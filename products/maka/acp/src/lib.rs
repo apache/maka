@@ -24,6 +24,7 @@ mod content;
 mod foreground;
 mod history;
 mod interaction;
+mod mcp;
 mod presentation;
 mod projection;
 mod server;

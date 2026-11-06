@@ -25,9 +25,15 @@ use serde_json::Value;
 pub(super) fn validate<P: Protocol>(
     message: Dispatch<UntypedMessage, UntypedMessage, P>,
     valid_content: impl Fn(&Value) -> bool,
+    valid_servers: impl Fn(&Value) -> bool,
 ) -> Result<Handled<Dispatch<UntypedMessage, UntypedMessage, P>>, Error> {
     if let Dispatch::Request(request, responder) = message {
-        if let Err(reason) = parameters(&request.method, &request.params, valid_content) {
+        if let Err(reason) = parameters(
+            &request.method,
+            &request.params,
+            valid_content,
+            valid_servers,
+        ) {
             responder.respond_with_error(Error::invalid_params().data(reason.to_string()))?;
             return Ok(Handled::Yes);
         }
@@ -45,17 +51,20 @@ fn parameters(
     method: &str,
     params: &Value,
     valid_content: impl Fn(&Value) -> bool,
+    valid_servers: impl Fn(&Value) -> bool,
 ) -> Result<(), &'static str> {
     match method {
         "session/new" | "session/resume" | "session/load" => {
-            for field in ["mcpServers", "additionalDirectories"] {
-                if params.get(field).is_some_and(|value| {
-                    !value.is_null() && !value.as_array().is_some_and(Vec::is_empty)
-                }) {
-                    return Err(
-                        "MCP servers and additional directories are not supported by this connection",
-                    );
-                }
+            if params
+                .get("mcpServers")
+                .is_some_and(|value| !value.is_null() && !valid_servers(value))
+            {
+                return Err("Invalid or unsupported MCP servers");
+            }
+            if params.get("additionalDirectories").is_some_and(|value| {
+                !value.is_null() && !value.as_array().is_some_and(Vec::is_empty)
+            }) {
+                return Err("Additional directories are not supported by this connection");
             }
             if method == "session/resume"
                 && params.get("replayFrom").is_some_and(|value| {
@@ -88,10 +97,15 @@ fn parameters(
 mod tests {
     use super::*;
     fn parameters(method: &str, params: &Value) -> Result<(), &'static str> {
-        super::parameters(method, params, |v| {
-            serde_json::from_value::<agent_client_protocol::v2::schema::ContentBlock>(v.clone())
-                .is_ok()
-        })
+        super::parameters(
+            method,
+            params,
+            |v| {
+                serde_json::from_value::<agent_client_protocol::v2::schema::ContentBlock>(v.clone())
+                    .is_ok()
+            },
+            crate::mcp::valid_v2,
+        )
     }
     use serde_json::json;
     #[test]

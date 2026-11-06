@@ -130,11 +130,11 @@ where
     app.tasks.close();
     let settled = tokio::time::timeout(Duration::from_secs(45), async {
         app.tasks.wait().await;
-        app.sessions.drained().await;
+        app.sessions.drained().await
     })
     .await;
     let closed = app.client.close().await;
-    settled.map_err(|_| "ACP shutdown did not settle its original Agent work")?;
+    settled.map_err(|_| "ACP shutdown did not settle its original Agent work")??;
     closed?;
     result
 }

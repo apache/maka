@@ -44,7 +44,11 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
         .name("maka")
         .on_receive_dispatch(
             async |message: v2::Dispatch, _cx: v2::ConnectionTo<AcpClient>| {
-                input::validate(message, |value|serde_json::from_value::<acp::ContentBlock>(value.clone()).is_ok())
+                input::validate(
+                    message,
+                    |value| serde_json::from_value::<acp::ContentBlock>(value.clone()).is_ok(),
+                    crate::mcp::valid_v2,
+                )
             },
             agent_client_protocol::on_receive_dispatch!(),
         )
@@ -53,7 +57,10 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         responder: Responder<acp::InitializeResponse>,
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let capabilities = Capabilities {
-                    form: request.capabilities.elicitation.as_ref()
+                    form: request
+                        .capabilities
+                        .elicitation
+                        .as_ref()
                         .is_some_and(acp::ElicitationCapabilities::supports_form),
                 };
                 init.initialize(capabilities, Peer::v2(_cx, init.stop.clone()))?;
@@ -64,11 +71,19 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                     )
                     .capabilities(
                         acp::AgentCapabilities::new().session(
-                            acp::SessionCapabilities::new().prompt(
-                                acp::PromptCapabilities::new()
-                                    .image(acp::PromptImageCapabilities::new())
-                                    .embedded_context(acp::PromptEmbeddedContextCapabilities::new()),
-                            ),
+                            acp::SessionCapabilities::new()
+                                .mcp(
+                                    acp::McpCapabilities::new()
+                                        .stdio(acp::McpStdioCapabilities::new())
+                                        .http(acp::McpHttpCapabilities::new()),
+                                )
+                                .prompt(
+                                    acp::PromptCapabilities::new()
+                                        .image(acp::PromptImageCapabilities::new())
+                                        .embedded_context(
+                                            acp::PromptEmbeddedContextCapabilities::new(),
+                                        ),
+                                ),
                         ),
                     ),
                 )
@@ -81,9 +96,16 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = create.clone();
                 create.dispatch(responder, async move {
-                    let setup = app.sessions.create(
-                        &app.client, &app.initialized()?.peer, request.cwd.as_ref(),
-                    ).await?;
+                    let servers = crate::mcp::v2(request.mcp_servers, request.cwd.as_ref())?;
+                    let setup = app
+                        .sessions
+                        .create(
+                            &app.client,
+                            &app.initialized()?.peer,
+                            request.cwd.as_ref(),
+                            servers,
+                        )
+                        .await?;
                     Ok(acp::NewSessionResponse::new(setup.id)
                         .config_options(transport::v2::config(setup.options)))
                 })
@@ -96,10 +118,14 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = list.clone();
                 list.dispatch(responder, async move {
-                    let page = app.sessions.list(
-                        &app.client, request.cwd.map(|path| path.0),
-                        request.cursor.map(|cursor| cursor.to_string()),
-                    ).await?;
+                    let page = app
+                        .sessions
+                        .list(
+                            &app.client,
+                            request.cwd.map(|path| path.0),
+                            request.cursor.map(|cursor| cursor.to_string()),
+                        )
+                        .await?;
                     Ok(transport::v2::list(page))
                 })
             },
@@ -111,10 +137,18 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = resume.clone();
                 resume.dispatch(responder, async move {
-                    let setup = app.sessions.resume(
-                        &app.client, &app.initialized()?.peer, &request.session_id.to_string(),
-                        request.cwd.as_ref(), request.replay_from.is_some(),
-                    ).await?;
+                    let servers = crate::mcp::v2(request.mcp_servers, request.cwd.as_ref())?;
+                    let setup = app
+                        .sessions
+                        .resume(
+                            &app.client,
+                            &app.initialized()?.peer,
+                            &request.session_id.to_string(),
+                            request.cwd.as_ref(),
+                            request.replay_from.is_some(),
+                            servers,
+                        )
+                        .await?;
                     Ok(acp::ResumeSessionResponse::new()
                         .config_options(transport::v2::config(setup.options)))
                 })
@@ -139,12 +173,23 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = config.clone();
                 config.dispatch(responder, async move {
-                    let value = request.value.as_id().ok_or("Configuration requires a select value")?;
-                    let options = app.sessions.set_config(
-                        &app.client, &app.initialized()?.peer, &request.session_id.to_string(),
-                        request.config_id.0.as_ref(), value.0.as_ref(),
-                    ).await?;
-                    Ok(acp::SetSessionConfigOptionResponse::new(transport::v2::config(options)))
+                    let value = request
+                        .value
+                        .as_id()
+                        .ok_or("Configuration requires a select value")?;
+                    let options = app
+                        .sessions
+                        .set_config(
+                            &app.client,
+                            &app.initialized()?.peer,
+                            &request.session_id.to_string(),
+                            request.config_id.0.as_ref(),
+                            value.0.as_ref(),
+                        )
+                        .await?;
+                    Ok(acp::SetSessionConfigOptionResponse::new(
+                        transport::v2::config(options),
+                    ))
                 })
             },
             agent_client_protocol::on_receive_request!(),

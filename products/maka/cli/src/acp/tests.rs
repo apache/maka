@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod mcp;
 mod provider;
 mod public_client;
 mod support;

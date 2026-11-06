@@ -22076,6 +22076,177 @@ export const contracts = {
           },
           resources: {},
         },
+        sessionMcp: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionMcp',
+            description:
+              'Client-provided MCP servers whose lifetime is the original subscription.\nConfigurations and credentials are never saved as installation settings.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              servers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/McpServerConfiguration',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'servers'],
+            $defs: {
+              McpServerConfiguration: {
+                description:
+                  'Explicit trust for an external MCP server; tool annotations never expand it.\nInstallation changes require reactivation; client subscriptions own their scope.',
+                type: 'object',
+                properties: {
+                  name: {
+                    description:
+                      'Stable namespace, using ASCII letters, digits, underscores and hyphens.',
+                    type: 'string',
+                  },
+                  transport: {
+                    $ref: '#/$defs/McpTransport',
+                  },
+                  tools: {
+                    description:
+                      'Omitted selects all tools discovered from this explicitly trusted server.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  readOnlyTools: {
+                    description:
+                      "Explicitly permit these remote tools in read-only workspaces.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                    default: [],
+                  },
+                  preapproved: {
+                    description:
+                      'Skip per-call confirmation only when the installer explicitly grants it.',
+                    type: 'boolean',
+                    default: false,
+                  },
+                  startupTimeoutMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 10000,
+                  },
+                  callTimeoutMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 120000,
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'transport'],
+              },
+              McpTransport: {
+                oneOf: [
+                  {
+                    description:
+                      'Explicitly trusted process. Runs outside the session filesystem sandbox.',
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'stdio',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      args: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                      cwd: {
+                        description:
+                          'Absolute working directory, independent of model-controlled arguments.',
+                        type: 'string',
+                      },
+                      env: {
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                      passEnv: {
+                        description:
+                          'Environment variable names explicitly forwarded from the Host.',
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['type', 'command', 'cwd'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'streamable_http',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      headers: {
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                      headerEnv: {
+                        description:
+                          'Header name to Host environment variable; keeps tokens out of config.',
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['type', 'url'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionMcpAttached',
+            type: 'object',
+            properties: {
+              tools: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['tools'],
+          },
+          resources: {},
+        },
         setCompactionPrompt: {
           mode: 'mutation',
           input: {

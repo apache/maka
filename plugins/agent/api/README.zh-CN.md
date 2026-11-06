@@ -72,6 +72,9 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 
 `metadata.pinned` 用于置顶或取消置顶会话，省略时保留原状态。Session 结果包含 `pinned`。会话目录先返回置顶会话，再沿用原有 ID 顺序，前后翻页游标仍受目录 revision 约束。新会话和新分支默认不置顶。
 
+
+`sessionMcp` 是仅供用户调用的订阅，将客户端 MCP 服务器绑定到一个空闲 Session。连接期间持有该订阅，关闭时等待清理确认。订阅返回已绑定的工具名称；凭据仅保存在内存中，每次租约使用新身份。关闭会取消排队工作，等待原执行清理后再释放传输。
+
 ## 历史 checkpoint 管理
 
 [Checkpoint 契约](src/contract/checkpoints.rs)通过现有 Agent endpoint 提供显式的 history-only 管理：

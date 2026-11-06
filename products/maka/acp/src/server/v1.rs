@@ -43,9 +43,11 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
         .name("maka")
         .on_receive_dispatch(
             async |message: v1::Dispatch, _cx: v1::ConnectionTo<Client>| {
-                input::validate(message, |value| {
-                    serde_json::from_value::<acp::ContentBlock>(value.clone()).is_ok()
-                })
+                input::validate(
+                    message,
+                    |value| serde_json::from_value::<acp::ContentBlock>(value.clone()).is_ok(),
+                    crate::mcp::valid_v1,
+                )
             },
             agent_client_protocol::on_receive_dispatch!(),
         )
@@ -66,6 +68,7 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
                         .agent_info(acp::Implementation::new("maka", env!("CARGO_PKG_VERSION")))
                         .agent_capabilities(
                             acp::AgentCapabilities::new()
+                                .mcp_capabilities(acp::McpCapabilities::new().http(true))
                                 .load_session(true)
                                 .prompt_capabilities(
                                     acp::PromptCapabilities::new()
@@ -87,9 +90,10 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
                         _cx: v1::ConnectionTo<Client>| {
                 let app = create.clone();
                 create.dispatch(responder, async move {
+                    let servers = crate::mcp::v1(request.mcp_servers, &request.cwd)?;
                     let setup = app
                         .sessions
-                        .create(&app.client, &app.initialized()?.peer, &request.cwd)
+                        .create(&app.client, &app.initialized()?.peer, &request.cwd, servers)
                         .await?;
                     Ok(acp::NewSessionResponse::new(setup.id)
                         .config_options(transport::v1::config(setup.options)))
@@ -103,6 +107,7 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
                         _cx: v1::ConnectionTo<Client>| {
                 let app = load.clone();
                 load.dispatch(responder, async move {
+                    let servers = crate::mcp::v1(request.mcp_servers, &request.cwd)?;
                     let setup = app
                         .sessions
                         .resume(
@@ -111,6 +116,7 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
                             &request.session_id.to_string(),
                             &request.cwd,
                             true,
+                            servers,
                         )
                         .await?;
                     Ok(acp::LoadSessionResponse::new()

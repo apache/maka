@@ -48,6 +48,7 @@ pub(crate) struct Session {
     pub id: String,
     pub gate: Arc<AsyncMutex<()>>,
     pub preferences: AsyncMutex<configuration::Preferences>,
+    mcp: AsyncMutex<Option<crate::client::Subscription>>,
     active: Mutex<Option<CancellationToken>>,
     closed: AtomicBool,
 }
@@ -62,6 +63,7 @@ impl Session {
             id,
             gate: Arc::default(),
             preferences: AsyncMutex::default(),
+            mcp: AsyncMutex::default(),
             active: Mutex::default(),
             closed: AtomicBool::new(false),
         })
@@ -102,13 +104,17 @@ impl Registry {
         }
     }
     /// The caller supplies the shutdown deadline; retain every gate until drained.
-    pub async fn drained(&self) {
+    pub async fn drained(&self) -> Result<(), Error> {
         let _creation = self.creation.lock().await;
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut guards = Vec::with_capacity(sessions.len());
         for session in sessions {
             guards.push(session.gate.clone().lock_owned().await);
+            if let Some(lease) = session.mcp.lock().await.take() {
+                lease.close().await?;
+            }
         }
+        Ok(())
     }
     pub fn get(&self, id: &str) -> Result<Arc<Session>, Error> {
         self.sessions
@@ -119,7 +125,13 @@ impl Registry {
             .cloned()
             .ok_or_else(|| "ACP session is not open on this connection".into())
     }
-    pub async fn create(&self, client: &Client, peer: &Peer, cwd: &Path) -> Result<Setup, Error> {
+    pub async fn create(
+        &self,
+        client: &Client,
+        peer: &Peer,
+        cwd: &Path,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+    ) -> Result<Setup, Error> {
         let cwd = list::directory(cwd)?;
         let _creation = self.creation.lock().await;
         if peer.stop.is_cancelled() {
@@ -136,10 +148,9 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(id.clone(), Session::new(id.clone()));
+        let local = Session::new(id.clone());
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        self.sessions.lock().unwrap().insert(id.clone(), local);
         Ok(Setup { id, options })
     }
     pub async fn resume(
@@ -149,6 +160,7 @@ impl Registry {
         id: &str,
         cwd: &Path,
         replay_history: bool,
+        servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
     ) -> Result<Setup, Error> {
         let cwd = list::directory(cwd)?;
         let _creation = self.creation.lock().await;
@@ -160,10 +172,18 @@ impl Registry {
             .query("agent", "observe", json!({"sessionId":id}))
             .await?;
         let session = observation.session;
-        list::ensure_idle(&session)?;
         if list::directory(Path::new(&session.workspace.path))? != cwd {
             return Err("Resume cwd differs from Host session workspace".into());
         }
+        if let Some(lease) = local.mcp.lock().await.take() {
+            lease.close().await?;
+        }
+        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
+        let observation: Observation = client
+            .query("agent", "observe", json!({"sessionId":id}))
+            .await?;
+        let session = observation.session;
+        list::ensure_idle(&session)?;
         let options =
             configuration::options(client, &session, &local.preferences.lock().await.clone())
                 .await?;
@@ -206,6 +226,9 @@ impl Registry {
             tokio::time::timeout(Duration::from_secs(20), session.gate.clone().lock_owned())
                 .await
                 .map_err(|_| "ACP session cancellation has not settled")?;
+        if let Some(lease) = session.mcp.lock().await.take() {
+            lease.close().await?;
+        }
         self.sessions.lock().unwrap().remove(&id);
         Ok(())
     }

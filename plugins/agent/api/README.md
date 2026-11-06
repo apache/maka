@@ -72,6 +72,9 @@ On macOS, active watches also compare direct-child metadata. Each scan is follow
 
 `metadata.pinned` sets or clears conversation pinning; omission preserves it. Session results include `pinned`. Catalog pages place pinned conversations first, then keep the existing ID order, with revision-bound forward and backward cursors. New conversations and forks start unpinned.
 
+
+`sessionMcp` is a user-only subscription that attaches client MCP servers to one idle Session. Retain the subscription for the connection lifetime and await its cleanup on close. It emits the attached tool names; credentials remain transient, and each new lease has a fresh identity. Closing fences queued work and settles its original execution before releasing the transports.
+
 ## History checkpoint management
 
 The [checkpoint contract](src/contract/checkpoints.rs) exposes explicit, history-only management through the existing Agent endpoint:

@@ -109,6 +109,7 @@ impl Handler for Agent {
                         }
                     }
                 }
+                "sessionMcp" => owner.session_mcp(decode(input)?, context).await,
                 "projectMcp" => encode(owner.project_mcp(decode(input)?, context.scope()).await?),
                 "trustProjectMcp" => {
                     context.operation().ok_or("agent_mutation_required")?;

@@ -142,6 +142,7 @@ impl Owner {
 
         let mut basis = MessageBasis {
             mcp_revision: None,
+            client_mcp: None,
             mcp_catalog: None,
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
@@ -256,6 +257,7 @@ impl Owner {
             let accepted: MessageBasis = serde_json::from_value(original.execution.basis.clone())
                 .map_err(|error| error.to_string())?;
             expected.mcp_revision = accepted.mcp_revision;
+            expected.client_mcp = accepted.client_mcp;
             expected.internal_tools = accepted.internal_tools;
             expected.internal_bindings = accepted.internal_bindings;
             descriptor.execution.basis =
@@ -300,7 +302,9 @@ impl Owner {
             }
             // Deferred work captures runtime tools when accepted; retries keep that original basis.
             let catalog = self.mcp_projects.capture(&basis.workspace).await?;
+            let catalog = self.mcp_projects.with_client(session, catalog)?;
             basis.mcp_revision = catalog.revision.clone();
+            basis.client_mcp = catalog.client_mcp;
             basis.mcp_catalog = Some(catalog.clone());
             basis.internal_tools = catalog.definitions.clone();
             basis.internal_bindings = catalog.bindings.clone();
