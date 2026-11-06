@@ -115,9 +115,15 @@ function fixture() {
       ],
     ]),
     gpui: workspace([
-      ['nsh-platform-gpui', 'third-party/nsh/crates/gpui/nsh-platform-gpui', ['external-nsh']],
+      [
+        'nsh-platform-gpui',
+        'third-party/nsh/crates/gpui/nsh-platform-gpui',
+        ['external-nsh', 'third-party/gpui-fast/crates/gpui'],
+      ],
+      ['gpui-fast', 'third-party/gpui-fast/crates/gpui'],
     ]),
     termina: workspace([['termina', 'third-party/termina']]),
+    gpuiFast: workspace([['gpui-fast', 'third-party/gpui-fast/crates/gpui']]),
   };
   metadata.root.workspace_members = metadata.root.workspace_members.filter(
     (id) => !id.startsWith('third-party/'),
@@ -175,6 +181,42 @@ test('Windows backend changes select the native tests and default desktop consum
   const template = fixture()(['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs']);
   assert.ok(template.suites['windows-nsh']);
   assert.equal(template.full, false);
+});
+
+test('GPUI lifecycle changes execute the original native regression and embedding consumers', async () => {
+  const plan = fixture()(['third-party/gpui-fast/crates/gpui/src/window.rs']);
+  assert.equal(plan.full, false);
+  assert.deepEqual(plan.workers.find((worker) => worker.id === 'gpui').suites, [
+    'gpui',
+    'gpui-fast',
+  ]);
+  const commands = [];
+  const exec = executor(
+    root,
+    { id: 'gpui', workspace: 'gpui' },
+    {
+      run: async (command, args) => {
+        commands.push({ command, args });
+      },
+    },
+  );
+  await exec.prepare('gpui-fast');
+  await exec.verify('gpui-fast');
+  assert.equal(commands.length, 2);
+  for (const { args } of commands) {
+    assert.deepEqual(args.slice(0, 2), ['nextest', 'run']);
+    assert.ok(args.includes('third-party/gpui-fast/Cargo.toml'));
+    assert.ok(args.includes('--locked'));
+    assert.ok(
+      args.some((arg) =>
+        arg.includes(
+          'closing_a_painted_window_releases_its_input_handler_and_view_before_native_cleanup',
+        ),
+      ),
+    );
+  }
+  assert.ok(commands[0].args.includes('--no-run'));
+  assert.ok(!commands[1].args.includes('--no-run'));
 });
 
 test('compiler cache pruning and both archive paths retain V8 native outputs', () => {

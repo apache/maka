@@ -24,6 +24,7 @@ export const manifests = {
   termina: 'third-party/termina/Cargo.toml',
   nsh: 'third-party/nsh/Cargo.toml',
   gpui: 'third-party/nsh/crates/gpui/Cargo.toml',
+  gpuiFast: 'third-party/gpui-fast/Cargo.toml',
 };
 
 const bundledPackages = Object.values(
@@ -189,6 +190,22 @@ export const suites = {
     filter:
       'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
   },
+  'gpui-fast': {
+    workspace: 'gpuiFast',
+    packages: ['gpui-fast'],
+    cargoArgs: [
+      '--locked',
+      '--manifest-path',
+      manifests.gpuiFast,
+      '-p',
+      'gpui-fast',
+      '--lib',
+      '--features',
+      'test-support',
+    ],
+    filter:
+      'test(=fast::tests::retained::closing_a_painted_window_releases_its_input_handler_and_view_before_native_cleanup)',
+  },
   'macos-desktop': {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
@@ -300,7 +317,7 @@ export const workers = [
   },
   {
     id: 'gpui',
-    suites: ['gpui'],
+    suites: ['gpui', 'gpui-fast'],
     runner: 'ubuntu-latest',
     workspace: 'gpui',
     dependencies: 'gpui',

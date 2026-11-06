@@ -27,7 +27,11 @@ const role = process.env.MAKA_CI_ROLE;
 const workspace = process.env.MAKA_CI_WORKSPACE;
 const version = process.env.MAKA_CI_NEXTEST;
 const selectedManifests =
-  role === 'native-windows' ? [manifests.root, manifests.nsh] : [manifests[workspace]];
+  role === 'native-windows'
+    ? [manifests.root, manifests.nsh]
+    : role === 'gpui'
+      ? [manifests.gpui, manifests.gpuiFast]
+      : [manifests[workspace]];
 const tools =
   role === 'tooling'
     ? ['cargo-deny']

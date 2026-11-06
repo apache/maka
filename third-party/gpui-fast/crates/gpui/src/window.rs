@@ -1518,6 +1518,14 @@ pub struct Window {
     pub(crate) a11y: A11y,
 }
 
+impl Drop for Window {
+    fn drop(&mut self) {
+        // Native cleanup may outlive this update. Release its entity-owning
+        // input handler while the app can still collect the window's views.
+        drop(self.platform_window.take_input_handler());
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ModifierState {
     modifiers: Modifiers,

@@ -114,3 +114,5 @@ Maka's own change. A wheel or trackpad gesture, or a touch pan, over a scroll co
 ## Upstream synchronization (2026-10-25)
 
 The five adapted crates now track `124f79b0f14c688ae87877e370c015a9dc9d7ce5`. Upstream text-layout lifetime fixes and Windows frame scheduling/device wake changes are imported with their native regression tests. Existing Maka input, scrolling and cleanup ownership is retained. Normalized Windows test dependencies include upstream’s new serde_json dependency.
+
+Logical Window destruction releases the platform's published input handler before native state enters deferred cleanup. Its original entity lease is dropped within the same App update, so closing the last window in a resident application does not require another frame to release the view and engine. The platform cleanup receipt remains responsible for native renderer and callback destruction.

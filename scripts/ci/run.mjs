@@ -108,6 +108,7 @@ export function executor(
         'root',
         'desktop',
         'gpui',
+        'gpui-fast',
         'windows-desktop',
         'macos-desktop',
         'windows-nsh',
@@ -187,7 +188,9 @@ export function executor(
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
     } else if (
-      ['desktop', 'gpui', 'windows-desktop', 'macos-desktop', 'windows-nsh'].includes(id)
+      ['desktop', 'gpui', 'gpui-fast', 'windows-desktop', 'macos-desktop', 'windows-nsh'].includes(
+        id,
+      )
     ) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {

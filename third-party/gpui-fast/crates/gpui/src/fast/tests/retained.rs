@@ -1134,6 +1134,48 @@ impl Render for TextField {
     }
 }
 
+/// Native cleanup may keep its window state alive after the GPUI window closes.
+/// Its published input handler must not keep the painted view alive with it.
+#[test]
+fn closing_a_painted_window_releases_its_input_handler_and_view_before_native_cleanup() {
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| cx.set_quit_mode(crate::QuitMode::Explicit));
+    let released = Rc::new(Cell::new(false));
+    let window = cx.add_window(|_, cx| TextField {
+        focus: cx.focus_handle(),
+        notify_when_asked: Cell::new(false),
+        builds: Rc::new(Cell::new(0)),
+    });
+    let weak = cx
+        .update_window(window.into(), |_, window, cx| {
+            let field = window.root::<TextField>().unwrap().unwrap();
+            cx.observe_release(&field, {
+                let released = released.clone();
+                move |_, _| released.set(true)
+            })
+            .detach();
+            let focus = field.read(cx).focus.clone();
+            window.focus(&focus, cx);
+            window.draw(cx).clear(cx);
+            field.downgrade()
+        })
+        .unwrap();
+    let mut native = cx.test_window(window.into());
+    let handler = crate::PlatformWindow::take_input_handler(&mut native)
+        .expect("painting the focused field must publish its input handler");
+    crate::PlatformWindow::set_input_handler(&mut native, handler);
+
+    cx.update_window(window.into(), |_, window, _| window.remove_window())
+        .unwrap();
+
+    assert!(
+        released.get(),
+        "closing must release the view before native cleanup"
+    );
+    assert!(weak.upgrade().is_none());
+    assert!(crate::PlatformWindow::take_input_handler(&mut native).is_none());
+}
+
 impl crate::EntityInputHandler for TextField {
     fn text_for_range(
         &mut self,
