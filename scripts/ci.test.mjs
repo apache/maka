@@ -250,14 +250,14 @@ test('compiler cache pruning and both archive paths retain V8 native outputs', (
           exclude: paths.filter((path) => path.startsWith('!')).map((path) => path.slice(1)),
         },
       );
-      const archive = join(directory, `${action}.tar`);
+      const archive = `${action}.tar`;
       execFileSync('tar', ['-cf', archive, '-T', '-'], {
         cwd: directory,
-        input: files.join('\n') + '\n',
+        input: files.map((path) => path.replaceAll('\\', '/')).join('\n') + '\n',
       });
       const restored = join(directory, action);
       mkdirSync(restored);
-      execFileSync('tar', ['-xf', archive, '-C', restored]);
+      execFileSync('tar', ['-xf', archive, '-C', action], { cwd: directory });
       for (const [path, contents] of Object.entries(outputs))
         assert.equal(readFileSync(join(restored, path), 'utf8'), contents, `${action}: ${path}`);
     }
