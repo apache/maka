@@ -103,6 +103,7 @@ export function createTerminalInterrupt(options: {
     if (timer !== undefined) clearTimeout(timer);
   });
   return {
+    interrupt,
     prompt,
     confirmation,
     dismiss,

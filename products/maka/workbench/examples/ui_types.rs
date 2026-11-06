@@ -38,6 +38,7 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/app/ComputerAppRequest.tsx",
     "products/maka/workbench/app/CapabilityRequest.tsx",
     "products/maka/workbench/tests/fixtures/composer-completion.tsx",
+    "products/maka/workbench/tests/fixtures/skill-input.tsx",
     "products/maka/workbench/tests/fixtures/mermaid-view.tsx",
     "plugins/agent/conversations/ui/index.tsx",
     "plugins/agent/composer/ui/index.tsx",

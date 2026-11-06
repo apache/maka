@@ -7,6 +7,7 @@ import { platform } from 'nsh';
 import { lucide, type LucideElement } from './lucide';
 
 const icons = {
+  book: { lucide: 'book', glyph: '📖' },
   back: { lucide: 'chevron-left', glyph: '‹' },
   sidebar: { lucide: 'panel-left', glyph: '◫' },
   split: { lucide: 'columns-2', glyph: '◫' },
