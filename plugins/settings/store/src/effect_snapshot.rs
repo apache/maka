@@ -24,7 +24,7 @@ use crate::{
     vault,
 };
 use maka_agent_facts::configuration::*;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 /// Private execution material, never a catalog or plugin projection. All fields
@@ -69,26 +69,24 @@ impl ConfigurationStore {
     ) -> Result<Option<ConnectionObservation>> {
         let store = self.clone();
         self.transaction(crate::TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                let Some(connection) = crate::catalog::find(tx, &id).await? else {
-                    return Ok(None);
-                };
-                if !connection.enabled || !selected(&connection) {
-                    return Ok(None);
-                }
-                let material = EffectSnapshot::read(tx, connection).await?;
-                Ok(Some(ConnectionObservation {
-                    credential: material.provider_credential(&store)?,
-                    request_headers: material
-                        .request_headers()
-                        .map(validation::parse_headers)
-                        .transpose()
-                        .map_err(ConfigError::Invalid)?
-                        .unwrap_or_default(),
-                    connection: material.connection,
-                    network: material.network.configuration,
-                }))
-            })
+            let Some(connection) = crate::catalog::find(tx, &id)? else {
+                return Ok(None);
+            };
+            if !connection.enabled || !selected(&connection) {
+                return Ok(None);
+            }
+            let material = EffectSnapshot::read(tx, connection)?;
+            Ok(Some(ConnectionObservation {
+                credential: material.provider_credential(&store)?,
+                request_headers: material
+                    .request_headers()
+                    .map(validation::parse_headers)
+                    .transpose()
+                    .map_err(ConfigError::Invalid)?
+                    .unwrap_or_default(),
+                connection: material.connection,
+                network: material.network.configuration,
+            }))
         })
         .await
     }
@@ -109,19 +107,16 @@ struct SecretSnapshot {
 }
 
 impl EffectSnapshot {
-    pub async fn read(
-        tx: &mut SqliteConnection,
-        connection: ConnectionCatalogEntry,
-    ) -> Result<Self> {
+    pub fn read(tx: &Connection, connection: ConnectionCatalogEntry) -> Result<Self> {
         let id = &connection.connection_id;
-        let credential = secret(tx, id, ConnectionCredentialKind::Provider).await?;
+        let credential = secret(tx, id, ConnectionCredentialKind::Provider)?;
         // Reject malformed persisted envelopes before handing out a ticket.
         if let Some(secret) = &credential.secret {
             oauth::decode(secret)?;
         }
-        let headers = secret(tx, id, ConnectionCredentialKind::RequestHeaders).await?;
+        let headers = secret(tx, id, ConnectionCredentialKind::RequestHeaders)?;
         Ok(Self {
-            network: NetworkSnapshot::read(tx).await?,
+            network: NetworkSnapshot::read(tx)?,
             connection,
             credential,
             headers,
@@ -186,9 +181,9 @@ impl EffectSnapshot {
         self.headers.secret.as_deref()
     }
 
-    pub async fn changed(
+    pub fn changed(
         &self,
-        tx: &mut SqliteConnection,
+        tx: &Connection,
         current: Option<&ConnectionCatalogEntry>,
     ) -> Result<Vec<ConnectionEffectChangedDomain>> {
         use ConnectionEffectChangedDomain as Changed;
@@ -201,22 +196,22 @@ impl EffectSnapshot {
         }) {
             changed.push(Changed::Connection);
         }
-        if self.credentials_changed(tx).await? {
+        if self.credentials_changed(tx)? {
             changed.push(Changed::Credential);
         }
-        if self.network_changed(tx).await? {
+        if self.network_changed(tx)? {
             changed.push(Changed::NetworkProxy);
         }
         Ok(changed)
     }
 
-    pub async fn network_changed(&self, tx: &mut SqliteConnection) -> Result<bool> {
-        self.network.changed(tx).await
+    pub fn network_changed(&self, tx: &Connection) -> Result<bool> {
+        self.network.changed(tx)
     }
 
-    pub async fn credentials_changed(&self, tx: &mut SqliteConnection) -> Result<bool> {
+    pub fn credentials_changed(&self, tx: &Connection) -> Result<bool> {
         for snapshot in [&self.credential, &self.headers] {
-            let current = vault::status(tx, &snapshot.locator).await?;
+            let current = vault::status(tx, &snapshot.locator)?;
             if vault::status_basis(&current) != snapshot.basis {
                 return Ok(true);
             }
@@ -225,20 +220,18 @@ impl EffectSnapshot {
     }
 }
 
-async fn secret(
-    tx: &mut SqliteConnection,
-    id: &str,
-    kind: ConnectionCredentialKind,
-) -> Result<SecretSnapshot> {
+fn secret(tx: &Connection, id: &str, kind: ConnectionCredentialKind) -> Result<SecretSnapshot> {
     let locator = CredentialLocator::Connection {
         connection_id: id.into(),
         kind,
     };
-    let status = vault::status(tx, &locator).await?;
-    let secret = sqlx::query_scalar("SELECT secret FROM credentials WHERE locator = ?")
-        .bind(serde_json::to_string(&locator)?)
-        .fetch_optional(tx)
-        .await?;
+    let status = vault::status(tx, &locator)?;
+    let secret = tx
+        .prepare_cached("SELECT secret FROM credentials WHERE locator = ?")?
+        .query_row(rusqlite::params![serde_json::to_string(&locator)?], |row| {
+            row.get(0)
+        })
+        .optional()?;
     Ok(SecretSnapshot {
         locator,
         basis: vault::status_basis(&status),

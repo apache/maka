@@ -23,10 +23,10 @@ use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 
-pub(super) async fn source_fence(
-    connection: &mut SqliteConnection,
+pub(super) fn source_fence(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     opening: Option<&(i64, RuntimeEvent)>,
     mode: &CheckpointMode,
@@ -42,11 +42,9 @@ pub(super) async fn source_fence(
                 "automatic compaction requires a live model invocation",
             ));
         }
-        let high = selection
-            .high_water(connection, i64::MAX as u64 - 1)
-            .await?;
+        let high = selection.high_water(connection, i64::MAX as u64 - 1)?;
         if high > 0 {
-            safety::closed_boundary(connection, session, high).await?;
+            safety::closed_boundary(connection, session, high)?;
         }
         return Ok(high);
     };
@@ -76,44 +74,49 @@ pub(super) async fn source_fence(
         }
         _ => return Err(invalid("checkpoint mode does not match its opening")),
     };
-    let high = selection.high_water(connection, before as u64 - 1).await?;
+    let high = selection.high_water(connection, before as u64 - 1)?;
     if matches!(mode, CheckpointMode::MidTurn { .. }) {
         if high <= *opened as u64 {
             return Err(invalid(
                 "mid-turn source has no completed work after its anchor",
             ));
         }
-        safety::settled_boundary(connection, &event.invocation.invocation_id, high).await?;
+        safety::settled_boundary(connection, &event.invocation.invocation_id, high)?;
     } else if high > 0 {
-        safety::closed_boundary(connection, session, high).await?;
+        safety::closed_boundary(connection, session, high)?;
     }
     Ok(high)
 }
 
 /// The frozen source key owns a round. Route/digest changes cannot create a new
 /// repair budget; the first request's existing step identity is the round root.
-pub(super) async fn summary_start(
-    connection: &mut SqliteConnection,
+pub(super) fn summary_start(
+    connection: &rusqlite::Connection,
     invocation: &str,
     scope: &maka_agent_facts::event::LogScope,
     high: u64,
     through: u64,
 ) -> Result<Option<u64>, StoreError> {
-    let first: Option<i64> = sqlx::query_scalar(
-        "SELECT sequence FROM event_log INDEXED BY context_summary_round
+    let first: Option<i64> = connection
+        .prepare_cached(
+            "SELECT sequence FROM event_log INDEXED BY context_summary_round
          WHERE invocation_id = ?1 AND event_header IS NOT NULL
          AND kind = 'model_requested' AND sequence < ?2
          AND json_extract(event_header, '$.fact.purpose') = 'summary'
          AND json_extract(event_header, '$.fact.source_high_water') = ?3
          AND json_extract(event_header, '$.fact.source_scope') = json(?4)
          ORDER BY sequence LIMIT 1",
-    )
-    .bind(invocation)
-    .bind(through as i64)
-    .bind(high as i64)
-    .bind(serde_json::to_string(scope)?)
-    .fetch_optional(connection)
-    .await?;
+        )?
+        .query_row(
+            rusqlite::params![
+                invocation,
+                through as i64,
+                high as i64,
+                serde_json::to_string(scope)?
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
     first.map(crate::sequence_number).transpose()
 }
 
@@ -143,18 +146,17 @@ pub(super) const SUMMARY_ADMISSION: &str = "WITH covered AS (
 /// Renewal must be Main progress covered by the new source. A fast Main can
 /// finish before the prior Summary request commits; request arrival order is
 /// not a progress fence, and late repairs must not roll that fence backward.
-pub(super) async fn admit_summary(
-    connection: &mut SqliteConnection,
+pub(super) fn admit_summary(
+    connection: &rusqlite::Connection,
     invocation: &str,
     first: Option<u64>,
     high: u64,
 ) -> Result<(), StoreError> {
-    let (pending, attempts, renewed): (bool, i64, bool) = sqlx::query_as(SUMMARY_ADMISSION)
-        .bind(invocation)
-        .bind(first.map(|v| v as i64))
-        .bind(high as i64)
-        .fetch_one(connection)
-        .await?;
+    let (pending, attempts, renewed): (bool, i64, bool) =
+        connection.prepare_cached(SUMMARY_ADMISSION)?.query_row(
+            rusqlite::params![invocation, first.map(|v| v as i64), high as i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
     if pending || (first.is_some() && attempts >= 3) || (first.is_none() && !renewed) {
         return Err(invalid(
             "summary requires settled work and a bounded repair budget",

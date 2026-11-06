@@ -21,6 +21,7 @@
 use super::routes::Creation;
 use super::*;
 use crate::sessions::{PluginSession, SessionCopy, SessionCopyResult};
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -74,38 +75,24 @@ fn invalid(message: impl std::fmt::Display) -> StoreError {
 }
 
 impl RootStore {
-    pub(super) async fn route_partition(&self, id: &str) -> Result<usize, StoreError> {
-        self.require_open()?;
-        crate::sessions::validate_id(id)?;
-        let id = id.to_owned();
-        self.control.connection.read(move |db| Box::pin(async move {
-            let partition: Option<i64> = sqlx::query_scalar("SELECT partition FROM session_routes WHERE session_id=? AND ready=1 AND visible=1").bind(id).fetch_optional(db).await?;
-            Ok(partition.ok_or(StoreError::SessionNotFound)? as usize)
-        })).await
+    pub(super) async fn require_published_session(&self, id: &str) -> Result<(), StoreError> {
+        self.session(id).await.map(|_| ())
     }
 
-    async fn family_partition(
+    async fn require_creation_dependencies(
         &self,
-        target: &str,
         source: Option<&str>,
         origin: Option<&PluginSession>,
-    ) -> Result<usize, StoreError> {
-        let mut partition = None;
+    ) -> Result<(), StoreError> {
         let authority = origin.and_then(|origin| origin.authority_session_id.as_deref());
         let scope = origin.and_then(|origin| match origin.creator.scope() {
             maka_plugin_core::scope::Scope::Session(id) => Some(id.as_str()),
             _ => None,
         });
         for dependency in [source, authority, scope].into_iter().flatten() {
-            let inherited = self.route_partition(dependency).await?;
-            if partition.is_some_and(|current| current != inherited) {
-                return Err(invalid(
-                    "Session creation dependencies belong to different partitions",
-                ));
-            }
-            partition = Some(inherited);
+            self.require_published_session(dependency).await?;
         }
-        Ok(partition.unwrap_or_else(|| partition_for(b"session", target)))
+        Ok(())
     }
 
     pub(super) async fn execute_creation(
@@ -113,9 +100,8 @@ impl RootStore {
         id: &str,
         fingerprint: &str,
         command: Creation,
-        partition: usize,
         members: Vec<String>,
-    ) -> Result<usize, StoreError> {
+    ) -> Result<(), StoreError> {
         self.require_open()?;
         if fingerprint.is_empty() {
             return Err(invalid("invalid session fingerprint"));
@@ -123,12 +109,29 @@ impl RootStore {
         for member in &members {
             crate::sessions::validate_id(member)?;
         }
-        let (partition, command) = self
-            .reserve_family(id, fingerprint, command, partition, members)
+        let creation = self
+            .gates
+            .write([super::gates::Key::Creation(id.to_owned())])
             .await?;
-        self.finish_creation(id, fingerprint, partition, command)
+        let (sessions, bindings) = command.pin_inputs(id)?;
+        let log = super::pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings)
+            .await?
+            .scoped(Arc::new(creation));
+        let reserved = log
+            .connection
+            .write(
+                creation::WriteReservation {
+                    id: id.to_owned(),
+                    fingerprint: fingerprint.to_owned(),
+                    command,
+                    members,
+                },
+                self.log.commits.notice(),
+            )
             .await?;
-        Ok(partition)
+        self.finish_pinned_creation(id, fingerprint, reserved.command, &log)
+            .await?;
+        Ok(())
     }
 
     pub async fn create_plugin_session<T: Serialize + DeserializeOwned + Send + 'static>(
@@ -141,24 +144,21 @@ impl RootStore {
         crate::sessions::validate_time(now)?;
         let configuration = serde_json::to_value(configuration)?;
         creation::validate_configuration(&configuration)?;
-        let partition = self
-            .family_partition(&claim.session_id, None, Some(claim))
+        self.require_creation_dependencies(None, Some(claim))
             .await?;
         let command = Creation::Plugin {
             origin: claim.into(),
             configuration,
             created_at: now,
         };
-        let partition = self
-            .execute_creation(
-                &claim.session_id,
-                &claim.fingerprint,
-                command,
-                partition,
-                vec![claim.session_id.clone()],
-            )
-            .await?;
-        self.handle(claim.session_id.clone(), partition)
+        self.execute_creation(
+            &claim.session_id,
+            &claim.fingerprint,
+            command,
+            vec![claim.session_id.clone()],
+        )
+        .await?;
+        self.handle(claim.session_id.clone())
             .get()
             .await?
             .ok_or(StoreError::SessionNotFound)
@@ -216,8 +216,7 @@ impl RootStore {
         let configuration = serde_json::to_value(configuration)?;
         creation::validate_configuration(&configuration)?;
         let target = request.target_session_id.clone();
-        let partition = self
-            .family_partition(&target, Some(&request.source_session_id), origin.as_ref())
+        self.require_creation_dependencies(Some(&request.source_session_id), origin.as_ref())
             .await?;
         let fingerprint = origin.as_ref().map(|o| o.fingerprint.clone()).unwrap_or(
             maka_agent_facts::artifact::content_digest(serde_json::to_string(&request)?.as_bytes()),
@@ -229,21 +228,15 @@ impl RootStore {
             created_at: now,
         };
         match self
-            .execute_creation(
-                &target,
-                &fingerprint,
-                command,
-                partition,
-                vec![target.clone()],
-            )
+            .execute_creation(&target, &fingerprint, command, vec![target.clone()])
             .await
         {
             Err(StoreError::SessionCreationRejected(
                 CreationRejection::SourceRevisionConflict { expected, actual },
             )) => Ok(SessionCopyResult::SourceRevisionConflict { expected, actual }),
             Err(error) => Err(error),
-            Ok(partition) => Ok(SessionCopyResult::Committed(Box::new(
-                self.handle(target, partition)
+            Ok(()) => Ok(SessionCopyResult::Committed(Box::new(
+                self.handle(target)
                     .get()
                     .await?
                     .ok_or(StoreError::SessionNotFound)?,
@@ -280,8 +273,7 @@ impl RootStore {
         }
         let configuration = serde_json::to_value(configuration)?;
         creation::validate_configuration(&configuration)?;
-        let partition = self
-            .family_partition(&owner.session_id, None, Some(owner))
+        self.require_creation_dependencies(None, Some(owner))
             .await?;
         let command = Creation::Import {
             origin: owner.into(),
@@ -290,16 +282,14 @@ impl RootStore {
             configuration,
             created_at: now,
         };
-        let partition = self
-            .execute_creation(
-                &owner.session_id,
-                &owner.fingerprint,
-                command,
-                partition,
-                vec![owner.session_id.clone()],
-            )
-            .await?;
-        self.handle(owner.session_id.clone(), partition)
+        self.execute_creation(
+            &owner.session_id,
+            &owner.fingerprint,
+            command,
+            vec![owner.session_id.clone()],
+        )
+        .await?;
+        self.handle(owner.session_id.clone())
             .get()
             .await?
             .ok_or(StoreError::SessionNotFound)
@@ -449,11 +439,10 @@ pub(super) async fn commit(
     store
         .connection
         .run(|db| {
-            Box::pin(async move {
-                let tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                tx.rollback().await?;
-                Ok(())
-            })
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            tx.rollback()?;
+            Ok(())
         })
         .await?;
     Ok(rejection)
@@ -501,7 +490,7 @@ impl RootStore {
         let digest = staged.summary().digest.clone();
         let stage = uuid::Uuid::new_v4().to_string();
         let directory = self
-            .control
+            .log
             .root_owner
             .as_ref()
             .ok_or_else(|| invalid("bundle requires Root owner"))?
@@ -517,16 +506,10 @@ impl RootStore {
             configurations,
             members: members.clone(),
         };
-        let partition = self
-            .execute_creation(
-                &id,
-                binding_fingerprint,
-                command,
-                partition_for(b"session", &id),
-                members,
-            )
+        self.execute_creation(&id, binding_fingerprint, command, members)
             .await?;
-        let receipt = self.partitions[partition]
+        let receipt = self
+            .log
             .bundle_import_receipt(&digest, binding_fingerprint)
             .await?
             .ok_or_else(|| invalid("committed bundle receipt is missing"))?;
@@ -540,7 +523,7 @@ impl RootStore {
     /// Startup has not published this Root, so imports cannot race stage cleanup.
     pub(super) async fn cleanup_stages(&self) -> Result<(), StoreError> {
         let directory = self
-            .control
+            .log
             .root_owner
             .as_ref()
             .ok_or_else(|| invalid("bundle requires Root owner"))?
@@ -551,9 +534,9 @@ impl RootStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let pending: Vec<String> = self.control.connection.read(|db| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT DISTINCT json_extract(command,'$.stage') FROM session_routes WHERE ready=0 AND json_extract(command,'$.kind')='bundle'").fetch_all(db).await?)
-        })).await?;
+        let pending: Vec<String> = self.log.connection.read(|db| {
+            Ok(db.prepare_cached("SELECT DISTINCT json_extract(command,'$.stage') FROM session_creations WHERE ready=0 AND json_extract(command,'$.kind')='bundle'")?.query_map(rusqlite::params![], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
+        }).await?;
         let pending: std::collections::HashSet<_> = pending.into_iter().collect();
         for entry in entries {
             let entry = entry?;
@@ -580,29 +563,24 @@ impl RootStore {
 mod tests;
 
 impl RootStore {
-    async fn recover_target(&self, id: &str) -> Result<Option<usize>, StoreError> {
+    async fn recover_target(&self, id: &str) -> Result<bool, StoreError> {
         self.require_open()?;
         crate::sessions::validate_id(id)?;
         let id = id.to_owned();
-        let row: Option<(String, String, i64, String, Option<String>)> = self.control.connection.read(move |db| Box::pin(async move {
-            Ok(sqlx::query_as("SELECT r.creation_id,c.fingerprint,r.partition,c.command,r.failure FROM session_routes r JOIN session_routes c ON c.session_id=r.creation_id WHERE r.session_id=? AND r.visible=1").bind(id).fetch_optional(db).await?)
-        })).await?;
-        let Some((id, fingerprint, partition, command, failure)) = row else {
-            return Ok(None);
+        let row: Option<(String, String, String, Option<String>)> = self.log.connection.read(move |db| {
+            Ok(db.query_row("SELECT r.creation_id,c.fingerprint,c.command,r.failure FROM session_creations r JOIN session_creations c ON c.session_id=r.creation_id WHERE r.session_id=? AND r.visible=1", rusqlite::params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?)
+        }).await?;
+        let Some((id, fingerprint, command, failure)) = row else {
+            return Ok(false);
         };
         if let Some(failure) = failure {
             return Err(StoreError::SessionCreationRejected(serde_json::from_str(
                 &failure,
             )?));
         }
-        self.finish_creation(
-            &id,
-            &fingerprint,
-            partition as usize,
-            serde_json::from_str(&command)?,
-        )
-        .await?;
-        Ok(Some(partition as usize))
+        self.finish_creation(&id, &fingerprint, serde_json::from_str(&command)?)
+            .await?;
+        Ok(true)
     }
 
     pub async fn probe_session_create<T: DeserializeOwned + Send + 'static>(
@@ -611,12 +589,8 @@ impl RootStore {
         fingerprint: &str,
     ) -> Result<Option<SessionRecord<T>>, StoreError> {
         match self.recover_target(id).await? {
-            Some(partition) => {
-                self.partitions[partition]
-                    .probe_session_create(id, fingerprint)
-                    .await
-            }
-            None => Ok(None),
+            true => self.log.probe_session_create(id, fingerprint).await,
+            false => Ok(None),
         }
     }
 
@@ -625,12 +599,8 @@ impl RootStore {
         target: &str,
     ) -> Result<Option<maka_agent_facts::session::CopyReceipt>, StoreError> {
         match self.recover_target(target).await? {
-            Some(partition) => {
-                self.partitions[partition]
-                    .session_copy_receipt(target)
-                    .await
-            }
-            None => Ok(None),
+            true => self.log.session_copy_receipt(target).await,
+            false => Ok(None),
         }
     }
 
@@ -641,17 +611,17 @@ impl RootStore {
     ) -> Result<Option<crate::bundle::ImportReceipt>, StoreError> {
         self.require_open()?;
         let query_digest = digest.to_owned();
-        let id: Option<String> = self.control.connection.read(move |db| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT session_id FROM session_routes WHERE session_id=creation_id AND json_extract(command,'$.kind')='bundle' AND json_extract(command,'$.digest')=?").bind(query_digest).fetch_optional(db).await?)
-        })).await?;
+        let id: Option<String> = self.log.connection.read(move |db| {
+            Ok(db.query_row("SELECT session_id FROM session_creations WHERE session_id=creation_id AND json_extract(command,'$.kind')='bundle' AND json_extract(command,'$.digest')=?", rusqlite::params![query_digest], |row| row.get(0)).optional()?)
+        }).await?;
         let Some(id) = id else { return Ok(None) };
         match self.recover_target(&id).await? {
-            Some(partition) => {
-                self.partitions[partition]
+            true => {
+                self.log
                     .bundle_import_receipt(digest, binding_fingerprint)
                     .await
             }
-            None => Ok(None),
+            false => Ok(None),
         }
     }
 }
@@ -692,19 +662,17 @@ async fn committed_receipt(store: &EventLog, command: &Creation) -> Result<bool,
         ),
         _ => return Ok(false),
     };
-    store.connection.read(move |db| Box::pin(async move {
+    store.connection.read(move |db| {
         if let Some((source, count, configuration)) = receipt {
-            let imported: Option<(String, i64, String)> = sqlx::query_as("SELECT source_json,records,configuration FROM session_imports WHERE session_id=? AND state='published'")
-                .bind(&id).fetch_optional(&mut *db).await?;
+            let imported: Option<(String, i64, String)> = db.query_row("SELECT source_json,records,configuration FROM session_imports WHERE session_id=? AND state='published'", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
             let Some((stored_source, stored_count, stored_configuration)) = imported else { return Ok(false) };
             if stored_source != source || stored_count != count || serde_json::from_str::<Value>(&stored_configuration)? != configuration { return Ok(false); }
         }
-        let stored: Option<(String,String,String,bool,Option<String>)> = sqlx::query_as("SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?")
-            .bind(&id).fetch_optional(&mut *db).await?;
+        let stored: Option<(String,String,String,bool,Option<String>)> = db.query_row("SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
         Ok(match (stored, expected_origin) {
             (None, None) => true,
             (Some((package,scope,fingerprint,managed,authority)), Some(origin)) => package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint && managed == origin.managed && authority == origin.authority_session_id,
             _ => false,
         })
-    })).await
+    }).await
 }

@@ -147,7 +147,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
     std::fs::write(&foreign, b"not a Maka database").unwrap();
     assert!(matches!(
         EventLog::open(&foreign).await,
-        Err(StoreError::Sqlx(_))
+        Err(error) if matches!(error.underlying(), StoreError::Sqlite(_))
     ));
     assert_eq!(std::fs::read(foreign).unwrap(), b"not a Maka database");
 }

@@ -20,9 +20,8 @@
 use super::{RootStore, SessionStore};
 use crate::{
     StoreError,
-    recall::{ExcludedTurnTail, Ranked, SearchBatch, SearchContext, SearchQuery, normalize_query},
+    recall::{ExcludedTurnTail, SearchBatch, SearchContext, SearchQuery, normalize_query},
 };
-use futures_util::future::try_join_all;
 use tokio_util::sync::CancellationToken;
 
 impl RootStore {
@@ -44,34 +43,10 @@ impl RootStore {
         normalize_query(&mut input)?;
         let stop = cancellation.child_token();
         let _cancel_on_drop = stop.clone().drop_guard();
-        let results = try_join_all(self.partitions.iter().enumerate().map(|(partition, log)| {
-            log.search_history_partition(partition, prefix.to_owned(), input.clone(), stop.clone())
-        }))
-        .await?;
-        let batch = tokio::task::spawn_blocking(move || {
-            let mut ranked = Ranked::new(input.limit);
-            let mut gaps = Vec::new();
-            for result in results {
-                gaps.extend(result.gaps);
-                for hit in result.hits {
-                    if stop.is_cancelled() {
-                        return Err(cancelled());
-                    }
-                    ranked.push(hit);
-                }
-            }
-            if stop.is_cancelled() {
-                return Err(cancelled());
-            }
-            Ok(SearchBatch {
-                hits: ranked.finish(&stop)?,
-                gaps,
-            })
-        })
-        .await
-        .map_err(|error| {
-            StoreError::InvalidTransition(format!("history result merge failed: {error}"))
-        })??;
+        let batch = self
+            .log
+            .search_published_history(prefix.to_owned(), input, stop)
+            .await?;
         self.require_open()?;
         Ok(batch)
     }
@@ -97,7 +72,7 @@ impl RootStore {
         let _cancel_on_drop = stop.clone().drop_guard();
         let selected = async {
             if let Some(execution) = execution {
-                let (source, _, _) = self
+                let (source, _) = self
                     .pin_session_pair(session, execution.id(), Some(execution))
                     .await?;
                 Ok::<_, StoreError>(source)
@@ -110,9 +85,7 @@ impl RootStore {
             _ = stop.cancelled() => return Err(cancelled()),
             selected = selected => selected?,
         };
-        let partition = self.route_partition(session).await?;
-        log.history_context_partition(
-            partition,
+        log.published_history_context(
             prefix.to_owned(),
             session.to_owned(),
             anchor_message_id.to_owned(),

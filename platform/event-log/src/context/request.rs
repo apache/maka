@@ -25,10 +25,10 @@ use maka_agent_facts::context::resolve_model_purpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 
-pub(super) async fn validate(
-    connection: &mut SqliteConnection,
+pub(super) fn validate(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     let Fact::ModelRequested {
@@ -54,8 +54,7 @@ pub(super) async fn validate(
         &event.invocation.invocation_id,
         "invocation_opened",
         None,
-    )
-    .await?;
+    )?;
     let Fact::InvocationOpened { input, .. } = &opening.fact else {
         return Err(invalid("missing opening"));
     };
@@ -64,15 +63,14 @@ pub(super) async fn validate(
     }
     let resolved = resolve_model_purpose(input, *purpose).map_err(invalid)?;
     if resolved == ModelPurpose::Main && matches!(input, InvocationInput::Message { .. }) {
-        safety::summary_boundary(connection, &event.invocation.invocation_id).await?;
+        safety::summary_boundary(connection, &event.invocation.invocation_id)?;
         if let Some(id) = checkpoint_event_id {
-            let selection = Selection::for_opening(connection, &opening).await?;
+            let selection = Selection::for_opening(connection, &opening)?;
             if source_scope != &selection.scope {
                 return Err(invalid("request checkpoint belongs to another scope"));
             }
             let (baseline, source) =
-                super::read::latest_with_evidence(connection, &selection, *source_high_water)
-                    .await?;
+                super::read::latest_with_evidence(connection, &selection, *source_high_water)?;
             let baseline = baseline.ok_or_else(|| invalid("missing request baseline"))?;
             if baseline.event_id != *id || source.digest != *source_digest {
                 return Err(invalid("request baseline evidence changed"));
@@ -80,12 +78,11 @@ pub(super) async fn validate(
         }
         return Ok(());
     }
-    let selection = Selection::for_opening(connection, &opening).await?;
+    let selection = Selection::for_opening(connection, &opening)?;
     let session = &event.invocation.session_id;
-    safety::require_safe(connection, session, Some(&event.invocation.invocation_id)).await?;
+    safety::require_safe(connection, session, Some(&event.invocation.invocation_id))?;
     if resolved == ModelPurpose::Main {
-        safety::model_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)
-            .await?;
+        safety::model_boundary(connection, &event.invocation.invocation_id, i64::MAX as u64)?;
     }
     let high = if resolved == ModelPurpose::Summary {
         let mode = match input {
@@ -112,17 +109,15 @@ pub(super) async fn validate(
             source_high_water
                 .checked_add(1)
                 .ok_or_else(|| invalid("source overflow"))?,
-        )
-        .await?
+        )?
     } else {
-        safety::model_source_unchanged(connection, &selection, event).await?;
+        safety::model_source_unchanged(connection, &selection, event)?;
         *source_high_water
     };
     if source_scope != &selection.scope || high != *source_high_water {
         return Err(invalid("model request source changed"));
     }
-    let (baseline, source) =
-        super::read::latest_with_evidence(connection, &selection, high).await?;
+    let (baseline, source) = super::read::latest_with_evidence(connection, &selection, high)?;
     if source.digest != *source_digest {
         return Err(invalid("model request source changed"));
     }
@@ -138,8 +133,7 @@ pub(super) async fn validate(
             .as_deref()
             .ok_or_else(|| invalid("model request requires effective source evidence"))?,
         i64::MAX as u64,
-    )
-    .await?;
+    )?;
     if resolved == ModelPurpose::Main {
         return Ok(());
     }
@@ -149,20 +143,16 @@ pub(super) async fn validate(
         source_scope,
         *source_high_water,
         i64::MAX as u64,
-    )
-    .await?
+    )?
     .map(|sequence| sequence as i64);
     boundary::admit_summary(
         connection,
         &event.invocation.invocation_id,
         first_summary.map(|value| value as u64),
         *source_high_water,
-    )
-    .await?;
-    let previous_effective: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT sequence,json_extract(event_header,'$.fact.effective_source_digest') FROM runtime_events
-         WHERE sequence = ?",
-    ).bind(first_summary).fetch_optional(&mut *connection).await?;
+    )?;
+    let previous_effective: Option<(i64, Option<String>)> = connection.prepare_cached("SELECT sequence,json_extract(event_header,'$.fact.effective_source_digest') FROM runtime_events
+         WHERE sequence = ?")?.query_row(rusqlite::params![first_summary], |row| Ok((row.get(0)?,row.get(1)?,))).optional()?;
     if let Some((sequence, expected)) = previous_effective {
         if expected != *effective_source_digest {
             return Err(invalid("summary repair changed effective source"));
@@ -174,15 +164,12 @@ pub(super) async fn validate(
                 .as_deref()
                 .ok_or_else(|| invalid("summary requires effective source evidence"))?,
             sequence as u64,
-        )
-        .await?;
+        )?;
     }
-    let first: Option<(String, String, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT json_extract(event_header, '$.fact.model_id'), json_extract(event_header, '$.fact.route_identity'),
+    let first: Option<(String, String, i64, String, Option<String>)> = connection.prepare_cached("SELECT json_extract(event_header, '$.fact.model_id'), json_extract(event_header, '$.fact.route_identity'),
          json_extract(event_header, '$.fact.source_high_water'), json_extract(event_header, '$.fact.source_digest'),
          json_extract(event_header, '$.fact.checkpoint_event_id') FROM runtime_events
-         WHERE sequence = ?",
-    ).bind(first_summary).fetch_optional(&mut *connection).await?;
+         WHERE sequence = ?")?.query_row(rusqlite::params![first_summary], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,))).optional()?;
     if first.is_some_and(|(m, r, h, d, p)| {
         m != *model_id
             || r != *route_identity

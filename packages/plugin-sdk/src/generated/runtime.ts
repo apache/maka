@@ -6687,11 +6687,7 @@ export interface SettingsUsageRange {
 }
 export interface UsageFence {
   stateDomain: string;
-  /**
-   * @minItems 8
-   * @maxItems 8
-   */
-  partitions: [number, number, number, number, number, number, number, number];
+  sequence: number;
 }
 /**
  * Filters only the activity list, never headline accounting for the range.
@@ -6703,7 +6699,6 @@ export interface UsageSelection {
 }
 export interface UsageActivityCursor {
   completedAt: number;
-  partition: number;
   requestId: string;
 }
 export interface SettingsUsagePage {
@@ -6869,7 +6864,7 @@ export interface UsageToolSummary {
 export interface UsageGroupCursor {
   group: UsageGroup;
   /**
-   * None is the unknown-provider group, not the beginning of pagination.
+   * None identifies the unknown-provider group, not the start of pagination.
    */
   key?: string | null;
 }

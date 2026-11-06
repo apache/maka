@@ -20,7 +20,7 @@
 use super::{MAX_SAFE_INTEGER, advance_catalog, invalid, number};
 use crate::StoreError;
 use maka_agent_facts::event::TerminalStatus;
-use sqlx::{Row, SqliteConnection};
+use rusqlite::{OptionalExtension, params};
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionExecution {
     pub turn_id: String,
@@ -46,13 +46,13 @@ pub enum SessionExecutionState {
     },
 }
 
-pub(crate) async fn has_active_invocation(
-    connection: &mut SqliteConnection,
+pub(crate) fn has_active_invocation(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<bool, StoreError> {
     // Local openings are admitted serially; bundle imports precede all local openings.
     // Thus only the latest canonical opening can own active local execution.
-    Ok(sqlx::query_scalar(
+    Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM (
             SELECT invocation_id FROM event_log INDEXED BY catalog_message_facts
             WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
@@ -65,56 +65,56 @@ pub(crate) async fn has_active_invocation(
          AND NOT EXISTS(SELECT 1 FROM runtime_events terminal
             WHERE terminal.invocation_id = opening.invocation_id
             AND terminal.kind = 'invocation_ended'))",
-    )
-    .bind(session)
-    .fetch_one(connection)
-    .await?)
+        params![session],
+        |row| row.get(0),
+    )?)
 }
 
-pub(super) async fn read(
-    connection: &mut SqliteConnection,
+pub(super) fn read(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Option<SessionExecution>, StoreError> {
-    let opening = sqlx::query(
-        "SELECT invocation_id, json_extract(event_header, '$.invocation.turn_id'),
+    let opening = connection.query_row("SELECT invocation_id, json_extract(event_header, '$.invocation.turn_id'),
                 catalog_time(json_extract(event_header, '$.recorded_at'))
          FROM event_log INDEXED BY catalog_message_facts
          WHERE invocation_id IS NOT NULL
          AND kind IN ('invocation_opened', 'model_completed') AND kind = 'invocation_opened'
          AND json_extract(event_header, '$.invocation.session_id') = ?
          AND NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=event_log.invocation_id)
-         ORDER BY sequence DESC LIMIT 1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *connection)
-    .await?;
+         ORDER BY sequence DESC LIMIT 1",params![id],|row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, i64>(2)?,))).optional()
+    ?;
     let Some(opening) = opening else {
         return Ok(None);
     };
-    let invocation_id: String = opening.try_get(0)?;
-    let turn_id = opening.try_get(1)?;
-    let opened_at = number(&opening, 2)?;
-    let terminal = sqlx::query(
-        "SELECT json_extract(event_header, '$.fact.outcome.kind'),
+    let invocation_id: String = opening.0;
+    let turn_id = opening.1;
+    let opened_at = number(opening.2)?;
+    let terminal = connection
+        .query_row(
+            "SELECT json_extract(event_header, '$.fact.outcome.kind'),
                 catalog_time(json_extract(event_header, '$.recorded_at')),
                 json_extract(event_header, '$.fact.outcome.outcome.kind') FROM event_log
                 INDEXED BY invocation_boundary
          WHERE invocation_id = ? AND kind IN ('invocation_opened', 'invocation_ended')
          AND kind = 'invocation_ended' ORDER BY sequence DESC LIMIT 1",
-    )
-    .bind(&invocation_id)
-    .fetch_optional(&mut *connection)
-    .await?;
+            params![&invocation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
     let terminal = terminal
         .map(|row| -> Result<_, StoreError> {
-            let kind: String = row.try_get(0)?;
-            let recorded_at = number(&row, 1)?;
+            let kind: String = row.0;
+            let recorded_at = number(row.1)?;
             Ok(SessionExecutionState::Ended {
                 recorded_at,
                 status: match kind.as_str() {
-                    "context_compact_finished"
-                        if row.try_get::<Option<String>, _>(2)?.as_deref() == Some("failed") =>
-                    {
+                    "context_compact_finished" if row.2.as_deref() == Some("failed") => {
                         Ok(TerminalStatus::Failed)
                     }
                     "completed" | "context_compact_finished" => Ok(TerminalStatus::Completed),
@@ -134,12 +134,13 @@ pub(super) async fn read(
     }))
 }
 
-pub(super) async fn last_message(
-    connection: &mut SqliteConnection,
+pub(super) fn last_message(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Option<CatalogMessage>, StoreError> {
-    sqlx::query(
-        "SELECT message_at, (
+    connection
+        .query_row(
+            "SELECT message_at, (
             SELECT preview FROM catalog_messages INDEXED BY catalog_latest_preview
             WHERE session_id = ?1 AND preview IS NOT NULL
             ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
@@ -148,47 +149,46 @@ pub(super) async fn last_message(
             WHERE session_id = ?1 ORDER BY sequence DESC, ordinal DESC LIMIT 1
          ) FROM catalog_messages INDEXED BY catalog_latest_message WHERE session_id = ?1
          ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *connection)
-    .await?
-    .map(|row| -> Result<_, StoreError> {
-        Ok(CatalogMessage {
-            recorded_at: number(&row, 0)?,
-            preview: row.try_get(1)?,
-            tail_message_id: row.try_get(2)?,
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| -> Result<_, StoreError> {
+            Ok(CatalogMessage {
+                recorded_at: number(row.0)?,
+                preview: row.1,
+                tail_message_id: row.2,
+            })
         })
-    })
-    .transpose()
+        .transpose()
 }
 
-pub(crate) async fn advance_revision(
-    connection: &mut SqliteConnection,
+pub(crate) fn advance_revision(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<(), StoreError> {
-    if crate::workspace_bindings::current_session_revision(connection, id)
-        .await?
+    if crate::workspace_bindings::current_session_revision(connection, id)?
         .is_some_and(|revision| revision >= MAX_SAFE_INTEGER)
     {
         return Err(invalid("session revision exhausted"));
     }
-    let changed = sqlx::query(
+    let changed = connection.execute(
         "UPDATE session_control SET revision = revision + 1 WHERE id = ? AND revision < ?",
-    )
-    .bind(id)
-    .bind(MAX_SAFE_INTEGER as i64)
-    .execute(&mut *connection)
-    .await?
-    .rows_affected();
+        params![id, MAX_SAFE_INTEGER as i64],
+    )?;
     if changed == 1 {
-        advance_catalog(connection).await?;
-    } else if sqlx::query_scalar::<_, bool>(
+        advance_catalog(connection)?;
+    } else if connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-    )
-    .bind(id)
-    .fetch_one(&mut *connection)
-    .await?
-    {
+        params![id],
+        |row| row.get(0),
+    )? {
         return Err(invalid("session revision exhausted"));
     }
     Ok(())

@@ -368,7 +368,6 @@ function Preview() {
         defaultRoute={{ instance, id: 'connections' }}
         route={signal({ instance, id: 'connections' })}
         operations={operations}
-        recover={() => {}}
       />
     </HostProvider>
   );

@@ -23,7 +23,7 @@ use maka_agent_facts::{
     context::PreparedContextBreakdown,
     event::{Fact, RuntimeEvent},
 };
-use sqlx::{Connection, Row};
+use rusqlite::OptionalExtension;
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +63,6 @@ impl EventLog {
         session: &str,
         through: Option<u64>,
     ) -> Result<ContextReport, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if let Some(through) = through {
             safe_number(through)?;
@@ -71,30 +70,22 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let head: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-                        .fetch_one(&mut *tx)
-                        .await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+                    let head: i64 = tx.prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?.query_row(rusqlite::params![], |row| row.get(0))?;
                     let head = safe_number(sequence_number(head)?)?;
                     let through = through.unwrap_or(head);
                     if through > head {
                         return Err(invalid("fence exceeds committed history"));
                     }
-                    let row = sqlx::query(
-                        "SELECT sequence, event_header FROM runtime_events
+                    let row: Option<(i64,String)> = tx.prepare_cached("SELECT sequence, event_header FROM runtime_events
                          WHERE json_extract(event_header,'$.invocation.session_id')=?1
                            AND kind='model_requested' AND sequence<=?2
                            AND json_extract(event_header,'$.fact.purpose')='main'
-                         ORDER BY sequence DESC LIMIT 1",
-                    )
-                    .bind(&session)
-                    .bind(through as i64)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+                         ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![&session,through as i64], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
                     let request = if let Some(row) = row {
-                        let sequence = safe_number(sequence_number(row.try_get("sequence")?)?)?;
-                        let event: RuntimeEvent = serde_json::from_str(row.try_get("event_header")?)?;
+                        let sequence = safe_number(sequence_number(row.0)?)?;
+                        let event: RuntimeEvent = serde_json::from_str(&row.1)?;
                         let Fact::ModelRequested {
                             step_id,
                             model_id,
@@ -112,27 +103,18 @@ impl EventLog {
                         if let Some(breakdown) = &context_breakdown {
                             breakdown.validate().map_err(invalid)?;
                         }
-                        let terminal = sqlx::query(
-                            "SELECT kind, json_extract(event_header,'$.fact.output.usage.input_tokens') AS input_tokens
+                        let terminal: Option<(String,Option<i64>)> = tx.prepare_cached("SELECT kind, json_extract(event_header,'$.fact.output.usage.input_tokens') AS input_tokens
                              FROM runtime_events WHERE invocation_id=?1 AND operation_id=?2
                                AND kind IN ('model_completed','model_interrupted')
                                AND sequence>?3 AND sequence<=?4
                                AND json_extract(event_header,'$.invocation.session_id')=?5
-                             ORDER BY sequence LIMIT 1"
-                        )
-                        .bind(&event.invocation.invocation_id)
-                        .bind(&step_id)
-                        .bind(sequence as i64)
-                        .bind(through as i64)
-                        .bind(&session)
-                        .fetch_optional(&mut *tx)
-                        .await?;
+                             ORDER BY sequence LIMIT 1")?.query_row(rusqlite::params![&event.invocation.invocation_id,&step_id,sequence as i64,through as i64,&session], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
                         let (state, reported_input_tokens) = match terminal {
                             None => (ContextRequestState::Requested, None),
-                            Some(row) => match row.try_get::<&str, _>("kind")? {
+                            Some(row) => match row.0.as_str() {
                                 "model_completed" => (
                                     ContextRequestState::Completed,
-                                    row.try_get::<Option<i64>, _>("input_tokens")?
+                                    row.1
                                         .map(|value| safe_number(sequence_number(value)?))
                                         .transpose()?,
                                 ),
@@ -159,9 +141,9 @@ impl EventLog {
                     } else {
                         None
                     };
-                    tx.commit().await?;
+                    tx.commit()?;
                     Ok(ContextReport { through, request })
-                })
+                }
             })
             .await
     }

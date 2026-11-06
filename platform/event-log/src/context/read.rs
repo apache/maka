@@ -24,21 +24,21 @@ use super::{
 use crate::{EventLog, StoreError};
 use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::event::{Fact, RuntimeEvent, StoredEvent};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 
 impl EventLog {
     pub async fn check_history(&self, session: &str) -> Result<bool, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let pending = safety::require_safe(&mut tx, &session, None).await?;
-                    tx.commit().await?;
-                    Ok(pending)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let pending = safety::require_safe(&tx, &session, None)?;
+                tx.commit()?;
+                Ok(pending)
             })
             .await
     }
@@ -55,26 +55,24 @@ impl EventLog {
         session: &str,
         current: Option<&str>,
     ) -> Result<u64, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let (session, current) = (session.to_owned(), current.map(str::to_owned));
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let opening =
-                        safety::current_opening(&mut tx, &session, current.as_deref()).await?;
-                    let selection = match &opening {
-                        Some((_, event)) => Selection::for_opening(&mut tx, event).await?,
-                        None => Selection::session(&session),
-                    };
-                    let high_water = selection.high_water(&mut tx, i64::MAX as u64).await?;
-                    let coverage = latest_selected(&mut tx, &selection, high_water)
-                        .await?
-                        .map_or(0, |baseline| baseline.checkpoint.covered_through);
-                    tx.commit().await?;
-                    Ok(coverage)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let opening = safety::current_opening(&tx, &session, current.as_deref())?;
+                let selection = match &opening {
+                    Some((_, event)) => Selection::for_opening(&tx, event)?,
+                    None => Selection::session(&session),
+                };
+                let high_water = selection.high_water(&tx, i64::MAX as u64)?;
+                let coverage = latest_selected(&tx, &selection, high_water)?
+                    .map_or(0, |baseline| baseline.checkpoint.covered_through);
+                tx.commit()?;
+                Ok(coverage)
             })
             .await
     }
@@ -93,59 +91,48 @@ impl EventLog {
         current: Option<&str>,
         mode: Option<CheckpointMode>,
     ) -> Result<ContextView, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let (session, current) = (session.to_owned(), current.map(str::to_owned));
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let opening =
-                        safety::current_opening(&mut tx, &session, current.as_deref()).await?;
-                    let prior_unknown =
-                        safety::require_safe(&mut tx, &session, current.as_deref()).await?;
-                    let selection = match &opening {
-                        Some((_, event)) => Selection::for_opening(&mut tx, event).await?,
-                        None => Selection::session(&session),
-                    };
-                    let high_water = if let Some(mode) = &mode {
-                        if let Some((_, event)) = &opening {
-                            boundary::admit_summary(
-                                &mut tx,
-                                &event.invocation.invocation_id,
-                                None,
-                                i64::MAX as u64,
-                            )
-                            .await?;
-                            safety::settled_boundary(
-                                &mut tx,
-                                &event.invocation.invocation_id,
-                                i64::MAX as u64,
-                            )
-                            .await?;
-                        }
-                        boundary::source_fence(
-                            &mut tx,
-                            &selection,
-                            opening.as_ref(),
-                            mode,
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let opening = safety::current_opening(&tx, &session, current.as_deref())?;
+                let prior_unknown = safety::require_safe(&tx, &session, current.as_deref())?;
+                let selection = match &opening {
+                    Some((_, event)) => Selection::for_opening(&tx, event)?,
+                    None => Selection::session(&session),
+                };
+                let high_water = if let Some(mode) = &mode {
+                    if let Some((_, event)) = &opening {
+                        boundary::admit_summary(
+                            &tx,
+                            &event.invocation.invocation_id,
+                            None,
                             i64::MAX as u64,
-                        )
-                        .await?
-                    } else {
-                        selection.high_water(&mut tx, i64::MAX as u64).await?
-                    };
-                    let view = selected_view(
-                        &mut tx,
+                        )?;
+                        safety::settled_boundary(
+                            &tx,
+                            &event.invocation.invocation_id,
+                            i64::MAX as u64,
+                        )?;
+                    }
+                    boundary::source_fence(
+                        &tx,
                         &selection,
-                        high_water,
+                        opening.as_ref(),
+                        mode,
                         i64::MAX as u64,
-                        prior_unknown,
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok(view)
-                })
+                    )?
+                } else {
+                    selection.high_water(&tx, i64::MAX as u64)?
+                };
+                let view =
+                    selected_view(&tx, &selection, high_water, i64::MAX as u64, prior_unknown)?;
+                tx.commit()?;
+                Ok(view)
             })
             .await
     }
@@ -179,29 +166,28 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<ModelContextSource, StoreError> {
-        self.validate_root()?;
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let selection = Selection {
-                        scope: view.source_evidence.scope,
-                        session: Some(view.selection.session),
-                        lineage: view.selection.lineage,
-                    };
-                    let source = materialize_selected(
-                        &mut tx,
-                        &selection,
-                        view.source_evidence.high_water,
-                        view.selection.before,
-                        max_events,
-                        max_bytes,
-                        view.latest_main,
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok(source)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let selection = Selection {
+                    scope: view.source_evidence.scope,
+                    session: Some(view.selection.session),
+                    lineage: view.selection.lineage,
+                };
+                let source = materialize_selected(
+                    &tx,
+                    &selection,
+                    view.source_evidence.high_water,
+                    view.selection.before,
+                    max_events,
+                    max_bytes,
+                    view.latest_main,
+                )?;
+                tx.commit()?;
+                Ok(source)
             })
             .await
     }
@@ -209,27 +195,27 @@ impl EventLog {
 
 /// Handoff admission checks current obligations and committed source identity;
 /// it does not read every old model payload to establish private-byte trust.
-pub(crate) async fn validate_handoff_context(
-    connection: &mut SqliteConnection,
+pub(crate) fn validate_handoff_context(
+    connection: &rusqlite::Connection,
     opening: &RuntimeEvent,
 ) -> Result<(), StoreError> {
-    let selection = Selection::for_opening(connection, opening).await?;
-    let high = selection.high_water(connection, i64::MAX as u64).await?;
-    latest_with_evidence(connection, &selection, high).await?;
-    super::semantic::available(connection, &opening.invocation.session_id).await?;
+    let selection = Selection::for_opening(connection, opening)?;
+    let high = selection.high_water(connection, i64::MAX as u64)?;
+    latest_with_evidence(connection, &selection, high)?;
+    super::semantic::available(connection, &opening.invocation.session_id)?;
     Ok(())
 }
 
-pub(super) async fn selected_view(
-    connection: &mut SqliteConnection,
+pub(super) fn selected_view(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     high_water: u64,
     before: u64,
     prior_unknown: bool,
 ) -> Result<ContextView, StoreError> {
-    let captured: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-        .fetch_one(&mut *connection)
-        .await?;
+    let captured: i64 = connection
+        .prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
+        .query_row(rusqlite::params![], |row| row.get(0))?;
     let captured = crate::sequence_number(captured)?;
     selected_view_at(
         connection,
@@ -239,11 +225,10 @@ pub(super) async fn selected_view(
         prior_unknown,
         captured,
     )
-    .await
 }
 
-pub(super) async fn selected_view_at(
-    connection: &mut SqliteConnection,
+pub(super) fn selected_view_at(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     high_water: u64,
     before: u64,
@@ -254,10 +239,9 @@ pub(super) async fn selected_view_at(
         .session
         .as_deref()
         .ok_or_else(|| invalid("context requires a Session"))?;
-    super::semantic::available_at(connection, session, captured).await?;
+    super::semantic::available_at(connection, session, captured)?;
     let before = before.min(captured.saturating_add(1));
-    let (baseline, source_evidence) =
-        latest_with_evidence(connection, selection, high_water).await?;
+    let (baseline, source_evidence) = latest_with_evidence(connection, selection, high_water)?;
     let semantic = super::semantic::SemanticSelection {
         session: session.to_owned(),
         lineage: selection.lineage.clone(),
@@ -270,10 +254,10 @@ pub(super) async fn selected_view_at(
         replay: None,
         prior_unknown,
     };
-    let has_new_history = super::semantic::meaningful_history(connection, &semantic).await?;
-    let latest_main = latest_main::read_selected(connection, selection, high_water).await?;
+    let has_new_history = super::semantic::meaningful_history(connection, &semantic)?;
+    let latest_main = latest_main::read_selected(connection, selection, high_water)?;
     let effective_source_digest =
-        crate::archive::digest_selected(connection, selection, &source_evidence, before).await?;
+        crate::archive::digest_selected(connection, selection, &source_evidence, before)?;
     Ok(ContextView {
         source_evidence,
         effective_source_digest,
@@ -285,8 +269,8 @@ pub(super) async fn selected_view_at(
     })
 }
 
-pub(super) async fn materialize_selected(
-    connection: &mut SqliteConnection,
+pub(super) fn materialize_selected(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     high_water: u64,
     before: u64,
@@ -294,17 +278,15 @@ pub(super) async fn materialize_selected(
     max_bytes: usize,
     latest_main: super::LatestMainContext,
 ) -> Result<ModelContextSource, StoreError> {
-    let (baseline, source_evidence) =
-        latest_with_evidence(connection, selection, high_water).await?;
+    let (baseline, source_evidence) = latest_with_evidence(connection, selection, high_water)?;
     let after = baseline
         .as_ref()
         .map_or(0, |baseline| baseline.checkpoint.covered_through);
     let tail = super::tail::read(
         connection, selection, after, high_water, before, max_events, max_bytes,
-    )
-    .await?;
+    )?;
     let effective_source_digest =
-        crate::archive::digest_selected(connection, selection, &source_evidence, before).await?;
+        crate::archive::digest_selected(connection, selection, &source_evidence, before)?;
     Ok(ModelContextSource {
         source_evidence,
         effective_source_digest,
@@ -314,13 +296,12 @@ pub(super) async fn materialize_selected(
     })
 }
 
-pub(crate) async fn latest_selected(
-    connection: &mut SqliteConnection,
+pub(crate) fn latest_selected(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
 ) -> Result<Option<ContextBaseline>, StoreError> {
-    let Some(StoredEvent { event, .. }) = latest_record(connection, selection, through).await?
-    else {
+    let Some(StoredEvent { event, .. }) = latest_record(connection, selection, through)? else {
         return Ok(None);
     };
     let Fact::ContextCheckpointRecorded { checkpoint } = &event.fact else {
@@ -329,7 +310,7 @@ pub(crate) async fn latest_selected(
     // This also rejects an unsealed checkpoint observed by a later fact in the
     // same uncommitted append batch. Committed standalone checkpoints have it.
     if matches!(checkpoint.mode, CheckpointMode::Standalone) {
-        super::validate::require_terminal(connection, &event).await?;
+        super::validate::require_terminal(connection, &event)?;
     }
     let native =
         if let maka_agent_facts::context::CheckpointContent::CodexNative { item_digest, .. } =
@@ -340,8 +321,7 @@ pub(crate) async fn latest_selected(
                 &event.invocation.invocation_id,
                 "model_requested",
                 Some(&checkpoint.summary_step_id),
-            )
-            .await?;
+            )?;
             let Fact::ModelRequested {
                 context: Some(context),
                 model_id,
@@ -358,8 +338,7 @@ pub(crate) async fn latest_selected(
                 &event.invocation.invocation_id,
                 "model_completed",
                 Some(&checkpoint.summary_step_id),
-            )
-            .await?;
+            )?;
             let Fact::ModelCompleted { output, .. } = completion.fact else {
                 return Err(invalid("native checkpoint has no completion"));
             };
@@ -384,19 +363,19 @@ pub(crate) async fn latest_selected(
     }))
 }
 
-pub(super) async fn latest_with_evidence(
-    connection: &mut SqliteConnection,
+pub(super) fn latest_with_evidence(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
 ) -> Result<(Option<ContextBaseline>, super::SourceEvidence), StoreError> {
-    let baseline = latest_selected(connection, selection, through).await?;
-    let evidence = super::evidence::selected(connection, selection, through).await?;
+    let baseline = latest_selected(connection, selection, through)?;
+    let evidence = super::evidence::selected(connection, selection, through)?;
     Ok((baseline, evidence))
 }
 
 /// Select without traversing predecessors, so chain validation stays iterative.
-pub(crate) async fn latest_record(
-    connection: &mut SqliteConnection,
+pub(crate) fn latest_record(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
 ) -> Result<Option<StoredEvent>, StoreError> {
@@ -414,8 +393,10 @@ pub(crate) async fn latest_record(
     );
     // Limit each indexed branch before combining: a wide UNION view would sort
     // every old body even when the newest native checkpoint is already known.
-    let row: Option<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT * FROM (
+    let row: Option<(i64, String)> = connection
+        .prepare_cached(
+            &(format!(
+                "SELECT * FROM (
            SELECT c.sequence,c.event_header FROM runtime_events c
            WHERE json_extract(c.event_header,'$.invocation.session_id')=?2 AND {eligible}
            ORDER BY c.sequence DESC LIMIT 1)
@@ -424,12 +405,13 @@ pub(crate) async fn latest_record(
            JOIN runtime_events c ON c.sequence=h.sequence
            WHERE h.session_id=?2 AND {eligible} ORDER BY h.sequence DESC LIMIT 1)
          ORDER BY sequence DESC LIMIT 1"
-    )))
-    .bind(through as i64)
-    .bind(&selection.session)
-    .bind(&selection.lineage)
-    .fetch_optional(&mut *connection)
-    .await?;
+            )),
+        )?
+        .query_row(
+            rusqlite::params![through as i64, &selection.session, &selection.lineage],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
     let Some((sequence, json)) = row else {
         return Ok(None);
     };

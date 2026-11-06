@@ -20,40 +20,33 @@
 use super::*;
 use crate::turns::TurnBoundary;
 use maka_agent_facts::event::Invocation;
-use sqlx::Connection;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-async fn counted_op<T>(
-    db: &mut SqliteConnection,
-    op: impl AsyncFnOnce(&mut SqliteConnection) -> T,
-) -> (T, usize) {
+fn counted_op<T>(db: &mut Connection, op: impl FnOnce(&Connection) -> T) -> (T, usize) {
     let steps = Arc::new(AtomicUsize::new(0));
     let observed = steps.clone();
-    db.lock_handle()
-        .await
-        .unwrap()
-        .set_progress_handler(1, move || {
+    db.progress_handler(
+        1,
+        Some(move || {
             observed.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-    let result = op(db).await;
-    db.lock_handle().await.unwrap().remove_progress_handler();
+            false
+        }),
+    )
+    .unwrap();
+    let result = op(db);
+    db.progress_handler(0, None::<fn() -> bool>).unwrap();
     (result, steps.load(Ordering::Relaxed))
 }
 
-async fn check_after_deltas(deltas: usize) -> [usize; 6] {
-    let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+fn check_after_deltas(deltas: usize) -> [usize; 6] {
+    let mut db = Connection::open_in_memory().unwrap();
     // This isolates boundary validation against the real ledger indexes. Other
     // admission reducers do not participate in the executor-state lookup.
-    sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
-        kind != "trigger"
-    })))
-    .execute(&mut db)
-    .await
-    .unwrap();
+    db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
+        .unwrap();
     let invocation = Invocation {
         session_id: "session".into(),
         turn_id: "turn".into(),
@@ -66,25 +59,19 @@ async fn check_after_deltas(deltas: usize) -> [usize; 6] {
             outcome: InvocationOutcome::Completed,
         },
     );
-    let (native, native_steps) =
-        counted_op(&mut db, async |db| validate(db, &ended_event).await).await;
+    let (native, native_steps) = counted_op(&mut db, |db| validate(db, &ended_event));
     native.unwrap();
 
-    sqlx::query(
-        "INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES
+    db.execute("INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES
          ('opened','invocation','invocation_opened',
           '{\"invocation\":{\"session_id\":\"session\",\"turn_id\":\"turn\",\"run_id\":\"run\",\"invocation_id\":\"invocation\"},\"fact\":{\"kind\":\"invocation_opened\",\"input\":{\"kind\":\"message\",\"content\":\"hi\"}}}'),
          ('started','invocation','executor_started','{}'),
          ('m1-start','invocation','executor_observed',
           '{\"fact\":{\"output\":{\"type\":\"message_start\",\"messageId\":\"m1\"}}}'),
          ('m2-start','invocation','executor_observed',
-          '{\"fact\":{\"output\":{\"type\":\"message_start\",\"messageId\":\"m2\"}}}')",
-    )
-    .execute(&mut db)
-    .await
+          '{\"fact\":{\"output\":{\"type\":\"message_start\",\"messageId\":\"m2\"}}}')", rusqlite::params![])
     .unwrap();
-    sqlx::query(
-        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+    db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
         INSERT INTO event_log(event_id,invocation_id,kind,event_header)
         SELECT printf('m1-delta-%08d',x),'invocation','executor_observed',
             json_object('invocation',json_object('session_id','session'),
@@ -94,11 +81,7 @@ async fn check_after_deltas(deltas: usize) -> [usize; 6] {
         SELECT printf('m2-think-%08d',x),'invocation','executor_observed',
             json_object('invocation',json_object('session_id','session'),
                 'fact',json_object('output',json_object('type','thinking_delta','messageId','m2','text','thought')))
-        FROM n",
-    )
-    .bind(deltas as i64)
-    .execute(&mut db)
-    .await
+        FROM n", rusqlite::params![deltas as i64])
     .unwrap();
 
     let delta_event = RuntimeEvent::new(
@@ -110,33 +93,29 @@ async fn check_after_deltas(deltas: usize) -> [usize; 6] {
             },
         },
     );
-    let (open_delta, open_delta_steps) =
-        counted_op(&mut db, async |db| validate(db, &delta_event).await).await;
+    let (open_delta, open_delta_steps) = counted_op(&mut db, |db| validate(db, &delta_event));
     open_delta.unwrap();
 
     let root = TurnBoundary::for_test(invocation.clone());
-    let (streams, streams_steps) = counted_op(&mut db, async |db| {
-        crate::observation::streams::read(db, Some(&root)).await
-    })
-    .await;
+    let (streams, streams_steps) = counted_op(&mut db, |db| {
+        crate::observation::streams::read(db, Some(&root))
+    });
     assert_eq!(streams.unwrap().len(), 4);
 
-    let (unfinished, unfinished_steps) =
-        counted_op(&mut db, async |db| validate(db, &ended_event).await).await;
+    let (unfinished, unfinished_steps) = counted_op(&mut db, |db| validate(db, &ended_event));
     assert!(
         matches!(unfinished, Err(StoreError::InvalidTransition(ref reason))
         if reason == "executor completion requires a durable final result")
     );
 
-    sqlx::query(
+    db.execute(
         "INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES
          ('m1-end','invocation','executor_observed',
           '{\"fact\":{\"output\":{\"type\":\"message_end\",\"messageId\":\"m1\"}}}'),
          ('m2-end','invocation','executor_observed',
           '{\"fact\":{\"output\":{\"type\":\"message_end\",\"messageId\":\"m2\"}}}')",
+        rusqlite::params![],
     )
-    .execute(&mut db)
-    .await
     .unwrap();
 
     let completed_event = RuntimeEvent::new(
@@ -145,19 +124,16 @@ async fn check_after_deltas(deltas: usize) -> [usize; 6] {
             message_id: Some("m1".into()),
         },
     );
-    let (completed, completed_steps) =
-        counted_op(&mut db, async |db| validate(db, &completed_event).await).await;
+    let (completed, completed_steps) = counted_op(&mut db, |db| validate(db, &completed_event));
     completed.unwrap();
 
-    sqlx::query(
+    db.execute(
         "INSERT INTO event_log(event_id,invocation_id,kind,event_header)
         VALUES('completed','invocation','executor_completed','{}')",
+        rusqlite::params![],
     )
-    .execute(&mut db)
-    .await
     .unwrap();
-    let (finished, finished_steps) =
-        counted_op(&mut db, async |db| validate(db, &ended_event).await).await;
+    let (finished, finished_steps) = counted_op(&mut db, |db| validate(db, &ended_event));
     finished.unwrap();
 
     [
@@ -170,10 +146,10 @@ async fn check_after_deltas(deltas: usize) -> [usize; 6] {
     ]
 }
 
-#[tokio::test]
-async fn executor_boundary_checks_do_not_scan_prior_output() {
-    let small = check_after_deltas(256).await;
-    let large = check_after_deltas(16_384).await;
+#[test]
+fn executor_boundary_checks_do_not_scan_prior_output() {
+    let small = check_after_deltas(256);
+    let large = check_after_deltas(16_384);
     eprintln!("executor boundary VM steps: deltas256={small:?}, deltas16384={large:?}");
     for (small, large) in small.into_iter().zip(large) {
         assert!(

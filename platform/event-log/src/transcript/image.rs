@@ -22,7 +22,7 @@ use crate::{EventLog, StoreError, artifacts::ImageChunk};
 use maka_agent_facts::attachment::{AttachmentKind, AttachmentRef, StorageRef};
 use maka_agent_facts::history::RowPosition;
 use maka_agent_facts::tool_output::ImageOutput;
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 impl EventLog {
     /// Read only an immutable user upload belonging to this Session.
@@ -33,7 +33,6 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         sql_number(offset)?;
         if limit == 0 || limit > 32 * 1024 {
@@ -42,15 +41,15 @@ impl EventLog {
         let (session, id) = (session.to_owned(), id.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let chunk = crate::artifacts::read_attachment_image(
-                        &mut tx, &session, &id, None, offset, limit,
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok(chunk)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let chunk = crate::artifacts::read_attachment_image(
+                    &tx, &session, &id, None, offset, limit,
+                )?;
+                tx.commit()?;
+                Ok(chunk)
             })
             .await
     }
@@ -65,7 +64,6 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         sql_number(through)?;
         sql_number(offset)?;
@@ -76,20 +74,13 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, through).await?;
-                    super::bodycache::ensure(tx, &session, position).await?;
-                    let raw: String = sqlx::query_scalar(
-                        "SELECT a.value FROM temp.transcript_rows r, json_each(r.payload, '$.attachments') a
-                         WHERE r.session_id = ?1 AND r.source_sequence = ?2 AND r.item_index = ?3
-                         AND json_extract(r.payload, '$.type') = 'user' AND a.key = ?4",
-                    )
-                    .bind(&session)
-                    .bind(source_sequence)
-                    .bind(item_index)
-                    .bind(i64::from(attachment_index))
-                    .fetch_optional(&mut *tx)
-                    .await?
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, through)?;
+                    super::bodycache::ensure(tx, &session, position)?;
+                    let raw: String = tx.query_row("SELECT a.value FROM temp.transcript_rows r, json_each(r.payload, '$.attachments') a
+                         WHERE r.owner_key = ?1 AND r.source_sequence = ?2 AND r.item_index = ?3
+                         AND json_extract(r.payload, '$.type') = 'user' AND a.key = ?4", rusqlite::params![&session, source_sequence, item_index, i64::from(attachment_index)], |row| row.get(0)).optional()
+                    ?
                     .ok_or_else(|| invalid("canonical image attachment not found"))?;
                     let attachment: AttachmentRef = serde_json::from_str(&raw)?;
                     let StorageRef::SessionFile {
@@ -110,10 +101,10 @@ impl EventLog {
                         offset,
                         limit,
                     )
-                    .await?;
+                    ?;
 
                     Ok(chunk)
-                }))
+                })
             })
             .await
     }
@@ -142,7 +133,6 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         sql_number(through)?;
         if position.source_sequence > through || limit == 0 || limit > 32 * 1024 {
@@ -153,32 +143,21 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, through).await?;
-                    super::bodycache::ensure(tx, &session, position).await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, through)?;
+                    super::bodycache::ensure(tx, &session, position)?;
                     let query = match index {
-                        None => sqlx::query_scalar(
-                            "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
-                 FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                        None => "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
+                 FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
                  AND json_extract(payload, '$.content.kind') = 'image' AND ?4 IS NULL",
-                        ),
-                        Some(_) => sqlx::query_scalar(
-                            "SELECT image.value
+                        Some(_) => "SELECT image.value
                  FROM temp.transcript_rows, json_each(payload, '$.images') image
-                 WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                 WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
                  AND image.key = ?4 AND image.type = 'object'",
-                        ),
                     };
-                    let raw: String = query
-                    .bind(&session)
-                    .bind(source_sequence)
-                    .bind(item_index)
-                    .bind(index.map(i64::from))
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .ok_or_else(|| invalid("canonical tool image not found"))?;
+                    let raw: String = tx.query_row(query, rusqlite::params![&session,source_sequence,item_index,index.map(i64::from)], |row| row.get(0)).optional()?.ok_or_else(|| invalid("canonical tool image not found"))?;
                     let image: ImageOutput = serde_json::from_str(&raw)?;
                     let StorageRef::SessionFile {
                         session_id,
@@ -199,10 +178,10 @@ impl EventLog {
                         limit,
                         position.source_sequence,
                     )
-                    .await?;
+                    ?;
 
                     Ok(chunk)
-                }))
+                })
             })
             .await
     }

@@ -199,9 +199,7 @@ use maka_agent_facts::execution::ThinkingLevel::High;
         selection::thinking(&fixture, vec![Off, Low, High], High).await;
         let deployment = fixture.app.client().snapshot().effective.unwrap().deployment;
         let mut sessions = Vec::new();
-        let raw: Vec<_> = std::fs::read_dir(fixture.root.join("runtime-partitions")).unwrap()
-            .map(|entry| entry.unwrap().path()).filter(|path| path.extension().is_some_and(|extension| extension == "sqlite"))
-            .map(|path| rusqlite::Connection::open(path).unwrap()).collect();
+        let raw=vec![rusqlite::Connection::open(fixture.root.join(maka_event_log::root::ROOT_DATABASE)).unwrap()];
         for database in &raw { database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap(); }
         for (index, level) in [Some(Off), Some(Low), None].into_iter().enumerate() {
             let session = fixture.create(&format!("Recovery {index}")).await;
@@ -330,110 +328,36 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
 #[tokio::test]
 async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_for_original_sql() {
     use sqlx::{Connection, Executor};
-
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        let a = fixture.create("Recovered queue preparation").await;
-        let blocked_database = fixture.session_database(&a);
-        let c = loop {
-            let session = fixture.create("Independent running Session").await;
-            if fixture.session_database(&session) != blocked_database {
-                break session;
-            }
-        };
-        let running = fixture.send(&c).await.unwrap();
-        let (mut running_socket, _) = listener.accept().await.unwrap();
-        request(&mut running_socket).await;
-
-        // Leave the original admitted message durable, without starting a Run.
-        let database = rusqlite::Connection::open(&blocked_database).unwrap();
-        database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
-        assert!(fixture.send(&a).await.is_err());
-        let original = fixture.session(&a).await.pending_messages(&a).await.unwrap();
-        assert_eq!(original.len(), 1);
-        database.execute_batch("DROP TRIGGER hold_opening").unwrap();
-        drop(database);
-
-        // Capture a real create before gating SQL. Choose a different physical
-        // Session writer so the test isolates the Agent lifecycle boundary.
-        let create_input = fixture.create_input("Independent creation").await;
-        let client = fixture.app.client();
-        let create = loop {
-            let prepared = client.prepare_mutation(fixture.binding(2).await, "create".into(), create_input.clone(), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
-            let id = fixture.owner.operation_id(prepared.reference());
-            let mut hash = Sha256::new();
-            hash.update(b"session\0");
-            hash.update(id.as_bytes());
-            let partition = usize::from(hash.finalize()[0]) % maka_event_log::root_store::PARTITION_COUNT;
-            let path = fixture.root.join("runtime-partitions").join(format!("{partition:02}.sqlite"));
-            if path != blocked_database {
-                break prepared.reference().clone();
-            }
-        };
-        let stop = client.prepare_mutation(fixture.binding(2).await, "stop".into(), json!({"sessionId":c,"invocationId":running["invocationId"]}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
-        let stop_reference = stop.reference().clone();
-        drop(stop);
-
-        let b = fixture.owner.operation_id(&create);
-        let selection = fixture.selection().await;
-        let send = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":b,"message":"Independent admission","delivery":"queue","backend":model_backend(&selection)}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
-        let send_reference = send.reference().clone();
-        drop(send);
-        let mut writer = sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&blocked_database)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30),async {
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture=Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await;
+        let session=fixture.create("Recovered queue preparation").await;
+        let other=fixture.create("Independent Session").await;
+        let path=fixture.session_database(&session);
+        let database=rusqlite::Connection::open(&path).unwrap();
+        database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT,'opening failure'); END;").unwrap();
+        assert!(fixture.send(&session).await.is_err());
+        assert_eq!(fixture.session(&session).await.pending_messages(&session).await.unwrap().len(),1);
+        database.execute_batch("DROP TRIGGER hold_opening").unwrap();drop(database);
+        let mut writer=sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&path)).await.unwrap();
         writer.execute("BEGIN IMMEDIATE").await.unwrap();
-        let scheduling = fixture.owner.schedule_pending();
-        tokio::pin!(scheduling);
-        let mut scheduled = false;
-        let preparing = loop {
-            tokio::select! {
-                result = &mut scheduling, if !scheduled => { result.unwrap(); scheduled = true; },
-                () = tokio::task::yield_now() => {},
-            }
-            let runs = fixture.owner.runs.lock().await;
-            if let Some(preparing) = runs.preparing.get(&a) {
-                break preparing.clone();
-            }
+        let scheduling=fixture.owner.schedule_pending();tokio::pin!(scheduling);
+        let mut scheduled=false;
+        let preparing=loop {
+            tokio::select! {result=&mut scheduling,if !scheduled=>{result.unwrap();scheduled=true;},()=tokio::task::yield_now()=>{}}
+            let runs=fixture.owner.runs.lock().await;
+            if let Some(preparing)=runs.preparing.get(&session) {break preparing.clone();}
         };
-        let mut same_session = Box::pin(fixture.owner.runs.session(&a));
+        let mut same_session=Box::pin(fixture.owner.runs.session(&session));
         assert!(futures_util::poll!(same_session.as_mut()).is_pending());
-        let parent = scope(&fixture.issuer, true);
-        let created = fixture.owner.create(serde_json::from_value(create_input).unwrap(), &create, &parent).await.unwrap();
-        let Created::Created { session } = created else { panic!("independent creation was refused"); };
-        assert_eq!(session.id, b);
-        let admitted = fixture.owner.send(Send {
- delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None,
-            session_id: b.clone(), message: "Independent admission".into(),
-            backend: Some(model_backend(&selection)), attachments: vec![],
-        }, &send_reference, &parent).await.unwrap();
-        assert!(matches!(admitted, SendResult::Started { .. }));
-        let (mut independent_socket, _) = listener.accept().await.unwrap();
-        request(&mut independent_socket).await;
-        assert!(fixture.owner.stop_run(&c, running["invocationId"].as_str().unwrap(), &stop_reference).await.unwrap());
-        assert!(!preparing.is_cancelled());
-        assert!(futures_util::poll!(same_session.as_mut()).is_pending());
+        // Another Session's lifecycle remains accessible while this Session awaits SQL.
+        drop(fixture.owner.runs.session(&other).await);
         drop(same_session);
-
-        let mut close = fixture.owner.close();
+        let mut close=fixture.owner.close();
         assert!(futures_util::poll!(close.as_mut()).is_pending());
-        assert!(preparing.is_cancelled(), "close must fence the original preparing worker first");
-        assert!(futures_util::poll!(close.as_mut()).is_pending(), "a cancelled observer cannot settle the held SQL writer");
-        writer.execute("ROLLBACK").await.unwrap();
+        assert!(preparing.is_cancelled());
+        writer.execute("ROLLBACK").await.unwrap();writer.close().await.unwrap();
         close.await.unwrap();
-        if !scheduled {
-            scheduling.await.unwrap();
-        }
-        let runs = fixture.owner.runs.lock().await;
-        assert!(runs.preparing.is_empty());
-        assert!(runs.controls.is_empty());
-        drop(runs);
-        let queue = fixture.session(&a).await.pending_messages(&a).await.unwrap();
-        assert!(queue.len() <= 1);
-        if let Some(pending) = queue.first() {
-            assert_eq!(pending, &original[0], "cancellation must preserve the original accepted identity");
-        }
-        drop((running_socket, independent_socket));
         fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

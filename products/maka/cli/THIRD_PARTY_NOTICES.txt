@@ -6626,11 +6626,9 @@ SOFTWARE.
 
 bindgen@0.70.1 (BSD-3-Clause); authors declared by package: Jyun-Yan You <jyyou.tw@gmail.com>, Emilio Cobos Álvarez <emilio@crisal.io>, Nick Fitzgerald <fitzgen@gmail.com>, The Servo project developers
 bindgen@0.72.1 (BSD-3-Clause); authors declared by package: Jyun-Yan You <jyyou.tw@gmail.com>, Emilio Cobos Álvarez <emilio@crisal.io>, Nick Fitzgerald <fitzgen@gmail.com>, The Servo project developers
-bindgen@0.73.2 (BSD-3-Clause)
 
 https://crates.io/api/v1/crates/bindgen/0.70.1/download :: LICENSE
 https://crates.io/api/v1/crates/bindgen/0.72.1/download :: LICENSE
-https://crates.io/api/v1/crates/bindgen/0.73.2/download :: LICENSE
 
 BSD 3-Clause License
 

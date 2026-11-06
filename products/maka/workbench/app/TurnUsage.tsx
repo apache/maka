@@ -105,9 +105,7 @@ export function TurnUsage(props: {
         if (
           (fence !== null &&
             (page.through.stateDomain !== fence.stateDomain ||
-              page.through.partitions.some(
-                (position, index) => position !== fence.partitions[index],
-              ))) ||
+              page.through.sequence !== fence.sequence)) ||
           !Number.isSafeInteger(page.total) ||
           page.total < 0 ||
           (expectedTotal !== null && page.total !== expectedTotal) ||

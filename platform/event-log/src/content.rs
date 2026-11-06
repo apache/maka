@@ -17,10 +17,26 @@
  * under the License.
  */
 
-ALTER TABLE context_semantic_rows RENAME COLUMN directory_json TO directory_bytes;
-ALTER TABLE context_semantic_fragments RENAME COLUMN directory_json TO directory_bytes;
-ALTER TABLE context_semantic_directory_children RENAME COLUMN directory_json TO directory_bytes;
+//! Immutable bytes are shared; domain bindings retain ownership and access policy.
+use crate::StoreError;
+use rusqlite::OptionalExtension;
 
-UPDATE context_semantic_rows SET directory_bytes=maka_directory_row(directory_bytes);
-UPDATE context_semantic_fragments SET directory_bytes=maka_directory_payload(directory_bytes);
-UPDATE context_semantic_directory_children SET directory_bytes=maka_directory_child(directory_bytes);
+const INSERT: &str = "INSERT INTO contents(content_sha256,payload) VALUES(?,?) ON CONFLICT(content_sha256) DO NOTHING RETURNING id";
+const READ_ID: &str = "SELECT id FROM contents WHERE content_sha256=?";
+
+pub(crate) fn put(
+    connection: &rusqlite::Connection,
+    digest: &str,
+    bytes: &[u8],
+) -> Result<i64, StoreError> {
+    if let Some(id) = connection
+        .prepare_cached(READ_ID)?
+        .query_row([digest], |row| row.get(0))
+        .optional()?
+    {
+        return Ok(id);
+    }
+    Ok(connection
+        .prepare_cached(INSERT)?
+        .query_row(rusqlite::params![digest, bytes], |row| row.get(0))?)
+}

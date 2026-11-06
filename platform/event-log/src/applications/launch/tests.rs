@@ -72,12 +72,11 @@ async fn launcher_requires_root_and_preserves_complete_configuration_with_typed_
     store
         .connection
         .run(|connection| {
-            Box::pin(async move {
-                sqlx::query("UPDATE application_launch SET deployment='invalid-uuid'")
-                    .execute(connection)
-                    .await?;
-                Ok(())
-            })
+            connection.execute(
+                "UPDATE application_launch SET deployment='invalid-uuid'",
+                params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -88,10 +87,10 @@ async fn launcher_requires_root_and_preserves_complete_configuration_with_typed_
 #[tokio::test]
 async fn unknown_commit_is_not_reported_as_success_or_replaced() {
     let (_dir, store) = crate::applications::tests::store().await;
-    store.connection.run(|connection| Box::pin(async move {
-        sqlx::raw_sql("CREATE TABLE launcher_probe (id TEXT REFERENCES application_deployments(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_launch AFTER INSERT ON application_launch BEGIN INSERT INTO launcher_probe VALUES ('missing'); END;").execute(connection).await?;
+    store.connection.run(|connection| {
+        connection.execute_batch("CREATE TABLE launcher_probe (id TEXT REFERENCES application_deployments(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_launch AFTER INSERT ON application_launch BEGIN INSERT INTO launcher_probe VALUES ('missing'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let result = store
         .begin_application_launch(Launch {
             deployment: Uuid::new_v4(),

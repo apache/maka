@@ -74,7 +74,6 @@ impl EventLog {
         now: u64,
         guard: RegistrationGuard,
     ) -> Result<ProjectRecord> {
-        self.validate_root()?;
         validate_registration(&registration)?;
         let now = timestamp(now)?;
         self.connection
@@ -116,7 +115,6 @@ impl EventLog {
         now: u64,
         expected: Option<ProjectRecord>,
     ) -> Result<ProjectRecord> {
-        self.validate_root()?;
         validate_id(id)?;
         let now = timestamp(now)?;
         if let ProjectMutation::Rename(name) = &mutation {
@@ -125,43 +123,40 @@ impl EventLog {
         let id = id.to_owned();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let record = read(&mut tx, &id).await?.ok_or(ProjectError::NotFound)?;
-                    if expected
-                        .as_ref()
-                        .is_some_and(|expected| expected != &record)
-                    {
-                        return Err(ProjectError::Changed.into());
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let record = read(&tx, &id)?.ok_or(ProjectError::NotFound)?;
+                if expected
+                    .as_ref()
+                    .is_some_and(|expected| expected != &record)
+                {
+                    return Err(ProjectError::Changed.into());
+                }
+                match mutation {
+                    ProjectMutation::Rename(name) => {
+                        tx.execute(
+                            "UPDATE projects SET name = ? WHERE id = ?",
+                            params![name.trim(), &record.id],
+                        )?;
                     }
-                    match mutation {
-                        ProjectMutation::Rename(name) => {
-                            sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
-                                .bind(name.trim())
-                                .bind(&record.id)
-                                .execute(&mut *tx)
-                                .await?;
-                        }
-                        ProjectMutation::Archive => {
-                            sqlx::query("UPDATE projects SET archived_at = ? WHERE id = ?")
-                                .bind(now)
-                                .bind(&record.id)
-                                .execute(&mut *tx)
-                                .await?;
-                        }
-                        ProjectMutation::Restore => {
-                            sqlx::query("UPDATE projects SET archived_at = NULL WHERE id = ?")
-                                .bind(&record.id)
-                                .execute(&mut *tx)
-                                .await?;
-                        }
+                    ProjectMutation::Archive => {
+                        tx.execute(
+                            "UPDATE projects SET archived_at = ? WHERE id = ?",
+                            params![now, &record.id],
+                        )?;
                     }
-                    let record = read(&mut tx, &record.id)
-                        .await?
-                        .ok_or(ProjectError::NotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(record)
-                })
+                    ProjectMutation::Restore => {
+                        tx.execute(
+                            "UPDATE projects SET archived_at = NULL WHERE id = ?",
+                            params![&record.id],
+                        )?;
+                    }
+                }
+                let record = read(&tx, &record.id)?.ok_or(ProjectError::NotFound)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(record)
             })
             .await
     }
@@ -196,64 +191,60 @@ impl EventLog {
         now: u64,
         expected: Option<ProjectRecord>,
     ) -> Result<(ProjectRecord, String)> {
-        self.validate_root()?;
         validate_id(id)?;
         let now = timestamp(now)?;
         let id = id.to_owned();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let record = read(&mut tx, &id).await?.ok_or(ProjectError::NotFound)?;
-                    if expected
-                        .as_ref()
-                        .is_some_and(|expected| expected != &record)
-                    {
-                        return Err(ProjectError::Changed.into());
-                    }
-                    if record.archived_at.is_some() {
-                        return Err(ProjectError::Archived.into());
-                    }
-                    let location = record
-                        .locations
-                        .iter()
-                        .filter(|location| available_paths.contains(&location.path))
-                        .min_by(|a, b| {
-                            b.last_used_at
-                                .cmp(&a.last_used_at)
-                                .then_with(|| a.path.cmp(&b.path))
-                        })
-                        .ok_or(ProjectError::Unavailable)?;
-                    let path = location.path.clone();
-                    touch(&mut tx, &record.id, &path, now).await?;
-                    let record = read(&mut tx, &record.id)
-                        .await?
-                        .ok_or(ProjectError::NotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok((record, path))
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let record = read(&tx, &id)?.ok_or(ProjectError::NotFound)?;
+                if expected
+                    .as_ref()
+                    .is_some_and(|expected| expected != &record)
+                {
+                    return Err(ProjectError::Changed.into());
+                }
+                if record.archived_at.is_some() {
+                    return Err(ProjectError::Archived.into());
+                }
+                let location = record
+                    .locations
+                    .iter()
+                    .filter(|location| available_paths.contains(&location.path))
+                    .min_by(|a, b| {
+                        b.last_used_at
+                            .cmp(&a.last_used_at)
+                            .then_with(|| a.path.cmp(&b.path))
+                    })
+                    .ok_or(ProjectError::Unavailable)?;
+                let path = location.path.clone();
+                touch(&tx, &record.id, &path, now)?;
+                let record = read(&tx, &record.id)?.ok_or(ProjectError::NotFound)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok((record, path))
             })
             .await
     }
 
     pub async fn touch_project(&self, id: &str, path: &str, now: u64) -> Result<ProjectRecord> {
-        self.validate_root()?;
         validate_id(id)?;
         validate_text(path)?;
         let now = timestamp(now)?;
         let (id, path) = (id.to_owned(), path.to_owned());
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let record = read(&mut tx, &id).await?.ok_or(ProjectError::NotFound)?;
-                    touch(&mut tx, &record.id, &path, now).await?;
-                    let record = read(&mut tx, &record.id)
-                        .await?
-                        .ok_or(ProjectError::NotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(record)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let record = read(&tx, &id)?.ok_or(ProjectError::NotFound)?;
+                touch(&tx, &record.id, &path, now)?;
+                let record = read(&tx, &record.id)?.ok_or(ProjectError::NotFound)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(record)
             })
             .await
     }
@@ -272,23 +263,25 @@ impl crate::writeback::Statement for WriteRegistration {
 
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<ProjectRecord>>> {
-        Box::pin(async move {
+        connection: &rusqlite::Connection,
+    ) -> Result<crate::writeback::Prepared<ProjectRecord>> {
+        {
             let Self {
                 registration,
                 prefer,
                 now,
                 guard,
             } = self;
-            let existing: Option<String> =
-                sqlx::query_scalar("SELECT id FROM projects WHERE identity = ?")
-                    .bind(&registration.identity)
-                    .fetch_optional(&mut *connection)
-                    .await?;
+            let existing: Option<String> = connection
+                .query_row(
+                    "SELECT id FROM projects WHERE identity = ?",
+                    params![&registration.identity],
+                    |row| row.get(0),
+                )
+                .optional()?;
             if let RegistrationGuard::Observed(expected) = guard {
                 let actual = match &existing {
-                    Some(id) => read(connection, id).await?,
+                    Some(id) => read(connection, id)?,
                     None => None,
                 };
                 if actual != expected {
@@ -297,63 +290,52 @@ impl crate::writeback::Statement for WriteRegistration {
             } else if matches!(guard, RegistrationGuard::Available)
                 && let Some(id) = &existing
             {
-                let archived: Option<i64> =
-                    sqlx::query_scalar("SELECT archived_at FROM projects WHERE id=?")
-                        .bind(id)
-                        .fetch_one(&mut *connection)
-                        .await?;
+                let archived: Option<i64> = connection.query_row(
+                    "SELECT archived_at FROM projects WHERE id=?",
+                    params![id],
+                    |row| row.get(0),
+                )?;
                 if archived.is_some() {
                     return Err(ProjectError::Archived.into());
                 }
             }
             let id = if let Some(id) = existing {
-                sqlx::query("UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?")
-                    .bind(now)
-                    .bind(&id)
-                    .execute(&mut *connection)
-                    .await?;
+                connection.execute(
+                    "UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?",
+                    params![now, &id],
+                )?;
                 id
             } else {
                 let id = Uuid::new_v4().to_string();
-                sqlx::query("INSERT INTO projects VALUES (?, ?, ?, ?, NULL)")
-                    .bind(&id)
-                    .bind(&registration.identity)
-                    .bind(registration.name.trim())
-                    .bind(now)
-                    .execute(&mut *connection)
-                    .await?;
-                sqlx::query("INSERT INTO project_identities VALUES (?, ?)")
-                    .bind(&id)
-                    .bind(&id)
-                    .execute(&mut *connection)
-                    .await?;
+                connection.execute(
+                    "INSERT INTO projects VALUES (?, ?, ?, ?, NULL)",
+                    params![&id, &registration.identity, registration.name.trim(), now],
+                )?;
+                connection.execute(
+                    "INSERT INTO project_identities VALUES (?, ?)",
+                    params![&id, &id],
+                )?;
                 id
             };
-            let has_location: bool = sqlx::query_scalar(
+            let has_location: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM project_locations WHERE project_id = ?)",
-            )
-            .bind(&id)
-            .fetch_one(&mut *connection)
-            .await?;
+                params![&id],
+                |row| row.get(0),
+            )?;
             let used_at = if prefer || !has_location { now } else { 0 };
-            sqlx::query(
+            connection.execute(
                 "INSERT INTO project_locations VALUES (?, ?, ?, ?)
     ON CONFLICT(project_id, path) DO UPDATE SET is_worktree = excluded.is_worktree,
     last_used_at = MAX(project_locations.last_used_at, excluded.last_used_at)",
-            )
-            .bind(&id)
-            .bind(&registration.path)
-            .bind(registration.is_worktree)
-            .bind(used_at)
-            .execute(&mut *connection)
-            .await?;
-            let record = read(connection, &id).await?.ok_or(ProjectError::NotFound)?;
+                params![&id, &registration.path, registration.is_worktree, used_at],
+            )?;
+            let record = read(connection, &id)?.ok_or(ProjectError::NotFound)?;
             Ok(crate::writeback::Prepared {
                 value: record,
                 changed: true,
                 notification: crate::writeback::Notification::None,
             })
-        })
+        }
     }
 
     fn committed(value: ProjectRecord) -> ProjectRecord {
@@ -368,25 +350,18 @@ impl crate::writeback::Statement for WriteRegistration {
     }
 }
 
-async fn touch(connection: &mut SqliteConnection, id: &str, path: &str, now: i64) -> Result<()> {
-    if sqlx::query(
+fn touch(connection: &rusqlite::Connection, id: &str, path: &str, now: i64) -> Result<()> {
+    if connection.execute(
         "UPDATE project_locations SET last_used_at = MAX(last_used_at, ?)
         WHERE project_id = ? AND path = ?",
-    )
-    .bind(now)
-    .bind(id)
-    .bind(path)
-    .execute(&mut *connection)
-    .await?
-    .rows_affected()
-        != 1
+        params![now, id, path],
+    )? != 1
     {
         return Err(ProjectError::PathMismatch.into());
     }
-    sqlx::query("UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?")
-        .bind(now)
-        .bind(id)
-        .execute(connection)
-        .await?;
+    connection.execute(
+        "UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?",
+        params![now, id],
+    )?;
     Ok(())
 }

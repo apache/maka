@@ -26,7 +26,7 @@ mod relink;
 
 use crate::{EventLog, StoreError};
 pub use relink::{ProjectRelink, ProjectRelinkGuard};
-use sqlx::{Connection, Row, SqliteConnection};
+use rusqlite::{OptionalExtension, params};
 use std::collections::BTreeMap;
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -96,134 +96,123 @@ impl EventLog {
     }
 
     async fn project_catalog(&self, prefix: Option<String>) -> Result<Vec<ProjectRecord>> {
-        self.validate_root()?;
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let mut projects = read_all(&mut tx, prefix.as_deref()).await?;
-                    projects.sort_by(|a, b| {
-                        a.archived_at
-                            .is_some()
-                            .cmp(&b.archived_at.is_some())
-                            .then_with(|| b.last_used_at.cmp(&a.last_used_at))
-                            .then_with(|| a.id.cmp(&b.id))
-                    });
-                    Ok(projects)
-                })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let mut projects = read_all(&tx, prefix.as_deref())?;
+                projects.sort_by(|a, b| {
+                    a.archived_at
+                        .is_some()
+                        .cmp(&b.archived_at.is_some())
+                        .then_with(|| b.last_used_at.cmp(&a.last_used_at))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                Ok(projects)
             })
             .await
     }
 
     pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>> {
-        self.validate_root()?;
         validate_id(id)?;
         let id = id.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    read(&mut tx, &id).await
-                })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                read(&tx, &id)
             })
             .await
     }
 }
 
-async fn read_all(
-    connection: &mut SqliteConnection,
-    prefix: Option<&str>,
-) -> Result<Vec<ProjectRecord>> {
-    let rows = sqlx::query(
-        "SELECT id, identity, name, last_used_at, archived_at FROM projects WHERE (?1 IS NULL OR instr(identity, ?1)=1) ORDER BY id",
-    )
-    .bind(prefix)
-    .fetch_all(&mut *connection)
-    .await?;
+fn read_all(connection: &rusqlite::Connection, prefix: Option<&str>) -> Result<Vec<ProjectRecord>> {
+    let rows = connection.prepare_cached("SELECT id, identity, name, last_used_at, archived_at FROM projects WHERE (?1 IS NULL OR instr(identity, ?1)=1) ORDER BY id")?.query_map(params![prefix],|row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, i64>(3)?,row.get::<_, Option<i64>>(4)?,)))?.collect::<std::result::Result<Vec<_>, _>>()
+    ?;
     let mut records = BTreeMap::new();
     for row in rows {
-        let id: String = row.try_get("id")?;
+        let id: String = row.0;
         records.insert(
             id.clone(),
             ProjectRecord {
                 id,
-                identity: row.try_get("identity")?,
-                name: row.try_get("name")?,
-                last_used_at: number(row.try_get("last_used_at")?)?,
-                archived_at: row
-                    .try_get::<Option<i64>, _>("archived_at")?
-                    .map(number)
-                    .transpose()?,
+                identity: row.1,
+                name: row.2,
+                last_used_at: number(row.3)?,
+                archived_at: row.4.map(number).transpose()?,
                 aliases: Vec::new(),
                 locations: Vec::new(),
             },
         );
     }
-    for row in sqlx::query(
-        "SELECT a.id, a.project_id FROM project_identities a JOIN projects p ON p.id=a.project_id WHERE a.id != a.project_id AND (?1 IS NULL OR instr(p.identity, ?1)=1) ORDER BY a.id",
-    )
-    .bind(prefix)
-    .fetch_all(&mut *connection)
-    .await?
+    for row in connection.prepare_cached("SELECT a.id, a.project_id FROM project_identities a JOIN projects p ON p.id=a.project_id WHERE a.id != a.project_id AND (?1 IS NULL OR instr(p.identity, ?1)=1) ORDER BY a.id")?.query_map(params![prefix],|row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,)))?.collect::<std::result::Result<Vec<_>, _>>()
+    ?
     {
-        let owner: String = row.try_get("project_id")?;
+        let owner: String = row.1;
         records
             .get_mut(&owner)
             .ok_or_else(|| invalid("orphan project identity"))?
             .aliases
-            .push(row.try_get("id")?);
+            .push(row.0);
     }
-    for row in sqlx::query(
-        "SELECT l.project_id, l.path, l.is_worktree, l.last_used_at FROM project_locations l JOIN projects p ON p.id=l.project_id WHERE (?1 IS NULL OR instr(p.identity, ?1)=1) ORDER BY l.path",
-    )
-    .bind(prefix)
-    .fetch_all(connection)
-    .await?
+    for row in connection.prepare_cached("SELECT l.project_id, l.path, l.is_worktree, l.last_used_at FROM project_locations l JOIN projects p ON p.id=l.project_id WHERE (?1 IS NULL OR instr(p.identity, ?1)=1) ORDER BY l.path")?.query_map(params![prefix],|row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, bool>(2)?,row.get::<_, i64>(3)?,)))?.collect::<std::result::Result<Vec<_>, _>>()
+    ?
     {
-        let owner: String = row.try_get("project_id")?;
+        let owner: String = row.0;
         records
             .get_mut(&owner)
             .ok_or_else(|| invalid("orphan project location"))?
             .locations
             .push(ProjectLocation {
-                path: row.try_get("path")?,
-                is_worktree: row.try_get("is_worktree")?,
-                last_used_at: number(row.try_get("last_used_at")?)?,
+                path: row.1,
+                is_worktree: row.2,
+                last_used_at: number(row.3)?,
             });
     }
     Ok(records.into_values().collect())
 }
 
-async fn read(connection: &mut SqliteConnection, id: &str) -> Result<Option<ProjectRecord>> {
-    let canonical: Option<String> =
-        sqlx::query_scalar("SELECT project_id FROM project_identities WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *connection)
-            .await?;
+fn read(connection: &rusqlite::Connection, id: &str) -> Result<Option<ProjectRecord>> {
+    let canonical: Option<String> = connection
+        .query_row(
+            "SELECT project_id FROM project_identities WHERE id = ?",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
     let Some(id) = canonical else {
         return Ok(None);
     };
-    let row =
-        sqlx::query("SELECT identity, name, last_used_at, archived_at FROM projects WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&mut *connection)
-            .await?;
-    let aliases = sqlx::query_scalar(
-        "SELECT id FROM project_identities WHERE project_id = ? AND id != ? ORDER BY id",
-    )
-    .bind(&id)
-    .bind(&id)
-    .fetch_all(&mut *connection)
-    .await?;
-    let rows = sqlx::query("SELECT path, is_worktree, last_used_at FROM project_locations WHERE project_id = ? ORDER BY path")
-        .bind(&id).fetch_all(connection).await?;
+    let row = connection.query_row(
+        "SELECT identity, name, last_used_at, archived_at FROM projects WHERE id = ?",
+        params![&id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        },
+    )?;
+    let aliases = connection
+        .prepare_cached(
+            "SELECT id FROM project_identities WHERE project_id = ? AND id != ? ORDER BY id",
+        )?
+        .query_map(params![&id, &id], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let rows = connection.prepare_cached("SELECT path, is_worktree, last_used_at FROM project_locations WHERE project_id = ? ORDER BY path")?.query_map(params![&id],|row| Ok((row.get::<_, String>(0)?,row.get::<_, bool>(1)?,row.get::<_, i64>(2)?,)))?.collect::<std::result::Result<Vec<_>, _>>()?;
     let locations = rows
         .into_iter()
         .map(|row| {
             Ok(ProjectLocation {
-                path: row.try_get("path")?,
-                is_worktree: row.try_get("is_worktree")?,
-                last_used_at: number(row.try_get("last_used_at")?)?,
+                path: row.0,
+                is_worktree: row.1,
+                last_used_at: number(row.2)?,
             })
         })
         .collect::<Result<_>>()?;
@@ -231,13 +220,10 @@ async fn read(connection: &mut SqliteConnection, id: &str) -> Result<Option<Proj
         id,
         aliases,
         locations,
-        identity: row.try_get("identity")?,
-        name: row.try_get("name")?,
-        last_used_at: number(row.try_get("last_used_at")?)?,
-        archived_at: row
-            .try_get::<Option<i64>, _>("archived_at")?
-            .map(number)
-            .transpose()?,
+        identity: row.0,
+        name: row.1,
+        last_used_at: number(row.2)?,
+        archived_at: row.3.map(number).transpose()?,
     }))
 }
 

@@ -33,8 +33,8 @@ async fn open() -> (tempfile::TempDir, RootStore) {
     (dir, root)
 }
 async fn admit(log: &EventLog, model: String, tokens: u64) {
-    log.connection.run(move |connection| Box::pin(async move {
-        let mut tx = connection.begin().await?;
+    log.connection.run(move |connection| {
+        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
         let id = Uuid::new_v4();
         let source = Uuid::new_v4();
         let records = [
@@ -43,14 +43,14 @@ async fn admit(log: &EventLog, model: String, tokens: u64) {
             (Uuid::new_v4(), "auxiliary_model_settled", json!({"request_id":id,"outcome":"success","completed_at":{"secs_since_epoch":2,"nanos_since_epoch":0}})),
         ];
         for (id, kind, event) in records {
-            crate::canonical_insert::insert(crate::canonical_insert::Record {
+            crate::canonical_insert::insert(&tx, crate::canonical_insert::Record {
                 sequence: None, event_id: &id.to_string(), invocation_id: None,
                 kind, operation_id: None, json: &event.to_string(),
-            }).execute(&mut *tx).await?;
+            })?;
         }
-        tx.commit().await?;
+        tx.commit()?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
 }
 fn query() -> UsageQuery {
     UsageQuery {
@@ -68,8 +68,8 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
         .await
         .unwrap();
     for index in 0..40 {
-        admit(&root.partitions[0], format!("model-{index:02}"), 1).await;
-        admit(&root.partitions[1], format!("model-{index:02}"), 2).await;
+        admit(&root.log, format!("model-{index:02}"), 1).await;
+        admit(&root.log, format!("model-{index:02}"), 2).await;
     }
     let report = root
         .usage_summary_page(query(), Group::ByModel, None)
@@ -102,12 +102,15 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
     assert_eq!(first.total, 80);
     assert_eq!(first.attempts.len(), 32);
     // A new settled admission at the same wall-clock time must not enter this fence.
-    admit(&root.partitions[0], "new-model".into(), 1000).await;
+    admit(&root.log, "new-model".into(), 1000).await;
     let mut ids = BTreeSet::new();
     let mut page = first;
     loop {
         for attempt in &page.attempts {
-            assert!(ids.insert(cursor(attempt, 0).request_id));
+            assert!(ids.insert(match attempt {
+                Activity::Model(row) => row.request_id.clone(),
+                Activity::Tool(row) => row.request_id.clone(),
+            }));
         }
         let Some(after) = page.next_cursor else {
             break;
@@ -132,7 +135,7 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
     let mut foreign = query();
     foreign.through = Some(UsageFence {
         state_domain: "foreign".into(),
-        partitions: [0; PARTITION_COUNT],
+        sequence: 0,
     });
     assert!(root.usage_totals(foreign).await.is_err());
     root.close().await.unwrap();

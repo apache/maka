@@ -223,7 +223,6 @@ impl Bot {
     }
     #[cfg(test)]
     pub(super) async fn release_for_test(&self, session: &str) {
-        self.creating.lock().unwrap().remove(session);
         let (revision, _) = self.read::<Record>(RECORD_KEY).await.unwrap();
         self.storage
             .batch(vec![Mutation {
@@ -233,7 +232,13 @@ impl Bot {
             }])
             .await
             .unwrap();
-        self.set_current(None);
+        {
+            let mut current = self.current.write().unwrap();
+            if current.as_deref() == Some(session) {
+                *current = None;
+            }
+        }
+        self.creating.lock().unwrap().remove(session);
     }
     fn set_current(&self, session: Option<String>) {
         *self.current.write().expect("bot identity") = session;

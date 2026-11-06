@@ -88,12 +88,9 @@ pub(super) fn configuration(stage: &'static str, error: &ConfigError, connection
             stage, cause, connection_id, error_kind = ?error.kind(), os_code = error.raw_os_error(),
             "Model preparation failed"
         ),
-        ConfigError::Sqlx(error) => {
+        ConfigError::Sqlite(error) => {
             // Only a numeric SQLite code, never the database's free-form message.
-            let sql_code = error
-                .as_database_error()
-                .and_then(|error| error.code())
-                .and_then(|code| code.parse::<i32>().ok());
+            let sql_code = error.sqlite_error().map(|error| error.extended_code);
             tracing::warn!(
                 stage,
                 cause,

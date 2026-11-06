@@ -46,13 +46,8 @@ pub struct SessionSubscription {
     receiver: watch::Receiver<u64>,
     _registration: Arc<Registration>,
     control: Option<watch::Receiver<()>>,
-    peers: Vec<SessionSubscription>,
 }
 impl SessionSubscription {
-    pub(crate) fn with_peers(mut self, peers: Vec<Self>) -> Self {
-        self.peers = peers;
-        self
-    }
     pub(crate) fn with_control(mut self, control: watch::Receiver<()>) -> Self {
         self.control = Some(control);
         self
@@ -61,18 +56,13 @@ impl SessionSubscription {
     /// A Root binding change can invalidate metadata without appending facts in
     /// this partition. Both channels are hints to re-read canonical state.
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
-        use futures_util::{StreamExt, stream::FuturesUnordered};
-        let mut pending: FuturesUnordered<_> = std::iter::once(&mut self.receiver)
-            .chain(self.peers.iter_mut().map(|peer| &mut peer.receiver))
-            .map(|receiver| receiver.changed())
-            .collect();
         if let Some(control) = &mut self.control {
             tokio::select! {
-                changed = pending.next() => changed.expect("primary subscription"),
-                changed = control.changed() => changed,
+                changed=self.receiver.changed()=>changed,
+                changed=control.changed()=>changed,
             }
         } else {
-            pending.next().await.expect("primary subscription")
+            self.receiver.changed().await
         }
     }
 }
@@ -136,7 +126,6 @@ impl CommitHub {
             receiver,
             _registration: registration,
             control: None,
-            peers: Vec::new(),
         }
     }
     pub(crate) fn notice(&self) -> CommitNotice {

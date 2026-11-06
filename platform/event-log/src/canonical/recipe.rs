@@ -40,31 +40,66 @@ pub(crate) fn projection<'a>(
         return Ok(None);
     }
     #[derive(Deserialize)]
-    struct Envelope<'a> {
-        #[serde(borrow)]
-        fact: Fact<'a>,
+    struct Envelope {
+        fact: Fact,
     }
     #[derive(Deserialize)]
-    struct Fact<'a> {
-        #[serde(borrow)]
-        outcome: Outcome<'a>,
+    struct Fact {
+        outcome: Outcome,
     }
     #[derive(Deserialize)]
-    struct Outcome<'a> {
+    struct Outcome {
         kind: String,
-        #[serde(borrow)]
-        model_projection: Option<&'a RawValue>,
     }
-    let envelope: Envelope<'_> = serde_json::from_str(json)?;
+    let envelope: Envelope = serde_json::from_str(json)?;
     if envelope.fact.outcome.kind != "succeeded" {
         return Ok(None);
     }
-    let token = envelope
+    // A null slot is still a present token. Deserialize it without Option's null semantics.
+    #[derive(Deserialize)]
+    struct Required<'a> {
+        #[serde(borrow)]
+        model_projection: &'a RawValue,
+    }
+    #[derive(Deserialize)]
+    struct RequiredFact<'a> {
+        #[serde(borrow)]
+        outcome: Required<'a>,
+    }
+    #[derive(Deserialize)]
+    struct RequiredEnvelope<'a> {
+        #[serde(borrow)]
+        fact: RequiredFact<'a>,
+    }
+    let token = serde_json::from_str::<RequiredEnvelope<'_>>(json)?
         .fact
         .outcome
         .model_projection
-        .ok_or_else(|| invalid("successful tool result lacks its projection"))?
         .get();
+    #[derive(Deserialize)]
+    struct Tag {
+        kind: String,
+    }
+    #[derive(Deserialize)]
+    struct Json<'a> {
+        #[serde(borrow)]
+        value: &'a RawValue,
+    }
+    #[derive(Deserialize)]
+    struct Text<'a> {
+        #[serde(borrow)]
+        text: &'a RawValue,
+    }
+    let token = if token == "null" {
+        token
+    } else {
+        match serde_json::from_str::<Tag>(token)?.kind.as_str() {
+            "json" => serde_json::from_str::<Json<'_>>(token)?.value.get(),
+            "text" => serde_json::from_str::<Text<'_>>(token)?.text.get(),
+            "content" | "failure" => token,
+            _ => return Err(invalid("unknown frozen projection kind")),
+        }
+    };
     let offset = (token.as_ptr() as usize)
         .checked_sub(json.as_ptr() as usize)
         .ok_or_else(|| invalid("projection does not borrow its event"))?;

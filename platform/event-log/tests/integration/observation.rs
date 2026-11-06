@@ -47,15 +47,8 @@ async fn fenced_bootstrap_and_bounded_catchup_survive_coalescing_and_reopen() {
         .unwrap();
     let targets = ["session".into(), "idle".into()];
     let versions = log.observation_versions(&targets).await.unwrap();
-    assert_eq!(
-        versions["session"],
-        maka_event_log::observation::ObservationVersion {
-            metadata: 1,
-            queue: 0,
-            event: 0,
-            root_control_revision: 0,
-        }
-    );
+    let version = versions["session"];
+    assert_eq!((version.metadata, version.queue, version.event), (1, 0, 0));
     let first = Invocation {
         session_id: "session".into(),
         turn_id: "first".into(),

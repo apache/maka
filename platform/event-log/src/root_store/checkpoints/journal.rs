@@ -18,14 +18,16 @@
  */
 
 use super::*;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-async fn binding(db: &mut SqliteConnection, request: &Request) -> Result<(), StoreError> {
-    let scope: Option<String> =
-        sqlx::query_scalar("SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?")
-            .bind(&request.session_id)
-            .fetch_optional(db)
-            .await?;
+fn binding(db: &Connection, request: &Request) -> Result<(), StoreError> {
+    let scope: Option<String> = db
+        .query_row(
+            "SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?",
+            rusqlite::params![&request.session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(scope) = scope
         && serde_json::from_str::<Scope>(&scope)? != request.scope
     {
@@ -34,14 +36,9 @@ async fn binding(db: &mut SqliteConnection, request: &Request) -> Result<(), Sto
     Ok(())
 }
 
-async fn receipt(
-    db: &mut SqliteConnection,
-    request: &Request,
-) -> Result<Option<Publication>, StoreError> {
-    binding(db, request).await?;
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT request_json,publication_json FROM history_checkpoint_publications WHERE request_key=?")
-        .bind(request.key()?).fetch_optional(db).await?;
+fn receipt(db: &Connection, request: &Request) -> Result<Option<Publication>, StoreError> {
+    binding(db, request)?;
+    let row: Option<(String, String)> = db.query_row("SELECT request_json,publication_json FROM history_checkpoint_publications WHERE request_key=?", rusqlite::params![request.key()?], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
     row.map(|(original, state)| {
         if serde_json::from_str::<Request>(&original)? != *request {
             return Err(invalid(
@@ -53,29 +50,24 @@ async fn receipt(
     .transpose()
 }
 
-async fn head(db: &mut SqliteConnection, session: &str) -> Result<Option<Head>, StoreError> {
-    let json: Option<String> =
-        sqlx::query_scalar("SELECT head_json FROM history_checkpoint_heads WHERE session_id=?")
-            .bind(session)
-            .fetch_optional(db)
-            .await?;
+fn head(db: &Connection, session: &str) -> Result<Option<Head>, StoreError> {
+    let json: Option<String> = db
+        .query_row(
+            "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
+            rusqlite::params![session],
+            |row| row.get(0),
+        )
+        .optional()?;
     json.map(|json| serde_json::from_str(&json).map_err(Into::into))
         .transpose()
 }
 
-async fn write(
-    db: &mut SqliteConnection,
-    request: &Request,
-    value: &Publication,
-) -> Result<(), StoreError> {
-    let changed = sqlx::query(
+fn write(db: &Connection, request: &Request, value: &Publication) -> Result<(), StoreError> {
+    let changed = db.execute(
         "UPDATE history_checkpoint_publications SET publication_json=? WHERE request_key=?",
-    )
-    .bind(serde_json::to_string(value)?)
-    .bind(request.key()?)
-    .execute(db)
-    .await?;
-    if changed.rows_affected() != 1 {
+        rusqlite::params![serde_json::to_string(value)?, request.key()?],
+    )?;
+    if changed != 1 {
         return Err(invalid("checkpoint request missing"));
     }
     Ok(())
@@ -85,9 +77,7 @@ pub(super) async fn read(
     log: &EventLog,
     request: Request,
 ) -> Result<Option<Publication>, StoreError> {
-    log.connection
-        .read(move |db| Box::pin(async move { receipt(db, &request).await }))
-        .await
+    log.connection.read(move |db| receipt(db, &request)).await
 }
 
 pub(super) async fn original(
@@ -96,41 +86,40 @@ pub(super) async fn original(
 ) -> Result<Option<PublicationRequest>, StoreError> {
     log.connection
         .read(move |db| {
-            Box::pin(async move {
-                binding(db, &request).await?;
-                let original: Option<String> = sqlx::query_scalar(
+            binding(db, &request)?;
+            let original: Option<String> = db
+                .query_row(
                     "SELECT request_json FROM history_checkpoint_publications WHERE request_key=?",
+                    rusqlite::params![request.key()?],
+                    |row| row.get(0),
                 )
-                .bind(request.key()?)
-                .fetch_optional(db)
-                .await?;
-                original
-                    .map(|json| {
-                        let original: Request = serde_json::from_str(&json)?;
-                        if original.scope != request.scope
-                            || original.session_id != request.session_id
-                            || original.publication.fingerprint != request.publication.fingerprint
-                            || original.publication.expected_revision
-                                != request.publication.expected_revision
-                            || original.publication.confirmed_subtree_digest
-                                != request.publication.confirmed_subtree_digest
-                            || original
+                .optional()?;
+            original
+                .map(|json| {
+                    let original: Request = serde_json::from_str(&json)?;
+                    if original.scope != request.scope
+                        || original.session_id != request.session_id
+                        || original.publication.fingerprint != request.publication.fingerprint
+                        || original.publication.expected_revision
+                            != request.publication.expected_revision
+                        || original.publication.confirmed_subtree_digest
+                            != request.publication.confirmed_subtree_digest
+                        || original
+                            .publication
+                            .workspace
+                            .as_ref()
+                            .map(|v| v.consistency)
+                            != request
                                 .publication
                                 .workspace
                                 .as_ref()
                                 .map(|v| v.consistency)
-                                != request
-                                    .publication
-                                    .workspace
-                                    .as_ref()
-                                    .map(|v| v.consistency)
-                        {
-                            return Err(invalid("checkpoint operation inputs differ"));
-                        }
-                        Ok(original.publication)
-                    })
-                    .transpose()
-            })
+                    {
+                        return Err(invalid("checkpoint operation inputs differ"));
+                    }
+                    Ok(original.publication)
+                })
+                .transpose()
         })
         .await
 }
@@ -142,23 +131,22 @@ pub(super) async fn read_head(
 ) -> Result<Option<Head>, StoreError> {
     log.connection
         .read(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin().await?;
-                let bound: Option<String> = sqlx::query_scalar(
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
+            let bound: Option<String> = tx
+                .query_row(
                     "SELECT scope_json FROM history_checkpoint_bindings WHERE session_id=?",
+                    rusqlite::params![&session],
+                    |row| row.get(0),
                 )
-                .bind(&session)
-                .fetch_optional(&mut *tx)
-                .await?;
-                if let Some(bound) = bound
-                    && serde_json::from_str::<Scope>(&bound)? != scope
-                {
-                    return Err(invalid("history checkpoint binding differs"));
-                }
-                let value = head(&mut tx, &session).await?;
-                tx.rollback().await?;
-                Ok(value)
-            })
+                .optional()?;
+            if let Some(bound) = bound
+                && serde_json::from_str::<Scope>(&bound)? != scope
+            {
+                return Err(invalid("history checkpoint binding differs"));
+            }
+            let value = head(&tx, &session)?;
+            tx.rollback()?;
+            Ok(value)
         })
         .await
 }
@@ -168,25 +156,20 @@ pub(super) async fn claim(
     log: &EventLog,
     request: Request,
 ) -> Result<(Publication, bool), StoreError> {
-    log.connection.run(move |db| Box::pin(async move {
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(value) = receipt(&mut tx, &request).await? {
-            tx.rollback().await?;
+    log.connection.run(move |db| {
+        let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+        if let Some(value) = receipt(&tx, &request)? {
+            tx.rollback()?;
             return Ok((value, false));
         }
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)")
-            .bind(&request.session_id).fetch_one(&mut *tx).await?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)", rusqlite::params![&request.session_id], |row| row.get(0))?;
         if !exists { return Err(StoreError::SessionNotFound); }
-        sqlx::query("INSERT INTO history_checkpoint_bindings VALUES(?,?) ON CONFLICT(session_id) DO NOTHING")
-            .bind(&request.session_id).bind(serde_json::to_string(&request.scope)?).execute(&mut *tx).await?;
+        tx.execute("INSERT INTO history_checkpoint_bindings VALUES(?,?) ON CONFLICT(session_id) DO NOTHING", rusqlite::params![&request.session_id, serde_json::to_string(&request.scope)?])?;
         let value = Publication { state: PublicationState::Capturing, cleanup_pending: true, cleanup_error: None };
-        sqlx::query("INSERT INTO history_checkpoint_publications VALUES(?,?,?,?)")
-            .bind(request.key()?).bind(&request.session_id)
-            .bind(serde_json::to_string(&request)?).bind(serde_json::to_string(&value)?)
-            .execute(&mut *tx).await?;
-        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+        tx.execute("INSERT INTO history_checkpoint_publications VALUES(?,?,?,?)", rusqlite::params![request.key()?, &request.session_id, serde_json::to_string(&request)?, serde_json::to_string(&value)?])?;
+        tx.commit().map_err(StoreError::CommitUnknown)?;
         Ok((value, true))
-    })).await
+    }).await
 }
 
 pub(super) async fn prepare(
@@ -196,18 +179,15 @@ pub(super) async fn prepare(
 ) -> Result<(), StoreError> {
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                let mut value = receipt(&mut tx, &request)
-                    .await?
-                    .ok_or_else(|| invalid("checkpoint claim missing"))?;
-                if value.state != PublicationState::Capturing {
-                    return Err(invalid("checkpoint is not capturing"));
-                }
-                value.state = PublicationState::Prepared { manifest };
-                write(&mut tx, &request, &value).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)
-            })
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let mut value =
+                receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+            if value.state != PublicationState::Capturing {
+                return Err(invalid("checkpoint is not capturing"));
+            }
+            value.state = PublicationState::Prepared { manifest };
+            write(&tx, &request, &value)?;
+            tx.commit().map_err(StoreError::CommitUnknown)
         })
         .await
 }
@@ -218,47 +198,53 @@ pub(super) async fn commit(
     request: Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    log.connection.run(move |db| Box::pin(async move {
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-        let mut value = receipt(&mut tx, &request).await?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+    let notice = log.commits.notice();
+    log.connection.run(move |db| {
+        let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+        let mut value = receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
         match &value.state {
             PublicationState::Published { .. } | PublicationState::Conflict { .. } => {
-                tx.rollback().await?;
+                tx.rollback()?;
                 return Ok(value);
             }
             PublicationState::Prepared { manifest: original } if original == &manifest => {}
             _ => return Err(invalid("checkpoint prepared material differs")),
         }
-        let actual = head(&mut tx, &request.session_id).await?.map(|head| head.revision);
+        let actual = head(&tx, &request.session_id)?.map(|head| head.revision);
         if actual != request.publication.expected_revision {
             value.state = PublicationState::Conflict { actual };
+            crate::snapshots::release_unpublished(&tx,&request.key()?)?;
         } else {
             let head = Head { revision: Revision(uuid::Uuid::new_v4()), manifest };
-            sqlx::query("INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json")
-                .bind(&request.session_id).bind(serde_json::to_string(&head)?).execute(&mut *tx).await?;
+            tx.execute("INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json", rusqlite::params![&request.session_id, serde_json::to_string(&head)?])?;
             value.state = PublicationState::Published { head };
             boundary("head_written");
         }
-        write(&mut tx, &request, &value).await?;
-        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+        if let PublicationState::Published { head } = &value.state {
+            crate::snapshots::publish(&tx,&request.key()?,&head.manifest.digest)?;
+        }
+        write(&tx, &request, &value)?;
+        tx.commit().map_err(StoreError::CommitUnknown)?;
+                notice.material_released();
         Ok(value)
-    })).await
+    }).await
 }
 
 pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), StoreError> {
+    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                let mut value = receipt(&mut tx, &request)
-                    .await?
-                    .ok_or_else(|| invalid("checkpoint claim missing"))?;
-                if value.state == PublicationState::Capturing {
-                    value.state = PublicationState::Interrupted;
-                    write(&mut tx, &request, &value).await?;
-                }
-                tx.commit().await.map_err(StoreError::CommitUnknown)
-            })
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let mut value =
+                receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+            if value.state == PublicationState::Capturing {
+                value.state = PublicationState::Interrupted;
+                crate::snapshots::release_unpublished(&tx, &request.key()?)?;
+                write(&tx, &request, &value)?;
+            }
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            notice.material_released();
+            Ok(())
         })
         .await
 }
@@ -270,16 +256,13 @@ pub(super) async fn record_cleanup(
 ) -> Result<(), StoreError> {
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                let mut value = receipt(&mut tx, &request)
-                    .await?
-                    .ok_or_else(|| invalid("checkpoint claim missing"))?;
-                value.cleanup_pending = cause.is_some();
-                value.cleanup_error = cause;
-                write(&mut tx, &request, &value).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)
-            })
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let mut value =
+                receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+            value.cleanup_pending = cause.is_some();
+            value.cleanup_error = cause;
+            write(&tx, &request, &value)?;
+            tx.commit().map_err(StoreError::CommitUnknown)
         })
         .await
 }
@@ -290,24 +273,24 @@ pub(super) async fn unavailable(
     manifest: ObjectRef,
     cause: String,
 ) -> Result<Publication, StoreError> {
+    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                let mut value = receipt(&mut tx, &request)
-                    .await?
-                    .ok_or_else(|| invalid("checkpoint claim missing"))?;
-                if value.state
-                    == (PublicationState::Prepared {
-                        manifest: manifest.clone(),
-                    })
-                {
-                    value.state = PublicationState::Unavailable { manifest, cause };
-                    write(&mut tx, &request, &value).await?;
-                }
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                Ok(value)
-            })
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+            let mut value =
+                receipt(&tx, &request)?.ok_or_else(|| invalid("checkpoint claim missing"))?;
+            if value.state
+                == (PublicationState::Prepared {
+                    manifest: manifest.clone(),
+                })
+            {
+                value.state = PublicationState::Unavailable { manifest, cause };
+                crate::snapshots::release_unpublished(&tx, &request.key()?)?;
+                write(&tx, &request, &value)?;
+            }
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            notice.material_released();
+            Ok(value)
         })
         .await
 }
@@ -317,12 +300,10 @@ pub(super) async fn pending(
     log: &EventLog,
     after: String,
 ) -> Result<Vec<(String, Request, Publication)>, StoreError> {
-    log.connection.read(move |db| Box::pin(async move {
-        let rows: Vec<(String,String,String)> = sqlx::query_as(
-            "SELECT request_key,request_json,publication_json FROM history_checkpoint_publications
+    log.connection.read(move |db| {
+        let rows: Vec<(String,String,String)> = db.prepare_cached("SELECT request_key,request_json,publication_json FROM history_checkpoint_publications
              WHERE request_key>? AND (json_extract(publication_json,'$.state.kind') IN ('capturing','prepared')
-              OR json_extract(publication_json,'$.cleanup_pending')=1) ORDER BY request_key LIMIT 64")
-            .bind(after).fetch_all(db).await?;
+              OR json_extract(publication_json,'$.cleanup_pending')=1) ORDER BY request_key LIMIT 64")?.query_map(rusqlite::params![after], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,)))?.collect::<Result<Vec<_>, _>>()?;
         rows.into_iter().map(|(key,request,value)| Ok((key,serde_json::from_str(&request)?,serde_json::from_str(&value)?))).collect()
-    })).await
+    }).await
 }

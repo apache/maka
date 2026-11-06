@@ -17,13 +17,12 @@
  * under the License.
  */
 
-//! Retirement gates the same Session admission used by cross-partition workers.
+//! Retirement shares Session admission with accepted workers.
 use super::*;
 use crate::sessions::{
     AbandonRevision, RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionMutation,
     SessionRetirement,
 };
-use std::collections::BTreeSet;
 
 #[cfg(test)]
 mod tests;
@@ -83,11 +82,7 @@ impl RootStore {
         after: Option<&str>,
     ) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
-        let mut ids = BTreeSet::new();
-        for partition in &self.partitions {
-            ids.extend(partition.pending_session_retirements(after).await?);
-        }
-        Ok(ids.into_iter().take(32).collect())
+        self.log.pending_session_retirements(after).await
     }
     pub async fn session_retirement(
         &self,

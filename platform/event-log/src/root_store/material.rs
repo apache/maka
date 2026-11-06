@@ -23,12 +23,11 @@
 
 use super::EventLog;
 use crate::sessions::MaterialCollection;
-use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 pub(super) async fn maintain(
-    partitions: &[Arc<EventLog>],
+    log: &EventLog,
     ready: oneshot::Receiver<()>,
     stop: CancellationToken,
 ) {
@@ -37,8 +36,7 @@ pub(super) async fn maintain(
         () = stop.cancelled() => {},
         () = async {
             if ready.await.is_ok() {
-                let collectors = partitions.iter().enumerate().map(|(index, log)| collect(index, log));
-                futures_util::future::join_all(collectors).await;
+                collect(log).await;
             }
         } => {},
     }
@@ -46,7 +44,7 @@ pub(super) async fn maintain(
     // SQL jobs still drain on their original actors before Root releases authority.
 }
 
-async fn collect(partition: usize, log: &EventLog) {
+async fn collect(log: &EventLog) {
     let mut releases = log.commits.subscribe_material_releases();
     loop {
         // Consume only hints preceding this pass. A release during the scan must
@@ -61,9 +59,7 @@ async fn collect(partition: usize, log: &EventLog) {
                 Err(error) => {
                     // Never spin on an uncertain commit or claim collection is
                     // complete. A later release/reopen rereads canonical state.
-                    eprintln!(
-                        "Session material collection failed for partition {partition}: {error}"
-                    );
+                    eprintln!("Session material collection failed: {error}");
                     break;
                 }
             }

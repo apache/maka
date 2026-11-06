@@ -24,8 +24,8 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::message::MessageDisposition;
 use maka_agent_facts::message::RootSourceMessage;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, SqliteConnection};
 
 pub(crate) mod insert;
 mod receipts;
@@ -111,7 +111,6 @@ impl EventLog {
         owner: &str,
         after: Option<&str>,
     ) -> Result<Vec<String>, StoreError> {
-        self.validate_root()?;
         if let Some(after) = after {
             crate::sessions::validate_id(after)?;
         }
@@ -119,19 +118,18 @@ impl EventLog {
         let owner = owner.to_owned();
         let after = after.map(str::to_owned);
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    Ok(sqlx::query_scalar(
-                        "SELECT DISTINCT session_id FROM message_admissions
+            .read(move |connection| {
+                {
+                    Ok(connection
+                        .prepare_cached(
+                            "SELECT DISTINCT session_id FROM message_admissions
                  WHERE (?1 IS NULL OR session_id > ?1)
                    AND json_extract(record_json, '$.execution.owner') = ?2
                  ORDER BY session_id LIMIT 64",
-                    )
-                    .bind(after)
-                    .bind(owner)
-                    .fetch_all(connection)
-                    .await?)
-                })
+                        )?
+                        .query_map(rusqlite::params![after, owner], |row| row.get(0))?
+                        .collect::<Result<Vec<_>, _>>()?)
+                }
             })
             .await
     }
@@ -141,7 +139,6 @@ impl EventLog {
         &self,
         admission: PendingMessageAdmission,
     ) -> Result<PendingMessageAdmission, StoreError> {
-        self.validate_root()?;
         let commits = self.commits.session(&admission.invocation.session_id);
         self.connection
             .write(WriteAdmission(admission), commits)
@@ -153,15 +150,12 @@ impl EventLog {
         session: &str,
         message: &str,
     ) -> Result<Option<PendingMessageAdmission>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(message)?;
         let session = session.to_owned();
         let message = message.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move { read(connection, &session, &message).await })
-            })
+            .read(move |connection| read(connection, &session, &message))
             .await
     }
 
@@ -169,45 +163,43 @@ impl EventLog {
         &self,
         session: &str,
     ) -> Result<Vec<PendingMessageAdmission>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    pending(&mut tx, &session).await
-                })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                pending(&tx, &session)
             })
             .await
     }
 }
 
-pub(super) async fn pending(
-    tx: &mut SqliteConnection,
+pub(super) fn pending(
+    tx: &Connection,
     session: &str,
 ) -> Result<Vec<PendingMessageAdmission>, StoreError> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT message_id, record_json FROM message_admissions WHERE session_id = ? ORDER BY position, message_id"
-    ).bind(session).fetch_all(tx).await?;
+    let rows: Vec<(String, String)> = tx.prepare_cached("SELECT message_id, record_json FROM message_admissions WHERE session_id = ? ORDER BY position, message_id")?.query_map(rusqlite::params![session], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(|(id, json)| decode(&json, session, &id))
         .collect()
 }
 
-pub(crate) async fn read(
-    connection: &mut SqliteConnection,
+pub(crate) fn read(
+    connection: &Connection,
     session: &str,
     message: &str,
 ) -> Result<Option<PendingMessageAdmission>, StoreError> {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT record_json
+    let json: Option<String> = connection
+        .query_row(
+            "SELECT record_json
          FROM message_admissions WHERE session_id = ? AND message_id = ?",
-    )
-    .bind(session)
-    .bind(message)
-    .fetch_optional(connection)
-    .await?;
+            rusqlite::params![session, message],
+            |row| row.get(0),
+        )
+        .optional()?;
     json.map(|json| decode(&json, session, message)).transpose()
 }
 fn decode(json: &str, session: &str, message: &str) -> Result<PendingMessageAdmission, StoreError> {
@@ -220,15 +212,12 @@ fn decode(json: &str, session: &str, message: &str) -> Result<PendingMessageAdmi
 }
 
 /// No handoff flag: only the atomic appearance of the canonical delivery retires pending work.
-pub(crate) async fn consume(
-    connection: &mut SqliteConnection,
-    event: &RuntimeEvent,
-) -> Result<(), StoreError> {
+pub(crate) fn consume(connection: &Connection, event: &RuntimeEvent) -> Result<(), StoreError> {
     for id in crate::message_sources::identities(event) {
-        if crate::message_queue::cancelled(connection, &event.invocation.session_id, id).await? {
+        if crate::message_queue::cancelled(connection, &event.invocation.session_id, id)? {
             return Err(invalid("cancelled message cannot be delivered"));
         }
-        let Some(pending) = read(connection, &event.invocation.session_id, id).await? else {
+        let Some(pending) = read(connection, &event.invocation.session_id, id)? else {
             continue;
         };
         let matches = match &event.fact {
@@ -251,12 +240,11 @@ pub(crate) async fn consume(
                 "canonical delivery differs from its pending admission",
             ));
         }
-        sqlx::query("DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?")
-            .bind(&event.invocation.session_id)
-            .bind(id)
-            .execute(&mut *connection)
-            .await?;
-        crate::message_queue::bump(connection, &event.invocation.session_id).await?;
+        connection.execute(
+            "DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?",
+            rusqlite::params![&event.invocation.session_id, id],
+        )?;
+        crate::message_queue::bump(connection, &event.invocation.session_id)?;
     }
     Ok(())
 }
@@ -270,22 +258,17 @@ impl crate::writeback::Statement for WriteAdmission {
     type Output = PendingMessageAdmission;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<Self::Value>, StoreError>>
-    {
-        Box::pin(async move {
-            let changed = insert::insert(connection, &self.0, insert::Owner::Unsealed)
-                .await?
-                .is_some();
-            Ok(crate::writeback::Prepared {
-                value: self.0,
-                changed,
-                notification: if changed {
-                    crate::writeback::Notification::Metadata
-                } else {
-                    crate::writeback::Notification::None
-                },
-            })
+        connection: &Connection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        let changed = insert::insert(connection, &self.0, insert::Owner::Unsealed)?.is_some();
+        Ok(crate::writeback::Prepared {
+            value: self.0,
+            changed,
+            notification: if changed {
+                crate::writeback::Notification::Metadata
+            } else {
+                crate::writeback::Notification::None
+            },
         })
     }
     fn committed(value: Self::Value) -> Self::Output {

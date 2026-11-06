@@ -26,7 +26,6 @@ use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::entity_id;
 use maka_agent_facts::workspace::PermissionBasis;
 use maka_sandbox::grant::{Decision, Permissions, Scope};
-use sqlx::Connection;
 
 /// A projection of an immutable approval outcome, never another grant ledger.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,8 +35,8 @@ pub struct PermissionGrant {
     pub scope: Scope,
 }
 
-pub(super) async fn require_revision(
-    connection: &mut sqlx::SqliteConnection,
+pub(super) fn require_revision(
+    connection: &rusqlite::Connection,
     record: &InteractionRecord,
 ) -> Result<(), StoreError> {
     let expected = match &record.request {
@@ -49,7 +48,7 @@ pub(super) async fn require_revision(
         _ => None,
     };
     if let Some(expected) = expected
-        && crate::workspace_bindings::permission_basis(connection, &record.session_id).await?
+        && crate::workspace_bindings::permission_basis(connection, &record.session_id)?
             != Some(expected)
     {
         return Err(invalid("permission request has a stale Session boundary"));
@@ -68,7 +67,6 @@ impl EventLog {
         tool_use_id: Option<&str>,
         basis: &PermissionBasis,
     ) -> Result<Vec<PermissionGrant>, StoreError> {
-        self.validate_root()?;
         for id in [
             &invocation.session_id,
             &invocation.turn_id,
@@ -82,13 +80,12 @@ impl EventLog {
         let invocation = invocation.clone();
         let basis = *basis;
         let tool_use_id = tool_use_id.map(str::to_owned);
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin().await?;
-            if crate::workspace_bindings::permission_basis(&mut tx, &invocation.session_id).await? != Some(basis) {
+        self.connection.read(move |connection| {
+            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+            if crate::workspace_bindings::permission_basis(&tx, &invocation.session_id)? != Some(basis) {
                 return Ok(Vec::new());
             }
-            let ids: Vec<String> = sqlx::query_scalar(
-                "SELECT request.request_id FROM interaction_requests AS request
+            let ids: Vec<String> = tx.prepare_cached("SELECT request.request_id FROM interaction_requests AS request
                  JOIN interaction_outcomes AS outcome ON outcome.request_id = request.request_id
                  WHERE request.session_id = ?
                  AND json_extract(request.record_json, '$.request.kind') = 'permissions'
@@ -103,33 +100,30 @@ impl EventLog {
                                OR (json_extract(outcome.outcome_json, '$.decision.scope') = 'once'
                                    AND json_extract(request.record_json, '$.runId') = ?
                                    AND json_extract(request.record_json, '$.request.toolUseId') = ?))))
-                 ORDER BY request.created_at, request.request_id",
-            ).bind(&invocation.session_id).bind(basis.boundary_revision as i64).bind(basis.binding.id.to_string()).bind(basis.binding.permission_epoch as i64).bind(&invocation.turn_id)
-                .bind(&invocation.run_id).bind(&tool_use_id).fetch_all(&mut *tx).await?;
+                 ORDER BY request.created_at, request.request_id",)?.query_map(rusqlite::params![&invocation.session_id, basis.boundary_revision as i64, basis.binding.id.to_string(), basis.binding.permission_epoch as i64, &invocation.turn_id, &invocation.run_id, &tool_use_id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
             let mut grants = Vec::with_capacity(ids.len());
             for id in ids {
-                let record = read(&mut tx, &id).await?.ok_or_else(|| invalid("permission outcome disappeared"))?;
+                let record = read(&tx, &id)?.ok_or_else(|| invalid("permission outcome disappeared"))?;
                 let Some(InteractionOutcome::PermissionsDecision { decision: Decision::Allow { permissions, scope }, .. }) = record.outcome else {
                     return Err(invalid("permission outcome changed kind"));
                 };
                 grants.push(PermissionGrant { request_id: id, permissions, scope });
             }
-            tx.commit().await?;
+            tx.commit()?;
             Ok(grants)
-        })).await
+        }).await
     }
 }
 
 /// Called only inside the owning metadata CAS. Existing first-writer outcomes
 /// stay immutable; the new revision makes those earlier grants inapplicable.
-pub(crate) async fn close_previous_basis(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn close_previous_basis(
+    connection: &rusqlite::Connection,
     session: &str,
     previous: PermissionBasis,
     now: u64,
 ) -> Result<usize, StoreError> {
-    let current = crate::workspace_bindings::permission_basis(connection, session)
-        .await?
+    let current = crate::workspace_bindings::permission_basis(connection, session)?
         .ok_or_else(|| invalid("Session permission boundary disappeared"))?;
     if current == previous {
         return Ok(0);
@@ -144,20 +138,20 @@ pub(crate) async fn close_previous_basis(
         reason: maka_agent_facts::interaction::ClosureReason::ProducerCancelled,
         committed_at: now,
     };
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT request_id FROM interaction_pending
+    let ids: Vec<String> = connection
+        .prepare_cached(
+            "SELECT request_id FROM interaction_pending
          WHERE session_id=? ORDER BY created_at,request_id",
-    )
-    .bind(session)
-    .fetch_all(&mut *connection)
-    .await?;
+        )?
+        .query_map(rusqlite::params![session], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     let mut closed = 0;
     for id in ids {
-        let record = read(connection, &id)
-            .await?
-            .ok_or_else(|| invalid("permission request disappeared"))?;
+        let record =
+            read(connection, &id)?.ok_or_else(|| invalid("permission request disappeared"))?;
         if matches!(record.request,
             InteractionRequest::SessionApproval { basis, .. }
+            | InteractionRequest::ComputerApp { basis, .. }
             | InteractionRequest::Permissions { basis, .. }
             | InteractionRequest::ClientCapability { basis: Some(basis), .. }
             if basis == previous)
@@ -165,11 +159,10 @@ pub(crate) async fn close_previous_basis(
             closure
                 .validate_for_request(&record.request)
                 .map_err(invalid)?;
-            sqlx::query("INSERT INTO interaction_outcomes VALUES (?, ?)")
-                .bind(&record.request_id)
-                .bind(super::records::encode(&closure)?)
-                .execute(&mut *connection)
-                .await?;
+            connection.execute(
+                "INSERT INTO interaction_outcomes VALUES (?, ?)",
+                rusqlite::params![&record.request_id, super::records::encode(&closure)?],
+            )?;
             closed += 1;
         }
     }

@@ -25,8 +25,8 @@ use maka_agent_facts::{
     event::{Fact, Invocation},
     execution::ModelBinding,
 };
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::Serialize;
-use sqlx::{Connection, SqliteConnection};
 use std::time::SystemTime;
 
 #[derive(Serialize)]
@@ -43,51 +43,49 @@ impl EventLog {
         invocation: Invocation,
         cause: TitleFailureCause,
     ) -> Result<u64, StoreError> {
-        self.validate_root()?;
         cause
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
         let commits = self.commits.session(&invocation.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    original_title_binding(&mut tx, &invocation).await?;
-                    let failure = Failure {
-                        opening: invocation,
-                        recorded_at: SystemTime::now(),
-                        cause,
-                    };
-                    let event_id = uuid::Uuid::new_v4().to_string();
-                    let json = serde_json::to_string(&failure)?;
-                    let result = crate::canonical_insert::insert(crate::canonical_insert::Record {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+                original_title_binding(&tx, &invocation)?;
+                let failure = Failure {
+                    opening: invocation,
+                    recorded_at: SystemTime::now(),
+                    cause,
+                };
+                let event_id = uuid::Uuid::new_v4().to_string();
+                let json = serde_json::to_string(&failure)?;
+                crate::canonical_insert::insert(
+                    &tx,
+                    crate::canonical_insert::Record {
                         sequence: None,
                         event_id: &event_id,
                         invocation_id: None,
                         kind: "title_failure",
                         operation_id: None,
                         json: &json,
-                    })
-                    .execute(&mut *tx)
-                    .await?;
-                    let sequence = crate::sequence_number(result.last_insert_rowid())?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.publish(sequence);
-                    Ok(sequence)
-                })
+                    },
+                )?;
+                let sequence = crate::sequence_number(tx.last_insert_rowid())?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.publish(sequence);
+                Ok(sequence)
             })
             .await
     }
 }
 
 /// Original provenance only; current admission and attempt policy belong to the caller.
-pub(crate) async fn original_title_binding(
-    connection: &mut SqliteConnection,
+pub(crate) fn original_title_binding(
+    connection: &Connection,
     invocation: &Invocation,
 ) -> Result<ModelBinding, StoreError> {
-    let opening = crate::message_sources::first_message_opening(connection, &invocation.session_id)
-        .await?
-        .ok_or_else(|| invalid("Session title has no committed user opening"))?;
+    let opening =
+        crate::message_sources::first_message_opening(connection, &invocation.session_id)?
+            .ok_or_else(|| invalid("Session title has no committed user opening"))?;
     if opening.event.invocation != *invocation {
         return Err(invalid("Session title must use its first user opening"));
     }

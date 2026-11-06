@@ -259,7 +259,7 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     let before = inspect(&log, move |db| {
         assert_eq!(
             db.query_row(
-                "SELECT count(*) FROM temp.transcript_rows WHERE session_id='cache' AND source_sequence=?",
+                "SELECT count(*) FROM temp.transcript_rows WHERE owner_key='cache' AND source_sequence=?",
                 [through as i64],
                 |row| row.get::<_, i64>(0),
             )
@@ -315,7 +315,7 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
             .query_row("SELECT bytes FROM temp.transcript_body_cache_bytes", [], |row| row.get::<_, i64>(0))
             .unwrap();
         assert!(body_bytes <= super::RETAINED_BYTES);
-        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE session_id='cache' AND source_sequence=?", [through as i64], |row| row.get::<_,i64>(0)).unwrap(), SIBLINGS as i64 + 1, "body eviction must retain complete directory metadata");
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE owner_key='cache' AND source_sequence=?", [through as i64], |row| row.get::<_,i64>(0)).unwrap(), SIBLINGS as i64 + 1, "body eviction must retain complete directory metadata");
         assert_eq!(
             db.query_row("PRAGMA temp.freelist_count", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
@@ -373,10 +373,7 @@ async fn observation_reads_leave_canonical_subscribers_idle_and_complete_while_w
     let first = user(&log, "first", "first 中🙂".into()).await;
     let second = user(&log, "second", "second text".into()).await;
     // Flush the final append's subscriber notification before establishing the baseline.
-    log.connection
-        .run(|_| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap();
+    log.connection.run(|_| Ok(())).await.unwrap();
     let mut changes = log.connection.subscribe_changes();
     let writer = log.connection.writer();
     let (entered, ready) = oneshot::channel();
@@ -384,11 +381,9 @@ async fn observation_reads_leave_canonical_subscribers_idle_and_complete_while_w
     let held = tokio::spawn(async move {
         writer
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    let _ = gate.await;
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                let _ = gate.blocking_recv();
+                Ok(())
             })
             .await
     });
@@ -479,24 +474,24 @@ async fn observation_reads_leave_canonical_subscribers_idle_and_complete_while_w
     if let Err(panic) = reads {
         std::panic::resume_unwind(panic);
     }
-    async fn reject_main_write(db: &mut sqlx::SqliteConnection) -> Result<(), crate::StoreError> {
-        let error = sqlx::query(
-            "INSERT INTO session_read_state(session_id,has_unread) VALUES('forbidden',0)",
-        )
-        .execute(db)
-        .await
-        .unwrap_err();
+    fn reject_main_write(db: &rusqlite::Connection) -> Result<(), crate::StoreError> {
+        let error = db
+            .execute(
+                "INSERT INTO session_read_state(session_id,has_unread) VALUES('forbidden',0)",
+                rusqlite::params![],
+            )
+            .unwrap_err();
         assert!(
-            matches!(error, sqlx::Error::Database(error) if error.code().as_deref() == Some("8"))
+            matches!(error, rusqlite::Error::SqliteFailure(error, _) if error.code == rusqlite::ErrorCode::ReadOnly)
         );
         Ok(())
     }
     log.connection
-        .read(|db| Box::pin(reject_main_write(db)))
+        .read(|db| reject_main_write(db))
         .await
         .unwrap();
     log.connection
-        .observe(|db| Box::pin(reject_main_write(db)))
+        .observe(|db| reject_main_write(db))
         .await
         .unwrap();
     log.close().await.unwrap();
@@ -622,7 +617,7 @@ async fn inherited_directory_replaces_a_warmed_bare_claimant_on_the_observation_
     let Page::Ready { chunks, .. } = read(&log, inherited, Position::Start).await;
     assert_eq!(chunks[0].text, "inherited bytes");
     inspect(&log, move |db| {
-        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_rows WHERE session_id='cache' AND source_sequence=?", [bare as i64], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_rows WHERE owner_key='cache' AND source_sequence=?", [bare as i64], |row| row.get::<_, i64>(0)).unwrap(), 0);
     }).await;
     log.close().await.unwrap();
 }

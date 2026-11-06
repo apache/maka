@@ -20,9 +20,9 @@
 use crate::{StoreError, sequence_number};
 use maka_agent_facts::event::StoredEvent;
 use maka_presentation::ProjectionError;
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::SqliteConnection;
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::{Connection, OptionalExtension};
+
+use rusqlite::{Connection as RawConnection, params};
 
 const HIGH: &str = r#"SELECT COALESCE(MAX(sequence), 0) FROM event_log"#;
 const EXEC_BOUNDARY: &str = r#"SELECT sequence FROM runtime_events
@@ -112,7 +112,6 @@ SELECT kind, tool, CASE WHEN tool THEN 0 ELSE EXISTS(
     SELECT 1 FROM runtime_events WHERE invocation_id=?1 AND sequence<=?2 AND kind='executor_started'
 ) END AS external FROM classified"#;
 
-#[derive(sqlx::FromRow)]
 struct Metadata {
     kind: Option<String>,
     tool: bool,
@@ -121,52 +120,46 @@ struct Metadata {
 
 /// Live and preparation readers use the same metadata and selection policy.
 /// Both queries remain inside the reader's original transaction.
-pub(super) async fn selected(
-    tx: &mut SqliteConnection,
+pub(super) fn selected(
+    tx: &Connection,
     invocation: &str,
     step: Option<&str>,
     through: i64,
     boundary: bool,
 ) -> Result<Vec<i64>, StoreError> {
-    let invocation = invocation.to_owned();
-    let step = step.map(str::to_owned);
-    crate::connection::worker_query(tx, move |worker| {
-        Box::pin(async move {
-            selected_on_worker(worker, &invocation, step.as_deref(), through, boundary).await
-        })
-    })
-    .await
+    selected_on_worker(tx, invocation, step, through, boundary)
 }
 
-pub(super) async fn selected_on_worker(
-    tx: &mut SqliteWorkerConnection<'_>,
+pub(super) fn selected_on_worker(
+    tx: &rusqlite::Connection,
     invocation: &str,
     step: Option<&str>,
     through: i64,
     boundary: bool,
 ) -> Result<Vec<i64>, StoreError> {
-    let metadata = sqlx::query_as::<_, Metadata>(PLAN)
-        .bind(invocation)
-        .bind(through)
-        .bind(boundary)
-        .fetch_one(&mut *tx)
-        .await?;
+    let metadata = tx.query_row(
+        PLAN,
+        rusqlite::params![invocation, through, boundary],
+        |row| {
+            Ok(Metadata {
+                kind: row.get(0)?,
+                tool: row.get(1)?,
+                external: row.get(2)?,
+            })
+        },
+    )?;
     let mut selection =
         if let Some(selection) = plan(metadata, invocation, step, through, boundary)? {
             selection
         } else {
-            // SAFETY: the worker exclusively owns this borrowed handle. All
-            // temporary raw statements are dropped before SQLx resumes.
-            let db = unsafe { RawConnection::from_handle(tx.as_raw_handle().as_ptr()) }?;
-            db.set_prepared_statement_cache_capacity(100);
-            super::tools::selection(&db, invocation, through)?
+            super::tools::selection(tx, invocation, through)?
         };
     if let Some(slot) = selection.pending_step_slot() {
-        *slot = match sqlx::query_scalar::<_, Option<String>>(PENDING)
-            .bind(invocation)
-            .bind(through)
-            .fetch_optional(&mut *tx)
-            .await?
+        *slot = match tx
+            .query_row(PENDING, rusqlite::params![invocation, through], |row| {
+                row.get(0)
+            })
+            .optional()?
         {
             Some(Some(step)) => Some(step),
             None => None,
@@ -180,12 +173,12 @@ pub(super) async fn selected_on_worker(
             }
         };
     }
-    selection.read(tx).await
+    selection.read(tx)
 }
 
-pub(super) async fn fence(tx: &mut SqliteConnection, through: u64) -> Result<i64, StoreError> {
+pub(super) fn fence(tx: &Connection, through: u64) -> Result<i64, StoreError> {
     let through = i64::try_from(through).map_err(|_| ProjectionError::OutOfRange)?;
-    let high: i64 = sqlx::query_scalar(HIGH).fetch_one(tx).await?;
+    let high: i64 = tx.query_row(HIGH, rusqlite::params![], |row| row.get(0))?;
     checked_fence(through, high)
 }
 
@@ -198,19 +191,8 @@ fn checked_fence(through: i64, high: i64) -> Result<i64, StoreError> {
     Ok(through)
 }
 
-pub(super) async fn fact(
-    tx: &mut SqliteConnection,
-    sequence: i64,
-) -> Result<StoredEvent, StoreError> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence=?",
-        columns = crate::canonical::COLUMNS,
-        joins = crate::canonical::JOINS
-    )))
-    .bind(sequence)
-    .fetch_one(tx)
-    .await?;
-    decoded_fact(sequence, &crate::canonical::json(&row)?)
+pub(super) fn fact(tx: &Connection, sequence: i64) -> Result<StoredEvent, StoreError> {
+    fact_on_handle(tx, sequence)
 }
 
 pub(super) fn fact_on_handle(db: &RawConnection, sequence: i64) -> Result<StoredEvent, StoreError> {
@@ -232,16 +214,16 @@ fn decoded_fact(sequence: i64, json: &str) -> Result<StoredEvent, StoreError> {
     })
 }
 
-pub(super) async fn pending_step_on_worker(
-    tx: &mut SqliteWorkerConnection<'_>,
+pub(super) fn pending_step_on_worker(
+    tx: &rusqlite::Connection,
     invocation: &str,
     through: i64,
 ) -> Result<Option<String>, StoreError> {
-    Ok(sqlx::query_scalar(PENDING)
-        .bind(invocation)
-        .bind(through)
-        .fetch_optional(tx)
-        .await?)
+    Ok(tx
+        .query_row(PENDING, rusqlite::params![invocation, through], |row| {
+            row.get(0)
+        })
+        .optional()?)
 }
 
 fn pending_step_on_handle(
@@ -340,7 +322,7 @@ fn plan(
 }
 
 /// Owned query inputs selected under the current transaction. No evidence
-/// results or borrowed connection state survive the worker callback.
+/// results or borrowed connection state survive the database operation.
 pub(super) enum Selection {
     Step {
         invocation: String,
@@ -409,70 +391,24 @@ impl Selection {
         }
     }
 
-    async fn read(&self, tx: &mut SqliteWorkerConnection<'_>) -> Result<Vec<i64>, StoreError> {
-        // UNION removes overlaps; CAST uses the index while original JSON
-        // equality preserves malformed non-string step-ID selection semantics.
-        let query = sqlx::query_scalar(self.sql());
-        Ok(match self {
-            Self::Step {
-                invocation,
-                step,
-                through,
-                boundaries,
-                completed,
-            } => {
-                query
-                    .bind(invocation)
-                    .bind(step)
-                    .bind(through)
-                    .bind(boundaries)
-                    .bind(completed)
-                    .fetch_all(tx)
-                    .await?
-            }
-            Self::ExecutorBoundary {
-                invocation,
-                through,
-                boundary,
-            }
-            | Self::ExecutorRest {
-                invocation,
-                through,
-                boundary,
-            } => {
-                query
-                    .bind(invocation)
-                    .bind(through)
-                    .bind(boundary)
-                    .fetch_all(tx)
-                    .await?
-            }
-        })
+    fn read(&self, tx: &rusqlite::Connection) -> Result<Vec<i64>, StoreError> {
+        self.read_on_handle(tx)
     }
 }
 
 #[cfg(test)]
 mod executor_tests {
     use super::*;
-    use sqlx::Connection;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
 
-    async fn boundary_cost(prior_deltas: usize) -> [usize; 2] {
-        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
-            kind != "trigger"
-        })))
-        .execute(&mut db)
-        .await
-        .unwrap();
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
+    fn boundary_cost(prior_deltas: usize) -> [usize; 2] {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
+            .unwrap();
+        db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
             INSERT INTO event_log(event_id,invocation_id,kind,event_header)
             SELECT printf('delta-%08d',x),'invocation','executor_observed',
                 json_object('fact',json_object('output',json_object('type','output_delta','messageId','old','text','chunk')))
-            FROM n").bind(prior_deltas as i64).execute(&mut db).await.unwrap();
+            FROM n", rusqlite::params![prior_deltas as i64]).unwrap();
         let mut boundaries = Vec::new();
         for output in [
             serde_json::json!({"type":"message_start","messageId":"current"}),
@@ -481,9 +417,8 @@ mod executor_tests {
             serde_json::json!({"type":"tool_start","toolCallId":"current-tool"}),
         ] {
             let index = boundaries.len();
-            let sequence = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES(?1,'invocation','executor_observed',?2)")
-                .bind(format!("boundary-{index}")).bind(serde_json::json!({"fact":{"output":output}}).to_string())
-                .execute(&mut db).await.unwrap().last_insert_rowid();
+            db.execute("INSERT INTO event_log(event_id,invocation_id,kind,event_header) VALUES(?1,'invocation','executor_observed',?2)", rusqlite::params![format!("boundary-{index}"), serde_json::json!({"fact":{"output":output}}).to_string()]).unwrap();
+            let sequence = db.last_insert_rowid();
             boundaries.push(sequence);
         }
         let mut costs = [0; 2];
@@ -491,33 +426,25 @@ mod executor_tests {
             .into_iter()
             .enumerate()
         {
-            let steps = Arc::new(AtomicUsize::new(0));
-            let observed = steps.clone();
-            db.lock_handle()
-                .await
+            let mut statement = db.prepare_cached(EXEC_BOUNDARY).unwrap();
+            statement.reset_status(rusqlite::StatementStatus::VmStep);
+            let selected: Vec<i64> = statement
+                .query_map(rusqlite::params!["invocation", sequence, true], |row| {
+                    row.get(0)
+                })
                 .unwrap()
-                .set_progress_handler(1, move || {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                    true
-                });
-            let selected: Vec<i64> = sqlx::query_scalar(EXEC_BOUNDARY)
-                .bind("invocation")
-                .bind(sequence)
-                .bind(true)
-                .fetch_all(&mut db)
-                .await
+                .collect::<Result<_, _>>()
                 .unwrap();
-            db.lock_handle().await.unwrap().remove_progress_handler();
+            costs[index] = statement.get_status(rusqlite::StatementStatus::VmStep) as usize;
             assert_eq!(selected.len(), expected);
-            costs[index] = steps.load(Ordering::Relaxed);
         }
         costs
     }
 
-    #[tokio::test]
-    async fn message_and_tool_rows_do_not_replay_prior_executor_text() {
-        let small = boundary_cost(256).await;
-        let large = boundary_cost(16_384).await;
+    #[test]
+    fn message_and_tool_rows_do_not_replay_prior_executor_text() {
+        let small = boundary_cost(256);
+        let large = boundary_cost(16_384);
         for (small, large) in small.into_iter().zip(large) {
             assert!(
                 small > 0 && large < small * 2,

@@ -2584,32 +2584,40 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         Some((source, "en", "Local Host")),
     )
     .await;
-    desktop.control("Open Accessibility settings").await;
-    desktop
-        .control("Open Screen & System Audio Recording settings")
-        .await;
-    desktop.press("Show permission application in Finder").await;
+    desktop.control("Ready local").await;
+    desktop.press("Enable Accessibility…").await;
+    desktop.control("Requested accessibility").await;
+    desktop.press("Permission still not enabled?").await;
+    desktop.press("Show in Finder").await;
     desktop.control("Requested reveal_application").await;
     desktop.artifact("system-permission-native-guidance");
-    desktop.press("Open Accessibility settings").await;
+    desktop.press("Permission still not enabled?").await;
+    desktop.press("Open Accessibility settings…").await;
     desktop.control("Requested accessibility").await;
-    desktop.press("Cancel request").await;
+    desktop.press("Cancel setup").await;
     desktop
         .control("Request cancelled without granting access")
         .await;
-    for mode in ["Remote Host", "Older request"] {
-        desktop.press(mode).await;
-        desktop
-            .until("remote or old request retained local actions", || {
-                (desktop
-                    .controls("Show permission application in Finder")
-                    .is_empty()
-                    && desktop.controls("Open Accessibility settings").is_empty())
-                .then_some(())
-            })
-            .await;
-        desktop.control("Cancel request").await;
-    }
+    assert!(desktop.controls("Cancel setup").is_empty());
+
+    desktop.press("Remote Host").await;
+    desktop.control("Ready remote").await;
+    desktop.press("Enable Accessibility…").await;
+    desktop.control("Prompted accessibility").await;
+    desktop.press("Permission still not enabled?").await;
+    assert!(desktop.controls("Show in Finder").is_empty());
+    assert!(desktop.controls("Open Accessibility settings…").is_empty());
+    desktop.control("Cancel setup").await;
+
+    desktop.press("Older request").await;
+    desktop.control("Ready old").await;
+    assert!(desktop.controls("Enable Accessibility…").is_empty());
+    assert!(desktop.controls("Open Accessibility settings…").is_empty());
+    assert!(desktop.controls("Show in Finder").is_empty());
+    desktop.press("Cancel setup").await;
+    desktop
+        .control("Request cancelled without granting access")
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

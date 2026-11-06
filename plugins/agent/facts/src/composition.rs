@@ -87,7 +87,8 @@ impl RequestComposition {
             serde_json::to_vec(&self).map_err(|_| "invalid request composition encoding")?;
         Ok(FrozenComposition {
             digest: content_digest(&bytes),
-            bytes: bytes.into_boxed_slice(),
+            encoded_len: bytes.len(),
+            value: Arc::new(self),
         })
     }
 }
@@ -95,14 +96,18 @@ impl RequestComposition {
 #[derive(Clone, Debug)]
 pub struct FrozenComposition {
     digest: String,
-    bytes: Box<[u8]>,
+    encoded_len: usize,
+    value: Arc<RequestComposition>,
 }
 impl FrozenComposition {
     pub fn digest(&self) -> &str {
         &self.digest
     }
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    pub fn value(&self) -> &RequestComposition {
+        &self.value
+    }
+    pub fn encoded_len(&self) -> usize {
+        self.encoded_len
     }
 }
 

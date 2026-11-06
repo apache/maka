@@ -20,10 +20,9 @@
 mod startup;
 pub use startup::{RecoveryError, recover_invocations};
 
-use futures_util::TryStreamExt;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::model::ToolInput;
-use sqlx::{Connection, Row, SqliteConnection};
+use rusqlite::params;
 
 use crate::{EventLog, StoreError};
 
@@ -60,17 +59,15 @@ macro_rules! unresolved {
     ) };
 }
 
-pub(crate) async fn require_local(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_local(
+    connection: &rusqlite::Connection,
     invocation: &str,
 ) -> Result<(), StoreError> {
-    if sqlx::query_scalar::<_, bool>(
+    if connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM imported_invocations WHERE invocation_id=?)",
-    )
-    .bind(invocation)
-    .fetch_one(connection)
-    .await?
-    {
+        params![invocation],
+        |row| row.get(0),
+    )? {
         return Err(StoreError::ImportedInvocation);
     }
     Ok(())
@@ -137,55 +134,52 @@ impl EventLog {
         &self,
         invocation: &Invocation,
     ) -> Result<InvocationRecovery, StoreError> {
-        self.validate_root()?;
         let invocation = invocation.clone();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut transaction = connection.begin().await?;
-                    require_local(&mut transaction, &invocation.invocation_id).await?;
-                    let identity: String = sqlx::query_scalar(
-                        "SELECT json_extract(event_header, '$.invocation') FROM runtime_events
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                require_local(&transaction, &invocation.invocation_id)?;
+                let identity: String = transaction.query_row(
+                    "SELECT json_extract(event_header, '$.invocation') FROM runtime_events
              WHERE invocation_id = ? AND kind = 'invocation_opened'",
-                    )
-                    .bind(&invocation.invocation_id)
-                    .fetch_one(&mut *transaction)
-                    .await?;
-                    if serde_json::from_str::<Invocation>(&identity)? != invocation {
-                        return Err(StoreError::InvalidTransition(
-                            "stored invocation identity changed".into(),
-                        ));
-                    }
-                    let mut evidence = InvocationRecovery {
-                        unfinished_executor: false,
-                        unfinished_model_steps: Vec::new(),
-                        uncertain_operations: Vec::new(),
-                        undispatched_calls: Vec::new(),
-                    };
-                    {
-                        let query =
-                            unresolved!(" SELECT kind, id, name, input, call FROM unresolved");
-                        let mut rows = sqlx::query(query)
-                            .bind(&invocation.invocation_id)
-                            .fetch(&mut *transaction);
-                        while let Some(row) = rows.try_next().await? {
-                            match row.try_get::<i64, _>(0)? {
-                                0 => evidence.unfinished_model_steps.push(row.try_get(1)?),
-                                1 => evidence.uncertain_operations.push(row.try_get(1)?),
-                                2 => evidence.undispatched_calls.push(UndispatchedCall {
-                                    operation_id: row.try_get(1)?,
-                                    identity: serde_json::from_str(row.try_get(4)?)?,
-                                    name: row.try_get(2)?,
-                                    input: serde_json::from_str(row.try_get(3)?)?,
-                                }),
-                                3 => evidence.unfinished_executor = true,
-                                _ => unreachable!("query emits only recovery fact kinds"),
-                            }
+                    params![&invocation.invocation_id],
+                    |row| row.get(0),
+                )?;
+                if serde_json::from_str::<Invocation>(&identity)? != invocation {
+                    return Err(StoreError::InvalidTransition(
+                        "stored invocation identity changed".into(),
+                    ));
+                }
+                let mut evidence = InvocationRecovery {
+                    unfinished_executor: false,
+                    unfinished_model_steps: Vec::new(),
+                    uncertain_operations: Vec::new(),
+                    undispatched_calls: Vec::new(),
+                };
+                {
+                    let query = unresolved!(" SELECT kind, id, name, input, call FROM unresolved");
+                    let mut statement = transaction.prepare_cached(query)?;
+                    let mut rows = statement.query(params![&invocation.invocation_id])?;
+                    while let Some(row) = rows.next()? {
+                        match row.get::<_, i64>(0)? {
+                            0 => evidence.unfinished_model_steps.push(row.get(1)?),
+                            1 => evidence.uncertain_operations.push(row.get(1)?),
+                            2 => evidence.undispatched_calls.push(UndispatchedCall {
+                                operation_id: row.get(1)?,
+                                identity: serde_json::from_str(&row.get::<_, String>(4)?)?,
+                                name: row.get(2)?,
+                                input: serde_json::from_str(&row.get::<_, String>(3)?)?,
+                            }),
+                            3 => evidence.unfinished_executor = true,
+                            _ => unreachable!("query emits only recovery fact kinds"),
                         }
                     }
-                    transaction.commit().await?;
-                    Ok(evidence)
-                })
+                }
+                transaction.commit()?;
+                Ok(evidence)
             })
             .await
     }
@@ -199,7 +193,6 @@ impl EventLog {
         after_sequence: u64,
         limit: usize,
     ) -> Result<UnfinishedInvocations, StoreError> {
-        self.validate_root()?;
         let expected_session = self.expected_session.clone();
         if limit == 0 {
             return Err(StoreError::PrefixTooLarge);
@@ -208,33 +201,32 @@ impl EventLog {
         let cursor = i64::try_from(after_sequence).map_err(|_| StoreError::PrefixTooLarge)?;
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let statement = if expected_session.is_some() {
-                        SESSION_UNFINISHED_INVOCATIONS
-                    } else {
-                        UNFINISHED_INVOCATIONS
-                    };
-                    let mut query = sqlx::query(statement).bind(cursor).bind(sql_limit);
-                    if let Some(session) = expected_session.as_deref() {
-                        query = query.bind(session);
-                    }
-                    let mut rows = query.fetch(connection);
-                    let mut page = UnfinishedInvocations {
-                        invocations: Vec::new(),
-                        through_sequence: after_sequence,
-                    };
-                    while let Some(row) = rows.try_next().await? {
-                        page.through_sequence = u64::try_from(row.try_get::<i64, _>(4)?)
-                            .map_err(|_| StoreError::PrefixTooLarge)?;
-                        page.invocations.push(Invocation {
-                            session_id: row.try_get(0)?,
-                            turn_id: row.try_get(1)?,
-                            run_id: row.try_get(2)?,
-                            invocation_id: row.try_get(3)?,
-                        });
-                    }
-                    Ok(page)
-                })
+                let statement = if expected_session.is_some() {
+                    SESSION_UNFINISHED_INVOCATIONS
+                } else {
+                    UNFINISHED_INVOCATIONS
+                };
+                let mut statement = connection.prepare_cached(statement)?;
+                let mut rows = if let Some(session) = expected_session.as_deref() {
+                    statement.query(params![cursor, sql_limit, session])?
+                } else {
+                    statement.query(params![cursor, sql_limit])?
+                };
+                let mut page = UnfinishedInvocations {
+                    invocations: Vec::new(),
+                    through_sequence: after_sequence,
+                };
+                while let Some(row) = rows.next()? {
+                    page.through_sequence = u64::try_from(row.get::<_, i64>(4)?)
+                        .map_err(|_| StoreError::PrefixTooLarge)?;
+                    page.invocations.push(Invocation {
+                        session_id: row.get(0)?,
+                        turn_id: row.get(1)?,
+                        run_id: row.get(2)?,
+                        invocation_id: row.get(3)?,
+                    });
+                }
+                Ok(page)
             })
             .await
     }

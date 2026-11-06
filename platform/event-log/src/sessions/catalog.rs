@@ -31,12 +31,13 @@ pub(crate) struct CatalogKey {
     pub id: String,
 }
 impl CatalogKey {
-    async fn read(db: &mut SqliteConnection, id: &str) -> Result<Option<Self>, StoreError> {
+    pub(crate) fn read(db: &rusqlite::Connection, id: &str) -> Result<Option<Self>, StoreError> {
         let sql = format!("SELECT {PIN_ORDER}, catalog_recency FROM session_control WHERE id = ?");
-        Ok(sqlx::query_as::<_, (bool, i64)>(sqlx::AssertSqlSafe(sql))
-            .bind(id)
-            .fetch_optional(db)
-            .await?
+        Ok(db
+            .query_row(&sql, params![id], |row| {
+                Ok((row.get::<_, bool>(0)?, row.get::<_, i64>(1)?))
+            })
+            .optional()?
             .map(|(unpinned, recency)| Self {
                 unpinned,
                 recency,
@@ -73,7 +74,7 @@ const PREDICATE: &str = "
     AND (?3 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.path')=?3))
     AND (?4 IS NULL OR substr(id, 1, length(?4)) = ?4)
     AND (?5 = 0 OR EXISTS (
-        SELECT 1 FROM all_interaction_pending pending
+        SELECT 1 FROM interaction_pending pending
         WHERE pending.session_id = session_control.id))
     AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?6))
     AND (?7 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?7))
@@ -81,7 +82,7 @@ const PREDICATE: &str = "
 
 #[derive(Clone)]
 pub(crate) struct Selection {
-    root_partition: Option<usize>,
+    pub(crate) published_only: bool,
     session: Option<String>,
     cwd: Option<String>,
     prefix: Option<String>,
@@ -94,7 +95,7 @@ pub(crate) struct Selection {
 impl Selection {
     pub(crate) fn new(scope: &CatalogScope, filter: CatalogFilter) -> Result<Self, StoreError> {
         let mut selection = Self {
-            root_partition: None,
+            published_only: false,
             session: None,
             cwd: None,
             prefix: None,
@@ -145,9 +146,9 @@ impl Selection {
         Ok(selection)
     }
 
-    async fn ids(
+    pub(crate) fn ids(
         &self,
-        connection: &mut SqliteConnection,
+        connection: &rusqlite::Connection,
         position: &CatalogPosition,
         limit: usize,
     ) -> Result<Vec<CatalogKey>, StoreError> {
@@ -160,8 +161,8 @@ impl Selection {
                 ("<", "DESC", key.unpinned, key.recency, key.id.as_str())
             }
         };
-        let visibility = if self.root_partition.is_some() {
-            "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?11 AND r.ready=1 AND r.visible=1)"
+        let visibility = if self.published_only {
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?11 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
@@ -180,49 +181,60 @@ impl Selection {
             AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?12, ?13, ?9)
             ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?10"
         );
-        let query = sqlx::query_as::<_, (bool, i64, String)>(sqlx::AssertSqlSafe(sql))
-            .bind(if self.filter.archived_only {
+        let mut values = vec![
+            rusqlite::types::Value::Integer(if self.filter.archived_only {
                 2
             } else {
-                i32::from(!self.filter.include_archived)
-            })
-            .bind(&self.session)
-            .bind(&self.cwd)
-            .bind(&self.prefix)
-            .bind(self.filter.pending_only)
-            .bind(&self.project)
-            .bind(&self.workspace_identity)
-            .bind(&self.title_query)
-            .bind(cursor)
-            .bind(limit as i64);
-        let query = query
-            .bind(self.root_partition.map(|partition| partition as i64))
-            .bind(unpinned)
-            .bind(recency);
-        let query = if let Some(parent) = &self.parent {
-            query.bind(parent)
-        } else {
-            query
-        };
-        let mut ids: Vec<_> = query
-            .fetch_all(connection)
-            .await?
-            .into_iter()
-            .map(|(unpinned, recency, id)| CatalogKey {
-                unpinned,
-                recency,
-                id,
-            })
-            .collect();
+                i64::from(!self.filter.include_archived)
+            }),
+            self.session
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.cwd
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.prefix
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            rusqlite::types::Value::Integer(i64::from(self.filter.pending_only)),
+            self.project
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.workspace_identity
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.title_query.clone().into(),
+            cursor.to_owned().into(),
+            (limit as i64).into(),
+            i64::from(self.published_only).into(),
+            i64::from(unpinned).into(),
+            recency.into(),
+        ];
+        if let Some(parent) = &self.parent {
+            values.push(parent.clone().into());
+        }
+        let mut ids = connection
+            .prepare_cached(&sql)?
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                Ok(CatalogKey {
+                    unpinned: row.get(0)?,
+                    recency: row.get(1)?,
+                    id: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         if position.reverse() {
             ids.reverse();
         }
         Ok(ids)
     }
 
-    async fn pending_count(&self, connection: &mut SqliteConnection) -> Result<u64, StoreError> {
-        let visibility = if self.root_partition.is_some() {
-            "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?9 AND r.ready=1 AND r.visible=1)"
+    pub(crate) fn pending_count(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<u64, StoreError> {
+        let visibility = if self.published_only {
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?9 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
@@ -235,43 +247,52 @@ impl Selection {
         // owner, scope, title and archive predicates still match the inbox.
         let sql =
             format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent}");
-        let query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
-            .bind(if self.filter.archived_only {
+        let mut values = vec![
+            rusqlite::types::Value::Integer(if self.filter.archived_only {
                 2
             } else {
-                i32::from(!self.filter.include_archived)
-            })
-            .bind(&self.session)
-            .bind(&self.cwd)
-            .bind(&self.prefix)
-            .bind(true)
-            .bind(&self.project)
-            .bind(&self.workspace_identity)
-            .bind(&self.title_query);
-        let query = if self.root_partition.is_some() || self.parent.is_some() {
-            query.bind(self.root_partition.map(|partition| partition as i64))
-        } else {
-            query
-        };
-        let query = if let Some(parent) = &self.parent {
-            query.bind(parent)
-        } else {
-            query
-        };
-        let count = query.fetch_one(connection).await?;
+                i64::from(!self.filter.include_archived)
+            }),
+            self.session
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.cwd
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.prefix
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            rusqlite::types::Value::Integer(1),
+            self.project
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.workspace_identity
+                .clone()
+                .map_or(rusqlite::types::Value::Null, Into::into),
+            self.title_query.clone().into(),
+        ];
+        if self.published_only || self.parent.is_some() {
+            values.push(i64::from(self.published_only).into());
+        }
+        if let Some(parent) = &self.parent {
+            values.push(parent.clone().into());
+        }
+        let count: i64 =
+            connection.query_row(&sql, rusqlite::params_from_iter(values), |row| row.get(0))?;
         u64::try_from(count).map_err(|_| invalid("invalid pending session count"))
     }
 }
 
-async fn revision(
-    connection: &mut SqliteConnection,
+fn revision(
+    connection: &rusqlite::Connection,
     scope: &CatalogScope,
     filter: CatalogFilter,
 ) -> Result<String, StoreError> {
-    let counter: i64 =
-        sqlx::query_scalar("SELECT revision FROM session_catalog_revision WHERE singleton = 1")
-            .fetch_one(connection)
-            .await?;
+    let counter: i64 = connection.query_row(
+        "SELECT revision FROM session_catalog_revision WHERE singleton = 1",
+        params![],
+        |row| row.get(0),
+    )?;
     Ok(format!(
         "sha256:{}",
         hex::encode(Sha256::digest(serde_json::to_vec(&(
@@ -290,12 +311,9 @@ impl EventLog {
         scope: CatalogScope,
         filter: CatalogFilter,
     ) -> Result<String, StoreError> {
-        self.validate_root()?;
         Selection::new(&scope, filter)?;
         self.connection
-            .run(move |connection| {
-                Box::pin(async move { revision(connection, &scope, filter).await })
-            })
+            .read(move |connection| revision(connection, &scope, filter))
             .await
     }
 
@@ -307,9 +325,8 @@ impl EventLog {
         limit: usize,
         filter: CatalogFilter,
     ) -> Result<SessionPage<T>, StoreError> {
-        self.validate_root()?;
-        if limit == 0 || limit > MAX_SESSION_PAGE {
-            return Err(invalid("session page limit must be 1..=32"));
+        if limit == 0 || i64::try_from(limit).is_err() {
+            return Err(invalid("invalid session page size"));
         }
         let cursor = match position {
             SessionPosition::Start => None,
@@ -332,79 +349,70 @@ impl EventLog {
         let selection = Selection::new(&scope, filter)?;
         let expected_revision = expected_revision.map(str::to_owned);
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let revision = revision(&mut tx, &scope, filter).await?;
-                    if let Some(expected) = expected_revision
-                        && expected != revision
-                    {
-                        return Err(StoreError::RevisionConflict {
-                            expected,
-                            actual: revision,
-                        });
-                    }
-                    let position = match cursor.as_deref() {
-                        None => SessionPosition::Start,
-                        Some(cursor) if inclusive => SessionPosition::At(cursor),
-                        Some(cursor) if reverse => SessionPosition::Before(cursor),
-                        Some(cursor) => SessionPosition::After(cursor),
-                    };
-                    let position = match position {
-                        SessionPosition::Start => CatalogPosition::Start,
-                        SessionPosition::At(id)
-                        | SessionPosition::After(id)
-                        | SessionPosition::Before(id) => {
-                            match CatalogKey::read(&mut tx, id).await? {
-                                Some(key) => CatalogPosition::new(position, key),
-                                None => CatalogPosition::Start,
-                            }
-                        }
-                    };
-                    let mut ids = selection.ids(&mut tx, &position, limit).await?;
-                    if ids.is_empty()
-                        && let CatalogPosition::At(cursor) = &position
-                    {
-                        ids = selection
-                            .ids(&mut tx, &CatalogPosition::Before(cursor.clone()), limit)
-                            .await?;
-                    }
-                    let previous_cursor = if let Some(first) = ids.first()
-                        && !selection
-                            .ids(&mut tx, &CatalogPosition::Before(first.clone()), 1)
-                            .await?
-                            .is_empty()
-                    {
-                        Some(first.id.clone())
-                    } else {
-                        None
-                    };
-                    let next_cursor = if let Some(last) = ids.last()
-                        && !selection
-                            .ids(&mut tx, &CatalogPosition::After(last.clone()), 1)
-                            .await?
-                            .is_empty()
-                    {
-                        Some(last.id.clone())
-                    } else {
-                        None
-                    };
-                    let pending_session_count = selection.pending_count(&mut tx).await?;
-                    let mut sessions = Vec::with_capacity(ids.len());
-                    for id in ids {
-                        sessions.push(
-                            read(&mut tx, &id.id)
-                                .await?
-                                .ok_or(StoreError::SessionNotFound)?,
-                        );
-                    }
-                    Ok(SessionPage {
-                        revision,
-                        sessions,
-                        pending_session_count,
-                        next_cursor,
-                        previous_cursor,
-                    })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let revision = revision(&tx, &scope, filter)?;
+                if let Some(expected) = expected_revision
+                    && expected != revision
+                {
+                    return Err(StoreError::RevisionConflict {
+                        expected,
+                        actual: revision,
+                    });
+                }
+                let position = match cursor.as_deref() {
+                    None => SessionPosition::Start,
+                    Some(cursor) if inclusive => SessionPosition::At(cursor),
+                    Some(cursor) if reverse => SessionPosition::Before(cursor),
+                    Some(cursor) => SessionPosition::After(cursor),
+                };
+                let position = match position {
+                    SessionPosition::Start => CatalogPosition::Start,
+                    SessionPosition::At(id)
+                    | SessionPosition::After(id)
+                    | SessionPosition::Before(id) => match CatalogKey::read(&tx, id)? {
+                        Some(key) => CatalogPosition::new(position, key),
+                        None => CatalogPosition::Start,
+                    },
+                };
+                let mut ids = selection.ids(&tx, &position, limit)?;
+                if ids.is_empty()
+                    && let CatalogPosition::At(cursor) = &position
+                {
+                    ids = selection.ids(&tx, &CatalogPosition::Before(cursor.clone()), limit)?;
+                }
+                let previous_cursor = if let Some(first) = ids.first()
+                    && !selection
+                        .ids(&tx, &CatalogPosition::Before(first.clone()), 1)?
+                        .is_empty()
+                {
+                    Some(first.id.clone())
+                } else {
+                    None
+                };
+                let next_cursor = if let Some(last) = ids.last()
+                    && !selection
+                        .ids(&tx, &CatalogPosition::After(last.clone()), 1)?
+                        .is_empty()
+                {
+                    Some(last.id.clone())
+                } else {
+                    None
+                };
+                let pending_session_count = selection.pending_count(&tx)?;
+                let mut sessions = Vec::with_capacity(ids.len());
+                for id in ids {
+                    sessions.push(read(&tx, &id.id)?.ok_or(StoreError::SessionNotFound)?);
+                }
+                Ok(SessionPage {
+                    revision,
+                    sessions,
+                    pending_session_count,
+                    next_cursor,
+                    previous_cursor,
                 })
             })
             .await
@@ -419,104 +427,51 @@ impl EventLog {
         Selection::new(scope, filter).map(|_| ())
     }
 
-    /// Root-only primitive: IDs, not configuration bodies, cross this bounded fanout.
-    pub(crate) async fn root_catalog_ids(
-        &self,
-        partition: usize,
-        mut selection: Selection,
-        position: CatalogPosition,
-        limit: usize,
-        expected: (i64, i64),
-        count_pending: bool,
-    ) -> Result<(Vec<CatalogKey>, u64), StoreError> {
-        self.validate_root()?;
-        if partition >= crate::root_store::PARTITION_COUNT
-            || limit == 0
-            || limit > MAX_SESSION_PAGE + 1
-        {
-            return Err(invalid("invalid Root catalog page"));
-        }
-        selection.root_partition = Some(partition);
-        self.connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    crate::root_store::catalog::require_snapshot(&mut tx, expected).await?;
-                    let ids = selection.ids(&mut tx, &position, limit).await?;
-                    let pending = if count_pending {
-                        selection.pending_count(&mut tx).await?
-                    } else {
-                        0
-                    };
-                    Ok((ids, pending))
-                })
-            })
-            .await
-    }
-
-    pub(crate) async fn catalog_key(&self, id: &str) -> Result<Option<CatalogKey>, StoreError> {
-        self.validate_root()?;
-        let id = id.to_owned();
-        self.connection
-            .read(move |db| Box::pin(async move { CatalogKey::read(db, &id).await }))
-            .await
-    }
-
     pub(crate) async fn root_catalog_record_outcomes<T: DeserializeOwned + Send + 'static>(
         &self,
-        partition: usize,
         ids: Vec<String>,
-        expected: Option<(i64, i64)>,
+        expected: Option<i64>,
     ) -> Result<Vec<Result<SessionRecord<T>, crate::sessions::UnreadableSession>>, StoreError> {
-        self.validate_root()?;
-        if partition >= crate::root_store::PARTITION_COUNT || ids.len() > MAX_SESSION_PAGE {
-            return Err(invalid("invalid Root catalog selection"));
-        }
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    if let Some(expected) = expected {
-                        crate::root_store::catalog::require_snapshot(&mut tx, expected).await?;
-                    }
-                    let mut records = Vec::with_capacity(ids.len());
-                    for id in ids {
-                        if crate::root_store::catalog::session_visible(&mut tx, partition, &id)
-                            .await?
-                        {
-                            match read(&mut tx, &id).await {
-                                Ok(Some(record)) => records.push(Ok(record)),
-                                Ok(None) => return Err(StoreError::SessionNotFound),
-                                Err(error)
-                                    if matches!(
-                                        error,
-                                        StoreError::Json(_)
-                                            | StoreError::InvalidTransition(_)
-                                            | StoreError::Projection(_)
-                                    ) =>
-                                {
-                                    records.push(Err(crate::sessions::UnreadableSession {
-                                        id,
-                                        error,
-                                    }));
-                                }
-                                Err(error) => return Err(error),
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                if let Some(expected) = expected {
+                    crate::root_store::catalog::require_snapshot(&tx, expected)?;
+                }
+                let mut records = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if crate::root_store::catalog::session_visible(&tx, &id)? {
+                        match read(&tx, &id) {
+                            Ok(Some(record)) => records.push(Ok(record)),
+                            Ok(None) => return Err(StoreError::SessionNotFound),
+                            Err(error)
+                                if matches!(
+                                    error,
+                                    StoreError::Json(_)
+                                        | StoreError::InvalidTransition(_)
+                                        | StoreError::Projection(_)
+                                ) =>
+                            {
+                                records.push(Err(crate::sessions::UnreadableSession { id, error }));
                             }
+                            Err(error) => return Err(error),
                         }
                     }
-                    Ok(records)
-                })
+                }
+                Ok(records)
             })
             .await
     }
 
     pub(crate) async fn root_catalog_records<T: DeserializeOwned + Send + 'static>(
         &self,
-        partition: usize,
         ids: Vec<String>,
-        expected: Option<(i64, i64)>,
+        expected: Option<i64>,
     ) -> Result<Vec<SessionRecord<T>>, StoreError> {
-        self.root_catalog_record_outcomes(partition, ids, expected)
+        self.root_catalog_record_outcomes(ids, expected)
             .await?
             .into_iter()
             .map(|entry| entry.map_err(|unreadable| unreadable.error))

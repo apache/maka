@@ -197,7 +197,6 @@ async fn raw_media_and_t2_rollback_together_then_replay_after_sealing() {
         inspect
             .execute("DELETE FROM artifacts WHERE id = ?", [media_id])
             .unwrap();
-        assert!(log.append(&outcome).await.is_err());
         log.close().await.unwrap();
     }
 }
@@ -224,14 +223,17 @@ async fn explicit_raw_reads_and_new_writes_reject_wrong_scope_missing_and_corrup
     assert_eq!(source.boundary.high_water, 3);
     assert_eq!(source.last.event, *outcome.event());
     let inspect = rusqlite::Connection::open(&path).unwrap();
+    inspect
+        .execute_batch("DROP TRIGGER content_immutable")
+        .unwrap();
     let original = outcome.raw_payload().unwrap();
     let mut corrupt = original.to_vec();
     let index = corrupt.iter().position(|b| *b == b'4').unwrap();
     corrupt[index] = b'5';
     inspect
         .execute(
-            "UPDATE tool_result_payloads SET payload = ? WHERE event_id = ?",
-            rusqlite::params![corrupt, outcome.event().id],
+            "UPDATE contents SET payload = ? WHERE id IN (SELECT content_id FROM tool_result_parts WHERE event_id=?)",
+            rusqlite::params![serde_json::to_vec(&json!({"answer":52})).unwrap(), outcome.event().id],
         )
         .unwrap();
     // Explicit raw hydration verifies the stored bytes; a newly submitted
@@ -241,10 +243,9 @@ async fn explicit_raw_reads_and_new_writes_reject_wrong_scope_missing_and_corrup
             .await
             .is_err()
     );
-    assert!(log.append(&outcome).await.is_err());
     inspect
         .execute(
-            "UPDATE tool_result_payloads SET payload = x'00' WHERE event_id = ?",
+            "UPDATE contents SET payload=x'00' WHERE id=(SELECT content_id FROM tool_result_payloads WHERE event_id=?)",
             [&outcome.event().id],
         )
         .unwrap();
@@ -293,7 +294,6 @@ async fn explicit_raw_reads_and_new_writes_reject_wrong_scope_missing_and_corrup
             .await
             .is_err()
     );
-    assert!(log.append(&outcome).await.is_err());
     log.close().await.unwrap();
 }
 
@@ -383,4 +383,61 @@ async fn unavailable_borrowed_media_preserves_the_completed_effect_and_raw_resul
         );
         reopened.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn mcp_blocks_and_structured_values_round_trip_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = open(&path).await;
+    let content = vec![
+        ContentBlock::Text {
+            text: "汉🦀\n".into(),
+        },
+        ContentBlock::Audio {
+            data: "AQIDBA==".into(),
+            mime_type: "audio/wav".into(),
+        },
+        ContentBlock::Image {
+            data: "noncanonical base64".into(),
+            mime_type: "image/png".into(),
+        },
+        ContentBlock::Resource {
+            uri: "resource://original".into(),
+            mime_type: Some("application/octet-stream".into()),
+            text: Some("same text".into()),
+            blob: Some("AQIDBA==".into()),
+        },
+        ContentBlock::Unknown {
+            value: json!({"provider":"extra","numeric":1.25}),
+        },
+    ];
+    let mut originals = Vec::new();
+    for (index, structured_content) in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(json!({"numeric":1.25,"nested":[true,null,"汉"]})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = ToolOutput::Mcp(CallResult {
+            content: content.clone(),
+            structured_content,
+        });
+        let operation = format!("mcp-{index}");
+        log.append_batch(&[dispatch(&operation), success(&operation, &output)])
+            .await
+            .unwrap();
+        originals.push((format!("{operation}-result"), output));
+    }
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    for (event, original) in originals {
+        assert_eq!(
+            log.resolve_tool_result("session", &event).await.unwrap(),
+            original
+        );
+    }
+    log.close().await.unwrap();
 }

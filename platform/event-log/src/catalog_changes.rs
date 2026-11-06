@@ -28,27 +28,23 @@ impl EventLog {
         through: u64,
         limit: usize,
     ) -> Result<Vec<(u64, String)>, StoreError> {
-        self.validate_root()?;
         if after > through || through > i64::MAX as u64 || limit == 0 || limit > 129 {
             return Err(StoreError::InvalidTransition(
                 "invalid catalog change bounds".into(),
             ));
         }
-        self.connection.run(move |connection| Box::pin(async move {
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT sequence, json_extract(event_header, '$.invocation.session_id')
+        self.connection.read(move |connection| {
+        let rows: Vec<(i64, String)> = connection.prepare_cached("SELECT sequence, json_extract(event_header, '$.invocation.session_id')
              FROM local_runtime_events
              WHERE sequence > ?1 AND sequence <= ?2
              AND kind IN ('invocation_opened', 'model_completed', 'model_interrupted', 'invocation_ended')
              AND EXISTS (SELECT 1 FROM session_control
                  WHERE id = json_extract(event_header, '$.invocation.session_id'))
-             ORDER BY sequence LIMIT ?3",
-        ).bind(after as i64).bind(through as i64).bind(limit as i64)
-            .fetch_all(connection).await?;
+             ORDER BY sequence LIMIT ?3")?.query_map(rusqlite::params![after as i64,through as i64,limit as i64], |row| Ok((row.get(0)?,row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
         rows.into_iter().map(|(sequence, session_id)| {
             Ok((sequence_number(sequence)?, session_id))
         })
         .collect()
-        })).await
+        }).await
     }
 }

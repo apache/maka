@@ -22,6 +22,7 @@
 
 use crate::{ConfigError, ConfigurationStore, Result, TransactionMode, catalog};
 pub use maka_agent_facts::public_catalog::PublicCatalogBody;
+use rusqlite::OptionalExtension;
 use std::collections::BTreeMap;
 
 type CachedCatalogRow = (String, String, Option<String>, Option<String>, i64);
@@ -77,33 +78,38 @@ pub struct PublicCatalogSnapshot {
 impl ConfigurationStore {
     pub async fn public_catalog(&self) -> Result<PublicCatalogSnapshot> {
         self.transaction(TransactionMode::Deferred, |tx| {
-            Box::pin(async move {
-                let revision: i64 = sqlx::query_scalar(
-                    "SELECT revision FROM connection_catalog WHERE singleton = 1",
-                )
-                .fetch_one(&mut *tx)
-                .await?;
-                let rows: Vec<CachedCatalogRow> = sqlx::query_as(
+            let revision: i64 = tx
+                .prepare_cached("SELECT revision FROM connection_catalog WHERE singleton = 1")?
+                .query_row(rusqlite::params![], |row| row.get(0))?;
+            let rows: Vec<CachedCatalogRow> = tx
+                .prepare_cached(
                     "SELECT source, body, etag, last_modified, checked_at FROM public_catalog",
-                )
-                .fetch_all(&mut *tx)
-                .await?;
-                let mut sources = BTreeMap::new();
-                for (source, body, etag, last_modified, checked_at) in rows {
-                    sources.insert(
-                        PublicCatalogSource::from_key(&source)?,
-                        PublicCatalogRecord {
-                            body: PublicCatalogBody::from_json(body)?,
-                            etag,
-                            last_modified,
-                            checked_at,
-                        },
-                    );
-                }
-                Ok(PublicCatalogSnapshot {
-                    catalog_revision: crate::database::unsigned(revision)?,
-                    sources,
-                })
+                )?
+                .query_map(rusqlite::params![], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut sources = BTreeMap::new();
+            for (source, body, etag, last_modified, checked_at) in rows {
+                sources.insert(
+                    PublicCatalogSource::from_key(&source)?,
+                    PublicCatalogRecord {
+                        body: PublicCatalogBody::from_json(body)?,
+                        etag,
+                        last_modified,
+                        checked_at,
+                    },
+                );
+            }
+            Ok(PublicCatalogSnapshot {
+                catalog_revision: crate::database::unsigned(revision)?,
+                sources,
             })
         })
         .await
@@ -117,38 +123,35 @@ impl ConfigurationStore {
         record: PublicCatalogRecord,
     ) -> Result<u64> {
         self.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
-                let previous: Option<String> =
-                    sqlx::query_scalar("SELECT body FROM public_catalog WHERE source = ?")
-                        .bind(source.key())
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                let previous = previous.map(PublicCatalogBody::from_json).transpose()?;
-                let changed = match previous {
-                    Some(previous) => !previous.same_content(&record.body)?,
-                    None => true,
-                };
-                sqlx::query(
-                    "INSERT INTO public_catalog(source, body, etag, last_modified, checked_at)
+            let previous: Option<String> = tx
+                .prepare_cached("SELECT body FROM public_catalog WHERE source = ?")?
+                .query_row(rusqlite::params![source.key()], |row| row.get(0))
+                .optional()?;
+            let previous = previous.map(PublicCatalogBody::from_json).transpose()?;
+            let changed = match previous {
+                Some(previous) => !previous.same_content(&record.body)?,
+                None => true,
+            };
+            tx.execute(
+                "INSERT INTO public_catalog(source, body, etag, last_modified, checked_at)
                      VALUES(?, ?, ?, ?, ?)
                      ON CONFLICT(source) DO UPDATE SET body = excluded.body,
                      etag = excluded.etag, last_modified = excluded.last_modified,
                      checked_at = excluded.checked_at",
-                )
-                .bind(source.key())
-                .bind(record.body.as_raw().get())
-                .bind(record.etag)
-                .bind(record.last_modified)
-                .bind(record.checked_at)
-                .execute(&mut *tx)
-                .await?;
-                let current = catalog::read(tx).await?;
-                if changed {
-                    catalog::advance(tx, current.revision, current.default_target.as_ref()).await
-                } else {
-                    Ok(current.revision)
-                }
-            })
+                rusqlite::params![
+                    source.key(),
+                    record.body.as_raw().get(),
+                    record.etag,
+                    record.last_modified,
+                    record.checked_at
+                ],
+            )?;
+            let current = catalog::read(tx)?;
+            if changed {
+                catalog::advance(tx, current.revision, current.default_target.as_ref())
+            } else {
+                Ok(current.revision)
+            }
         })
         .await
     }

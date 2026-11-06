@@ -24,9 +24,9 @@ use crate::StoreError;
 use maka_agent_facts::{
     history::semantic::Payload, model::ModelPart, tool_output::DurableToolProjection,
 };
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
-use sqlx::sqlite::SqliteWorkerConnection;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
 const READ_BUFFER_BYTES: usize = 32 * 1024;
@@ -48,10 +48,9 @@ pub(super) enum SemanticPayloadSource {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CanonicalModelPartSpan(CanonicalToolProjectionSpan);
 
-pub(super) fn locate_model_parts(
-    source_sequence: u64,
+pub(super) fn model_part_tokens(
     json: &str,
-) -> Result<std::collections::BTreeMap<u64, CanonicalModelPartSpan>, StoreError> {
+) -> Result<std::collections::BTreeMap<u64, &str>, StoreError> {
     #[derive(Deserialize)]
     struct Envelope<'src> {
         #[serde(borrow)]
@@ -139,22 +138,14 @@ pub(super) fn locate_model_parts(
             .ok_or_else(|| invalid("canonical model part is outside its event"))?;
         i32::try_from(end)
             .map_err(|_| invalid("canonical model part exceeds SQLite Blob range"))?;
-        let span = CanonicalModelPartSpan::from_metadata(
-            i64::try_from(source_sequence)
-                .map_err(|_| invalid("canonical model sequence exceeds SQLite range"))?,
-            i64::try_from(offset)
-                .map_err(|_| invalid("canonical model offset exceeds SQLite range"))?,
-            i64::try_from(raw.len())
-                .map_err(|_| invalid("canonical model length exceeds SQLite range"))?,
-        )?;
-        if spans.insert(ordinal, span).is_some() {
+        if spans.insert(ordinal, raw).is_some() {
             return Err(invalid("duplicate canonical model ordinal"));
         }
     }
     Ok(spans)
 }
 impl CanonicalModelPartSpan {
-    fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
+    pub(super) fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
         let span = CanonicalToolProjectionSpan::from_metadata(sequence, offset, len)?;
         if offset
             .checked_add(len)
@@ -171,10 +162,7 @@ impl CanonicalModelPartSpan {
     pub(super) fn len(self) -> i64 {
         self.0.len()
     }
-    pub(super) fn read(
-        self,
-        worker: &mut SqliteWorkerConnection<'_>,
-    ) -> Result<Payload, StoreError> {
+    pub(super) fn read(self, worker: &Connection) -> Result<Payload, StoreError> {
         self.0
             .read_inline_value::<ModelPart>(worker)
             .map(Payload::Part)
@@ -182,7 +170,7 @@ impl CanonicalModelPartSpan {
 }
 
 impl CanonicalToolProjectionSpan {
-    pub(super) fn locate(source_sequence: u64, json: &str) -> Result<Self, StoreError> {
+    pub(super) fn token(json: &str) -> Result<&str, StoreError> {
         #[derive(Deserialize)]
         struct Envelope<'src> {
             #[serde(borrow)]
@@ -200,24 +188,10 @@ impl CanonicalToolProjectionSpan {
         }
         let envelope: Envelope<'_> = serde_json::from_str(json)?;
         let projection = envelope.fact.outcome.model_projection.get();
-        let offset = (projection.as_ptr() as usize)
-            .checked_sub(json.as_ptr() as usize)
-            .ok_or_else(|| invalid("canonical projection does not borrow its event"))?;
-        offset
-            .checked_add(projection.len())
-            .filter(|end| *end <= json.len())
-            .ok_or_else(|| invalid("canonical projection is outside its event"))?;
-        Self::from_metadata(
-            i64::try_from(source_sequence)
-                .map_err(|_| invalid("canonical source sequence exceeds SQLite range"))?,
-            i64::try_from(offset)
-                .map_err(|_| invalid("canonical projection offset exceeds SQLite range"))?,
-            i64::try_from(projection.len())
-                .map_err(|_| invalid("canonical projection length exceeds SQLite range"))?,
-        )
+        Ok(projection)
     }
 
-    fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
+    pub(super) fn from_metadata(sequence: i64, offset: i64, len: i64) -> Result<Self, StoreError> {
         if sequence <= 0 || offset < 0 || len <= 0 || offset.checked_add(len).is_none() {
             return Err(invalid("invalid canonical projection span"));
         }
@@ -234,55 +208,26 @@ impl CanonicalToolProjectionSpan {
     pub(super) fn len(self) -> i64 {
         self.byte_len as i64
     }
-    pub(super) fn matches_projection(
-        self,
-        json: &str,
-        projection: &DurableToolProjection,
-    ) -> Result<bool, StoreError> {
-        let start = usize::try_from(self.byte_offset)
-            .map_err(|_| invalid("canonical projection offset exceeds address range"))?;
-        let end = start
-            .checked_add(
-                usize::try_from(self.byte_len)
-                    .map_err(|_| invalid("canonical projection length exceeds address range"))?,
-            )
-            .ok_or_else(|| invalid("canonical projection span overflows"))?;
-        let expected = json
-            .as_bytes()
-            .get(start..end)
-            .ok_or_else(|| invalid("canonical projection exceeds its event"))?;
-        serialized_matches(expected, projection)
-    }
-
-    pub(super) fn read(
-        self,
-        worker: &mut SqliteWorkerConnection<'_>,
-    ) -> Result<Payload, StoreError> {
-        super::captured::with_raw(worker, |raw| {
-            crate::canonical::with_span(
-                raw,
-                self.source_sequence,
-                self.byte_offset,
-                self.byte_len,
-                |reader| {
-                    let reader = BufReader::with_capacity(READ_BUFFER_BYTES, reader);
-                    Ok(Payload::Tool(serde_json::from_reader::<
-                        _,
-                        DurableToolProjection,
-                    >(reader)?))
-                },
-            )
-        })
+    pub(super) fn read(self, raw: &Connection) -> Result<Payload, StoreError> {
+        crate::canonical::with_span(
+            raw,
+            self.source_sequence,
+            self.byte_offset,
+            self.byte_len,
+            |reader| {
+                let reader = BufReader::with_capacity(READ_BUFFER_BYTES, reader);
+                Ok(Payload::Tool(serde_json::from_reader::<
+                    _,
+                    DurableToolProjection,
+                >(reader)?))
+            },
+        )
     }
     fn read_inline_value<T: serde::de::DeserializeOwned>(
         self,
-        worker: &mut SqliteWorkerConnection<'_>,
+        worker: &Connection,
     ) -> Result<T, StoreError> {
-        // SAFETY: the original SQLite worker is exclusively borrowed. The wrapper
-        // is non-owning, and it and the Blob are dropped before this callback returns.
-        let borrowed =
-            unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
-        let mut blob = borrowed.blob_open(
+        let mut blob = worker.blob_open(
             "main",
             "event_log",
             "event_header",
@@ -303,7 +248,6 @@ impl CanonicalToolProjectionSpan {
             Ok(serde_json::from_reader(reader)?)
         })();
         let closed = blob.close();
-        drop(borrowed);
         match (result, closed) {
             (result, Ok(())) => result,
             (Ok(_), Err(close)) => Err(close.into()),
@@ -314,7 +258,10 @@ impl CanonicalToolProjectionSpan {
     }
 }
 
-fn serialized_matches(expected: &[u8], value: &impl Serialize) -> Result<bool, StoreError> {
+pub(super) fn serialized_matches(
+    expected: &[u8],
+    value: &impl Serialize,
+) -> Result<bool, StoreError> {
     struct Compare<'a> {
         expected: &'a [u8],
         position: usize,

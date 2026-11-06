@@ -18,13 +18,14 @@
  */
 
 use super::SessionRecord;
+use rusqlite::{OptionalExtension, params};
+
 use crate::{
     EventLog, StoreError,
     context::{HistoryCut, history, safety},
 };
 use maka_agent_facts::session::{BranchOrigin, CopyPurpose, CopyState, ForkPosition, Lineage};
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::Connection;
 
 pub use maka_agent_facts::session::CopyRequest as SessionCopy;
 mod lifecycle;
@@ -44,18 +45,13 @@ impl EventLog {
         &self,
         target: &str,
     ) -> Result<Option<maka_agent_facts::session::CopyReceipt>, StoreError> {
-        self.validate_root()?;
         super::validate_id(target)?;
         let target = target.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row: Option<(String, String)> = sqlx::query_as(
-                        "SELECT request_json, state FROM session_history_copies WHERE session_id=? AND bundle_digest IS NULL",
-                    )
-                    .bind(target)
-                    .fetch_optional(connection)
-                    .await?;
+            .read(move |connection| {
+                {
+                    let row: Option<(String, String)> = connection.query_row("SELECT request_json, state FROM session_history_copies WHERE session_id=? AND bundle_digest IS NULL", params![target], |row| Ok((row.get(0)?, row.get(1)?,))).optional()
+                    ?;
                     row.map(|(request, state)| {
                         Ok(maka_agent_facts::session::CopyReceipt {
                             request: serde_json::from_str(&request)?,
@@ -63,7 +59,7 @@ impl EventLog {
                         })
                     })
                     .transpose()
-                })
+                }
             })
             .await
     }
@@ -107,7 +103,6 @@ impl EventLog {
         now: u64,
         origin: Option<super::PluginSession>,
     ) -> Result<SessionCopyResult<T>, StoreError> {
-        self.validate_root()?;
         super::validate_id(&request.source_session_id)?;
         super::validate_id(&request.target_session_id)?;
         super::validate_time(now)?;
@@ -136,118 +131,96 @@ impl EventLog {
             || maka_agent_facts::artifact::content_digest(encoded.as_bytes()),
             |origin| origin.fingerprint.clone(),
         );
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let previous: Option<(String, Option<String>)> = sqlx::query_as(
-                "SELECT request_json,bundle_digest FROM session_history_copies WHERE session_id = ?",
-            ).bind(&request.target_session_id).fetch_optional(&mut *tx).await?;
+        self.connection.run(move |connection| {
+            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+            let previous: Option<(String, Option<String>)> = tx.query_row("SELECT request_json,bundle_digest FROM session_history_copies WHERE session_id = ?", params![&request.target_session_id], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             if let Some((previous, bundle_digest)) = previous {
                 if bundle_digest.is_some() { return Err(StoreError::SessionConflict); }
                 if previous != encoded { return Err(StoreError::SessionConflict); }
-                super::removal::require_mutable(&mut tx, &request.target_session_id).await?;
-                super::origin::check(&mut tx, &request.target_session_id, origin.as_ref()).await?;
-                let session = super::read(&mut tx, &request.target_session_id).await?
+                super::removal::require_mutable(&tx, &request.target_session_id)?;
+                super::origin::check(&tx, &request.target_session_id, origin.as_ref())?;
+                let session = super::read(&tx, &request.target_session_id)?
                     .ok_or(StoreError::SessionNotFound)?;
                 return Ok(SessionCopyResult::Committed(Box::new(session)));
             }
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-            ).bind(&request.target_session_id).fetch_one(&mut *tx).await?;
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)", params![&request.target_session_id], |row| row.get(0))?;
             if exists { return Err(StoreError::SessionConflict); }
-            let actual = crate::workspace_bindings::current_session_revision(&mut tx, &request.source_session_id)
-                .await?.ok_or(StoreError::SessionNotFound)?;
+            let actual = crate::workspace_bindings::current_session_revision(&tx, &request.source_session_id)
+                ?.ok_or(StoreError::SessionNotFound)?;
             if actual != request.expected_source_revision {
                 return Ok(SessionCopyResult::SourceRevisionConflict {
                     expected: request.expected_source_revision, actual,
                 });
             }
-            let manager: Option<(String, String)> = sqlx::query_as(
-                "SELECT package_id, scope_id FROM plugin_sessions WHERE session_id = ? AND managed = 1",
-            ).bind(&request.source_session_id).fetch_optional(&mut *tx).await?;
+            let manager: Option<(String, String)> = tx.query_row("SELECT package_id, scope_id FROM plugin_sessions WHERE session_id = ? AND managed = 1", params![&request.source_session_id], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             if manager.is_some_and(|(package, scope)| origin.as_ref().is_none_or(|origin|
                 origin.creator.package() != package || String::from(origin.creator.scope().clone()) != scope
             )) {
                 return Err(StoreError::ManagedSession);
             }
-            let observed: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-                .fetch_one(&mut *tx).await?;
-            let through = history::resolve_cut(&mut tx, &request.source_session_id, &cut, observed).await?;
-            safety::require_safe_through(&mut tx, &request.source_session_id, None, through).await?;
-            let lineage = lineage(&mut tx, &request).await?;
+            let observed: i64 = tx.query_row("SELECT COALESCE(MAX(sequence),0) FROM event_log", params![], |row| row.get(0))?;
+            let through = history::resolve_cut(&tx, &request.source_session_id, &cut, observed)?;
+            safety::require_safe_through(&tx, &request.source_session_id, None, through)?;
+            let lineage = lineage(&tx, &request)?;
             if let Some(origin) = &origin {
-                super::origin::insert(&mut tx, origin).await?;
+                super::origin::insert(&tx, origin)?;
             }
-            super::insert(&mut tx, &request.target_session_id, &fingerprint, &configuration, now).await?;
+            super::insert(&tx, &request.target_session_id, &fingerprint, &configuration, now)?;
             let state = match request.purpose {
                 CopyPurpose::Revision { .. } => CopyState::Preparing,
                 _ => CopyState::Committed,
             };
-            sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(&request.target_session_id).bind(&request.source_session_id)
-                .bind(actual as i64).bind(through as i64).bind(observed).bind(encoded).bind(serde_json::to_string(&lineage)?)
-                .bind(state.as_str())
-                .execute(&mut *tx).await?;
+            tx.execute("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![&request.target_session_id, &request.source_session_id, actual as i64, through as i64, observed, encoded, serde_json::to_string(&lineage)?, state.as_str()])?;
             // Freeze the parent's current projection: its own archives over raw
             // history, or an already inherited pin. Later pruning cannot change it.
             let target = request.target_session_id.clone();
             let source = request.source_session_id.clone();
-            crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
-                sqlx::query(
-                "INSERT INTO session_history_members
+
+                tx.execute("INSERT INTO session_history_members
                  SELECT ?1, e.sequence,
                      COALESCE((SELECT a.sequence FROM runtime_events a WHERE a.kind = 'tool_result_archived'
                       AND CAST(json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') AS TEXT) = e.event_id
                       AND json_extract(a.event_header,'$.invocation.session_id') = e.owner_session_id
                       AND a.sequence < ?2), e.archive_sequence)
-                 FROM session_history_events e WHERE e.owner_session_id = ?3 AND e.sequence <= ?4",
-            ).bind(&target).bind(observed.saturating_add(1))
-                .bind(&source).bind(through as i64).execute(&mut *worker).await?;
+                 FROM session_history_events e WHERE e.owner_session_id = ?3 AND e.sequence <= ?4", params![&target, observed.saturating_add(1), &source, through as i64])?;
                 let mut after = 0i64;
                 loop {
-                    let members: Vec<(i64, Option<i64>)> = sqlx::query_as(
-                        "SELECT sequence,archive_sequence FROM session_history_members
-                         WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT 128",
-                    ).bind(&target).bind(after).fetch_all(&mut *worker).await?;
+                    let members: Vec<(i64, Option<i64>)> = tx.prepare_cached("SELECT sequence,archive_sequence FROM session_history_members
+                         WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT 128")?.query_map(params![&target, after], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<std::result::Result<Vec<_>, _>>()?;
                     if members.is_empty() { break; }
                     for (sequence, archive) in members {
-                        crate::context::semantic::copy_member(worker, &target, sequence, archive).await?;
+                        crate::context::semantic::copy_member(&tx, &target, sequence, archive)?;
                         after = sequence;
                     }
                 }
-                Ok(())
-            })).await?;
-            sqlx::query("SELECT context_source_pin_copy(?)")
-                .bind(&request.target_session_id).execute(&mut *tx).await?;
-            crate::artifacts::history::retain(&mut tx, &request.source_session_id, &request.target_session_id, now).await?;
+            tx.query_row("SELECT context_source_pin_copy(?)", params![&request.target_session_id], |_| Ok(()))?;
+            crate::artifacts::history::retain(&tx, &request.source_session_id, &request.target_session_id, now)?;
             if let CopyPurpose::Revision { turn_id } = &request.purpose {
-                let retained = sqlx::query(
-                    "INSERT INTO session_revision_sources
+                let retained = tx.execute("INSERT INTO session_revision_sources
                      SELECT ?1, sequence FROM session_history_events
                      WHERE owner_session_id = ?2 AND sequence <= ?3
                        AND json_extract(event_header, '$.invocation.turn_id') = ?4
                        AND ((kind = 'invocation_opened'
                          AND json_extract(event_header, '$.fact.input.kind') = 'message'
                          AND json_array_length(event_header, '$.fact.input.source_messages') > 0)
-                         OR kind = 'message_steered')"
-                ).bind(&request.target_session_id).bind(&request.source_session_id).bind(observed)
-                    .bind(turn_id).execute(&mut *tx).await?;
-                if retained.rows_affected() == 0 { return Err(super::invalid("revision Turn has no editable input")); }
-                crate::artifacts::history::retain_revision(&mut tx, &request.source_session_id, &request.target_session_id, now).await?;
+                         OR kind = 'message_steered')", params![&request.target_session_id, &request.source_session_id, observed, turn_id])?;
+                if retained == 0 { return Err(super::invalid("revision Turn has no editable input")); }
+                crate::artifacts::history::retain_revision(&tx, &request.source_session_id, &request.target_session_id, now)?;
             }
             // History ownership is not execution admission: a fully archived
             // source can seed a branch without becoming executable again.
-            super::removal::require_mutable(&mut tx, &request.source_session_id).await?;
-            retain(&mut tx, &request.source_session_id).await?;
-            let session = super::read(&mut tx, &request.target_session_id).await?
+            super::removal::require_mutable(&tx, &request.source_session_id)?;
+            retain(&tx, &request.source_session_id)?;
+            let session = super::read(&tx, &request.target_session_id)?
                 .ok_or(StoreError::SessionNotFound)?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(SessionCopyResult::Committed(Box::new(session)))
-        })).await
+        }).await
     }
 }
 
-async fn lineage(
-    connection: &mut sqlx::SqliteConnection,
+fn lineage(
+    connection: &rusqlite::Connection,
     request: &SessionCopy,
 ) -> Result<Lineage, StoreError> {
     let turn_id = match &request.purpose {
@@ -269,11 +242,13 @@ async fn lineage(
         }
         CopyPurpose::Revision { turn_id } => turn_id,
     };
-    let source: Option<String> =
-        sqlx::query_scalar("SELECT lineage_json FROM session_history_copies WHERE session_id = ?")
-            .bind(&request.source_session_id)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let source: Option<String> = connection
+        .query_row(
+            "SELECT lineage_json FROM session_history_copies WHERE session_id = ?",
+            params![&request.source_session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     let source: Option<Lineage> = source.map(|json| serde_json::from_str(&json)).transpose()?;
     let root = match &source {
         Some(Lineage::Revision {
@@ -281,14 +256,13 @@ async fn lineage(
         }) => root_session_id.clone(),
         _ => request.source_session_id.clone(),
     };
-    let index: i64 = sqlx::query_scalar(
+    let index: i64 = connection.query_row(
         "SELECT COALESCE(MAX(CAST(json_extract(lineage_json, '$.index') AS INTEGER)), 1) + 1
          FROM session_history_copies WHERE json_extract(lineage_json, '$.kind') = 'revision'
          AND CAST(json_extract(lineage_json, '$.root_session_id') AS TEXT) = ?",
-    )
-    .bind(&root)
-    .fetch_one(connection)
-    .await?;
+        params![&root],
+        |row| row.get(0),
+    )?;
     if index as u64 > super::MAX_SAFE_INTEGER {
         return Err(super::invalid("revision family exhausted"));
     }

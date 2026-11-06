@@ -20,8 +20,8 @@
 //! Root-owned native launcher selection. Opaque preparation is discarded on completion.
 use super::invalid;
 use crate::{EventLog, StoreError};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
-use sqlx::{Connection, Row};
 use uuid::Uuid;
 
 pub struct Launch {
@@ -45,32 +45,28 @@ impl EventLog {
         }
         let expected = serde_json::to_string(&expected)?;
         let configuration = serde_json::to_string(&configuration)?;
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let changed = sqlx::query("UPDATE application_launch SET configuration=? WHERE singleton=1 AND deployment=? AND pending IS NULL AND (configuration=? OR configuration=?) AND EXISTS(SELECT 1 FROM application_deployments WHERE id=? AND revision=?)")
-                .bind(&configuration).bind(source.deployment.to_string())
-                .bind(expected).bind(&configuration)
-                .bind(source.deployment.to_string()).bind(source.revision as i64)
-                .execute(&mut *tx).await?.rows_affected() == 1;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let changed = tx.execute("UPDATE application_launch SET configuration=? WHERE singleton=1 AND deployment=? AND pending IS NULL AND (configuration=? OR configuration=?) AND EXISTS(SELECT 1 FROM application_deployments WHERE id=? AND revision=?)", params![&configuration, source.deployment.to_string(), expected, &configuration, source.deployment.to_string(), source.revision as i64])? == 1;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(changed)
-        })).await
+        }).await
     }
 
     pub async fn application_launch(&self) -> Result<Option<Launch>, StoreError> {
         self.application_domain()?;
-        self.connection.run(|connection| Box::pin(async move {
-            let row = sqlx::query("SELECT deployment, configuration, pending FROM application_launch WHERE singleton=1")
-                .fetch_optional(connection).await?;
-            let Some(row) = row else { return Ok(None); };
-            let deployment = Uuid::parse_str(&row.try_get::<String, _>("deployment")?).map_err(|_| invalid("invalid launcher deployment"))?;
-            let configuration = row.try_get::<String, _>("configuration")?;
-            let pending = row.try_get::<Option<Vec<u8>>, _>("pending")?;
+        self.connection.read(|connection| {
+            let row = connection.query_row(
+                "SELECT deployment, configuration, pending FROM application_launch WHERE singleton=1", [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<Vec<u8>>>(2)?)),
+            ).optional()?;
+            let Some((deployment, configuration, pending)) = row else { return Ok(None); };
+            let deployment = Uuid::parse_str(&deployment).map_err(|_| invalid("invalid launcher deployment"))?;
             if deployment.is_nil() || pending.as_ref().is_some_and(Vec::is_empty) {
                 return Err(invalid("invalid launcher preparation"));
             }
             Ok(Some(Launch { deployment, configuration: serde_json::from_str(&configuration)?, pending }))
-        })).await
+        }).await
     }
 
     /// Select an existing committed source without starting source preparation.
@@ -86,14 +82,12 @@ impl EventLog {
             return Err(invalid("foreign launcher source"));
         }
         let configuration = serde_json::to_string(&configuration)?;
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let changed = sqlx::query("INSERT INTO application_launch (singleton,deployment,configuration,pending) SELECT 1,id,?,NULL FROM application_deployments WHERE id=? AND revision=?")
-                .bind(configuration).bind(source.deployment.to_string()).bind(source.revision as i64)
-                .execute(&mut *tx).await?.rows_affected();
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let changed = tx.execute("INSERT INTO application_launch (singleton,deployment,configuration,pending) SELECT 1,id,?,NULL FROM application_deployments WHERE id=? AND revision=?", params![configuration, source.deployment.to_string(), source.revision as i64])?;
             if changed != 1 { return Err(invalid("committed launcher source changed or is missing")); }
-            tx.commit().await.map_err(StoreError::CommitUnknown)
-        })).await
+            tx.commit().map_err(StoreError::CommitUnknown)
+        }).await
     }
 
     /// Create once, before any cross-Root source effects. An unknown COMMIT
@@ -107,12 +101,11 @@ impl EventLog {
         if launch.deployment.is_nil() || pending.is_empty() {
             return Err(invalid("invalid launcher preparation"));
         }
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            sqlx::query("INSERT INTO application_launch (singleton,deployment,configuration,pending) VALUES (1,?,?,?)")
-                .bind(launch.deployment.to_string()).bind(configuration).bind(pending).execute(&mut *tx).await?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)
-        })).await
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            tx.execute("INSERT INTO application_launch (singleton,deployment,configuration,pending) VALUES (1,?,?,?)", params![launch.deployment.to_string(), configuration, pending])?;
+            tx.commit().map_err(StoreError::CommitUnknown)
+        }).await
     }
 
     /// Prepare restoration while holding the application Root. The original connection
@@ -126,13 +119,12 @@ impl EventLog {
         if pending.is_empty() {
             return Err(invalid("invalid or oversized restoration preparation"));
         }
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let changed = sqlx::query("UPDATE application_launch SET pending=? WHERE singleton=1 AND deployment=? AND pending IS NULL")
-                .bind(pending).bind(deployment.to_string()).execute(&mut *tx).await?.rows_affected();
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let changed = tx.execute("UPDATE application_launch SET pending=? WHERE singleton=1 AND deployment=? AND pending IS NULL", params![pending, deployment.to_string()])?;
             if changed != 1 { return Err(invalid("launcher changed or already has unfinished work")); }
-            tx.commit().await.map_err(StoreError::CommitUnknown)
-        })).await
+            tx.commit().map_err(StoreError::CommitUnknown)
+        }).await
     }
 
     /// Publish the prepared connection configuration and clear recovery only
@@ -144,13 +136,12 @@ impl EventLog {
     ) -> Result<(), StoreError> {
         self.application_domain()?;
         let configuration = serde_json::to_string(&configuration)?;
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let changed = sqlx::query("UPDATE application_launch SET configuration=?, pending=NULL WHERE singleton=1 AND deployment=?")
-                .bind(configuration).bind(deployment.to_string()).execute(&mut *tx).await?.rows_affected();
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let changed = tx.execute("UPDATE application_launch SET configuration=?, pending=NULL WHERE singleton=1 AND deployment=?", params![configuration, deployment.to_string()])?;
             if changed != 1 { return Err(invalid("launcher selection changed")); }
-            tx.commit().await.map_err(StoreError::CommitUnknown)
-        })).await
+            tx.commit().map_err(StoreError::CommitUnknown)
+        }).await
     }
 }
 

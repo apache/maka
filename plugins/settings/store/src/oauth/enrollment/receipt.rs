@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoginReceipt {
@@ -61,12 +61,9 @@ pub(super) fn validate_attempt(value: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn read(tx: &mut SqliteConnection, attempt: &str) -> Result<Option<LoginReceipt>> {
+pub(super) fn read(tx: &Connection, attempt: &str) -> Result<Option<LoginReceipt>> {
     let saved: Option<(String, String, String, String, String)> =
-        sqlx::query_as("SELECT target, method, request_fingerprint, connection, phase FROM oauth_login_receipts WHERE attempt_id = ?")
-            .bind(attempt)
-            .fetch_optional(&mut *tx)
-            .await?;
+        tx.prepare_cached("SELECT target, method, request_fingerprint, connection, phase FROM oauth_login_receipts WHERE attempt_id = ?")?.query_row(rusqlite::params![attempt], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,))).optional()?;
     let Some((target, method, request_fingerprint, connection, phase)) = saved else {
         return Ok(None);
     };
@@ -90,22 +87,8 @@ pub(super) async fn read(tx: &mut SqliteConnection, attempt: &str) -> Result<Opt
     Ok(Some(saved))
 }
 
-pub(super) async fn write(
-    tx: &mut SqliteConnection,
-    attempt: &str,
-    saved: &LoginReceipt,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO oauth_login_receipts(attempt_id, target, method, request_fingerprint, connection, phase) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(attempt_id) DO UPDATE SET phase = excluded.phase",
-    )
-    .bind(attempt)
-    .bind(serde_json::to_string(&saved.target)?)
-    .bind(&saved.method)
-    .bind(&saved.request_fingerprint)
-    .bind(serde_json::to_string(&saved.connection)?)
-    .bind(serde_json::to_string(&saved.phase)?)
-    .execute(&mut *tx)
-    .await?;
+pub(super) fn write(tx: &Connection, attempt: &str, saved: &LoginReceipt) -> Result<()> {
+    tx.execute("INSERT INTO oauth_login_receipts(attempt_id, target, method, request_fingerprint, connection, phase) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(attempt_id) DO UPDATE SET phase = excluded.phase", rusqlite::params![attempt, serde_json::to_string(&saved.target)?, &saved.method, &saved.request_fingerprint, serde_json::to_string(&saved.connection)?, serde_json::to_string(&saved.phase)?])?;
     Ok(())
 }

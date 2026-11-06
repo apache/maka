@@ -66,10 +66,16 @@ function fixture() {
       ['maka-computer-use', 'platform/computer-use', ['platform/code-runtime']],
       ['maka-skills-core', 'plugins/skills/core'],
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
+      ['maka-terminal-shell', 'products/maka/terminal-shell'],
       [
         'maka-cli',
         'products/maka/cli',
-        ['platform/computer-use', 'plugins/skills/core', 'third-party/nsh/crates/nsh-core'],
+        [
+          'platform/computer-use',
+          'plugins/skills/core',
+          'products/maka/terminal-shell',
+          'third-party/nsh/crates/nsh-core',
+        ],
       ],
       ['maka-schema', 'tools/schema'],
       ['maka-workbench', 'products/maka/workbench'],
@@ -422,6 +428,16 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
     const selected = plan([input]);
     assert(selected.suites.root, input);
     assert(selected.suites.product, input);
+    assert(selected.suites.contracts, input);
+  }
+  for (const input of [
+    'products/maka/terminal-shell/tests/fixtures/components.tsx',
+    'products/maka/terminal-shell/tests/real_host/permission_preview.tsx',
+  ]) {
+    const selected = plan([input]);
+    assert.equal(selected.full, false, input);
+    assert(selected.suites.root, input);
+    assert(selected.suites.desktop, input);
     assert(selected.suites.contracts, input);
   }
   assert(

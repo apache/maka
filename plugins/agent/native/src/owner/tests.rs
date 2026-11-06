@@ -436,13 +436,7 @@ impl Fixture {
     }
 
     fn runtime_databases(&self) -> Vec<std::path::PathBuf> {
-        (0..8)
-            .map(|partition| {
-                self.root
-                    .join("runtime-partitions")
-                    .join(format!("{partition:02}.sqlite"))
-            })
-            .collect()
+        vec![self.root.join(maka_event_log::root::ROOT_DATABASE)]
     }
 
     fn runtime_database_containing(&self, query: &str, id: &str) -> std::path::PathBuf {
@@ -468,22 +462,8 @@ impl Fixture {
         matching.into_iter().next().unwrap()
     }
 
-    fn session_database(&self, id: &str) -> std::path::PathBuf {
-        let control = rusqlite::Connection::open_with_flags(
-            self.root.join(maka_event_log::root::ROOT_DATABASE),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let partition: u32 = control
-            .query_row(
-                "SELECT partition FROM session_routes WHERE session_id=?",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        self.root
-            .join("runtime-partitions")
-            .join(format!("{partition:02}.sqlite"))
+    fn session_database(&self, _id: &str) -> std::path::PathBuf {
+        self.root.join(maka_event_log::root::ROOT_DATABASE)
     }
 
     async fn prefix(
@@ -1381,7 +1361,7 @@ async fn cleanup_case(panic: bool) {
             "resources_retained",
         )
     } else {
-        ("queue_advance_failed", "store_sqlx", "operation_failed")
+        ("queue_advance_failed", "store_sqlite", "operation_failed")
     };
     let event = log
         .lines()

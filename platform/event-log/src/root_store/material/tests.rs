@@ -51,18 +51,17 @@ async fn block_update(
     let (release, released) = std::sync::mpsc::channel();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut entered = Some(entered);
-                db.lock_handle().await?.set_update_hook(move |update| {
-                    if update.table == table
-                        && let Some(entered) = entered.take()
-                    {
-                        let _ = entered.send(());
-                        let _ = released.recv();
-                    }
-                });
-                Ok(())
-            })
+            let mut entered = Some(entered);
+            db.update_hook(Some(move |_, _: &str, updated_table: &str, _| {
+                if updated_table == table
+                    && let Some(entered) = entered.take()
+                {
+                    let _ = entered.send(());
+                    let _ = released.recv();
+                }
+            }))
+            .unwrap();
+            Ok(())
         })
         .await
         .unwrap();
@@ -152,20 +151,16 @@ async fn retire(root: &RootStore, session: &str) {
 async fn material_state(log: &EventLog) -> (i64, i64, i64) {
     log.connection
         .read(|db| {
-            Box::pin(async move {
-                let bodies = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
-                )
-                .fetch_one(&mut *db)
-                .await?;
-                let free = sqlx::query_scalar("PRAGMA freelist_count")
-                    .fetch_one(&mut *db)
-                    .await?;
-                let pages = sqlx::query_scalar("PRAGMA page_count")
-                    .fetch_one(db)
-                    .await?;
-                Ok((bodies, free, pages))
-            })
+            let bodies = db.query_row(
+                "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
+                rusqlite::params![],
+                |row| row.get(0),
+            )?;
+            let free = db.query_row("PRAGMA freelist_count", rusqlite::params![], |row| {
+                row.get(0)
+            })?;
+            let pages = db.query_row("PRAGMA page_count", rusqlite::params![], |row| row.get(0))?;
+            Ok((bodies, free, pages))
         })
         .await
         .unwrap()
@@ -227,10 +222,9 @@ async fn retirement_automatically_collects_after_the_last_archived_fork_is_remov
         pages_after < pages_before,
         "automatic vacuum must shrink the database"
     );
-    let proof: (i64, i64) = log.connection.read(|db| Box::pin(async move {
-        Ok(sqlx::query_as("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log")
-            .fetch_one(db).await?)
-    })).await.unwrap();
+    let proof: (i64, i64) = log.connection.read(|db| {
+        Ok(db.query_row("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log", rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?)))?)
+    }).await.unwrap();
     assert_eq!(
         proof,
         (12, 12),
@@ -287,11 +281,7 @@ async fn ownership_released_during_a_pass_revisits_an_earlier_retained_source() 
     )
     .await;
     retire(&root, "source").await;
-    let partition = root.route_partition("source").await.unwrap();
-    let later_id = (0..)
-        .map(|index| format!("z-later-{index}"))
-        .find(|id| partition_for(b"session", id) == partition)
-        .unwrap();
+    let later_id = "z-later".to_owned();
     let later = root
         .create_session(&later_id, &later_id, &json!({}), 2)
         .await
@@ -355,7 +345,6 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .unwrap();
     turns(&source).await;
     let log = source.owner().unwrap();
-    let partition = root.route_partition("source").await.unwrap();
     let (reached, release) = block_update(&log, "event_log").await;
     retire(&root, "source").await;
     tokio::time::timeout(Duration::from_secs(10), reached)
@@ -363,14 +352,8 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .unwrap()
         .unwrap();
     let closed = root.lifecycle.as_ref().unwrap().receipt();
-    let independent = root.partitions[(partition + 1) % PARTITION_COUNT].close_receipt();
     drop(log);
     drop(root);
-    // Another partition closes while the accepted GC transaction is blocked.
-    tokio::time::timeout(Duration::from_secs(10), independent)
-        .await
-        .unwrap()
-        .unwrap();
     assert!(closed.clone().now_or_never().is_none());
     let namespaces = root::RootNamespaces {
         ownership: directory.path().join("ownership"),
@@ -382,12 +365,8 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .await
         .unwrap()
         .unwrap();
-    let inspect = rusqlite::Connection::open(
-        directory
-            .path()
-            .join(format!("root/runtime-partitions/{partition:02}.sqlite")),
-    )
-    .unwrap();
+    let inspect =
+        rusqlite::Connection::open(directory.path().join("root/runtime-rust.sqlite")).unwrap();
     let remaining: i64 = inspect
         .query_row(
             "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
@@ -403,6 +382,6 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
     let restored =
         Arc::new(root::RootOwner::open(&directory.path().join("root"), &namespaces).unwrap());
     let reopened = RootStore::open(restored).await.unwrap();
-    reclaimed(&reopened.partitions[partition]).await;
+    reclaimed(&reopened.log).await;
     reopened.close().await.unwrap();
 }

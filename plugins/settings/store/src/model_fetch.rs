@@ -44,21 +44,19 @@ impl ConfigurationStore {
         let id = connection_id.to_owned();
         let store = Arc::clone(self);
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                use ConnectionEffectRejectionReason as Rejected;
-                use ModelFetchPreparation as Preparation;
-                let Some(connection) = catalog::find(tx, &id).await? else {
-                    return Ok(Preparation::Rejected(Rejected::ConnectionNotFound));
-                };
-                if !connection.enabled {
-                    return Ok(Preparation::Rejected(Rejected::ConnectionDisabled));
-                }
-                let material = EffectSnapshot::read(tx, connection).await?;
-                Ok(Preparation::Ready(Box::new(PreparedModelFetch {
-                    store,
-                    material,
-                })))
-            })
+            use ConnectionEffectRejectionReason as Rejected;
+            use ModelFetchPreparation as Preparation;
+            let Some(connection) = catalog::find(tx, &id)? else {
+                return Ok(Preparation::Rejected(Rejected::ConnectionNotFound));
+            };
+            if !connection.enabled {
+                return Ok(Preparation::Rejected(Rejected::ConnectionDisabled));
+            }
+            let material = EffectSnapshot::read(tx, connection)?;
+            Ok(Preparation::Ready(Box::new(PreparedModelFetch {
+                store,
+                material,
+            })))
         })
         .await
     }
@@ -103,48 +101,45 @@ impl PreparedModelFetch {
         let material = self.material;
         self.store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    let catalog = catalog::read(tx).await?;
-                    let current = catalog
-                        .connections
-                        .into_iter()
-                        .find(|row| row.connection_id == material.connection.connection_id);
-                    let changed = material.changed(tx, current.as_ref()).await?;
-                    if !changed.is_empty() {
-                        return Ok(ConnectionModelFetchResult::Superseded { changed });
-                    }
-                    let mut row = current.expect("unchanged connection exists");
-                    let previous = row.clone();
-                    let selected_default = catalog
-                        .default_target
-                        .as_ref()
-                        .filter(|target| target.connection_id == row.connection_id)
-                        .map(|target| target.model_id.as_str())
-                        .or_else(|| row.enabled_model_ids.first().map(String::as_str));
-                    if row.models.is_empty()
-                        && row.enabled_model_ids.is_empty()
-                        && selected_default.is_none_or(str::is_empty)
-                    {
-                        row.enabled_model_ids.push(models[0].id.clone());
-                    }
-                    row.models = models;
-                    row.model_source = Some(ModelDiscoverySource::Fetched);
-                    row.models_fetched_at = Some(fetched_at);
-                    row.revision = catalog::next_revision(row.revision)?;
-                    if !same_test_basis(&previous, &row) {
-                        row.last_test = None;
-                    }
-                    catalog::write_entry(tx, &row).await?;
-                    let catalog_revision =
-                        catalog::advance(tx, catalog.revision, catalog.default_target.as_ref())
-                            .await?;
-                    Ok(ConnectionModelFetchResult::Committed {
-                        catalog_revision,
-                        connection: catalog::basis(&row),
-                        model_count: row.models.len() as u64,
-                        source: ModelDiscoverySource::Fetched,
-                        fetched_at,
-                    })
+                let catalog = catalog::read(tx)?;
+                let current = catalog
+                    .connections
+                    .into_iter()
+                    .find(|row| row.connection_id == material.connection.connection_id);
+                let changed = material.changed(tx, current.as_ref())?;
+                if !changed.is_empty() {
+                    return Ok(ConnectionModelFetchResult::Superseded { changed });
+                }
+                let mut row = current.expect("unchanged connection exists");
+                let previous = row.clone();
+                let selected_default = catalog
+                    .default_target
+                    .as_ref()
+                    .filter(|target| target.connection_id == row.connection_id)
+                    .map(|target| target.model_id.as_str())
+                    .or_else(|| row.enabled_model_ids.first().map(String::as_str));
+                if row.models.is_empty()
+                    && row.enabled_model_ids.is_empty()
+                    && selected_default.is_none_or(str::is_empty)
+                {
+                    row.enabled_model_ids.push(models[0].id.clone());
+                }
+                row.models = models;
+                row.model_source = Some(ModelDiscoverySource::Fetched);
+                row.models_fetched_at = Some(fetched_at);
+                row.revision = catalog::next_revision(row.revision)?;
+                if !same_test_basis(&previous, &row) {
+                    row.last_test = None;
+                }
+                catalog::write_entry(tx, &row)?;
+                let catalog_revision =
+                    catalog::advance(tx, catalog.revision, catalog.default_target.as_ref())?;
+                Ok(ConnectionModelFetchResult::Committed {
+                    catalog_revision,
+                    connection: catalog::basis(&row),
+                    model_count: row.models.len() as u64,
+                    source: ModelDiscoverySource::Fetched,
+                    fetched_at,
                 })
             })
             .await

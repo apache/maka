@@ -20,9 +20,10 @@
 use crate::{EventLog, StoreError};
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Prompt;
+use rusqlite::OptionalExtension;
 
 const QUERY: &str = "SELECT source_sequence,item_index FROM transcript_directory
-    WHERE session_id=?1 AND (source_sequence,item_index)<=(?2,?3) AND role='user'
+    WHERE owner_key=?1 AND (source_sequence,item_index)<=(?2,?3) AND role='user'
     ORDER BY source_sequence DESC,item_index DESC LIMIT 1";
 
 impl EventLog {
@@ -34,7 +35,6 @@ impl EventLog {
         through: u64,
         position: RowPosition,
     ) -> Result<Option<Prompt>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         super::read::sql_number(through)?;
         if position.source_sequence > through {
@@ -46,19 +46,16 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, through).await?;
-                    let row: Option<(i64,i64)> = sqlx::query_as(QUERY)
-                        .bind(&session).bind(source_sequence).bind(item_index)
-                        .fetch_optional(&mut *tx).await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, through)?;
+                    let row: Option<(i64,i64)> = tx.query_row(QUERY, rusqlite::params![&session, source_sequence, item_index], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
                     let Some((source,item)) = row else { return Ok(None) };
                     let position = super::read::row_position(source,item)?;
-                    super::bodycache::ensure(tx,&session,position).await?;
-                    let text: String = sqlx::query_scalar("SELECT COALESCE(navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text'),''),4096),'[attachments]') FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
-                        .bind(&session).bind(source).bind(item).fetch_one(&mut *tx).await?;
+                    super::bodycache::ensure(tx,&session,position)?;
+                    let text: String = tx.query_row("SELECT COALESCE(navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text'),''),4096),'[attachments]') FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, source, item], |row| row.get(0))?;
 
                     Ok(Some(Prompt { position,text }))
-                }))
+                })
             })
             .await
     }
@@ -73,10 +70,10 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         super::super::navigation::register(&db).unwrap();
         db.execute_batch(
-            "CREATE TABLE transcript_directory(session_id TEXT, source_sequence INTEGER, item_index INTEGER, role TEXT);",
+            "CREATE TABLE transcript_directory(owner_key TEXT, source_sequence INTEGER, item_index INTEGER, role TEXT);",
         )
         .unwrap();
-        db.execute_batch("CREATE INDEX directory_user ON transcript_directory (session_id, source_sequence, item_index) WHERE role = 'user';").unwrap();
+        db.execute_batch("CREATE INDEX directory_user ON transcript_directory (owner_key, source_sequence, item_index) WHERE role = 'user';").unwrap();
         for (session, sequence, role) in [
             ("a", 1, "user"),
             ("a", 2, "assistant"),

@@ -33,7 +33,7 @@ use maka_plugin_core::{
     package::{PackageRef, Packages},
     plan::{Plan, RemoteExports},
 };
-use sqlx::{Connection, Row, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
@@ -193,7 +193,6 @@ pub fn prepare_applications(
 }
 impl EventLog {
     fn application_domain(&self) -> Result<String, StoreError> {
-        self.validate_root()?;
         self.root_owner
             .as_ref()
             .map(|owner| owner.root_id().to_owned())
@@ -240,40 +239,36 @@ impl EventLog {
         let remote = serde_json::to_string(&observations)?;
         let owner = std::sync::Arc::downgrade(self.root_owner.as_ref().expect("owned source Root"));
         let commits = self.commits.notice();
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+        self.connection.run(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
             let id = deployment.to_string();
-            let current: Option<i64> = sqlx::query_scalar("SELECT revision FROM application_deployments WHERE id = ?")
-                .bind(&id).fetch_optional(&mut *tx).await?;
+            let current: Option<i64> = tx.query_row("SELECT revision FROM application_deployments WHERE id = ?", params![&id], |row| row.get(0)).optional()?;
             let current = current.unwrap_or(0) as u64;
             if current != expected_revision { return Err(StoreError::RevisionConflict {
                 expected: expected_revision.to_string(), actual: current.to_string(),
             }); }
             let revision = expected_revision + 1;
-            sqlx::query("INSERT INTO application_sources VALUES (?, ?, ?, ?)")
-                .bind(&id).bind(revision as i64).bind(encoded).bind(remote).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO application_deployments VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision")
-                .bind(&id).bind(revision as i64).execute(&mut *tx).await?;
+            tx.execute("INSERT INTO application_sources VALUES (?, ?, ?, ?)", params![&id, revision as i64, encoded, remote])?;
+            tx.execute("INSERT INTO application_deployments VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision", params![&id, revision as i64])?;
             for package in &bytes {
                 let reference = package.application_ref();
                 // Existing immutable content must match as well; never repair corruption by an overwrite.
-                let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM application_packages WHERE id = ? AND revision = ?)")
-                    .bind(&reference.id).bind(&reference.revision).fetch_one(&mut *tx).await?;
+                let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM application_packages WHERE id = ? AND revision = ?)", params![&reference.id, &reference.revision], |row| row.get(0))?;
                 if exists {
-                    if read_package(&mut tx, &reference).await?.files() != package.files() {
+                    if read_package(&tx, &reference)?.files() != package.files() {
                         return Err(StoreError::EventConflict);
                     }
                 } else {
-                    sqlx::query("INSERT INTO application_packages VALUES (?, ?)").bind(&reference.id).bind(&reference.revision).execute(&mut *tx).await?;
+                    tx.execute("INSERT INTO application_packages VALUES (?, ?)", params![&reference.id, &reference.revision])?;
                     for (path, payload) in package.files() {
-                        sqlx::query("INSERT INTO application_package_files VALUES (?, ?, ?, ?)")
-                            .bind(&reference.id).bind(&reference.revision).bind(path).bind(payload).execute(&mut *tx).await?;
+                        let digest=maka_agent_facts::artifact::content_digest(payload);
+                        let content=crate::content::put(&tx,&digest,payload)?;
+                        tx.execute("INSERT INTO application_package_files VALUES (?, ?, ?, ?)", params![&reference.id, &reference.revision, path, content])?;
                     }
                 }
-                sqlx::query("INSERT INTO application_source_packages VALUES (?, ?, ?, ?)")
-                    .bind(&id).bind(revision as i64).bind(&reference.id).bind(&reference.revision).execute(&mut *tx).await?;
+                tx.execute("INSERT INTO application_source_packages VALUES (?, ?, ?, ?)", params![&id, revision as i64, &reference.id, &reference.revision])?;
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             commits.metadata();
             let reference = DeploymentRef { state_domain: domain, deployment, revision };
             let snapshot = SourceSnapshot::new(owner, reference.clone(), &plan);
@@ -281,7 +276,7 @@ impl EventLog {
                 source: Deployment { reference, input, remote_exports: observations },
                 packages: bytes, plan, snapshot,
             })
-        })).await
+        }).await
     }
 
     pub async fn load_application(
@@ -346,27 +341,19 @@ impl EventLog {
         let requested = package.clone();
         let files = self
             .connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let installed: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM application_source_packages
-                            WHERE deployment = ? AND source_revision = ? AND id = ? AND revision = ?)",
-                    )
-                    .bind(&deployment)
-                    .bind(revision)
-                    .bind(&requested.id)
-                    .bind(&requested.revision)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            .read(move |connection| {
+
+                    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+                    let installed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM application_source_packages
+                            WHERE deployment = ? AND source_revision = ? AND id = ? AND revision = ?)", params![&deployment, revision, &requested.id, &requested.revision], |row| row.get(0))?;
                     let files = if installed {
-                        Some(read_package_files(&mut tx, &requested).await?)
+                        Some(read_package_files(&tx, &requested)?)
                     } else {
                         None
                     };
-                    tx.commit().await?;
+                    tx.commit()?;
                     Ok(files)
-                })
+
             })
             .await?;
         let Some(files) = files else {
@@ -392,13 +379,11 @@ impl EventLog {
             return Err(invalid("invalid deployment"));
         }
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let metadata = read_metadata(&mut tx, domain, deployment, revision).await?;
-                    tx.commit().await?;
-                    Ok(metadata)
-                })
+            .read(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+                let metadata = read_metadata(&tx, domain, deployment, revision)?;
+                tx.commit()?;
+                Ok(metadata)
             })
             .await
     }
@@ -415,22 +400,18 @@ impl EventLog {
         let owner = std::sync::Arc::downgrade(self.root_owner.as_ref().expect("owned source Root"));
         let raw = self
             .connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let Some(metadata) =
-                        read_metadata(&mut tx, domain, deployment, revision).await?
-                    else {
-                        return Ok(None);
-                    };
-                    let mut raw_packages = Vec::with_capacity(metadata.packages.len());
-                    for reference in &metadata.packages {
-                        let files = read_package_files(&mut tx, reference).await?;
-                        raw_packages.push((reference.clone(), files));
-                    }
-                    tx.commit().await?;
-                    Ok(Some((metadata, raw_packages)))
-                })
+            .read(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+                let Some(metadata) = read_metadata(&tx, domain, deployment, revision)? else {
+                    return Ok(None);
+                };
+                let mut raw_packages = Vec::with_capacity(metadata.packages.len());
+                for reference in &metadata.packages {
+                    let files = read_package_files(&tx, reference)?;
+                    raw_packages.push((reference.clone(), files));
+                }
+                tx.commit()?;
+                Ok(Some((metadata, raw_packages)))
             })
             .await?;
         let Some((metadata, raw_packages)) = raw else {
@@ -463,8 +444,8 @@ impl EventLog {
     }
 }
 
-async fn read_metadata(
-    connection: &mut SqliteConnection,
+fn read_metadata(
+    connection: &Connection,
     domain: String,
     deployment: Uuid,
     revision: Option<u64>,
@@ -472,51 +453,46 @@ async fn read_metadata(
     let id = deployment.to_string();
     let revision = match revision {
         Some(revision) => revision,
-        None => match sqlx::query_scalar::<_, i64>(
-            "SELECT revision FROM application_deployments WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_optional(&mut *connection)
-        .await?
+        None => match connection
+            .query_row(
+                "SELECT revision FROM application_deployments WHERE id = ?",
+                params![&id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
         {
             Some(revision) => revision as u64,
             None => return Ok(None),
         },
     };
-    let Some(row) = sqlx::query(
-        "SELECT revision, input_json, remote_exports_json
-                FROM application_sources WHERE deployment = ?1 AND revision = ?2",
-    )
-    .bind(&id)
-    .bind(revision as i64)
-    .fetch_optional(&mut *connection)
-    .await?
-    else {
-        return Ok(None);
-    };
-    let input_json: String = row.try_get("input_json")?;
-    let remote_json: String = row.try_get("remote_exports_json")?;
+    let Some((stored_revision, input_json, remote_json)) = connection.query_row(
+        "SELECT revision, input_json, remote_exports_json FROM application_sources WHERE deployment = ?1 AND revision = ?2",
+        params![&id, revision as i64],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+    ).optional()? else { return Ok(None); };
     let input: Input = serde_json::from_str(&input_json)?;
     let observations: Vec<RemoteObservation> = serde_json::from_str(&remote_json)?;
     let reference = DeploymentRef {
         state_domain: domain,
         deployment,
-        revision: row.try_get::<i64, _>("revision")? as u64,
+        revision: stored_revision as u64,
     };
     reference.validate().map_err(invalid)?;
-    let refs = sqlx::query("SELECT id,
-                CASE WHEN length(CAST(revision AS BLOB)) = 71 THEN revision END AS revision
-                FROM application_source_packages WHERE deployment = ? AND source_revision = ? ORDER BY id, revision")
-                .bind(&id).bind(revision as i64).fetch_all(&mut *connection).await?;
+    let mut statement = connection.prepare_cached("SELECT id,
+        CASE WHEN length(CAST(revision AS BLOB)) = 71 THEN revision END AS revision
+        FROM application_source_packages WHERE deployment = ? AND source_revision = ? ORDER BY id, revision")?;
+    let refs = statement.query_map(params![&id, revision as i64], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
     let mut packages = Vec::new();
     for row in refs {
+        let (id, revision) = row?;
         let reference = PackageRef {
-            id: row
-                .try_get::<Option<String>, _>("id")?
-                .ok_or_else(|| invalid("invalid stored package id"))?,
-            revision: row
-                .try_get::<Option<String>, _>("revision")?
-                .ok_or_else(|| invalid("invalid stored package revision"))?,
+            id: id.ok_or_else(|| invalid("invalid stored package id"))?,
+            revision: revision.ok_or_else(|| invalid("invalid stored package revision"))?,
         };
         reference
             .validate()
@@ -533,30 +509,27 @@ async fn read_metadata(
     }))
 }
 
-async fn read_package_files(
-    connection: &mut SqliteConnection,
+fn read_package_files(
+    connection: &Connection,
     reference: &PackageRef,
 ) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
-    let rows = sqlx::query(
-        "SELECT path,
-            CASE WHEN typeof(payload) = 'blob' THEN payload END AS payload
-            FROM application_package_files WHERE id = ? AND revision = ? ORDER BY path",
-    )
-    .bind(&reference.id)
-    .bind(&reference.revision)
-    .fetch_all(&mut *connection)
-    .await?;
-    if rows.is_empty() {
-        return Err(invalid("invalid stored application package file count"));
-    }
+    let mut statement = connection.prepare_cached(
+        "SELECT path, CASE WHEN typeof(c.payload) = 'blob' THEN c.payload END AS payload
+        FROM application_package_files f JOIN contents c ON c.id=f.content_id
+        WHERE f.id = ? AND f.revision = ? ORDER BY f.path",
+    )?;
+    let rows = statement.query_map(params![&reference.id, &reference.revision], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+    })?;
     let mut files = BTreeMap::new();
     for row in rows {
-        let path: String = row.try_get("path")?;
+        let (path, bytes) = row?;
         maka_packages::validate_path(&path).map_err(|e| invalid(e.to_string()))?;
-        let bytes: Vec<u8> = row
-            .try_get::<Option<Vec<u8>>, _>("payload")?
-            .ok_or_else(|| invalid("stored package payload must be a BLOB"))?;
+        let bytes = bytes.ok_or_else(|| invalid("stored package payload must be a BLOB"))?;
         files.insert(path, bytes);
+    }
+    if files.is_empty() {
+        return Err(invalid("invalid stored application package file count"));
     }
     Ok(files)
 }
@@ -572,11 +545,8 @@ fn build_checked_package(
     Ok(package)
 }
 
-async fn read_package(
-    connection: &mut SqliteConnection,
-    reference: &PackageRef,
-) -> Result<Package, StoreError> {
-    let files = read_package_files(connection, reference).await?;
+fn read_package(connection: &Connection, reference: &PackageRef) -> Result<Package, StoreError> {
+    let files = read_package_files(connection, reference)?;
     build_checked_package(files, reference)
 }
 

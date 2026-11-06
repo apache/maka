@@ -18,31 +18,9 @@
  */
 
 //! Accepted SQL custody belongs to the original actors, beyond callback unwind.
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) type Custody = Arc<dyn Send + Sync>;
-
-/// Exactly one in-flight slot per physical actor. A failed close leaves its
-/// slot with the original owner; there is no completed-work history to grow.
-#[derive(Default)]
-pub(super) struct Retained([Mutex<Vec<Custody>>; 3]);
-
-impl Retained {
-    pub(super) fn hold(&self, slot: usize, custody: Custody) {
-        self.0[slot]
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(custody);
-    }
-    pub(super) fn clear(&self, slot: usize) {
-        let retained = std::mem::take(
-            &mut *self.0[slot]
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
-        drop(retained);
-    }
-}
 
 pub(super) fn combine(current: &Option<Custody>, next: Custody) -> Custody {
     match current {
@@ -50,6 +28,3 @@ pub(super) fn combine(current: &Option<Custody>, next: Custody) -> Custody {
         None => next,
     }
 }
-
-#[cfg(test)]
-mod tests;
