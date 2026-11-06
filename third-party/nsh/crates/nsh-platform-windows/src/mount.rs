@@ -84,6 +84,7 @@ impl Mounter {
     /// The batch is applied.
     pub(crate) fn end_batch(&mut self, surface: &Rc<Surface>) {
         self.layout_animation = None;
+        crate::text_input::end_batch(surface);
         crate::selectable_view::end_batch(surface);
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
@@ -199,6 +200,8 @@ impl Mounter {
             MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = &self.get(*id) {
+                    crate::input::retire_cell(surface, view);
+                    crate::text_input::removing(surface, view);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -209,6 +212,8 @@ impl Mounter {
             MountItem::Delete { id } => {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
+                    crate::input::retire_cell(surface, &view);
+                    crate::text_input::removing(surface, &view);
                     crate::navigation::removing(surface, &view);
                     crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
@@ -267,6 +272,9 @@ impl Mounter {
             MountItem::ViewStyle { id, style } => {
                 let Some(view) = &self.get(*id) else { return };
                 let old = std::mem::replace(&mut view.state_mut().style, style.clone());
+                if !old.hidden && style.hidden {
+                    crate::text_input::removing(surface, view);
+                }
                 crate::input::style_changed(view);
                 if old.cursor != style.cursor {
                     crate::input::cursor_changed(surface);

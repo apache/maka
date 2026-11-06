@@ -17,6 +17,7 @@ default = ["js"]
 # Rust app and links no QuickJS.
 js = ["nsh-engine/js"]
 # Development support: dev server client, log forwarding, error overlay.
+terminal = ["dep:nsh-terminal"]
 dev = ["js", "dep:nsh-dev", "dep:nsh-testing"]
 
 [dependencies]
@@ -24,6 +25,7 @@ log.workspace = true
 
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
+nsh-terminal = { workspace = true, optional = true }
 nsh-core = { workspace = true, features = ["svg", "loader"] }
 nsh-engine = { workspace = true, features = ["net", "shader"] }
 nsh-base = { workspace = true, features = ["highlight", "math"] }

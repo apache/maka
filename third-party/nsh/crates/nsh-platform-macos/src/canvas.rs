@@ -205,6 +205,8 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
                 *slot = Some(image);
             }
             view.changed();
+            #[cfg(feature = "terminal")]
+            view.invalidate_capture();
         });
     }
     // The mounter draws it, when it shows.

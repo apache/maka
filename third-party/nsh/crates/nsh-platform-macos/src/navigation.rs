@@ -1437,6 +1437,12 @@ pub(crate) fn key_pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     // hands the keyboard back to the app, as a field's does, rather than
     // closing the screen under a form being filled in. Option+Left and
     // Command+[ a page does not use still go back.
+    if escape && crate::text_input::composing_focused(surface) {
+        return true;
+    }
+    if escape {
+        crate::text_input::disarm(surface);
+    }
     if escape && (focused_field(surface) || crate::native::web_focused(surface)) {
         if let Some(window) = surface.root.ns().window() {
             window.makeFirstResponder(Some(surface.root.ns()));
@@ -1550,30 +1556,44 @@ pub(crate) fn deleted(surface: &Surface, view: &NshView) {
 
 /// A modal was inserted: present it.
 pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
-    let mut nav = surface.nav.borrow_mut();
-    let id = view.id();
-    let m = nav.modals.entry(id).or_default();
-    if m.view.is_some() {
-        if !view.has_parent() {
+    {
+        let mut nav = surface.nav.borrow_mut();
+        let id = view.id();
+        let m = nav.modals.entry(id).or_default();
+        if m.view.is_some() {
+            if !view.has_parent() {
+                view.insert_before(&surface.root, None);
+                nav.size_modal(surface, id);
+                nav.raise_modals(surface);
+            }
+        } else {
+            m.view = Some(view.clone());
+            m.closed = false;
+            m.reported = Reported::default();
+            m.focus_before =
+                focused(surface).filter(|w| w.load().is_some_and(|v| !v.isDescendantOf(view.ns())));
+            if view.has_parent() {
+                view.unparent();
+            }
             view.insert_before(&surface.root, None);
+            nav.order.push(id);
             nav.size_modal(surface, id);
             nav.raise_modals(surface);
+            // Animated in at the end of the batch, with the options it brings.
+            nav.presenting.push(id);
         }
-        return;
     }
-    m.view = Some(view.clone());
-    m.closed = false;
-    m.reported = Reported::default();
-    m.focus_before = focused(surface);
-    if view.has_parent() {
-        view.unparent();
+    if let Some(window) = surface.root.ns().window()
+        && window.firstResponder().is_some_and(|r| {
+            r.downcast_ref::<NSView>().is_some_and(|v| {
+                v != surface.root.ns()
+                    && v.isDescendantOf(surface.root.ns())
+                    && !v.isDescendantOf(view.ns())
+            })
+        })
+    {
+        crate::text_input::to_root(&window, surface);
     }
-    view.insert_before(&surface.root, None);
-    nav.order.push(id);
-    nav.size_modal(surface, id);
-    nav.raise_modals(surface);
-    // Animated in at the end of the batch, with the options it brings.
-    nav.presenting.push(id);
 }
 
 /// A modal was removed: dismiss it.

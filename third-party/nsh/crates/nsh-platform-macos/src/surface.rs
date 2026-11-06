@@ -57,6 +57,8 @@ enum Message {
     /// A batch, and when the engine handed it over (while a performance
     /// monitor measures).
     Batch(MountBatch, Option<Instant>),
+    /// The engine finished handling events up to this count.
+    Handled(u64),
     Error(String),
     Frame,
     HotUpdateFailed,
@@ -99,6 +101,7 @@ struct Sink {
     perf: Arc<AtomicBool>,
     /// The directory `import()` chunks load from ([`AppOptions::chunks`]).
     chunks: Option<PathBuf>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Sink {
@@ -111,6 +114,9 @@ impl Sink {
                     surface.drain();
                 }
             });
+            if let Some(wake) = &self.wake {
+                wake();
+            }
         }
     }
 }
@@ -119,6 +125,10 @@ impl MountSink for Sink {
     fn submit(&self, batch: MountBatch) {
         let sent = self.perf.load(Ordering::Relaxed).then(Instant::now);
         self.send(Message::Batch(batch, sent));
+    }
+
+    fn handled(&self, events: u64) {
+        self.send(Message::Handled(events));
     }
 
     fn report_error(&self, message: &str) {
@@ -187,6 +197,14 @@ pub(crate) struct Surface {
     /// The text selection ([`crate::text::Selected`]).
     pub(crate) selection: crate::text::Selected,
     engine: RefCell<Option<Engine>>,
+    pub(crate) capture_revision: Cell<u64>,
+    pub(crate) focus_generation: Cell<u64>,
+    events_handled: Cell<u64>,
+    pub(crate) terminal: Cell<bool>,
+    pub(crate) terminal_scale: Cell<f32>,
+    pub(crate) terminal_clipboard: RefCell<Option<String>>,
+    pub(crate) terminal_quit: Cell<bool>,
+    pub(crate) terminal_wake: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     control: RefCell<Option<EngineControl>>,
     rx: RefCell<Option<Receiver<Message>>>,
     pending: RefCell<Arc<AtomicBool>>,
@@ -278,6 +296,14 @@ impl Surface {
             input: Default::default(),
             selection: Default::default(),
             engine: RefCell::new(None),
+            capture_revision: Cell::new(0),
+            focus_generation: Cell::new(0),
+            events_handled: Cell::new(0),
+            terminal: Cell::new(false),
+            terminal_scale: Cell::new(1.0),
+            terminal_clipboard: RefCell::new(None),
+            terminal_quit: Cell::new(false),
+            terminal_wake: RefCell::new(None),
             control: RefCell::new(None),
             rx: RefCell::new(None),
             pending: RefCell::new(Arc::new(AtomicBool::new(false))),
@@ -352,6 +378,7 @@ impl Surface {
             pending: pending.clone(),
             perf: self.perf_on.clone(),
             chunks: self.chunks.borrow().clone(),
+            wake: self.terminal_wake.borrow().clone(),
         };
         *self.rx.borrow_mut() = Some(rx);
         *self.pending.borrow_mut() = pending;
@@ -379,7 +406,13 @@ impl Surface {
                 *self.control.borrow_mut() = Some(engine.control());
                 *self.engine.borrow_mut() = Some(engine);
             }
-            Err(err) => log::error!("cannot start the engine: {err}"),
+            Err(err) => {
+                let error = format!("cannot start the engine: {err}");
+                log::error!("{error}");
+                if let Some(handler) = &*self.on_error.borrow() {
+                    handler(&error);
+                }
+            }
         }
     }
 
@@ -389,6 +422,8 @@ impl Surface {
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
+        self.events_handled.set(0);
+        crate::text_input::stopped(self);
         self.mounter.borrow_mut().clear();
         self.native.clear();
         crate::system::clear(self);
@@ -403,6 +438,22 @@ impl Surface {
         #[cfg(feature = "dev")]
         self.cosmetic_frames.set(0);
         crate::shader::clear(self);
+    }
+
+    #[cfg(feature = "terminal")]
+    pub(crate) fn running(&self) -> bool {
+        self.control.borrow().is_some()
+    }
+
+    pub(crate) fn events_sent(&self) -> u64 {
+        self.control
+            .borrow()
+            .as_ref()
+            .map_or(0, EngineControl::events_sent)
+    }
+
+    pub(crate) fn events_handled(&self) -> u64 {
+        self.events_handled.get()
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -420,8 +471,8 @@ impl Surface {
         });
     }
 
-    /// Shows fatal app errors with `f` (development hosts).
-    #[cfg(feature = "dev")]
+    /// Shows fatal app errors with `f` (development and terminal hosts).
+    #[cfg(any(feature = "dev", feature = "terminal"))]
     pub(crate) fn set_error_handler(&self, f: ErrorHandler) {
         *self.on_error.borrow_mut() = Some(f);
     }
@@ -537,7 +588,7 @@ impl Surface {
 
     /// Handles what the engine sent. While animations run (see the module
     /// doc), batches wait for the next frame ([`Surface::apply_queued`]).
-    fn drain(self: &Rc<Self>) {
+    pub(crate) fn drain(self: &Rc<Self>) {
         let monitor = self.perf.borrow().clone();
         let start = monitor.as_ref().map(|_| Instant::now());
         self.pending.borrow().store(false, Ordering::Release);
@@ -588,6 +639,10 @@ impl Surface {
                 }
                 self.apply(&batch);
                 return true;
+            }
+            Message::Handled(events) => {
+                self.events_handled.set(events);
+                crate::text_input::engine_caught_up(self);
             }
             Message::Error(message) => {
                 log::error!("{message}");
@@ -644,6 +699,8 @@ impl Surface {
     }
 
     fn apply(self: &Rc<Self>, batch: &MountBatch) {
+        self.capture_revision
+            .set(self.capture_revision.get().wrapping_add(1));
         crate::access::prepare(batch);
         for item in &batch.items {
             self.anim.borrow_mut().apply(item);
@@ -845,7 +902,9 @@ impl Surface {
 
     /// One display frame at `now`, `period` seconds after the previous one
     /// (the display link's, or the fallback timer's).
-    fn frame(self: &Rc<Self>, now: f64, period: f64) {
+    pub(crate) fn frame(self: &Rc<Self>, now: f64, period: f64) {
+        self.capture_revision
+            .set(self.capture_revision.get().wrapping_add(1));
         let Some(monitor) = self.perf.borrow().clone() else {
             return quiet(|| self.tick(now));
         };
@@ -901,7 +960,10 @@ impl Surface {
         let monitor = self.perf.borrow().clone();
         let start = Instant::now();
         let mut applied = false;
-        while !applied || start.elapsed() < budget {
+        while !applied
+            || start.elapsed() < budget
+            || matches!(self.queued.borrow().front(), Some(Message::Handled(_)))
+        {
             let Some(message) = self.queued.borrow_mut().pop_front() else {
                 break;
             };
@@ -932,6 +994,7 @@ impl Drop for Surface {
         if let Some(link) = self.link.borrow_mut().take() {
             link.invalidate();
         }
+        crate::text_input::disposed(key);
         let _ = SURFACES.try_with(|s| s.borrow_mut().remove(&key));
     }
 }

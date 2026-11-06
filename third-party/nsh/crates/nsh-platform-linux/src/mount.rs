@@ -60,6 +60,7 @@ impl Mounter {
         crate::navigation::end_batch(surface);
         crate::system::end_batch(surface);
         crate::selectable_view::end_batch(surface);
+        crate::text_input::end_batch(surface);
     }
 
     fn get(&self, id: NodeId) -> Option<&NshView> {
@@ -160,6 +161,8 @@ impl Mounter {
             MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
+                    crate::input::retire_cell(surface, view);
+                    crate::text_input::removing(surface, view);
                     crate::selectable_view::touched(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -171,6 +174,8 @@ impl Mounter {
                 crate::file_drop::deleted(surface, *id);
                 crate::navigation::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
+                    crate::input::retire_cell(surface, &view);
+                    crate::text_input::removing(surface, &view);
                     crate::navigation::deleted_parked_root(surface, &view);
                     crate::selectable_view::touched(surface, &view);
                     crate::native::deleted(surface, &view);
@@ -448,6 +453,7 @@ impl Mounter {
 
     /// Takes `view` out of its parent (a modal is dismissed).
     pub(crate) fn detach(&self, surface: &Rc<Surface>, view: &NshView) {
+        crate::text_input::removing(surface, view);
         match view.kind() {
             ViewKind::Modal => return crate::navigation::dismiss(surface, view),
             ViewKind::HeaderItem => return crate::navigation::header_item_removed(surface, view),
@@ -469,14 +475,24 @@ impl Mounter {
     fn command(&self, surface: &Rc<Surface>, id: NodeId, command: &Command) {
         let view = self.views.get(&id);
         match command {
-            Command::Focus => view.map_or((), crate::text_input::focus),
+            Command::Focus => match view {
+                Some(view) if view.kind() == ViewKind::Input => crate::text_input::focus(view),
+                Some(view) if id != ROOT_ID => crate::text_input::focus_view(view),
+                _ => {}
+            },
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
+                Some(view) if id != ROOT_ID => crate::text_input::blur_view(view),
                 _ => crate::text_input::blur_all(surface),
             },
             Command::SetSelection { start, end } => {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);
+                }
+            }
+            Command::ReplaceRange { .. } => {
+                if let Some(view) = view {
+                    crate::text_input::replace_range(view, command);
                 }
             }
             Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {

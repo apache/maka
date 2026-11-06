@@ -110,7 +110,8 @@ function fixture() {
     ]),
     nsh: workspace([
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
-      ['nsh-cli', 'third-party/nsh/crates/nsh-cli', ['third-party/nsh/crates/nsh-core']],
+      ['nsh-cli', 'third-party/nsh/crates/nsh-cli', ['external-nsh']],
+      ['nsh-terminal', 'third-party/nsh/crates/nsh-terminal', ['external-nsh']],
       [
         'nsh-platform-windows',
         'third-party/nsh/crates/nsh-platform-windows',
@@ -127,22 +128,19 @@ function fixture() {
         ['third-party/nsh/crates/nsh-platform-windows'],
       ],
     ]),
-    gpui: workspace([
-      ['nsh-platform-gpui', 'third-party/nsh/crates/gpui/nsh-platform-gpui', ['external-nsh']],
-    ]),
     termina: workspace([['termina', 'third-party/termina']]),
   };
   metadata.root.workspace_members = metadata.root.workspace_members.filter(
     (id) => !id.startsWith('third-party/'),
   );
   // The same path dependency has a different Cargo package ID in this graph.
-  metadata.gpui.packages.push({
+  metadata.nsh.packages.push({
     id: 'external-nsh',
     name: 'nsh-core',
     manifest_path: `${root}/third-party/nsh/crates/nsh-core/Cargo.toml`,
     source: null,
   });
-  metadata.gpui.resolve.nodes.push({ id: 'external-nsh', deps: [] });
+  metadata.nsh.resolve.nodes.push({ id: 'external-nsh', deps: [] });
   return (changes) => createPlan({ root, changes, metadata, revision: 'head', baseline: 'base' });
 }
 
@@ -164,7 +162,7 @@ test('a transitive Computer Use dependency selects all native OS checks and CLI 
 test('a path dependency affects consumers across owning workspaces', () => {
   const plan = fixture()(['third-party/nsh/crates/nsh-core/src/lib.rs']);
   assert.ok(plan.suites.nsh);
-  assert.ok(plan.suites.gpui);
+  assert.ok(plan.suites['windows-nsh']);
   assert.equal(plan.suites.root.filter, 'package(=maka-cli) | package(=maka-desktop-shell)');
   assert.equal(plan.full, false);
 });
@@ -177,7 +175,10 @@ test('Windows backend changes select the native tests and default desktop consum
     plan.workers
       .filter((worker) => worker.id.startsWith('native-'))
       .map(({ id, suites }) => ({ id, suites })),
-    [{ id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] }],
+    [
+      { id: 'native-macos', suites: ['macos-desktop'] },
+      { id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] },
+    ],
   );
   const consumer = fixture()(['third-party/nsh/crates/nsh-windows-app/src/lib.rs']);
   assert.ok(consumer.suites['windows-nsh']);
@@ -404,16 +405,17 @@ test('documentation is cheap while shared and unknown source inputs request full
     const plan = select([path]);
     assert.equal(plan.full, true, path);
     assert.ok(plan.suites.root, path);
-    assert.ok(plan.suites.gpui, path);
+    assert.ok(plan.suites['linux-nsh'], path);
   }
 });
 
 test('the aggregate accepts only successful planned work, including every selected matrix', () => {
   const full = createPlan({ root, revision: 'head' });
   const results = Object.fromEntries(
-    ['plan', 'tooling', 'suites', 'root-build', 'root-tests', 'desktop-build', 'desktop-tests'].map(
-      (id) => [id, { result: 'success' }],
-    ),
+    ['plan', 'tooling', 'suites', 'root-build', 'root-tests'].map((id) => [
+      id,
+      { result: 'success' },
+    ]),
   );
   checkResults(full, results, true);
   for (const id of Object.keys(results)) {
@@ -456,9 +458,7 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
     assert(selected.suites.desktop, input);
     assert(selected.suites.contracts, input);
   }
-  assert(
-    plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
-  );
+  assert(plan(['products/maka/workbench/tests/fonts/IBMPlexSans-Regular.ttf']).suites.root);
 });
 
 test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
@@ -667,7 +667,17 @@ test('skill publication changes run the existing behavior tests on Windows', asy
     },
     {
       executable: 'cargo',
-      args: ['nextest', 'run', '--locked', '-p', 'maka-skills-native', '--lib', '-j', '1'],
+      args: [
+        'nextest',
+        'run',
+        '--locked',
+        '-p',
+        'maka-skills-native',
+        '--lib',
+        '--no-tests=fail',
+        '-j',
+        '1',
+      ],
     },
   ]);
 });
@@ -1196,4 +1206,42 @@ test('product verification reaches the reviewed notice gate and propagates its f
   covered = true;
   await exec.verify('product');
   assert.equal(noticeChecks, 2);
+});
+
+test('native pixel and desktop regressions run only on their native OS workers', () => {
+  const plan = createPlan({ root, revision: 'head' });
+  for (const id of ['desktop', 'pixels']) {
+    assert.deepEqual(
+      plan.workers.filter((worker) => worker.suites.includes(id)).map((worker) => worker.runner),
+      ['macos-latest', 'windows-latest'],
+    );
+  }
+  assert.deepEqual(
+    plan.workers
+      .filter((worker) => worker.suites.includes('linux-nsh'))
+      .map((worker) => worker.runner),
+    ['ubuntu-latest'],
+  );
+  assert.equal(plan.suites.gpui, undefined);
+});
+
+test('native regression commands fail empty selections and GTK runs under Xvfb', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (exe, args) => {
+        calls.push({ exe, args });
+        return '';
+      },
+    },
+  );
+  for (const id of ['desktop', 'pixels', 'linux-nsh', 'macos-nsh', 'macos-surface', 'windows-nsh'])
+    await exec.verify(id);
+  for (const call of calls) assert(call.args.includes('--no-tests=fail'));
+  assert(calls.some(({ args }) => args.includes('native-desktop')));
+  assert(calls.some(({ args }) => args.includes('native-pixels')));
+  assert(calls.some(({ args }) => args.includes('terminal_native') && !args.includes('--lib')));
+  assert(calls.some(({ exe, args }) => exe === 'xvfb-run' && args[0] === '-a'));
 });

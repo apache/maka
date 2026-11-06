@@ -40,6 +40,7 @@ enum Message {
     HotUpdateFailed,
     /// The engine laid the app out at this size ([`MountSink::resized`]).
     Resized(Size<Points>),
+    Handled(u64),
 }
 
 /// How long the main thread waits for the layout at a new window size
@@ -61,6 +62,7 @@ struct Sink {
     tx: Sender<Message>,
     /// A wake-up is on its way: no need for another.
     pending: Arc<AtomicBool>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Sink {
@@ -68,6 +70,9 @@ impl Sink {
         let _ = self.tx.send(message);
         if !self.pending.swap(true, Ordering::AcqRel) {
             crate::window::wake(self.hwnd.load(Ordering::Acquire));
+            if let Some(wake) = &self.wake {
+                wake();
+            }
         }
     }
 }
@@ -92,6 +97,10 @@ impl MountSink for Sink {
     fn resized(&self, size: Size<Points>) {
         self.send(Message::Resized(size));
     }
+
+    fn handled(&self, events: u64) {
+        self.send(Message::Handled(events));
+    }
 }
 
 /// Called on every frame with the frame's time until it returns false
@@ -112,6 +121,9 @@ pub(crate) type ActivationHandler = Box<dyn Fn(bool) + Send>;
 
 /// One engine and its views.
 pub(crate) struct Surface {
+    pub(crate) terminal_active: Cell<Option<bool>>,
+    pub(crate) terminal_focus_generation: Cell<u64>,
+    pub(crate) terminal_wake: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     key: u64,
     /// The root view (node [`ROOT_ID`]): fills the window.
     pub(crate) root: NshView,
@@ -215,6 +227,7 @@ pub(crate) struct Surface {
     /// Keys the window takes before anything focused sees them (the
     /// standalone app's full screen, the dev host's reload).
     pub(crate) shortcuts: RefCell<Vec<ShortcutHandler>>,
+    events_handled: Cell<u64>,
 }
 
 impl Surface {
@@ -224,6 +237,9 @@ impl Surface {
         let root = NshView::new(ROOT_ID, nsh_core::ViewKind::View);
         let mounter = Mounter::new(root.clone());
         let surface = Rc::new(Surface {
+            terminal_active: Cell::new(None),
+            terminal_focus_generation: Cell::new(0),
+            terminal_wake: RefCell::new(None),
             key,
             root: root.clone(),
             views: mounter.views.clone(),
@@ -276,6 +292,7 @@ impl Surface {
             on_resized: RefCell::default(),
             resize_late: Cell::new(false),
             shortcuts: RefCell::default(),
+            events_handled: Cell::new(0),
             chrome: Default::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
@@ -400,6 +417,7 @@ impl Surface {
             hwnd: self.hwnd.clone(),
             tx,
             pending: pending.clone(),
+            wake: self.terminal_wake.borrow().clone(),
         };
         *self.rx.borrow_mut() = Some(rx);
         *self.pending.borrow_mut() = pending;
@@ -426,12 +444,18 @@ impl Surface {
                 *self.control.borrow_mut() = Some(engine.control());
                 *self.engine.borrow_mut() = Some(engine);
             }
-            Err(err) => log::error!("cannot start the engine: {err}"),
+            Err(err) => {
+                log::error!("cannot start the engine: {err}");
+                if let Some(handler) = &*self.on_error.borrow() {
+                    handler(&err.to_string());
+                }
+            }
         }
     }
 
     /// Stops the app and removes its views.
     pub(crate) fn stop(&self) {
+        crate::text_input::stopped(self);
         crate::input::cancel_keyboard_press(self);
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
@@ -448,7 +472,14 @@ impl Surface {
         self.js_frame.set(false);
         self.resize_late.set(false);
         self.frame_clients.borrow_mut().clear();
+        self.ticker.borrow_mut().take();
+        self.events_handled.set(0);
         self.invalidate();
+    }
+
+    #[cfg(feature = "terminal")]
+    pub(crate) fn running(&self) -> bool {
+        self.engine.borrow().is_some()
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -485,7 +516,21 @@ impl Surface {
 
     /// Sends an event to JS.
     pub(crate) fn event(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
-        self.control(|c| c.dispatch_event(id, kind, payload));
+        self.control(|c| {
+            c.set_focus_path(self.focus_path());
+            c.dispatch_event(id, kind, payload);
+        });
+    }
+
+    pub(crate) fn events_sent(&self) -> u64 {
+        self.control
+            .borrow()
+            .as_ref()
+            .map_or(0, EngineControl::events_sent)
+    }
+
+    pub(crate) fn events_handled(&self) -> u64 {
+        self.events_handled.get()
     }
 
     /// The view of node `id`.
@@ -493,8 +538,8 @@ impl Surface {
         self.views.get(id)
     }
 
-    /// Shows fatal app errors with `f` (development hosts).
-    #[cfg(feature = "dev")]
+    /// Reports fatal app errors to an embedding host.
+    #[cfg(any(feature = "dev", feature = "terminal"))]
     pub(crate) fn set_error_handler(&self, f: ErrorHandler) {
         *self.on_error.borrow_mut() = Some(f);
     }
@@ -611,6 +656,9 @@ impl Surface {
     }
 
     fn request_paint(&self) {
+        if let Some(wake) = &*self.terminal_wake.borrow() {
+            wake();
+        }
         if !self.invalid.replace(true) {
             crate::window::invalidate(self.hwnd());
         }
@@ -793,6 +841,10 @@ impl Surface {
                 }
             }
             Message::Resized(_) => self.resize_late.set(false),
+            Message::Handled(events) => {
+                self.events_handled.set(events);
+                crate::text_input::engine_caught_up(self);
+            }
         }
         false
     }
@@ -864,7 +916,7 @@ impl Surface {
         *self.test_model.borrow_mut() = model;
     }
 
-    fn wants_frames(&self) -> bool {
+    pub(crate) fn wants_frames(&self) -> bool {
         self.fps.borrow().is_some()
             || self.js_frame.get()
             || self.anim.borrow().animating()
@@ -923,8 +975,19 @@ impl Surface {
 
 impl Drop for Surface {
     fn drop(&mut self) {
+        crate::text_input::disposed(self.key);
         let key = self.key;
-        let _ = SURFACES.try_with(|s| s.borrow_mut().remove(&key));
+        let empty = SURFACES
+            .try_with(|s| {
+                let mut s = s.borrow_mut();
+                s.remove(&key);
+                s.retain(|_, w| w.strong_count() > 0);
+                s.is_empty()
+            })
+            .unwrap_or(false);
+        if empty {
+            crate::gfx::release_thread_resources();
+        }
     }
 }
 

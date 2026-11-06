@@ -57,6 +57,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         &format!("http://{}/v1", listener.local_addr().unwrap()),
         false,
         false,
+        maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
     )
     .await;
     drop(owner);

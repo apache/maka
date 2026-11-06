@@ -71,6 +71,14 @@ thread_local! {
     };
 }
 
+pub(super) fn clear_thread_cache() {
+    let _ = POOL.try_with(|p| {
+        let mut p = p.borrow_mut();
+        p.free.clear();
+        p.generation = 0;
+    });
+}
+
 /// Runs `f` with a device context of `gfx`'s device that nobody else is
 /// drawing with (its target unset, no drawing begun).
 pub(crate) fn with_context<R>(gfx: &Gfx, f: impl FnOnce(&ID2D1DeviceContext) -> R) -> Option<R> {

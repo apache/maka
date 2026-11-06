@@ -555,6 +555,9 @@ define_class!(
                 // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
+                    if !crate::text_input::has_pending(&surface) {
+                        crate::text_input::disarm(&surface);
+                    }
                 }
             }
             accepted
@@ -1000,7 +1003,7 @@ fn scripted_type() -> Option<NSEventType> {
 
 /// Runs `f` (which hands `event` to a window) with `event` as the one
 /// AppKit handles, for the root's `hitTest:`.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "dev", feature = "terminal", test))]
 pub(crate) fn scripted<R>(event: &NSEvent, f: impl FnOnce() -> R) -> R {
     let old = SCRIPTED.replace(Some(event.retain()));
     let r = f();
@@ -1213,6 +1216,22 @@ impl NshView {
         }
     }
 
+    /// Invalidates the terminal capture for native visual work outside engine batches.
+    #[cfg(feature = "terminal")]
+    pub(crate) fn invalidate_capture(&self) {
+        if let Some(surface) = self.0.keyboard_surface()
+            && surface.terminal.get()
+        {
+            surface
+                .capture_revision
+                .set(surface.capture_revision.get().wrapping_add(1));
+            let wake = surface.terminal_wake.borrow().clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+    }
+
     /// Something it draws changed: content (text, canvas) is drawn again
     /// and the decoration applied again.
     pub(crate) fn changed(&self) {
@@ -1288,7 +1307,12 @@ impl NshView {
     }
 
     /// The scale of its window's backing (2 before it has one).
-    fn backing_scale(&self) -> CGFloat {
+    pub(crate) fn backing_scale(&self) -> CGFloat {
+        if let Some(surface) = self.0.keyboard_surface()
+            && surface.terminal.get()
+        {
+            return surface.terminal_scale.get() as CGFloat;
+        }
         self.ns().window().map_or(2.0, |w| w.backingScaleFactor())
     }
 

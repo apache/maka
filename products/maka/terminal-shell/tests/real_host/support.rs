@@ -166,8 +166,9 @@ impl Fixture {
         options: Options,
         customize: impl FnOnce(&mut Value, &Path),
     ) -> Self {
+        let temp_root = std::env::temp_dir().canonicalize().unwrap();
         let directory = tempfile::Builder::new()
-            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .tempdir_in(maka_fs_tools::workspace::project::host_path(&temp_root).unwrap())
             .unwrap();
         #[cfg(windows)]
         std::fs::remove_dir(directory.path()).unwrap();
@@ -185,14 +186,6 @@ impl Fixture {
             .unwrap(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let selection = configure(
-            owner.clone(),
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            options.images,
-            options.code_mode,
-        )
-        .await;
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
         let bundled = product_packages().await;
         let home = directory.path().join("assistant-home");
         std::fs::create_dir(&home).unwrap();
@@ -224,6 +217,24 @@ impl Fixture {
             json!({"access":"read_only","requestPermissions":true});
 
         customize(&mut configuration, directory.path());
+
+        let sandbox_mode = match configuration["agent"]["permissions"]["access"].as_str() {
+            Some("read_only") => maka_agent_facts::execution::SandboxMode::ReadOnly,
+            Some("workspace_write") => maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+            Some("danger_full_access") => {
+                maka_agent_facts::execution::SandboxMode::DangerFullAccess
+            }
+            other => panic!("unexpected fixture sandbox access {other:?}"),
+        };
+        let selection = configure(
+            owner.clone(),
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            options.images,
+            options.code_mode,
+            sandbox_mode,
+        )
+        .await;
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
 
         let source =
             std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs"))
@@ -402,6 +413,7 @@ pub(crate) async fn configure(
     base: &str,
     vision: bool,
     code_mode: bool,
+    sandbox_mode: maka_agent_facts::execution::SandboxMode,
 ) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
@@ -452,6 +464,18 @@ pub(crate) async fn configure(
             .unwrap(),
         maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
     ));
+    if sandbox_mode != maka_agent_facts::execution::SandboxMode::WorkspaceWrite {
+        assert!(matches!(
+            config
+                .set_chat_defaults(
+                    config.runtime_policy().await.unwrap().revision,
+                    maka_agent_facts::configuration::policy::ChatDefaults { sandbox_mode },
+                )
+                .await
+                .unwrap(),
+            maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
+        ));
+    }
     config.shutdown().await.unwrap();
     selection
 }

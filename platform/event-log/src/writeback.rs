@@ -290,15 +290,16 @@ pub(crate) fn commit(
     connection: &mut Connection,
     mut requests: Vec<Request>,
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
-) -> bool {
+) -> (bool, impl FnOnce() + Send + 'static) {
     let result = transaction(connection, &mut requests, validate);
     let reusable = result
         .as_ref()
         .map_or_else(|failure| failure.reusable, |()| true);
-    for request in requests {
-        request.finish(&result);
-    }
-    reusable
+    (reusable, move || {
+        for request in requests {
+            request.finish(&result);
+        }
+    })
 }
 
 fn transaction(

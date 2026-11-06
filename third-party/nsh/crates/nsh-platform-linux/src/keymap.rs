@@ -19,8 +19,8 @@ use std::{
 
 use gtk4::{self as gtk, glib, prelude::*};
 use nsh_core::{
-    EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, Keymap, Keystroke},
+    EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
+    keymap::{Key, KeyBinding, KeyMatch, Keymap, Keystroke},
     platform::Os,
 };
 
@@ -30,17 +30,16 @@ use crate::surface::Surface;
 #[derive(Default)]
 pub(crate) struct KeymapState {
     controller: RefCell<Option<gtk::ShortcutController>>,
-    /// Each binding's trigger and whether it fires in a text field
-    /// (`KeyBinding::in_text`), for [`claims`].
-    triggers: RefCell<Vec<(gtk::ShortcutTrigger, bool)>>,
+    /// Each binding's trigger, newest first, for [`claims`] and held-key replay.
+    triggers: RefCell<Vec<(gtk::ShortcutTrigger, KeyBinding)>>,
+    /// Fallback bindings' triggers, newest first, for [`unhandled`].
+    fallbacks: RefCell<Vec<(gtk::ShortcutTrigger, KeyBinding)>>,
     /// The binding whose key is held down (GDK does not mark auto-repeats):
     /// it does not fire again until a key is released.
     held: Rc<Cell<Option<u32>>>,
     /// The window's key controller that sees releases, and its window.
     releases: RefCell<Option<(glib::WeakRef<gtk::Window>, gtk::EventControllerKey)>>,
-    /// The bindings, for keys pressed without a GDK event
-    /// ([`press`], `nsh test --target linux`).
-    #[cfg(feature = "dev")]
+    /// The bindings, for keys pressed without a GDK event ([`press`]).
     keymap: RefCell<Option<Arc<Keymap>>>,
 }
 
@@ -50,22 +49,16 @@ pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
     if keymap.is_empty() {
         return;
     }
-    #[cfg(feature = "dev")]
-    {
-        *surface.keymap.keymap.borrow_mut() = Some(keymap.clone());
-    }
+    *surface.keymap.keymap.borrow_mut() = Some(keymap.clone());
     let controller = gtk::ShortcutController::new();
     controller.set_scope(gtk::ShortcutScope::Global);
     // The window runs global controllers in their phase: in the bubble
     // phase the focused field (and its own capture controller) would see
     // the key first, and `when: "always"` could not take Ctrl+A from it.
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let keys_ref = controller.downgrade();
     let display = surface.root.display();
     for binding in keymap.bindings().iter().rev() {
-        // Focus-scoped shortcuts are currently supported by the terminal.
-        if binding.within.is_some() || binding.fallback {
-            continue;
-        }
         // The dev host's Ctrl+R reloads, whatever the app binds.
         if cfg!(feature = "dev") && binding.keystroke.reloads(Os::Linux) {
             continue;
@@ -73,24 +66,6 @@ pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
         let Some(trigger) = trigger(&binding.keystroke, |key| shifted(&display, key)) else {
             continue;
         };
-        let weak = Rc::downgrade(surface);
-        let (id, in_text, repeat) = (binding.id, binding.in_text, binding.repeat);
-        let action = gtk::CallbackAction::new(move |_, _| match weak.upgrade() {
-            Some(surface) if fires(&surface, in_text) => {
-                watch_releases(&surface);
-                let held = &surface.keymap.held;
-                if repeat || held.get() != Some(id) {
-                    held.set(Some(id));
-                    surface.event(
-                        ROOT_ID,
-                        EventKind::KeyCommand,
-                        EventPayload::Value(PayloadValue::Number(id as f64)),
-                    );
-                }
-                glib::Propagation::Stop
-            }
-            _ => glib::Propagation::Proceed,
-        });
         let Some(trigger) = gtk::ShortcutTrigger::parse_string(&trigger) else {
             continue;
         };
@@ -98,7 +73,36 @@ pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
             .keymap
             .triggers
             .borrow_mut()
-            .push((trigger.clone(), in_text));
+            .push((trigger.clone(), *binding));
+        if binding.fallback {
+            surface
+                .keymap
+                .fallbacks
+                .borrow_mut()
+                .push((trigger, *binding));
+            continue;
+        }
+        let weak = Rc::downgrade(surface);
+        let keys = keys_ref.clone();
+        let binding = *binding;
+        let action = gtk::CallbackAction::new(move |_, _| match weak.upgrade() {
+            Some(surface) if surface.input_paused.get() => glib::Propagation::Stop,
+            Some(surface)
+                if keys
+                    .upgrade()
+                    .and_then(|c| c.current_event())
+                    .is_some_and(|event| {
+                        crate::text_input::hold_shortcut_event(&surface, &event)
+                    }) =>
+            {
+                glib::Propagation::Stop
+            }
+            Some(surface) if fires_binding(&surface, &binding) => {
+                fire(&surface, &binding);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
         controller.add_shortcut(gtk::Shortcut::new(Some(trigger), Some(action)));
     }
     surface.root.add_controller(controller.clone());
@@ -117,45 +121,140 @@ pub(crate) fn clear(surface: &Surface) {
     }
     surface.keymap.held.set(None);
     surface.keymap.triggers.borrow_mut().clear();
-    #[cfg(feature = "dev")]
+    surface.keymap.fallbacks.borrow_mut().clear();
     surface.keymap.keymap.borrow_mut().take();
 }
 
-/// A key pressed without a GDK event (GTK takes no made-up ones; `nsh test
-/// --target linux`): the newest binding of `stroke` that fires where the
-/// focus is reports it, as its shortcut's action would. False if none.
-#[cfg(feature = "dev")]
-pub(crate) fn press(surface: &Surface, stroke: Keystroke) -> bool {
-    let keymap = surface.keymap.keymap.borrow().clone();
-    let Some(keymap) = keymap else {
-        return false;
-    };
-    let fired = keymap
-        .bindings()
-        .iter()
-        .rev()
-        .find(|b| !b.fallback && b.keystroke == stroke && fires(surface, b.in_text));
-    if let Some(binding) = fired {
+fn fire(surface: &Rc<Surface>, binding: &KeyBinding) {
+    watch_releases(surface);
+    let held = &surface.keymap.held;
+    if binding.repeat || held.get() != Some(binding.id) {
+        held.set(Some(binding.id));
         surface.event(
             ROOT_ID,
             EventKind::KeyCommand,
             EventPayload::Value(PayloadValue::Number(binding.id as f64)),
         );
+        if binding.keystroke.key != Key::Escape {
+            crate::text_input::arm(surface);
+        }
     }
-    fired.is_some()
+}
+
+fn fires_binding(surface: &Surface, binding: &KeyBinding) -> bool {
+    !(binding.keystroke.key == Key::Escape && crate::text_input::composing_focused(surface))
+        && fires(surface, binding.in_text, binding.within)
+}
+
+/// Replays capture-phase shortcut matching for a held GDK key event.
+pub(crate) fn press_gdk(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool {
+    if surface.input_paused.get() && !crate::text_input::is_replaying(surface) {
+        return true;
+    }
+    let matched = surface
+        .keymap
+        .triggers
+        .borrow()
+        .iter()
+        .find(|(trigger, binding)| {
+            !binding.fallback
+                && trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
+                && fires_binding(surface, binding)
+        })
+        .map(|(_, binding)| *binding);
+    if let Some(binding) = matched {
+        fire(surface, &binding);
+        return true;
+    }
+    false
+}
+
+/// Fallback bindings, run after the focused control, selection, scroll and
+/// navigation all left `event` unhandled.
+pub(crate) fn unhandled(surface: &Rc<Surface>, event: Option<&gtk::gdk::Event>) -> bool {
+    let Some(event) = event else {
+        return false;
+    };
+    if surface.input_paused.get() && !crate::text_input::is_replaying(surface) {
+        return true;
+    }
+    let matched = surface
+        .keymap
+        .fallbacks
+        .borrow()
+        .iter()
+        .find(|(trigger, binding)| {
+            trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
+                && fires_binding(surface, binding)
+        })
+        .map(|(_, binding)| *binding);
+    if let Some(binding) = matched {
+        fire(surface, &binding);
+        return true;
+    }
+    false
+}
+
+/// A key pressed without a GDK event (GTK takes no made-up ones; `nsh test
+/// --target linux`): the newest binding of `stroke` that fires where the
+/// focus is reports it, as its shortcut's action would. False if none.
+pub(crate) fn press(surface: &Rc<Surface>, stroke: Keystroke) -> bool {
+    press_in_phase(surface, stroke, false)
+}
+
+pub(crate) fn press_fallback(surface: &Rc<Surface>, stroke: Keystroke) -> bool {
+    press_in_phase(surface, stroke, true)
+}
+
+fn press_in_phase(surface: &Rc<Surface>, stroke: Keystroke, fallback: bool) -> bool {
+    if surface.input_paused.get() && !crate::text_input::is_replaying(surface) {
+        return true;
+    }
+    if cfg!(feature = "dev") && stroke.reloads(Os::Linux) {
+        return false;
+    }
+    if stroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
+        return false;
+    }
+    let Some(keymap) = surface.keymap.keymap.borrow().clone() else {
+        return false;
+    };
+    let Some((editing, path)) = focus_context(surface) else {
+        return false;
+    };
+    let found = if fallback {
+        keymap.find_fallback_with(stroke, editing, false, |id| path.contains(&id))
+    } else {
+        keymap.find_with(stroke, editing, false, |id| path.contains(&id))
+    };
+    if let KeyMatch::Fire(id) = found {
+        surface.event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            EventPayload::Value(PayloadValue::Number(id as f64)),
+        );
+        if stroke.key != Key::Escape {
+            crate::text_input::arm(surface);
+        }
+    }
+    found.consumed()
 }
 
 /// Whether a binding fires for `event` where the focus is: the application
 /// menu's shortcuts (`chrome.rs`), whose controller the window runs first,
 /// give way to it, as menus' key equivalents do on macOS.
 pub(crate) fn claims(surface: &Surface, event: &gtk::gdk::Event) -> bool {
+    if surface.input_paused.get() {
+        return true;
+    }
     surface
         .keymap
         .triggers
         .borrow()
         .iter()
-        .any(|(trigger, in_text)| {
-            trigger.trigger(event, false) != gtk::gdk::KeyMatch::None && fires(surface, *in_text)
+        .any(|(trigger, binding)| {
+            trigger.trigger(event, false) != gtk::gdk::KeyMatch::None
+                && fires_binding(surface, binding)
         })
 }
 
@@ -180,20 +279,27 @@ fn watch_releases(surface: &Surface) {
     *releases = Some((window.downgrade(), keys));
 }
 
-/// Whether a binding fires where the focus is: never while it is in
-/// another surface, in a text field or hosted widget only when the binding
-/// may (`in_text`).
-fn fires(surface: &Surface, in_text: bool) -> bool {
+fn focus_context(surface: &Surface) -> Option<(bool, Vec<NodeId>)> {
     let root = surface.root.upcast_ref::<gtk::Widget>();
     let Some(focus) = root.root().and_then(|r| r.focus()) else {
-        return true;
+        return Some((false, Vec::new()));
     };
     if !(focus.is_ancestor(root) || &focus == root) {
-        return false;
+        return None;
     }
     // A field's text widget, or a hosted widget (a web view).
     let editing = !focus.is::<crate::view::NshView>();
-    in_text || !editing
+    let path = crate::input::focus_path(surface, Some(focus));
+    Some((editing, path))
+}
+
+/// Whether a binding fires where the focus is: never while it is in
+/// another surface, in a text field or hosted widget only when the binding
+/// may (`in_text`), and inside `within` when scoped.
+fn fires(surface: &Surface, in_text: bool, within: Option<NodeId>) -> bool {
+    focus_context(surface).is_some_and(|(editing, path)| {
+        (in_text || !editing) && within.is_none_or(|scope| path.contains(&scope))
+    })
 }
 
 /// The keyval that `key` types with Shift on the display's layout (`slash`

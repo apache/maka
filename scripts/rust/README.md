@@ -78,7 +78,7 @@ node scripts/ci.mjs plan --base origin/rust-preview
 node scripts/ci.mjs run bridge
 ```
 
-PR plans follow Cargo reverse dependencies and declared runtime inputs; shared or unclassified changes select the full maintained set. Branch pushes and manual runs select the full set. Package filtering preserves each suite's workspace/features build recipe. The GPUI suite covers selected headless platform and terminal tests; standalone host webview/video configurations are outside that scope.
+PR plans follow Cargo reverse dependencies and declared runtime inputs; shared or unclassified changes select the full maintained set. Branch pushes and manual runs select the full set. Package filtering preserves each suite's workspace/features build recipe. Native desktop and terminal pixel regressions run on macOS and Windows. GTK tests run on Linux under Xvfb, and the shared native terminal transport tests run with the NSH suite.
 
 The root producer creates a nextest archive, including runtime product assets. Test workers execute partitions of that same artifact; the final `test` check requires all selected work to succeed. Cargo caches accelerate builds and are not test artifacts.
 

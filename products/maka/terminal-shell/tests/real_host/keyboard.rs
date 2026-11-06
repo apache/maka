@@ -26,6 +26,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
     let mut fixture = Fixture::open().await;
     let client = fixture.client().await;
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
     support::click_button(&mut view, "Choose model and effort").await;
     wait_view(&mut view, |screen| {
         screen.contains("Search models and sources…") && !screen.contains("Loading…")
@@ -270,6 +271,7 @@ async fn model_and_source_search_preserves_focus_and_keyboard_selection() {
     let fixture = Fixture::open().await;
     let client = fixture.client().await;
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
     support::click_button(&mut view, "Choose model and effort").await;
     wait_focused_input(&mut view, "Search models and sources").await;
     view.handle_event(Event::Paste("no-such-model".into()));

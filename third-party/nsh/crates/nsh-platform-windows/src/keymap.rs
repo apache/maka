@@ -58,6 +58,9 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
     if cfg!(feature = "dev") && keystroke.reloads(Os::Windows) {
         return false;
     }
+    if keystroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
+        return false;
+    }
     let editing = crate::text_input::focused(surface).is_some();
     let path = surface.focus_path();
     let found = if fallback {
@@ -71,6 +74,9 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
             EventKind::KeyCommand,
             EventPayload::Value(PayloadValue::Number(id as f64)),
         );
+        if keystroke.key != Key::Escape {
+            crate::text_input::arm(surface);
+        }
     }
     if found.consumed() {
         drop_char(surface);

@@ -61,7 +61,7 @@ mod tests {
 
     fn fonts() -> Arc<usvg::fontdb::Database> {
         let mut fonts = usvg::fontdb::Database::new();
-        fonts.load_font_data(include_bytes!("../../../../../third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf").to_vec());
+        fonts.load_font_data(include_bytes!("../../tests/fonts/IBMPlexSans-Regular.ttf").to_vec());
         fonts.set_sans_serif_family("IBM Plex Sans");
         Arc::new(fonts)
     }

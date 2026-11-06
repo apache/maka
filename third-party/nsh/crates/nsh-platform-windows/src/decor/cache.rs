@@ -55,6 +55,15 @@ thread_local! {
     });
 }
 
+pub(super) fn clear_thread_cache() {
+    let _ = CACHE.try_with(|cell| {
+        let mut c = cell.borrow_mut();
+        c.map.clear();
+        c.bytes = 0;
+        c.generation = 0;
+    });
+}
+
 /// The bitmap kept under `key`, or the one `make` draws (then kept).
 /// `make` must not use the cache itself.
 pub(crate) fn get_or_make(key: u64, make: impl FnOnce() -> Option<Baked>) -> Option<Baked> {

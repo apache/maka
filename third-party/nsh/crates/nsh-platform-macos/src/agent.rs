@@ -179,7 +179,17 @@ impl Native for MacNative {
         let mut next = Instant::now();
         let mut gesture = |dx: i32, dy: i32, phase: i64| {
             self.on_main(move |_, window| {
-                synth::wheel_with(window, x, y, dx, dy, Some(phase), 0, synth::timestamp());
+                synth::wheel_with(
+                    window,
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    Some(phase),
+                    0,
+                    synth::timestamp(),
+                    objc2_app_kit::NSEventModifierFlags::empty(),
+                );
             });
             next += frame;
             std::thread::sleep(next.saturating_duration_since(Instant::now()));
@@ -223,8 +233,10 @@ impl Native for MacNative {
 
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
         let content = content.clone();
-        self.on_main(move |_, window| crate::text_input::test_paste(window, &content))
-            .unwrap_or_else(|| Err("the window is gone".into()))
+        self.on_main(move |surface, window| {
+            crate::text_input::paste_or_hold(surface, window, &content)
+        })
+        .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn key(&self, key: Key) {

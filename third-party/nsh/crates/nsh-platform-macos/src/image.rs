@@ -1132,7 +1132,7 @@ fn wait_for_frame(surface: &Rc<Surface>, view: &NshView) {
 
 /// The size `view` shows its image at, and the look its filters give it.
 fn want(view: &NshView) -> (Want, Look) {
-    let scale = view.ns().window().map_or(2.0, |w| w.backingScaleFactor());
+    let scale = view.backing_scale();
     let s = view.state();
     let filters = s
         .style
@@ -1271,6 +1271,8 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
                     s.decor.set_image(Some((&picture, natural)), 0.0);
                 }
                 view.changed();
+                #[cfg(feature = "terminal")]
+                view.invalidate_capture();
             }
             Err(message) => log::warn!("image placeholder failed: {message}"),
         }
@@ -1337,6 +1339,8 @@ fn resized(surface: &Surface, view: &NshView) {
             quiet(|| s.decor.set_image(Some((&picture, natural)), 0.0));
         }
         view.changed();
+        #[cfg(feature = "terminal")]
+        view.invalidate_capture();
     };
     let load = fetch(
         surface,
@@ -1393,6 +1397,10 @@ fn loaded(
         (events, id)
     };
     view.changed();
+    #[cfg(feature = "terminal")]
+    if result.is_ok() {
+        view.invalidate_capture();
+    }
     match &result {
         Ok((picture, _)) if events.contains(EventKind::Load) => surface.event(
             id,

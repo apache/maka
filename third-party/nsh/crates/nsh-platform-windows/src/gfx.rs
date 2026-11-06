@@ -91,6 +91,18 @@ pub(crate) fn generation() -> u64 {
     GENERATION.with(Cell::get)
 }
 
+/// Drops this UI thread's cached Direct2D / Direct3D resources once its last
+/// surface closes, so main-thread callers never release COM devices inside
+/// `ExitProcess` TLS destructors or after `OleUninitialize`.
+pub(crate) fn release_thread_resources() {
+    crate::canvas::clear_thread_cache();
+    crate::decor::clear_thread_cache();
+    crate::text::clear_thread_cache();
+    crate::image::clear_thread_cache();
+    let _ = GFX.try_with(|g| g.borrow_mut().take());
+    let _ = GENERATION.try_with(|g| g.set(g.get() + 1));
+}
+
 impl Gfx {
     fn new() -> Result<Gfx> {
         let d3d = create_d3d(D3D_DRIVER_TYPE_HARDWARE).or_else(|err| {
@@ -156,15 +168,19 @@ fn create_d3d(driver: D3D_DRIVER_TYPE) -> Result<ID3D11Device> {
 
 /// DirectWrite's shared factory (free-threaded: any thread may use it).
 pub(crate) fn dwrite() -> IDWriteFactory2 {
-    thread_local! {
-        static DWRITE: IDWriteFactory2 = {
+    static DWRITE: std::sync::OnceLock<crate::text::Shared<IDWriteFactory2>> =
+        std::sync::OnceLock::new();
+    DWRITE
+        .get_or_init(|| {
             // SAFETY: plain factory creation; the shared factory exists for
             // the life of the process.
-            unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
-                .expect("DirectWrite is part of every supported Windows")
-        };
-    }
-    DWRITE.with(Clone::clone)
+            crate::text::Shared(
+                unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
+                    .expect("DirectWrite is part of every supported Windows"),
+            )
+        })
+        .0
+        .clone()
 }
 
 /// Bitmap properties of a target of the device context at `scale`.

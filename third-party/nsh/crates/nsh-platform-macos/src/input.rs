@@ -632,7 +632,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
         NSEventType::RightMouseDown => context_menu(surface, x, y, event.modifierFlags()),
         NSEventType::LeftMouseDown => {
             // A title bar of the app's own moves the window.
-            if crate::chrome::mouse_down(surface, event, x, y) {
+            if !surface.terminal.get() && crate::chrome::mouse_down(surface, event, x, y) {
                 return;
             }
             input.last.set(Some((x, y)));
@@ -859,7 +859,12 @@ pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
 /// it as Tab moves it there (its `becomeFirstResponder` sets `focus:` and
 /// reports `onFocus`), if it is a stop of Tab ([`is_key_stop`]).
 pub(crate) fn focus_control(surface: &Surface, view: &NshView) {
-    if !is_key_stop(view) || has_key_focus(view) {
+    if !is_key_stop(view)
+        || has_key_focus(view)
+        || !view
+            .ns()
+            .isDescendantOf(&crate::navigation::focus_scope(surface))
+    {
         return;
     }
     let Some(window) = view.ns().window() else {

@@ -263,6 +263,7 @@ mod tests {
             sign: None,
             profile: None,
             keystore: None,
+            abis: &[],
             run: false,
         }
     }

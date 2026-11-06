@@ -1545,10 +1545,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-embed-gpui"
-version = "0.4.0"
-
-[[package]]
 name = "fancy-regex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3751,9 +3747,11 @@ dependencies = [
  "libc",
  "log",
  "nsh-base",
+ "nsh-bundler",
  "nsh-core",
  "nsh-dev",
  "nsh-engine",
+ "nsh-terminal",
  "nsh-testing",
  "objc2",
  "objc2-app-kit",
@@ -3841,6 +3839,7 @@ dependencies = [
  "nsh-core",
  "nsh-dev",
  "nsh-engine",
+ "nsh-terminal",
  "nsh-testing",
  "rustc-hash 2.1.3",
  "serde_json",
@@ -3850,6 +3849,18 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics",
+]
+
+[[package]]
+name = "nsh-terminal"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "icy_sixel",
+ "image",
+ "nsh-core",
+ "nsh-engine",
 ]
 
 [[package]]

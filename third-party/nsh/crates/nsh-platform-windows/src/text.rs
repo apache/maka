@@ -2121,6 +2121,10 @@ thread_local! {
     static RESOURCES: RefCell<Option<Rc<Resources>>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn clear_thread_cache() {
+    let _ = RESOURCES.try_with(|r| r.borrow_mut().take());
+}
+
 fn resources(gfx: &Gfx) -> Option<Rc<Resources>> {
     let generation = crate::gfx::generation();
     if let Some(r) = RESOURCES.with_borrow(|r| r.clone())

@@ -1329,12 +1329,14 @@ pub(crate) fn key_pressed(
         gdk::Key::Left | gdk::Key::KP_Left => mods == gdk::ModifierType::ALT_MASK,
         _ => false,
     };
-    if back
-        && key == gdk::Key::Escape
-        && let Some(root) = focused_field(surface)
-    {
-        root.set_focus(None::<&gtk::Widget>);
-        return true;
+    if back && key == gdk::Key::Escape {
+        if crate::text_input::escape_composing(surface) {
+            return true;
+        }
+        if let Some(root) = focused_field(surface) {
+            root.set_focus(None::<&gtk::Widget>);
+            return true;
+        }
     }
     back && go_back(surface)
 }

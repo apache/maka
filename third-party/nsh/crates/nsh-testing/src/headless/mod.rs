@@ -2807,10 +2807,10 @@ mount(() => {
   prop(held, "onLongPress", () => record("long"));
   prop(held, "onPressUp", () => record("up"));
   prop(held, "onPress", () => record("press"));
-  insert(content, () => shown() ? held : null);
   const tail = element("view");
   prop(tail, "style", { height: 1000 });
   append(content, tail);
+  insert(content, () => shown() ? held : null, tail);
   return root;
 });
 "#

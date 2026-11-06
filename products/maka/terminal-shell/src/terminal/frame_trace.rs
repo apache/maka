@@ -20,7 +20,7 @@
 //! Opt-in measurements under the existing presentation lock. Nothing is
 //! formatted or written until terminal restoration has finished.
 
-use nsh_gpui_terminal::FrameToken;
+use nsh_terminal::FrameToken;
 use serde_json::{Value, json};
 use std::{io::Write, path::PathBuf, time::Instant};
 
@@ -121,6 +121,7 @@ impl Trace {
         self.samples.last_mut().unwrap()
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn record_input(&mut self, sample: InputSample) -> usize {
         let index = self.inputs.len();
         self.inputs.push(sample);
@@ -143,12 +144,14 @@ impl Trace {
         self.record(token, geometry, "discarded", at, at).outcome = outcome;
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn finish_input(&mut self, index: usize, end: Instant, outcome: &'static str) {
         let sample = &mut self.inputs[index];
         sample.dispatch_end = Some(end);
         sample.outcome = outcome;
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn record_input_pump(&mut self, sample: InputPumpSample) {
         self.input_pumps.push(sample);
     }

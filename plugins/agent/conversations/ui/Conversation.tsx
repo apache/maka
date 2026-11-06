@@ -442,7 +442,8 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'reserving'; frozen: FrozenSend }
     | { kind: 'failed'; frozen: FrozenSend; error: UiText };
   const freezeState = signal<FreezeState>({ kind: 'idle' });
-  const sending = () => freezeState().kind === 'reserving';
+  const checkingModel = signal(false);
+  const sending = () => freezeState().kind === 'reserving' || checkingModel();
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
@@ -1342,9 +1343,9 @@ export function Conversation(props: ConversationProps) {
         list?.scrollToEnd({ animated: false });
       }
       if (!alive) return;
-      transcriptStatus.set('live');
       immediateTranscriptRetry = true;
       if (!historyDestination.failed) error.set('');
+      transcriptStatus.set('live');
       // Subscribe before reading history so facts cannot fall between fences.
       // The snapshot is sufficient for readiness; no new event is required.
       for (;;) {
@@ -1924,6 +1925,12 @@ export function Conversation(props: ConversationProps) {
 
   const nativeSteer = (delivery: 'steer' | 'queue') =>
     delivery === 'steer' && invocation() !== null && runBackend() === 'model';
+  const modelLoading = (delivery: 'steer' | 'queue' = 'steer') =>
+    !nativeSteer(delivery) && backend() !== null && modelDetails().kind === 'loading';
+  const autoSending = () => {
+    const pending = autoSend();
+    return pending !== null && (!!pending.first || draft() === pending.text);
+  };
   const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
     const expectedInvocationId = invocation() ?? undefined;
     if (expectedInvocationId !== undefined && runBackend() === null)
@@ -1945,7 +1952,7 @@ export function Conversation(props: ConversationProps) {
     };
   };
 
-  const sendBlockedReason = () => {
+  const sendBlockedReasonFor = (includeAutoSend: boolean) => {
     if (transcriptStatus() === 'closing')
       return tr('Closing disconnected updates… Your draft is kept.');
     if (transcriptStatus() === 'failed')
@@ -1968,12 +1975,14 @@ export function Conversation(props: ConversationProps) {
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
-    if (sending()) return tr('Saving message… New typing is kept.');
+    if (sending() || (includeAutoSend && autoSending()))
+      return tr('Saving message… New typing is kept.');
     if (freezeState().kind === 'failed')
       return tr('Retry or remove the unsaved message before sending another.');
     if (!receiptsKnown()) return tr('Checking send status…');
     return '';
   };
+  const sendBlockedReason = () => sendBlockedReasonFor(true);
 
   const refreshSends = async () => {
     const operations = await pendingSends(client);
@@ -2070,7 +2079,31 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     try {
-      const selected = sendSelection(delivery, expectedBackend);
+      let targetBackend = expectedBackend;
+      if (modelLoading(delivery)) {
+        const capturedBackend = expectedBackend ?? backend() ?? undefined;
+        const capturedAttachments = attachments.ids();
+        checkingModel.set(true);
+        try {
+          await refreshModel();
+        } finally {
+          if (alive) checkingModel.set(false);
+        }
+        if (!alive) return;
+        if (sendBlockedReason()) {
+          notice.set(
+            uiMessage(
+              'This message was not sent. Your draft is kept; check the status below before trying again.',
+            ),
+          );
+          return;
+        }
+        if (!first && (draft() !== text || !attachments.same(capturedAttachments))) {
+          throw new UiError('The draft changed before confirmation. Send again to confirm it.');
+        }
+        targetBackend = capturedBackend;
+      }
+      const selected = sendSelection(delivery, targetBackend);
       const edit = { text, ...attachments.snapshot() };
       const frozen: FrozenSend = {
         id: `draft-send-${++sendSequence}`,
@@ -2440,7 +2473,7 @@ export function Conversation(props: ConversationProps) {
     retrySend: retryOriginal,
     checkSend,
     dismissSend: dismissOriginal,
-    recovering: () => !receiptsKnown() || sending(),
+    recovering: () => !receiptsKnown() || sending() || autoSending(),
     stopping,
     resumable,
     resuming: confirmingContinuation,
@@ -2745,11 +2778,13 @@ export function Conversation(props: ConversationProps) {
   // unless the draft was changed first.
   effect(() => {
     const pending = autoSend();
-    if (pending === null || sendBlockedReason()) return;
+    if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
     untracked(() => {
-      autoSend.set(null);
-      if (pending.first || draft() === pending.text)
-        void send(pending.text, undefined, pending.first);
+      batch(() => {
+        autoSend.set(null);
+        if (pending.first || draft() === pending.text)
+          void send(pending.text, undefined, pending.first);
+      });
     });
   });
   cleanup(() => {

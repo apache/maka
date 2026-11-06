@@ -1386,7 +1386,9 @@ pub(crate) fn key_pressed(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     if event.vk == VK_ESCAPE
         && let Some(field) = crate::text_input::focused(surface)
     {
-        crate::text_input::blur(&field);
+        if !crate::text_input::composing(&field) {
+            crate::text_input::blur(&field);
+        }
         return true;
     }
     go_back(surface)
@@ -1592,6 +1594,14 @@ pub(crate) fn focus_scope(surface: &Surface) -> NshView {
     surface.nav.borrow().focus_scope(surface)
 }
 
+/// Whether `view` is within the active modal scope (or no modal is active).
+pub(crate) fn in_focus_scope(surface: &Surface, view: &NshView) -> bool {
+    surface
+        .nav
+        .try_borrow()
+        .map_or(true, |nav| is_ancestor(&nav.focus_scope(surface), view))
+}
+
 /// A modal was removed: dismiss it.
 pub(crate) fn dismiss(surface: &Rc<Surface>, view: &NshView) {
     let mut nav = surface.nav.borrow_mut();
@@ -1780,6 +1790,35 @@ mod tests {
         modal_config(&surface, &modal, &config);
         end_batch(&surface);
         assert_eq!(modal.state().fade, 1.0);
+    }
+
+    #[test]
+    fn retired_modal_restores_order_without_representing_or_stealing_focus() {
+        let surface = Surface::new(Default::default());
+        let lower = child(&surface.root, 2, ViewKind::Modal);
+        let upper = child(&surface.root, 4, ViewKind::Modal);
+        for modal in [&lower, &upper] {
+            modal_config(
+                &surface,
+                modal,
+                &ModalConfig {
+                    animation: ModalAnimation::None,
+                    ..Default::default()
+                },
+            );
+            present(&surface, modal);
+        }
+        end_batch(&surface);
+        park_retired_root(&surface, &lower);
+        end_batch(&surface);
+        assert!(!lower.attached());
+        assert_eq!(focus_scope(&surface), upper);
+        present(&surface, &lower);
+        assert!(surface.nav.borrow().presenting.is_empty());
+        end_batch(&surface);
+        assert_eq!(surface.root.child_views(), vec![lower, upper.clone()]);
+        assert_eq!(focus_scope(&surface), upper);
+        assert!(surface.nav.borrow().transitions.is_empty());
     }
 
     #[test]
