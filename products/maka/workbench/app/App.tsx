@@ -342,18 +342,23 @@ function App(
         </View>
       </If>
 
-      {/* These views show only dialogs, which are window layers. Their loading
-          placeholder must not take height from the workbench. */}
-      <View style={{ height: 0, overflow: 'hidden' }}>
-        {runtime.renderView(configuration.preview, conversationPreviewView, {
+      {runtime.renderView(
+        configuration.preview,
+        conversationPreviewView,
+        {
           shell,
           surface: 'overlays' as const,
           docked: false,
           attach(handle) {
             if (preview() !== handle) preview.set(handle);
           },
-        })}
-        {runtime.renderView(configuration.settings, settingsViewContract, {
+        },
+        { loading: false },
+      )}
+      {runtime.renderView(
+        configuration.settings,
+        settingsViewContract,
+        {
           opened: settingsOpened,
           close: () => {
             if (!alive || blocked()) return;
@@ -367,8 +372,9 @@ function App(
           get page() {
             return settingsPage();
           },
-        })}
-      </View>
+        },
+        { loading: false },
+      )}
     </View>
   );
 }
