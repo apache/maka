@@ -70,7 +70,11 @@ export async function intakeFixture() {
   parentStore.lease();
   parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
-    runner: new DiscoveryRunner(parentStore, () => 0),
+    runner: new DiscoveryRunner(
+      parentStore,
+      () => 0,
+      () => now,
+    ),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
     notebook: { continuation: () => [] },

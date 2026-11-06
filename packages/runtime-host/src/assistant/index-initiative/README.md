@@ -49,8 +49,14 @@ Repeated wake requests retain their original FIFO position. Events arriving afte
 capture remain in the receipt store for a later investigation.
 
 A missing Host answer retains the submission and appears in
-`coordination.recovering`. It does not release the slot after a timer. Host handoff,
-queued admission and waiting for user interaction are not execution completion.
+`coordination.recovering`. Five continuous minutes without a resolved recovery
+abandons the investigation and frees its slot. The lane waits for its normal
+cadence; it does not immediately replace the investigation. Cancellation is
+best-effort. Late memory writes, draft results and unsent reports are discarded;
+already committed knowledge, history and unconsumed source hints remain.
+The recovery timestamp survives restart and resets when the Host resolves the
+execution. Healthy long investigations, queued admission and waiting for user
+interaction have no five-minute execution limit. Host handoff is not completion.
 The observer uses the existing `TurnMessageExecutionResolution` protocol: `pending`
 and `inbox` keep waiting, and `owned` permits observing the actual execution outcome.
 A `completed` query reply is invalid; completion is checked separately through the
@@ -66,8 +72,9 @@ a cross-database atomic transaction.
 
 ## Context continuation
 
-`legacy` keeps its workers; opt-in `scoped` rotates them only after successful
-completion. Both retain current knowledge and source references. Initial context
+`legacy` keeps its workers; opt-in `scoped` rotates them after successful
+completion. Both modes use fresh workers after abandonment so late tool calls
+cannot acquire a new investigation's identity. Both retain current knowledge and source references. Initial context
 includes at most three short recent progress previews with links to original
 records. Broad discovery also receives bounded catalog and feedback pages.
 Workers can read current entries and additional history on demand. Progress is

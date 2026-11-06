@@ -32,6 +32,7 @@ export function laneFixture(runner: DiscoveryRunner, store: InitiativeStore, lan
   let calls = 0;
   runner.register(lane, {
     store,
+    signal: new AbortController().signal,
     ready: () => store.fence(),
     request: async () => wanted,
     prepare: async (job) => {
@@ -57,6 +58,7 @@ export function laneFixture(runner: DiscoveryRunner, store: InitiativeStore, lan
       store.update((s) => {
         s.active = null;
       }),
+    abandon: () => async () => {},
     unfinished: () => !!store.get()?.active,
     run: async () => {
       calls++;

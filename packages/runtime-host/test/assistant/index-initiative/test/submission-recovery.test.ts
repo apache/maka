@@ -407,3 +407,66 @@ test('missing old submission identity never releases a still-running investigati
     f.close();
   }
 });
+
+test('abandonment retains committed knowledge but does not forward an old prepared report', async () => {
+  const f = fixture();
+  try {
+    f.setRunner(async (prompt) => {
+      await output(prompt, validDraft);
+    });
+    f.setPost(() => {
+      throw Error('Bot unavailable');
+    });
+    await f.run();
+    const job = f.controller.runner.job('broad')!;
+    assert.equal(f.book.events('prepared').length, 1);
+    assert.equal(f.book.events('note').length, 1);
+    // Restore an uncertain submission alongside an already prepared outbox, as
+    // after a Host interruption. Only that investigation's unsent output expires.
+    f.store.update((s) => {
+      s.pendingDraft.submission = {
+        sessionId: 'judge',
+        messageId: 'uncertain',
+        input: 'saved',
+        version: '',
+        revision: 0,
+      };
+    });
+    f.store.db
+      .prepare("UPDATE discovery_jobs SET state='recovering',recovery_since=? WHERE id=?")
+      .run(Date.now() - 300_001, job.id);
+    const query = f.agent.messageExecution;
+    f.agent.messageExecution = async () => undefined as any;
+    f.restart();
+    await f.restore();
+    assert.equal(f.controller.runner.abandoned(job.id), true);
+    assert.equal(f.store.get().pendingDraft, undefined);
+    assert.ok(f.store.get().nextAt > Date.now());
+    assert.equal(f.book.events('note').length, 1);
+    assert.equal(f.book.events('prepared').length, 1, 'retain history');
+
+    f.agent.messageExecution = query;
+    const sessions: any[] = [{ id: 'judge' }];
+    (f.ctx.agents as any).create = async (input: any) => {
+      const id = `new-${sessions.length}`;
+      sessions.push({ id, ...input });
+      return { ...f.agent, sessionId: id };
+    };
+    (f.ctx.agents as any).resume = async ({ sessionId }: any) => ({ ...f.agent, sessionId });
+    f.ctx.sessionQuery.list = async () => sessions;
+    f.setRunner(async (prompt) => {
+      await output(prompt);
+    });
+    f.setPost((m) => {
+      f.posted.push(m);
+      return true;
+    });
+    await f.run();
+    assert.equal(f.store.get().lastError, null);
+    assert.equal(f.book.events('reported').length, 0);
+    assert.equal(f.posted.length, 0);
+    assert.notEqual(f.store.get().judgementSession, 'judge');
+  } finally {
+    f.close();
+  }
+});

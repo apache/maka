@@ -185,7 +185,7 @@ for (const eventIntake of [false, true]) {
 }
 
 for (const accepted of [false, true]) {
-  test(`ambiguous submission retains its identity until Host reconciliation (accepted ${accepted})`, async (t) => {
+  test(`ambiguous submission retains its identity during the recovery grace period (accepted ${accepted})`, async (t) => {
     const f = await intakeFixture();
     const host = admissionHost(f);
     t.after(async () => {
@@ -204,8 +204,8 @@ for (const accepted of [false, true]) {
     await f.q.running;
     assert.equal(f.q.state().pending.messageId, messageId);
     f.agent.followup = followup;
-    f.advance(3600000);
-    // A missing resolution is not evidence that a new execution can be admitted.
+    f.advance(60_000);
+    // Before the recovery deadline, a missing resolution retains the original ID.
     const query = f.agent.messageExecution;
     f.agent.messageExecution = async () => undefined as any;
     await f.q.dispatch();

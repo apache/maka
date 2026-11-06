@@ -56,12 +56,15 @@ export interface DiscoveryJob<L extends DiscoveryLane = DiscoveryLane> {
 }
 export interface DiscoveryAdapter {
   store: InitiativeStore;
+  signal: AbortSignal;
   ready(): void;
   request(): Promise<boolean>;
   prepare(job: DiscoveryJob): Promise<DiscoveryAgent | undefined>;
-  recovery(): Promise<{ agent: DiscoveryAgent; messageId: string } | undefined>;
+  recovery(job: DiscoveryJob): Promise<{ agent: DiscoveryAgent; messageId: string } | undefined>;
   reattach(): void;
   defer(cancelled: boolean): void;
+  /** Retire local outputs synchronously; return a best-effort stop for the old worker. */
+  abandon(job: DiscoveryJob): () => Promise<unknown>;
   unfinished(): boolean;
   run(agent: DiscoveryAgent): Promise<void | 'deferred'>;
   error(error: unknown): void;
@@ -72,6 +75,7 @@ const fields = {
   quick: ['active', 'pending', 'contextWake'],
 } as const satisfies { [L in DiscoveryLane]: readonly (keyof DiscoveryWorkByLane[L])[] };
 const occupied = "state IN ('preparing','running','settling','recovering')";
+const recoveryTimeoutMs = 5 * 60_000;
 
 /** Cross-version continuation is deliberately unsupported; never silently discard work. */
 export function requireIdleDiscovery(state: any) {
@@ -97,6 +101,7 @@ export class DiscoveryRunner {
   constructor(
     private readonly store: InitiativeStore,
     private readonly sequence: () => number,
+    private readonly now: () => number = Date.now,
   ) {
     store.db.exec(`
       CREATE TABLE IF NOT EXISTS discovery_requests(
@@ -108,6 +113,15 @@ export class DiscoveryRunner {
       CREATE UNIQUE INDEX IF NOT EXISTS discovery_job_lane ON discovery_jobs(lane) WHERE state!='done';
       CREATE UNIQUE INDEX IF NOT EXISTS discovery_job_slot ON discovery_jobs((1)) WHERE ${occupied};
     `);
+    store.transaction(() => {
+      if (
+        !store.db
+          .prepare('PRAGMA table_info(discovery_jobs)')
+          .all()
+          .some((c) => c.name === 'recovery_since')
+      )
+        store.db.exec('ALTER TABLE discovery_jobs ADD COLUMN recovery_since INTEGER');
+    });
   }
   register(lane: DiscoveryLane, adapter: DiscoveryAdapter) {
     if (this.adapters.has(lane)) throw Error('Discovery lane already registered');
@@ -175,8 +189,69 @@ export class DiscoveryRunner {
     const current = this.job(job.lane);
     if (current?.id !== job.id) throw Error('Discovery job ownership changed');
     this.store.db
-      .prepare('UPDATE discovery_jobs SET state=?,owner=?,error=? WHERE id=?')
-      .run(state, this.store.owner, error === undefined ? null : String(error), job.id);
+      .prepare(`UPDATE discovery_jobs SET state=?,owner=?,error=?,
+        recovery_since=CASE WHEN ?='recovering' THEN COALESCE(recovery_since,?) ELSE NULL END
+        WHERE id=?`)
+      .run(
+        state,
+        this.store.owner,
+        error === undefined ? null : String(error),
+        state,
+        this.now(),
+        job.id,
+      );
+  }
+  abandoned(id: string) {
+    return !!this.store.db
+      .prepare("SELECT 1 FROM discovery_jobs WHERE id=? AND outcome='abandoned'")
+      .get(id);
+  }
+  private recoverySince(job: DiscoveryJob) {
+    return Number(
+      this.store.db.prepare('SELECT recovery_since FROM discovery_jobs WHERE id=?').get(job.id)!
+        .recovery_since,
+    );
+  }
+  private abandon(job: DiscoveryJob, adapter: DiscoveryAdapter) {
+    const stop = this.store.transaction(() => {
+      this.store.fence();
+      const cancel = adapter.abandon(job);
+      this.finish(job, 'abandoned');
+      this.store.db.prepare('DELETE FROM discovery_requests WHERE lane=?').run(job.lane);
+      return cancel;
+    });
+    // Stopping can fail or never answer. Old outputs are already discarded and the
+    // next ordinary cycle will use a fresh worker, so cancellation cannot hold the slot.
+    void Promise.resolve()
+      .then(stop)
+      .catch(() => {});
+  }
+  private async recover(job: DiscoveryJob, adapter: DiscoveryAdapter) {
+    const timeout = new AbortController();
+    try {
+      return await Promise.race([
+        (async () => {
+          const recovered = await adapter.recovery(job);
+          adapter.ready();
+          if (!recovered) return;
+          const admission = await this.readExecution(recovered.agent, recovered.messageId);
+          if (!admission) throw Error('Host has not resolved this discovery submission');
+          if (admission.state === 'owned') {
+            const snapshot = await recovered.agent.snapshot();
+            if (snapshot.root?.kind === 'reserved')
+              throw Error('Discovery Host is still recovering');
+          }
+          return { ...recovered, admission };
+        })(),
+        delay(Math.max(0, recoveryTimeoutMs - (this.now() - this.recoverySince(job))), undefined, {
+          signal: AbortSignal.any([timeout.signal, adapter.signal]),
+        }).then(() => {
+          throw Error('Discovery recovery timed out');
+        }),
+      ]);
+    } finally {
+      timeout.abort();
+    }
   }
   request(lane: DiscoveryLane) {
     this.store.transaction(() => {
@@ -237,19 +312,15 @@ export class DiscoveryRunner {
           this.finish(job, 'completed');
           continue;
         }
-        const recovered = await adapter.recovery();
+        this.set(job, 'recovering');
+        const recovered = await this.recover(job, adapter);
         adapter.ready();
         if (!recovered) {
           adapter.defer(false);
           this.set(job, 'retry_wait');
           continue;
         }
-        const admission = await this.readExecution(recovered.agent, recovered.messageId);
-        adapter.ready();
-        if (!admission) {
-          this.set(job, 'recovering', 'Host has not resolved this discovery submission');
-          continue;
-        }
+        const { admission } = recovered;
         if (admission.state === 'not_admitted' || admission.state === 'cancelled') {
           adapter.defer(admission.state === 'cancelled');
           this.set(job, 'retry_wait');
@@ -259,7 +330,9 @@ export class DiscoveryRunner {
         this.set(job, 'running');
         this.launch(job, adapter, recovered.agent);
       } catch (error) {
+        adapter.ready();
         this.set(job, 'recovering', error);
+        if (this.now() - this.recoverySince(job) >= recoveryTimeoutMs) this.abandon(job, adapter);
       }
     }
     for (const [lane, adapter] of this.adapters) {
@@ -336,7 +409,7 @@ export class DiscoveryRunner {
     const observed = task.catch(() => {});
     this.tasks.set(job.lane, observed);
   }
-  private finish(job: DiscoveryJob, outcome: 'completed' | 'interrupted') {
+  private finish(job: DiscoveryJob, outcome: 'completed' | 'interrupted' | 'abandoned') {
     this.store.fence();
     this.store.db
       .prepare(
@@ -384,6 +457,7 @@ export class DiscoveryRunner {
       signal.throwIfAborted();
       adapter.ready();
       const execution = await this.readExecution(agent, submission.messageId);
+      if (!execution) throw Error('Discovery admission is not yet known');
       if (execution?.state === 'owned') break;
       if (execution?.state === 'cancelled') {
         this.set(job, 'settling');
@@ -393,16 +467,30 @@ export class DiscoveryRunner {
     }
     this.set(job, 'running');
     for (;;) {
-      let failure: unknown;
+      // A handoff may keep whenIdle unresolved. Inspect the Host while waiting,
+      // without treating a healthy long run or user interaction as recovery failure.
+      const waiting = new AbortController();
+      let idle: { failure?: unknown } | undefined;
+      const observed = agent.whenIdle(AbortSignal.any([signal, waiting.signal])).then(
+        () => (idle = {}),
+        (failure: unknown) => (idle = { failure }),
+      );
+      let snapshot;
       try {
-        await agent.whenIdle(signal);
-      } catch (error) {
-        failure = error;
+        do {
+          await Promise.race([observed, delay(1000, undefined, { signal: waiting.signal })]);
+          signal.throwIfAborted();
+          adapter.ready();
+          snapshot = await agent.snapshot();
+          if (snapshot.root?.kind === 'reserved') throw Error('Discovery Host is still recovering');
+        } while (!idle);
+      } finally {
+        waiting.abort();
       }
+      const failure = idle?.failure;
       signal.throwIfAborted();
       adapter.ready();
-      const snapshot = await agent.snapshot();
-      if (awaitingUser(snapshot) || snapshot.root?.kind === 'reserved') {
+      if (awaitingUser(snapshot)) {
         if (failure) throw failure;
         await delay(1000, undefined, { signal });
         continue;
@@ -449,9 +537,9 @@ export class DiscoveryRunner {
       .get();
     const recovering = Object.fromEntries(
       this.store.db
-        .prepare("SELECT lane,started_at,error FROM discovery_jobs WHERE state='recovering'")
+        .prepare("SELECT lane,recovery_since,error FROM discovery_jobs WHERE state='recovering'")
         .all()
-        .map((row) => [row.lane, { since: row.started_at, reason: row.error }]),
+        .map((row) => [row.lane, { since: row.recovery_since, reason: row.error }]),
     );
     return {
       running: active ? { lane: active.lane, startedAt: active.started_at } : null,

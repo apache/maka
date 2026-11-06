@@ -71,7 +71,9 @@ test('an investigation awaiting user input keeps its slot and write identity', a
   assert.equal(f.q.execution('worker', true), f.q.state().active.id);
   assert.equal(f.parent.runner.status().running?.lane, 'quick');
   f.parent.runner.request('broad');
+  f.advance(3_600_000);
   await f.q.dispatch();
+  assert.deepEqual(f.parent.runner.status().recovering, {});
   assert.equal(f.parent.runner.waiting('broad'), true);
   f.parent.runner.withdraw('broad');
   // Only this observer is aborted; user-input handling itself remains the Host's job.
@@ -126,9 +128,105 @@ test('a protocol inbox reply waits for owned admission before settling', async (
   await waiting;
   assert.equal(f.q.state().lastFinishedAt, undefined);
   assert.equal(f.parent.runner.status().running?.lane, 'quick');
+  f.advance(3_600_000);
+  await f.q.dispatch();
+  assert.deepEqual(f.parent.runner.status().recovering, {});
   inInbox = false;
   await f.q.running;
   assert.equal(f.q.state().lastError, null);
   assert.ok(f.q.state().lastFinishedAt);
   assert.equal(f.counts().workerCalls, 1);
+});
+
+test('a reserved Host with an unresolved idle observer reaches bounded recovery', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.control({ action: 'check' });
+  let reserved = false;
+  const submit = f.agent.followup;
+  f.agent.followup = async (input, options) => {
+    const result = await submit(input, options);
+    reserved = true;
+    return result;
+  };
+  f.agent.snapshot = async () => ({
+    agent: { status: reserved ? 'running' : 'idle' },
+    root: { kind: reserved ? 'reserved' : 'idle' },
+    pendingInteractions: 0,
+  });
+  f.agent.whenIdle = () => new Promise<void>(() => {});
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /Host is still recovering/);
+  const job = f.parent.runner.job('quick')!;
+  f.advance(300_000);
+  await f.q.dispatch();
+  assert.equal(f.parent.runner.abandoned(job.id), true);
+  assert.equal(f.parent.runner.status().running, null);
+  assert.equal(f.counts().workerCalls, 1);
+});
+
+test('a healthy hour-long investigation is not a recovery timeout', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.control({ action: 'check' });
+  let release!: () => void;
+  let entered!: () => void;
+  let running = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const observed = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  f.agent.whenIdle = async () => {
+    running = true;
+    entered();
+    await gate;
+    running = false;
+  };
+  f.agent.snapshot = async () => ({
+    agent: { status: running ? 'running' : 'idle' },
+    pendingInteractions: 0,
+  });
+  await f.q.dispatch();
+  await observed;
+  f.advance(3_600_000);
+  await f.q.dispatch();
+  assert.equal(f.parent.runner.status().running?.lane, 'quick');
+  assert.deepEqual(f.parent.runner.status().recovering, {});
+  release();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.counts().workerCalls, 1);
+});
+
+test('shutdown interrupts a stuck recovery query without waiting for abandonment', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.control({ action: 'check' });
+  f.agent.whenIdle = async () => {
+    throw Error('lost observer');
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  let queried!: () => void;
+  const queryStarted = new Promise<void>((resolve) => {
+    queried = resolve;
+  });
+  f.ctx.agents.resume = () => {
+    queried();
+    return new Promise(() => {});
+  };
+  const dispatch = f.q.dispatch();
+  // Observe rejection now; shutdown intentionally rejects the owner's in-flight tick.
+  const rejected = assert.rejects(dispatch, /Quick discovery stopped/);
+  await queryStarted;
+  await f.q.close();
+  await rejected;
+  assert.equal(
+    f.parent.runner.status().running?.lane,
+    'quick',
+    'shutdown retains recovery for the next owner',
+  );
 });

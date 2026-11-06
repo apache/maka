@@ -157,6 +157,7 @@ export class InitiativeStore {
         pendingJudgement: old?.pendingJudgement,
         pendingDraft: old?.pendingDraft,
         promptVersions: old?.promptVersions,
+        legacyWorkerKey: old?.legacyWorkerKey,
         contextMode: contextMode ?? old?.contextMode ?? 'legacy',
         contextWake: old?.contextWake,
         intervalMs,

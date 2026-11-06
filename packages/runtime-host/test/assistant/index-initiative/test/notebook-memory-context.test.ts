@@ -23,6 +23,113 @@ import { view } from './notebook-output.js';
 import assert from 'node:assert/strict';
 import { fixture, until } from './fixture.js';
 import { output, note } from './notebook-output.js';
+import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+
+for (const lane of ['broad', 'quick']) {
+  test(`${lane} abandonment drops late worker writes and keeps earlier knowledge`, async () => {
+    let lost = false;
+    let worker = '';
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture({
+      beforeSnapshot: (id: string) => {
+        if (lost && id === worker) throw Error('Host snapshot unavailable');
+      },
+    });
+    let db: DatabaseSync | undefined;
+    let saved: any;
+    let lateFinished = false;
+    let later = 0;
+    const check = () =>
+      lane === 'broad'
+        ? f.invoke('InitiativeControl', { action: 'check' })
+        : f.remote('assistant.quick-discovery', { action: 'check' });
+    try {
+      await f.remote('assistant.bind', { sessionId: 'owner' });
+      f.setRunner(async ({ id, prompt, invoke }: any) => {
+        if (!worker) {
+          worker = id;
+          const context = await invoke('DiscoveryNotebook', {});
+          saved = {
+            key: 'before-disconnect',
+            executionId: context.executionId,
+            expectedFeedbackRevision: context.feedbackRevision,
+            notes: [note],
+          };
+          await invoke('DiscoveryNotebookRemember', saved);
+          lost = true;
+          await gate;
+          await assert.rejects(invoke('DiscoveryNotebookRemember', { ...saved, key: 'late' }));
+          if (lane === 'quick')
+            await assert.rejects(
+              invoke('QuickDiscoveryReport', { key: 'late', messages: ['old report'] }),
+            );
+          else await output(prompt, { notes: [{ ...note, text: 'late final draft' }] });
+          lateFinished = true;
+        } else {
+          assert.notEqual(id, worker, 'even legacy mode rotates the abandoned worker');
+          const context = await invoke('DiscoveryNotebook', {
+            view: 'topic',
+            topicId: note.topicId,
+          });
+          assert.deepEqual(
+            context.items.map((entry: any) => entry.text),
+            [note.text],
+          );
+          later++;
+          if (lane === 'broad') await output(prompt);
+        }
+      });
+      await check();
+      db = new DatabaseSync(join(f.root, 'dev.maka.index-initiative', 'initiative.sqlite'));
+      await until(() => db!.prepare("SELECT 1 FROM discovery_jobs WHERE state='recovering'").get());
+      const job = db.prepare("SELECT id FROM discovery_jobs WHERE state='recovering'").get()!;
+      db.prepare('UPDATE discovery_jobs SET recovery_since=? WHERE id=?').run(
+        Date.now() - 300_001,
+        job.id,
+      );
+      await until(() =>
+        db!.prepare("SELECT 1 FROM discovery_jobs WHERE id=? AND outcome='abandoned'").get(job.id),
+      );
+      const state =
+        lane === 'broad'
+          ? await f.invoke('InitiativeStatus')
+          : await f.remote('assistant.quick-discovery-status', {});
+      assert.equal(state.active, null);
+      assert.equal(state.checkRequested, false);
+      assert.ok((lane === 'broad' ? state.nextAt : state.retryAt) > Date.now());
+      assert.match(state.lastError, /abandoned/);
+      assert.ok(f.cancels() >= 1);
+      assert.equal(later, 0, 'timeout did not immediately start another investigation');
+
+      await check(); // explicit user check may override the ordinary cadence
+      await until(
+        () =>
+          later === (lane === 'broad' ? 2 : 1) &&
+          !db!.prepare("SELECT 1 FROM discovery_jobs WHERE state!='done'").get(),
+      );
+      release();
+      await until(() => lateFinished);
+      assert.deepEqual(f.workers.get('owner').transcript, [], 'late output never reached Bot');
+      const tools = f.filterTools(worker, [
+        { name: 'MatterDelegate', categoryHint: 'file_write' },
+        { name: 'SendUser', categoryHint: 'file_write' },
+        { name: 'Read', categoryHint: 'read' },
+      ]);
+      assert.deepEqual(
+        tools.map((tool: any) => tool.name),
+        ['Read'],
+      );
+    } finally {
+      release();
+      db?.close();
+      await f.close();
+    }
+  });
+}
 
 test('scoped cycles rotate workers, retain current memory and keep retired workers bounded', async () => {
   const f = await fixture();

@@ -118,10 +118,13 @@ export async function fixture(options: any = {}) {
     }),
     inbox: async () => [],
     transcript: async (id: string) => workers.get(id)?.transcript ?? [],
-    snapshot: async (id: string) => ({
-      agent: { status: workers.get(id)?.status ?? 'idle' },
-      pendingInteractions: workers.get(id)?.pendingInteractions ?? 0,
-    }),
+    snapshot: async (id: string) => {
+      await options.beforeSnapshot?.(id);
+      return {
+        agent: { status: workers.get(id)?.status ?? 'idle' },
+        pendingInteractions: workers.get(id)?.pendingInteractions ?? 0,
+      };
+    },
     cancel: async (id: string) => {
       cancels++;
       workers.get(id).status = 'idle';

@@ -67,6 +67,7 @@ export class InitiativeController {
     this.runner = new DiscoveryRunner(store, () => this.notebook.sequence());
     this.runner.register('broad', {
       store,
+      signal: this.abort.signal,
       ready: () => this.ready(),
       request: async () => {
         const state = store.get();
@@ -78,7 +79,7 @@ export class InitiativeController {
         );
       },
       prepare: (job) => this.prepareRun(job),
-      recovery: () => this.recoverSubmission(),
+      recovery: (job) => this.recoverSubmission(job),
       reattach: () =>
         store.update((state) => {
           const job = this.runner.job('broad')!;
@@ -97,6 +98,39 @@ export class InitiativeController {
             delete s.pendingDraft.submission;
           });
         store.recover();
+      },
+      abandon: (job) => {
+        const state = store.get();
+        const sessionId =
+          state.pendingDraft?.submission?.sessionId ??
+          (state.pendingDraft?.phase === 'discovery'
+            ? state.discoverySession
+            : state.judgementSession);
+        store.update((s) => {
+          // Keep history and worker roles, but never reuse an uncertain execution's Session.
+          delete s.discoverySession;
+          delete s.judgementSession;
+          s.legacyWorkerKey = job.id;
+          s.checkRequested = false;
+          s.nextAt = Date.now() + s.intervalMs;
+          s.lastError = 'Discovery recovery timed out; this investigation was abandoned';
+          s.failures = (s.failures ?? 0) + 1;
+          s.lastRun = {
+            id: job.id,
+            finishedAt: Date.now(),
+            outcome: 'error',
+            contextMode: s.contextMode,
+          };
+          store.log('discovery-abandoned', { id: job.id });
+        });
+        return async () => {
+          if (sessionId)
+            await this.asOwner(state, async () => {
+              const agent = await this.ctx.agents.resume({ sessionId });
+              this.ready();
+              await agent.cancel();
+            });
+        };
       },
       unfinished: () => {
         const state = store.get();
@@ -168,6 +202,9 @@ export class InitiativeController {
     for (const event of this.notebook.events('prepared')) {
       const id = `${event.id}:reported`;
       if (this.notebook.event(id)) continue;
+      // Draft message IDs start with their investigation ID. Keep the draft as
+      // history, but never deliver an abandoned investigation on a later cycle.
+      if (this.runner.abandoned(event.id.split(':')[0])) continue;
       // A new user message must be considered before an old recommendation is handed off.
       if (
         event.payload.feedbackRevision !== this.notebook.revision() ||
@@ -246,13 +283,14 @@ export class InitiativeController {
   dispatch() {
     return this.runner.tick();
   }
-  private async recoverSubmission() {
+  private async recoverSubmission(job: DiscoveryJob) {
     const state = this.store.get();
     const pending = state?.pendingDraft;
     const sessionId =
       pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
     if (!pending || !sessionId) return;
     const sessions = await this.asOwner(state, () => this.ctx.sessionQuery.list());
+    if (this.runner.job('broad')?.id !== job.id) return;
     if (!sessions.some((session: any) => session.id === sessionId)) {
       this.store.update((s) => {
         delete s.pendingDraft.submission;
@@ -301,8 +339,8 @@ export class InitiativeController {
       // switch modes between selecting the worker and claiming the cycle.
       const context = this.store.prepareContext(s.contextMode ?? 'legacy');
       const mode = context.mode;
-      const key = mode === 'scoped' ? context.id : 'legacy';
-      const label = `assistant-${phase}:${s.sessionId}${mode === 'scoped' ? ':' + key : ''}`;
+      const key = mode === 'scoped' ? context.id : (s.legacyWorkerKey ?? 'legacy');
+      const label = `assistant-${phase}:${s.sessionId}${key === 'legacy' ? '' : ':' + key}`;
       const sessions = await this.ctx.sessionQuery.list();
       const matches = sessions.filter(
         (item: any) => !item.isArchived && item.labels?.includes(label),
@@ -401,6 +439,7 @@ export class InitiativeController {
           });
         throw error;
       }
+      if (this.runner.job('broad')?.id !== state.active.id) return;
       this.store.update((s) => {
         delete s.pendingDraft.submission;
       });

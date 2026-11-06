@@ -145,6 +145,7 @@ export class QuickDiscoveryController {
     });
     parent.runner.register('quick', {
       store: this.store,
+      signal: this.abort.signal,
       ready: () => this.ready(),
       request: () => this.requestRun(),
       prepare: (job: DiscoveryJob) => this.prepareRun(job),
@@ -177,6 +178,28 @@ export class QuickDiscoveryController {
           }
           delete state.recovery;
         }),
+      abandon: (job: DiscoveryJob) => {
+        const state = this.state();
+        const sessionId = state.workerSession;
+        this.store.update((s) => {
+          delete s.workerSession;
+          s.legacyWorkerKey = job.id;
+          s.checkRequested = false;
+          s.retryAt = this.now() + s.intervalMs;
+          s.lastError = 'Discovery recovery timed out; this investigation was abandoned';
+          // Source captures and successful-check watermarks are untouched. The
+          // next ordinary cycle can reconsider those hints with a fresh worker.
+          this.store.log('quick-abandoned', { id: job.id });
+        });
+        return async () => {
+          if (sessionId)
+            await this.owner(state, async () => {
+              const agent = await this.ctx.agents.resume({ sessionId });
+              this.ready();
+              await agent.cancel();
+            });
+        };
+      },
       unfinished: () => !!(this.state()?.active || this.state()?.pending),
       run: (agent: any) => this.run(agent, this.state()),
       error: (error: unknown) =>
@@ -718,6 +741,7 @@ export class QuickDiscoveryController {
         }
         this.ready();
         this.store.update((s) => {
+          if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
           s.active.executionCompleted = true;
           // Legacy activations may have no recorded prompt version. Do not claim
           // they used the current instructions merely because recovery succeeded.
