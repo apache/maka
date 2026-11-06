@@ -1955,6 +1955,20 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
 
 #[tokio::test]
 async fn closing_session_mcp_settles_parked_work_before_allowing_reconnect() {
+    closing_session_mcp(McpClose::Reconnect).await;
+}
+
+#[tokio::test]
+async fn shutdown_wakes_session_mcp_parked_wait() {
+    closing_session_mcp(McpClose::Shutdown).await;
+}
+
+enum McpClose {
+    Reconnect,
+    Shutdown,
+}
+
+async fn closing_session_mcp(mode: McpClose) {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let counter = Counter::new(Behavior::Returned);
@@ -1967,6 +1981,11 @@ async fn closing_session_mcp_settles_parked_work_before_allowing_reconnect() {
             Some(setup),
         )
         .await;
+        let shutdown = matches!(mode, McpClose::Shutdown);
+        fixture
+            .owner
+            .mcp_shutdown_at_parked_wait
+            .store(shutdown, Ordering::SeqCst);
         let session = fixture.create("Session MCP disconnect").await;
         let mut lease = fixture
             .app
@@ -1994,6 +2013,27 @@ async fn closing_session_mcp_settles_parked_work_before_allowing_reconnect() {
             }
             commits.changed().await.unwrap();
         };
+
+        if shutdown {
+            let closing = fixture.owner.clone();
+            let (closed, ()) = tokio::join!(lease.completion(), async {
+                closing.stop.cancelled().await;
+                closing.close().await.unwrap();
+            });
+            closed.cleanup.unwrap();
+            assert!(
+                store
+                    .native_approval_checkpoint(&session)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revoked
+            );
+            assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+            fixture.app.shutdown().await.unwrap();
+            fixture.config.shutdown().await.unwrap();
+            return;
+        }
 
         lease.completion().await.cleanup.unwrap();
         let settlements = stored_facts(&fixture, &session)

@@ -252,6 +252,8 @@ pub(crate) struct Owner {
     producer_gate: Arc<Mutex<()>>,
     #[cfg(test)]
     title_write_gate: std::sync::Mutex<Option<Arc<title::WriteGate>>>,
+    #[cfg(test)]
+    mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool,
     #[cfg(all(test, target_os = "macos"))]
     file_native_hints: std::sync::atomic::AtomicBool,
     stop: CancellationToken,
@@ -652,6 +654,8 @@ impl Owner {
             producer_gate: Arc::default(),
             #[cfg(test)]
             title_write_gate: std::sync::Mutex::default(),
+            #[cfg(test)]
+            mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(test, target_os = "macos"))]
             file_native_hints: std::sync::atomic::AtomicBool::new(true),
             stop,

@@ -150,6 +150,14 @@ impl Owner {
         self: &Arc<Self>,
         cutoff: u64,
     ) -> Result<(), RunError> {
+        // Keep recovery parked until the cleanup waiter injects shutdown.
+        #[cfg(test)]
+        if self
+            .mcp_shutdown_at_parked_wait
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         let mut sessions = self.store.ready_native_approval_sessions().await?;
         sessions.extend(self.store.due_model_retry_sessions(cutoff).await?);
         let mut seen = std::collections::HashSet::new();

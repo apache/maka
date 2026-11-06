@@ -327,10 +327,26 @@ impl Owner {
             } else if !parked || self.stop.is_cancelled() {
                 return Ok(());
             } else {
+                #[cfg(test)]
+                if self
+                    .mcp_shutdown_at_parked_wait
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    use futures_util::FutureExt;
+                    // Enter the next wait without historical hints masking shutdown.
+                    while let Some(changed) = changes.changed().now_or_never() {
+                        changed.expect("live MCP test subscription");
+                    }
+                    self.stop.cancel();
+                }
                 self.schedule_activations(crate::owner::now())
                     .await
                     .map_err(|error| error.to_string())?;
-                changes.changed().await.map_err(|error| error.to_string())?;
+                // Recovery may have acquired custody during the scan; recheck it on shutdown.
+                tokio::select! {
+                    _ = self.stop.cancelled() => {},
+                    changed = changes.changed() => changed.map_err(|error| error.to_string())?,
+                }
             }
         }
     }
