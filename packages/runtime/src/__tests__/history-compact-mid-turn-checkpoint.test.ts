@@ -102,6 +102,88 @@ describe('mid-turn history compact checkpoint', () => {
     );
   });
 
+  test('covers multiple continuation turns and replays the original task anchor once', () => {
+    const anchor = textEvent('anchor', 'turn-original', 'user');
+    const events: RuntimeEvent[] = [
+      anchor,
+      textEvent('source-step', 'turn-original', 'model'),
+      textEvent('resume-step', 'turn-resume-1', 'model'),
+      {
+        ...textEvent('steering', 'turn-resume-1', 'user'),
+        content: { kind: 'text' as const, text: 'Keep going', steering: true },
+      },
+      textEvent('resume-step-2', 'turn-resume-2', 'model'),
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: events,
+      summary: sectionedSummary('Task progress'),
+      phase: 'mid_turn',
+      headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
+    });
+    assert.equal(checkpoint.coverage.through.turnId, 'turn-resume-2');
+    const tail = textEvent('tail', 'turn-resume-2', 'model');
+    const match = matchHistoryCompactCheckpointPrefix(checkpoint, [...events, tail]);
+    assert.equal(match.reason, undefined);
+    const replay = projectHistoryCompactCheckpointReplay(
+      checkpoint,
+      match.coveredRuntimeEvents,
+      match.successorRuntimeEvents,
+    );
+    assert.deepEqual(replay.slice(1), [anchor, tail]);
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(
+        {
+          ...checkpoint,
+          headAnchor: { runtimeEventId: 'steering', turnId: 'turn-resume-1' },
+        },
+        events,
+      ).reason,
+      'coverage_miss',
+    );
+  });
+
+  test('a host-authored task anchor survives checkpoint replay across a handoff', () => {
+    const anchor: RuntimeEvent = { ...textEvent('anchor', 'logical-turn', 'user'), author: 'host' };
+    const events = [
+      anchor,
+      { ...textEvent('step', 'logical-turn', 'model'), runId: 'successor-run' },
+    ];
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: events,
+      summary: sectionedSummary('Host task progress'),
+      phase: 'mid_turn',
+      headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
+    });
+    const match = matchHistoryCompactCheckpointPrefix(checkpoint, events);
+    assert.equal(match.reason, undefined);
+    const replay = projectHistoryCompactCheckpointReplay(
+      checkpoint,
+      match.coveredRuntimeEvents,
+      match.successorRuntimeEvents,
+    );
+    assert.deepEqual(replay.slice(1), [anchor]);
+  });
+
+  test('a newer host task also prevents reusing the previous user anchor', () => {
+    assert.throws(
+      () =>
+        buildHistoryCompactCheckpoint({
+          sessionId: 'session-1',
+          coveredRuntimeEvents: [
+            textEvent('anchor', 'turn-original', 'user'),
+            { ...textEvent('host-task', 'turn-host', 'user'), author: 'host' },
+            textEvent('step', 'turn-host', 'model'),
+          ],
+          summary: sectionedSummary('Task progress'),
+          phase: 'mid_turn',
+          headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-original' },
+        }),
+      /must be the compacted turn's user event/,
+    );
+  });
+
   test("rejects a head anchor that is not the compacted turn's user event", () => {
     const events = [textEvent('a', 'turn-1', 'user'), textEvent('b', 'turn-1', 'model')];
     // Anchor turnId disagrees with the covered event.
@@ -133,8 +215,7 @@ describe('mid-turn history compact checkpoint', () => {
   test("rejects a head anchor pointing at another covered turn's user event", () => {
     // A self-consistent anchor (role user, matching self-reported turnId) that
     // resolves to a PRIOR turn's prompt would silently drop the real current
-    // prompt from the replay — the compacted turn is the last covered event's
-    // turn, and the anchor must belong to it.
+    // prompt from the replay — a newer user task cannot reuse a prior anchor.
     const events = [
       textEvent('prior-user', 'turn-0', 'user'),
       textEvent('prior-model', 'turn-0', 'model'),

@@ -390,6 +390,7 @@ test('chained handoff parks planning at the original boundary as continuation_al
   const continuationEntered = deferred<void>();
   const continuationGo = deferred<void>();
   const executionAbort = new AbortController();
+  const observedAnchors: Array<string | undefined> = [];
   const backends = new BackendRegistry();
   backends.register('ai-sdk', (ctx) => {
     return new (class extends FakeBackend {
@@ -411,6 +412,7 @@ test('chained handoff parks planning at the original boundary as continuation_al
       }
 
       override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+        observedAnchors.push(input.headAnchorRuntimeEvent?.runId);
         if (!input.continuation) {
           await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
           originalEntered.resolve();
@@ -418,6 +420,14 @@ test('chained handoff parks planning at the original boundary as continuation_al
           const result = await input.handoffBoundary!(executionAbort.signal, 2);
           if (result === 'pause' && !executionAbort.signal.aborted) return;
         } else {
+          yield {
+            type: 'runtime_context',
+            id: `context-${input.runId}`,
+            turnId: input.turnId,
+            ts: Date.now(),
+            name: 'fixture',
+            text: 'Host context for this physical run',
+          };
           continuationEntered.resolve();
           await continuationGo.promise;
           const result = await input.handoffBoundary!(executionAbort.signal, null);
@@ -568,6 +578,16 @@ test('chained handoff parks planning at the original boundary as continuation_al
     });
     assert.equal(chainedPlan.disposition, 'park');
     assert.deepEqual(chainedPlan.rejectionReasons, ['continuation_already_exists']);
+
+    const plan2 = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+      sourceRunId: 'successor-run',
+      purpose: 'handoff',
+    });
+    assert.ok(plan2.continuation, JSON.stringify(plan2));
+    for await (const _ of manager.resumeSafeBoundaryContinuation(plan2.continuation)) {
+      void _;
+    }
+    assert.deepEqual(observedAnchors, ['original-run', 'original-run', 'original-run']);
   } finally {
     originalGo.resolve();
     continuationGo.resolve();
