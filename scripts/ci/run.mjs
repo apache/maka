@@ -297,6 +297,7 @@ export function executor(
         'windows-skills',
         'windows-nsh',
         'macos-host',
+        'macos-terminal',
         'windows-shell',
       ].includes(id)
     ) {
@@ -349,7 +350,8 @@ export function executor(
       await nextest(id, true);
       await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
     } else if (id === 'native') {
-      await cargo(['check', ...suites.native.cargoArgs]);
+      if (['darwin', 'win32'].includes(process.platform)) await nextest(id, true, filter, extra);
+      else await cargo(['check', ...suites.native.cargoArgs]);
     } else if (!['tooling', 'windows-ci'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }
@@ -360,6 +362,8 @@ export function executor(
       for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
+    } else if (id === 'macos-terminal') {
+      await nextest(id, false, filter, extra);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([
@@ -381,8 +385,8 @@ export function executor(
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);
-    } else if (id === 'native' && process.platform === 'darwin') {
-      await nextest(id);
+    } else if (id === 'native' && ['darwin', 'win32'].includes(process.platform)) {
+      await nextest(id, false, filter, extra);
     } else if (id === 'contracts') {
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);
       await node([

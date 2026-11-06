@@ -62,7 +62,21 @@ function fixture() {
   const metadata = {
     root: workspace([
       ['maka-code-runtime', 'platform/code-runtime'],
-      ['maka-agent-native', 'plugins/agent/native'],
+      [
+        'maka-agent-native',
+        'plugins/agent/native',
+        [
+          'platform/code-runtime',
+          'platform/computer-use',
+          'plugins/workspace/workspace-processes/native',
+        ],
+      ],
+      [
+        'maka-processes-native',
+        'plugins/workspace/workspace-processes/native',
+        ['platform/process', 'platform/sandbox'],
+      ],
+      ['maka-sandbox', 'platform/sandbox'],
       ['maka-computer-use', 'platform/computer-use', ['platform/code-runtime']],
       ['maka-skills-core', 'plugins/skills/core'],
       ['maka-skills-native', 'plugins/skills/native', ['plugins/skills/core']],
@@ -140,7 +154,7 @@ test('a transitive Computer Use dependency selects all native OS checks and CLI 
   );
   assert.equal(
     plan.suites.root.filter,
-    'package(=maka-cli) | package(=maka-code-runtime) | package(=maka-computer-use)',
+    'package(=maka-agent-native) | package(=maka-cli) | package(=maka-code-runtime) | package(=maka-computer-use)',
   );
   assert.ok(plan.suites.bridge);
   assert.ok(plan.suites.desktop);
@@ -501,7 +515,7 @@ test('Windows shell and CI helper changes run their behavior suites on Windows',
   ]);
 });
 
-test('native behavior verification selects nextest on macOS and Windows', () => {
+test('native behavior verification compiles and executes nextest on macOS and Windows', async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
   try {
     for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
@@ -521,6 +535,102 @@ test('native behavior verification selects nextest on macOS and Windows', () => 
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  try {
+    for (const host of ['linux', 'darwin', 'win32']) {
+      Object.defineProperty(process, 'platform', { value: host });
+      const calls = [];
+      const exec = executor(
+        root,
+        {},
+        {
+          run: async (executable, args) => {
+            calls.push({ executable, args });
+            return '';
+          },
+        },
+      );
+      await exec.prepare('native');
+      await exec.verify('native');
+      const cargo = [
+        '--locked',
+        '-p',
+        'maka-computer-use',
+        '--lib',
+        '--features',
+        'native-desktop',
+      ];
+      const filter = [
+        'test(macos::controller::tests::)',
+        'test(macos::tcc::tests::)',
+        'test(system_permission::process::tests::)',
+        'test(desktop::worker::macos::tests::)',
+        'test(desktop::worker::native_owner::tests::)',
+        'test(driver::tests::fresh_binding_replaces_failed_controller_without_restarting_old_owner)',
+      ].join(' | ');
+      assert.deepEqual(
+        calls,
+        host === 'linux'
+          ? [{ executable: 'cargo', args: ['check', ...cargo] }]
+          : [
+              { executable: 'cargo', args: ['nextest', 'run', ...cargo, '-E', filter, '--no-run'] },
+              { executable: 'cargo', args: ['nextest', 'run', ...cargo, '-E', filter] },
+            ],
+        host,
+      );
+    }
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+});
+
+test('native terminal implementation and fixtures run the real PTY acceptance on macOS', async () => {
+  for (const input of [
+    'plugins/agent/native/src/owner/tests/terminal.rs',
+    'plugins/agent/native/src/owner/tests/processes.rs',
+    'plugins/agent/native/src/owner/tests/service_tools/setup.rs',
+    'plugins/workspace/workspace-processes/native/src/terminal/output.rs',
+    'platform/process/src/pty/unix.rs',
+    'platform/sandbox/src/seatbelt/base.sbpl',
+    'plugins/agent/providers/data/catalog-facts.json',
+  ]) {
+    const plan = fixture()([input]);
+    assert.equal(plan.full, false, input);
+    assert.deepEqual(
+      plan.workers
+        .filter((worker) => worker.suites.includes('macos-terminal'))
+        .map((worker) => worker.runner),
+      ['macos-latest'],
+      input,
+    );
+  }
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (executable, args) => {
+        calls.push({ executable, args });
+        return '';
+      },
+    },
+  );
+  await exec.prepare('macos-terminal');
+  await exec.verify('macos-terminal');
+  const args = [
+    'nextest',
+    'run',
+    '--locked',
+    '-p',
+    'maka-agent-native',
+    '--lib',
+    '-E',
+    'test(=owner::tests::terminal::terminal_raw_bytes_full_resize_replay_and_observer_cancellation_preserve_native_owner)',
+  ];
+  assert.deepEqual(calls, [
+    { executable: 'cargo', args: [...args, '--no-run'] },
+    { executable: 'cargo', args },
+  ]);
 });
 
 test('skill publication changes run the existing behavior tests on Windows', async () => {
