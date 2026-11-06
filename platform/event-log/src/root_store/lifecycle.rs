@@ -181,10 +181,7 @@ impl StageOwner {
         self.validate_current()?;
         // No await separates registration from spawning the actual SQL owner.
         self.gates.start_work()?;
-        let registration = StageRegistration {
-            owner: Some(self.clone()),
-            started: false,
-        };
+        let registration = StageRegistration(StageState::Unstarted(self.clone()));
         crate::connection::OwnedConnection::open_tracked(
             options,
             crate::connection::ConnectionAuthority::Root(self.root.clone()),
@@ -197,16 +194,24 @@ impl StageOwner {
 
 /// Moved to the original connection thread before initialization can yield.
 /// Losing that thread's terminal report is failure, never inferred completion.
-pub(crate) struct StageRegistration {
-    owner: Option<StageOwner>,
-    started: bool,
+pub(crate) struct StageRegistration(StageState);
+enum StageState {
+    Unstarted(StageOwner),
+    Started(StageOwner),
+    Completed,
 }
 impl StageRegistration {
     pub(crate) fn started(&mut self) {
-        self.started = true;
+        let StageState::Unstarted(owner) = std::mem::replace(&mut self.0, StageState::Completed)
+        else {
+            unreachable!("only an unstarted SQL stage can start")
+        };
+        self.0 = StageState::Started(owner);
     }
     pub(crate) fn complete(&mut self, clean: bool) {
-        if let Some(owner) = self.owner.take() {
+        if let StageState::Unstarted(owner) | StageState::Started(owner) =
+            std::mem::replace(&mut self.0, StageState::Completed)
+        {
             if clean {
                 owner.gates.finish_work();
             } else {
@@ -220,6 +225,6 @@ impl Drop for StageRegistration {
     fn drop(&mut self) {
         // spawn failure destroys an unstarted closure without ever opening SQL.
         // Once started, only the explicit actual-close path may acknowledge it.
-        self.complete(!self.started);
+        self.complete(matches!(self.0, StageState::Unstarted(_)));
     }
 }

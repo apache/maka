@@ -271,10 +271,22 @@ impl Drop for SettlementCustody {
     }
 }
 struct DispatchStatus {
-    closed: bool,
+    admission: DispatchAdmission,
     active: usize,
-    unconfirmed: bool,
     retained: Option<DispatchRetention>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DispatchAdmission {
+    Open,
+    Closed,
+    Quarantined,
+}
+impl DispatchAdmission {
+    fn close(&mut self) {
+        if *self == Self::Open {
+            *self = Self::Closed;
+        }
+    }
 }
 
 /// Private first-commit evidence. A receipt cannot construct this scope.
@@ -295,8 +307,7 @@ impl DispatchWork {
         {
             let mut status = self.dispatch.status.lock().unwrap();
             status.active -= 1;
-            status.unconfirmed = true;
-            status.closed = true;
+            status.admission = DispatchAdmission::Quarantined;
         }
     }
     pub(crate) fn finish(&self) {
@@ -328,7 +339,7 @@ impl OperationDispatchScope {
             return Err(invalid("foreign original operation custody"));
         }
         let mut status = self.dispatch.status.lock().unwrap();
-        if status.closed {
+        if status.admission != DispatchAdmission::Open {
             return Err(invalid("original operation dispatch is closed"));
         }
         status.active = status
@@ -346,7 +357,7 @@ impl Drop for DispatchClaim {
         // Lost original execution custody never admits a new auxiliary worker.
         let retained = {
             let mut status = self.dispatch.status.lock().unwrap();
-            status.closed = true;
+            status.admission.close();
             status.retained.take()
         };
         if let Some(DispatchRetention {
@@ -492,9 +503,8 @@ impl EventLog {
         let dispatch = Arc::new(DispatchState {
             identity: self.connection.owner_identity(),
             status: std::sync::Mutex::new(DispatchStatus {
-                closed: false,
+                admission: DispatchAdmission::Open,
                 active: 0,
-                unconfirmed: false,
                 retained: Some(DispatchRetention {
                     _owner: owner.clone(),
                     lifetime,
@@ -538,10 +548,12 @@ impl EventLog {
         let cleanup_confirmed = matches!(cleanup, OperationCleanup::Confirmed);
         let custody = {
             let mut status = claim.dispatch.status.lock().unwrap();
-            if status.active != 0 || (status.unconfirmed && cleanup_confirmed) {
+            if status.active != 0
+                || (status.admission == DispatchAdmission::Quarantined && cleanup_confirmed)
+            {
                 return Err(invalid("original operation work has not drained"));
             }
-            status.closed = true;
+            status.admission.close();
             SettlementCustody {
                 retained: status.retained.take(),
                 confirmed: cleanup_confirmed,
