@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { restoreJob } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
@@ -237,7 +238,7 @@ test('old oversized captures recover on a fresh worker and retain the remaining 
     return { modelId: 'small-investigator', maxInputTokens: 5500, maxOutputTokens: 2048 };
   };
   f.q.store.bindWorker('poisoned', 'quick', 'legacy', 'legacy');
-  f.q.store.update((s: any) => {
+  restoreJob(f.q.store, 'quick', (s: any) => {
     s.intakeModelKey = 'screening::large';
     s.workerSession = 'poisoned';
     s.contextWake = { id: 'old-context', mode: 'legacy' };

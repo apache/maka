@@ -256,38 +256,18 @@ export class InitiativeController {
     const agent = await this.asOwner(state, () => this.ctx.agents.resume({ sessionId }));
     const snapshot = await agent.snapshot();
     if (snapshot.root?.kind === 'reserved') throw Error('Discovery Host is still recovering');
-    let submission = pending.submission;
+    const submission = pending.submission;
     if (!submission) {
-      // Pre-upgrade wakes did not persist their message ID. Match the canonical user
-      // message for this exact draft, then ask the Host for its durable admission proof.
-      const role = pending.phase === 'discovery' ? 'exploration' : 'judgement';
-      const directory = join(this.store.directory, 'notebook-wakes', pending.id, role);
-      const messages = await agent.transcript();
-      const message = [...messages]
-        .reverse()
-        .find(
-          (m: any) =>
-            m.type === 'user' &&
-            typeof m.text === 'string' &&
-            m.text.startsWith('Runtime heartbeat, not a new human request.\nHeartbeat ID: ') &&
-            m.text.includes(`\nPhase: ${pending.phase}\n`) &&
-            m.text.includes(`完成后把增量操作写入 ${join(directory, 'operations.json')}，格式`),
+      if (
+        snapshot.root?.kind === 'active' ||
+        snapshot.agent?.status === 'running' ||
+        awaitingUser(snapshot)
+      )
+        throw Error(
+          'Running discovery has no saved submission identity; finish it before switching versions',
         );
-      if (!message) return;
-      let revision = -1; // Missing old feedback snapshots must be repaired, never assumed current.
-      try {
-        const seed = readFileSync(join(directory, 'notebook.md'), 'utf8');
-        const value = JSON.parse(seed.slice(seed.indexOf('\n') + 1)).catalog?.feedbackRevision;
-        if (Number.isSafeInteger(value) && value >= 0) revision = value;
-      } catch {
-        /* Retain the Root and require a fresh draft after it finishes. */
-      }
-      submission = { messageId: message.id, sessionId, input: message.text, revision };
+      return;
     }
-    this.ready();
-    this.store.update((s) => {
-      s.pendingDraft.submission = submission;
-    });
     return { agent, messageId: submission.messageId };
   }
   private async prepareRun(job: DiscoveryJob) {

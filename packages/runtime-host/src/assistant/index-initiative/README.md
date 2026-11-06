@@ -71,18 +71,16 @@ Permissions, source scopes, provider retry policy and cadence remain unchanged.
 This implementation does not add parallel investigation slots, distributed
 ownership, semantic deduplication or automatic risk-based execution.
 
-## Upgrade
+## Cutover
 
-Stop the old scheduler before opening the data with this version. Under the
-scheduler lease, legacy lane working data and queue entries migrate transactionally
-into jobs and requests. Quick configuration is imported from its old database once;
-source receipts remain there. Existing worker bindings and notebook events retain
-their identities. The obsolete coordinator tables are retired after conversion.
+Use a fresh profile, or finish pending discovery work in the previous version
+before switching. This Runner starts from idle settings; it does not convert old
+in-flight jobs, queue rows or previous handoff records, or reconstruct missing
+submission identities from conversation history. Unfinished old state is rejected
+without deleting it; scheduler status exposes `coordination.initializationError`.
 
-If both legacy lanes describe potentially live executions, migration rolls back
-and reports `coordination.migrationError`; resolve the old executions before
-retrying. It never chooses one and drops the other.
-
-Use a pre-upgrade backup for rollback to an older binary. The old quick JSON is
-not a synchronized rollback copy, and older schedulers do not understand jobs.
-No live-profile migration is necessary to run the synthetic regression suite.
+Existing notebook events, source receipts, settings and restricted worker roles
+remain available. Old coordinator tables are left untouched and are not used by
+the Runner; normal triggers create new requests from current cadence and hints.
+Jobs created by this Runner still recover normally across restart and Host handoff.
+A rollback to an older binary requires the pre-upgrade data, not the new job state.

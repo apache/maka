@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { restoreJob } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,14 +78,19 @@ function fixture() {
     store.lease();
     store.recover(true);
     controller = new InitiativeController(ctx, store, {});
-    controller.runner.migrate();
+    controller.runner.initialize();
   };
   open();
   store!.bind({ sessionId: 'owner', cwd: directory });
-  store!.update((s) => {
-    s.pendingJudgement = true;
-    s.judgementSession = 'judge';
-  });
+  restoreJob(
+    store!,
+    'broad',
+    (s) => {
+      s.pendingJudgement = true;
+      s.judgementSession = 'judge';
+    },
+    'retry_wait',
+  );
   return {
     posted,
     prompts,
@@ -292,6 +298,7 @@ for (const accepted of [false, true]) {
       f.setRunner((prompt) => output(prompt, validDraft));
       await f.run();
       const original = f.store.get().active.id;
+      const prepared = f.store.get().pendingDraft.submission.input;
       f.store.control('pause');
       f.restart();
       f.agent.followup = submit;
@@ -301,7 +308,16 @@ for (const accepted of [false, true]) {
       assert.equal(f.store.get().active.id, original);
       assert.equal(f.controller.runner.status().running?.lane, 'broad');
       assert.equal(f.prompts.length, Number(accepted));
-      f.agent.messageExecution = query;
+      let resolutions = 0;
+      if (accepted) {
+        f.agent.messageExecution = async (id) =>
+          ++resolutions <= 3 ? { state: 'pending' } : query(id);
+        const idle = f.agent.whenIdle;
+        f.agent.whenIdle = async () => {
+          assert.ok(resolutions > 3, 'a queued wake must be owned before observing its completion');
+          await idle();
+        };
+      } else f.agent.messageExecution = query;
       await f.restore();
       assert.equal(f.store.get().active, null);
       assert.equal(f.store.get().enabled, false);
@@ -309,6 +325,15 @@ for (const accepted of [false, true]) {
       assert.equal(f.posted.length, Number(accepted));
       assert.ok(f.store.get().nextAt > Date.now());
       assert.equal(f.controller.runner.status().running, null);
+      if (!accepted) {
+        await f.run();
+        assert.equal(
+          f.store.get().lastRun.id,
+          original,
+          'positive absence keeps the logical cycle',
+        );
+        assert.deepEqual(f.prompts, [prepared], 'retry submits the original fixed body once');
+      }
     } finally {
       f.close();
     }
@@ -352,6 +377,32 @@ test('feedback received during a recovered broad draft is validated before deliv
     assert.equal(f.prompts.length, 2);
     assert.equal(f.store.get().lastError, null);
     assert.equal(f.posted.length, 0);
+  } finally {
+    f.close();
+  }
+});
+
+test('missing old submission identity never releases a still-running investigation', async () => {
+  const f = fixture();
+  try {
+    const submit = f.agent.followup;
+    f.agent.followup = async (text, options) => {
+      await submit(text, options);
+      throw Error('Lost response');
+    };
+    await f.run();
+    const id = f.store.get().active.id;
+    f.store.update((s) => {
+      delete s.pendingDraft.submission;
+    });
+    await f.restore();
+    assert.equal(f.store.get().active.id, id);
+    assert.equal(f.controller.runner.status().running?.lane, 'broad');
+    assert.match(
+      String(f.controller.runner.status().recovering.broad?.reason),
+      /no saved submission identity/,
+    );
+    assert.equal(f.prompts.length, 1);
   } finally {
     f.close();
   }

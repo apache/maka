@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { EventIntake } from './intake.js';
 import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
-import { DiscoveryExecutionEnded, type DiscoveryJob } from './runner.js';
+import { DiscoveryExecutionEnded, requireIdleDiscovery, type DiscoveryJob } from './runner.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
@@ -188,15 +188,18 @@ export class QuickDiscoveryController {
         this.owned = true;
         this.store.transaction(() => {
           this.store.fence();
-          const legacy = this.intakeStore.get();
-          if (!this.store.configuration() && legacy) this.store.saveConfiguration(legacy);
-          for (const worker of this.intakeStore.db.prepare('SELECT * FROM context_workers').all())
-            this.store.bindWorker(
-              String(worker.session_id),
-              worker.role as any,
-              worker.mode as any,
-              String(worker.context_key),
-            );
+          if (!this.store.configuration()) {
+            const legacy = this.intakeStore.get();
+            requireIdleDiscovery(legacy);
+            if (legacy) this.store.saveConfiguration(legacy);
+            for (const worker of this.intakeStore.db.prepare('SELECT * FROM context_workers').all())
+              this.store.bindWorker(
+                String(worker.session_id),
+                worker.role as any,
+                worker.mode as any,
+                String(worker.context_key),
+              );
+          }
           this.store.update((state) => {
             this.intake.upgrade(state);
           });
@@ -453,9 +456,7 @@ export class QuickDiscoveryController {
   private async worker(s: any) {
     return this.owner(s, async () => {
       // Pin the mode until this wake (including its outbox retries) has settled.
-      // Pre-upgrade pending work has no contextWake and must finish on its legacy worker.
-      const mode =
-        s.pending && !s.contextWake ? 'legacy' : (this.parent.store.get()?.contextMode ?? 'legacy');
+      const mode = this.parent.store.get()?.contextMode ?? 'legacy';
       const context = this.store.prepareContext(mode);
       const sessions = await this.ctx.sessionQuery.list();
       const key = context.mode === 'scoped' ? context.id : (s.legacyWorkerKey ?? 'legacy');
@@ -800,7 +801,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
     quick.start(tickMs);
     return () => quick.close();
   });
-  ctx.onClose(() => quick.store.close());
+  ctx.onClose(() => quick.close());
   ctx.backgroundSessions.register(() => [quick.state()?.workerSession].filter(Boolean));
   const controlSchema = z
     .object({

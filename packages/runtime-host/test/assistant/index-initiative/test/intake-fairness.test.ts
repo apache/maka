@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { restoreJob } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { QUICK_DISCOVERY_TASK } from '../../../../src/assistant/index-initiative/quick-prompt.js';
@@ -196,8 +197,9 @@ test('ongoing investigation does not inflate the screening prompt', async (t) =>
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
-  f.q.store.update((s: any) => {
+  restoreJob(f.q.store, 'quick', (s: any) => {
     s.active = {
+      id: 'active-investigation',
       eventWake: {
         id: 'active',
         events: [

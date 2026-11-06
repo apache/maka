@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { restoreJob } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { initializeQuickDiscovery } from '../../../../src/assistant/index-initiative/quick.js';
@@ -265,7 +266,7 @@ test('legacy unfinished event queues rescreen without resetting sources or resto
   const cursor = f.q.intakeStore.db
     .prepare("SELECT cursor FROM intake_sources WHERE id='mail'")
     .get()?.cursor;
-  f.q.store.update((s: any) => {
+  restoreJob(f.q.store, 'quick', (s: any) => {
     s.workerSession = 'worker';
     s.active = {
       id: 'old',
@@ -325,4 +326,16 @@ test('worker tools expose no event reader, per-event report fields or mandatory 
   assert.throws(() =>
     report.parameters.parse({ key: 'old', messages: [], processedEventIds: ['a'] }),
   );
+});
+
+test('quick cutover rejects unfinished old work before copying its configuration', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.q.intakeStore.saveConfiguration({ ...f.q.state(), active: { id: 'old-unfinished' } });
+  f.parent.store.db.exec("UPDATE state SET payload=json_remove(payload,'$.scopes.quick')");
+  await assert.rejects(f.restart(), /Finish pending discovery work/);
+  assert.equal(f.q.intakeStore.get().active.id, 'old-unfinished');
+  assert.equal(f.q.store.configuration(), null);
+  assert.equal(f.parent.runner.job('quick'), undefined);
+  assert.equal(f.counts().workerCalls, 0);
 });

@@ -18,7 +18,7 @@
  */
 
 import test from 'node:test';
-import { legacyState } from './runner-fixture.js';
+import { restoreJob } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { HostMessageCoordinator } from '../../../../src/server/message-coordinator.js';
@@ -341,7 +341,7 @@ for (const missing of [false, true]) {
     await f.q.control({ action: 'check', eventIntake: false });
     await f.q.dispatch();
     await f.q.running;
-    legacyState(f.q.store, (s: any) => {
+    restoreJob(f.q.store, 'quick', (s: any) => {
       s.pending = {
         id: 'not-started',
         messageId: 'not-admitted',

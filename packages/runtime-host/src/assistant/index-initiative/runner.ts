@@ -50,6 +50,18 @@ const fields: Record<DiscoveryLane, readonly string[]> = {
 };
 const occupied = "state IN ('preparing','running','settling','recovering')";
 
+/** Cross-version continuation is deliberately unsupported; never silently discard work. */
+export function requireIdleDiscovery(state: any) {
+  if (
+    Object.values(fields)
+      .flat()
+      .some((key) => state?.[key])
+  )
+    throw Error(
+      'Finish pending discovery work in the previous version, or use a fresh profile; legacy executions are not resumed by this Runner',
+    );
+}
+
 /** The execution ended, as opposed to an observer or a request becoming unavailable. */
 export class DiscoveryExecutionEnded extends Error {}
 
@@ -58,7 +70,7 @@ export class DiscoveryRunner {
   private adapters = new Map<DiscoveryLane, DiscoveryAdapter>();
   private tasks = new Map<DiscoveryLane, Promise<void>>();
   private ticking?: Promise<void>;
-  private migrationError?: string;
+  private initializationError?: string;
   constructor(
     private readonly store: InitiativeStore,
     private readonly sequence: () => number,
@@ -161,94 +173,19 @@ export class DiscoveryRunner {
   waiting(lane: DiscoveryLane) {
     return !!this.store.db.prepare('SELECT 1 FROM discovery_requests WHERE lane=?').get(lane);
   }
-  /** Import legacy lane snapshots once. Working state subsequently lives only in jobs. */
-  migrate() {
+  /** Start from an idle configuration; old execution formats are not converted. */
+  initialize() {
     this.store.transaction(() => {
       this.store.fence();
       for (const [lane, adapter] of this.adapters) {
         const configuration = adapter.store.configuration();
         if (!configuration || configuration.runnerSchema) continue;
-        const work: any = {};
-        for (const key of fields[lane]) {
-          if (configuration[key] !== undefined) work[key] = configuration[key];
-          delete configuration[key];
-        }
-        const active = work.active ?? work.pending;
-        const pending = active ?? work.pendingDraft ?? work.retry;
-        if (pending || work.pendingJudgement || work.candidateReport) {
-          const needsRecovery =
-            (active && !active.executionCompleted) || work.pendingDraft?.submission;
-          const id = pending?.id ?? randomUUID();
-          let after = this.sequence();
-          const legacy = this.store.db
-            .prepare("SELECT 1 FROM sqlite_master WHERE name='discovery_running'")
-            .get();
-          if (legacy) {
-            const slot = this.store.db
-              .prepare('SELECT * FROM discovery_running WHERE lane=?')
-              .get(lane);
-            if (slot) after = Number(slot.memory_after);
-          }
-          if (
-            needsRecovery &&
-            this.store.db.prepare(`SELECT 1 FROM discovery_jobs WHERE ${occupied}`).get()
-          )
-            throw Error(
-              'Multiple legacy investigations require reconciliation before Runner migration',
-            );
-          this.store.db
-            .prepare(
-              'INSERT INTO discovery_jobs(id,lane,state,owner,started_at,work,memory_after) VALUES(?,?,?,?,?,?,?)',
-            )
-            .run(
-              id,
-              lane,
-              needsRecovery ? 'recovering' : 'retry_wait',
-              this.store.owner,
-              active?.startedAt ?? Date.now(),
-              JSON.stringify(work),
-              after,
-            );
-        }
+        requireIdleDiscovery(configuration);
+        for (const key of fields[lane]) delete configuration[key];
         delete configuration.recovery;
         configuration.runnerSchema = 1;
         adapter.store.saveConfiguration(configuration);
       }
-      if (
-        this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='discovery_previous'").get()
-      ) {
-        const row = this.store.db
-          .prepare('SELECT payload FROM discovery_previous WHERE id=1')
-          .get();
-        if (row) {
-          const previous = JSON.parse(String(row.payload));
-          this.store.db
-            .prepare(
-              'INSERT OR IGNORE INTO discovery_jobs(id,lane,state,owner,started_at,work,memory_after,memory_through,finished_at,outcome) VALUES(?,?,?,?,?,?,?,?,?,?)',
-            )
-            .run(
-              'legacy-previous',
-              previous.lane,
-              'done',
-              this.store.owner,
-              previous.startedAt,
-              '{}',
-              previous.memory.afterSequence,
-              previous.memory.throughSequence,
-              previous.finishedAt,
-              previous.outcome,
-            );
-        }
-        this.store.db.exec('DROP TABLE discovery_previous');
-      }
-      if (
-        this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='discovery_waiters'").get()
-      ) {
-        this.store.db.exec(`INSERT OR IGNORE INTO discovery_requests(lane,queued_at)
-          SELECT lane,queued_at FROM discovery_waiters ORDER BY seq; DROP TABLE discovery_waiters;`);
-      }
-      if (this.adapters.has('broad') && this.adapters.has('quick'))
-        this.store.db.exec('DROP TABLE IF EXISTS discovery_running');
     });
   }
   tick(): Promise<void> {
@@ -261,10 +198,10 @@ export class DiscoveryRunner {
   private async dispatch() {
     for (const adapter of this.adapters.values()) adapter.ready();
     try {
-      this.migrate();
-      this.migrationError = undefined;
+      this.initialize();
+      this.initializationError = undefined;
     } catch (error) {
-      this.migrationError = String(error);
+      this.initializationError = String(error);
       throw error;
     }
     // An interrupted admission is reconciled before a new investigation can start.
@@ -489,7 +426,7 @@ export class DiscoveryRunner {
         .prepare('SELECT lane,queued_at AS queuedAt FROM discovery_requests ORDER BY seq')
         .all(),
       previous: this.previous(),
-      ...(this.migrationError ? { migrationError: this.migrationError } : {}),
+      ...(this.initializationError ? { initializationError: this.initializationError } : {}),
     };
   }
 }

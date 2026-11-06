@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
 import type {
   DiscoveryLane,
   DiscoveryRunner,
@@ -78,10 +79,37 @@ export function laneFixture(runner: DiscoveryRunner, store: InitiativeStore, lan
   };
 }
 
-/** An on-disk snapshot from before Runner migration (not a live state mutation). */
-export function legacyState(store: InitiativeStore, change: (s: any) => void) {
-  const state = store.get();
-  delete state.runnerSchema;
-  change(state);
-  store.saveConfiguration(state);
+/** Seed the current durable job format for an interrupted-execution fixture. */
+export function restoreJob(
+  store: InitiativeStore,
+  lane: DiscoveryLane,
+  change: (s: any) => void,
+  status = 'recovering',
+) {
+  store.transaction(() => {
+    const state = store.get();
+    change(state);
+    const work: any = {};
+    for (const key of [
+      'active',
+      'pending',
+      'pendingDraft',
+      'pendingJudgement',
+      'candidateReport',
+      'retry',
+      'contextWake',
+    ]) {
+      if (state[key] !== undefined) work[key] = state[key];
+      delete state[key];
+    }
+    const pending = work.active ?? work.pending ?? work.pendingDraft;
+    const id = pending?.id ?? randomUUID();
+    store.db
+      .prepare(
+        'INSERT INTO discovery_jobs(id,lane,state,owner,started_at,work,memory_after) VALUES(?,?,?,?,?,?,0)',
+      )
+      .run(id, lane, status, store.owner, pending?.startedAt ?? Date.now(), JSON.stringify(work));
+    state.runnerSchema = 1;
+    store.saveConfiguration(state);
+  });
 }

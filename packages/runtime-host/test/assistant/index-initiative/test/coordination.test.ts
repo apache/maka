@@ -91,51 +91,28 @@ test('coalesced requests keep FIFO order and completed memory intervals', async 
   await broad.finish();
 });
 
-test('legacy state migrates atomically to jobs, preserves queue order and is not imported twice', (t) => {
-  const { root, store, runner } = setup(t);
-  const quickStore = store.scope('quick');
-  quickStore.bind({ sessionId: 'owner', cwd: root });
+test('idle cutover keeps settings and memory without converting old coordination records', (t) => {
+  const { root, store, book, runner } = setup(t);
+  const quick = store.scope('quick');
+  quick.bind({ sessionId: 'owner', cwd: root });
   store.update((s) => {
-    s.active = { id: 'existing', startedAt: 1 };
-    s.pendingDraft = { id: 'existing', submission: { messageId: 'accepted', input: 'fixed' } };
+    s.intervalMs = 90000;
   });
-  quickStore.update((s) => {
-    s.pending = { id: 'retry', executionCompleted: true, reports: [] };
-  });
+  book.appendNote(note, 'retained-note');
   store.db.exec(
-    "CREATE TABLE discovery_waiters(seq INTEGER PRIMARY KEY, lane TEXT, queued_at INTEGER); INSERT INTO discovery_waiters VALUES(1,'quick',10),(2,'broad',20)",
+    "CREATE TABLE discovery_waiters(seq INTEGER PRIMARY KEY, lane TEXT, queued_at INTEGER); INSERT INTO discovery_waiters VALUES(1,'quick',10)",
   );
   laneFixture(runner, store, 'broad');
-  laneFixture(runner, quickStore, 'quick');
-  runner.migrate();
-  runner.migrate();
-  assert.equal(runner.job('broad')?.id, 'existing');
-  assert.equal(runner.job('broad')?.state, 'recovering');
-  assert.equal(runner.job('quick')?.state, 'retry_wait');
-  assert.equal(store.get().pendingDraft.submission.input, 'fixed');
-  assert.equal(store.configuration().active, undefined);
-  assert.equal(quickStore.configuration().pending, undefined);
-  assert.deepEqual(
-    runner.status().waiting.map((x) => x.lane),
-    ['quick', 'broad'],
-  );
-  assert.equal(store.db.prepare('SELECT count(*) AS n FROM discovery_jobs').get()?.n, 2);
-  store.release();
-  const successor = new InitiativeStore(root, 'successor');
-  try {
-    assert.equal(successor.lease(), true);
-    assert.throws(
-      () =>
-        store.update((s) => {
-          s.active = null;
-        }),
-      /ownership changed/,
-    );
-    assert.equal(runner.job('broad')?.id, 'existing');
-  } finally {
-    successor.release();
-    successor.close();
-  }
+  laneFixture(runner, quick, 'quick');
+  runner.initialize();
+  runner.initialize();
+  assert.equal(store.get().intervalMs, 90000);
+  assert.equal(store.get().enabled, false);
+  assert.equal(book.event('retained-note').payload.text, note.text);
+  assert.equal(runner.job('broad'), undefined);
+  assert.equal(runner.job('quick'), undefined);
+  assert.deepEqual(runner.status().waiting, []);
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM discovery_waiters').get()?.n, 1);
 });
 
 test('broad exploration and judgement finish before quick investigation; committed memory reaches its request', async () => {
@@ -270,7 +247,7 @@ test('a failed quick investigation releases capacity without consuming its pendi
   await broad.finish();
 });
 
-test('ambiguous overlapping legacy executions block migration without discarding either identity', async (t) => {
+test('unfinished legacy work blocks cutover without discarding either identity', async (t) => {
   const { store, runner } = setup(t);
   const quick = store.scope('quick');
   quick.bind({ sessionId: 'owner', cwd: store.directory });
@@ -282,10 +259,10 @@ test('ambiguous overlapping legacy executions block migration without discarding
   });
   laneFixture(runner, store, 'broad');
   laneFixture(runner, quick, 'quick');
-  await assert.rejects(runner.tick(), /Multiple legacy investigations/);
+  await assert.rejects(runner.tick(), /Finish pending discovery work/);
   assert.equal(store.get().active.id, 'broad-before-upgrade');
   assert.equal(quick.get().active.id, 'quick-before-upgrade');
   assert.equal(store.configuration().runnerSchema, undefined);
-  assert.equal(runner.job('broad'), undefined, 'the entire migration rolls back');
-  assert.match(runner.status().migrationError!, /require reconciliation/);
+  assert.equal(runner.job('broad'), undefined, 'no replacement job is created');
+  assert.match(runner.status().initializationError!, /legacy executions are not resumed/);
 });
