@@ -43,6 +43,8 @@ mod host;
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
+#[cfg(target_os = "linux")]
+mod tray_linux;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod window;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

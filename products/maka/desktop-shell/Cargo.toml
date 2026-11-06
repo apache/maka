@@ -44,3 +44,10 @@ gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-fe
 nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows" }
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }

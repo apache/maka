@@ -17,19 +17,11 @@
  * under the License.
  */
 
-//! The window the workbench runs in, and the end of the client.
+//! The disposable workbench window and the process-owned Host connection.
 //!
-//! Closing the window, the quit key and the quit menu item all close the
-//! window; once no window is left the client detaches from the Host (its
-//! tasks stop and its connection closes, within [`host::DETACH_LIMIT`]) and then the
-//! app quits. On macOS quitting ends the process (`terminate:`), so the
-//! detach runs before it, not after the event loop returns.
-//!
-//! While the window is open it follows the Root's Host: once the Host its
-//! client reaches stops, it connects to the next one and loads the workbench
-//! again in the same window.
-//!
-//! The window opens where it was when it last closed (see [`Placement`]).
+//! Closing releases the UI, not the admitted client. The tray reconstructs a
+//! window from the retained configuration; only Quit detaches, then exits.
+//! Host following continues with or without a window.
 
 use crate::{
     host::{self, Connection, Root},
@@ -39,7 +31,7 @@ use crate::{
 use maka_workbench::bindings::Bindings;
 use nsh_engine::{EngineConfig, JsonValue, Limits};
 use nsh_platform_gpui::{
-    AppOptions, AppView,
+    AppOptions, AppView, CloseRequest,
     gpui::{self, App, AppContext as _, Focusable as _, SystemNotification, WindowHandle},
     titlebar_options,
 };
@@ -50,6 +42,17 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::watch};
+
+#[cfg(target_os = "linux")]
+use crate::tray_linux::{Event as TrayEvent, Tray};
+#[cfg(target_os = "macos")]
+use nsh_platform_macos::StatusMenu;
+
+#[cfg(target_os = "macos")]
+enum TrayEvent {
+    Open,
+    Quit,
+}
 
 /// The first pause between attempts to reach the Root's next Host.
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
@@ -115,40 +118,90 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
     // quit handlers' 200 ms.
+    let (tray_events, mut tray_requests) = tokio::sync::mpsc::unbounded_channel();
+    let reopening = tray_events.clone();
     let application = gpui_platform::application().with_quit_mode(gpui::QuitMode::Explicit);
+    application.on_reopen(move |_| {
+        let _ = reopening.send(TrayEvent::Open);
+    });
     application.run(move |cx| {
         cx.set_app_identity(APP_ID, TITLE);
-        let closed = detach.clone();
-        cx.on_window_closed(move |cx, _| {
-            if cx.windows().is_empty() {
-                closed.then_quit(cx);
+        let (config, placement, endpoint, epoch, root) = start.take().expect("the app starts once");
+        #[cfg(target_os = "linux")]
+        let tray = Tray::start(handle.clone(), tray_events);
+        #[cfg(target_os = "macos")]
+        let tray = {
+            let open = tray_events.clone();
+            StatusMenu::new(
+                TITLE,
+                move || {
+                    let _ = open.send(TrayEvent::Open);
+                },
+                move || {
+                    let _ = tray_events.send(TrayEvent::Quit);
+                },
+            )
+        };
+        // Keep the pristine configuration before constructing any UI. Each
+        // window gets its own HostChannel, engine and registry instances.
+        let desktop = Rc::new(RefCell::new(Desktop {
+            config: config.clone(),
+            window: None,
+            quitting: false,
+            paused: false,
+            placement: Rc::new(placement),
+            shell: shell.clone(),
+            active,
+            tray,
+        }));
+        if let Err(error) = Desktop::show(&desktop, cx) {
+            eprintln!("maka-desktop-shell: cannot open a window: {error}");
+            detach.then_quit(cx);
+        }
+        let current = ConnectedHost::new((endpoint, epoch), config);
+        let commands = desktop.clone();
+        cx.spawn(async move |cx| {
+            while let Some(event) = tray_requests.recv().await {
+                cx.update(|cx| match event {
+                    TrayEvent::Quit => cx.quit(),
+                    TrayEvent::Open => Desktop::present(&commands, cx),
+                    #[cfg(target_os = "linux")]
+                    TrayEvent::Unavailable => {
+                        if commands.borrow().window.is_none() {
+                            Desktop::present(&commands, cx);
+                        }
+                    }
+                });
             }
         })
         .detach();
-        let (config, placement, endpoint, epoch, root) = start.take().expect("the app starts once");
-        let placement = Rc::new(placement);
-        let current = ConnectedView::new((endpoint, epoch), shell.attach(config));
-        let window = match open(current.config.clone(), placement.clone(), cx) {
-            Ok(window) => window,
-            Err(error) => {
-                eprintln!("maka-desktop-shell: cannot open a window: {error}");
-                std::process::exit(1);
-            }
-        };
-        let _ = window.update(cx, |_, window, cx| {
-            active.send_replace(window.is_window_active());
-            cx.observe_window_activation(window, move |_, window, _| {
-                active.send_replace(window.is_window_active());
-            })
-            .detach();
-        });
-        let closing = placement.clone();
         cx.spawn(async move |cx| {
-            if exits.recv().await.is_some() {
-                let _ = window.update(cx, |_, window, cx| {
-                    closing.save(window, cx);
-                    window.remove_window();
-                });
+            while exits.recv().await.is_some() {
+                cx.update(|cx| cx.quit());
+            }
+        })
+        .detach();
+        // Native Quit (including Dock/log-out on macOS) must not bypass
+        // the bounded detach through GPUI's 200 ms shutdown observers.
+        let quitting = detach.clone();
+        let saving = desktop.clone();
+        cx.on_request_quit(move |cx| {
+            if quitting.finished() {
+                return true;
+            }
+            saving.borrow_mut().quitting = true;
+            Desktop::save(&saving, cx);
+            quitting.then_quit(cx);
+            false
+        })
+        .expect("the desktop owns quit admission");
+        let closed = desktop.clone();
+        cx.on_window_closed(move |cx, _| {
+            if cx.windows().is_empty() {
+                let mut state = closed.borrow_mut();
+                state.window = None;
+                state.active.send_replace(false);
+                state.shell.release();
             }
         })
         .detach();
@@ -185,9 +238,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             }
         })
         .detach();
+        let scaling = desktop.clone();
         cx.spawn(async move |cx| {
             while let Some(scale) = text_sizes.recv().await {
-                let _ = window.update(cx, |view, _, cx| view.set_font_scale(Some(scale), cx));
+                if let Some(window) = scaling.borrow().window {
+                    let _ = window.update(cx, |view, _, cx| view.set_font_scale(Some(scale), cx));
+                }
             }
         })
         .detach();
@@ -216,9 +272,9 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         })
         .detach();
         let events = shell.events.clone();
+        let notified = desktop.clone();
         cx.on_system_notification_response(move |response, cx| {
-            cx.activate(true);
-            let _ = window.update(cx, |_, window, _| window.activate_window());
+            Desktop::present(&notified, cx);
             let host = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(host) = host {
                 let _ = host.send(
@@ -227,23 +283,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                 );
             }
         });
-        // Quitting from elsewhere (the Dock, logging out) gets the time GPUI
-        // gives quit handlers; a window still open records its place first.
-        let quitting = detach.clone();
-        cx.on_app_quit(move |cx| {
-            let _ = window.update(cx, |_, window, cx| placement.save(window, cx));
-            quitting.start(cx)
-        })
-        .detach();
-        follow(
-            window,
-            current,
-            root,
-            handle.clone(),
-            &detach,
-            shell.clone(),
-            cx,
-        );
+        follow(desktop, current, root, handle.clone(), &detach, cx);
         cx.activate(true);
     });
     Ok(())
@@ -252,6 +292,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
 fn open(
     config: EngineConfig,
     placement: Rc<Placement>,
+    desktop: Rc<RefCell<Desktop>>,
     cx: &mut App,
 ) -> Result<WindowHandle<AppView>, String> {
     let min = gpui::size(gpui::px(MIN_SIZE.0), gpui::px(MIN_SIZE.1));
@@ -301,11 +342,22 @@ fn open(
         });
         let app = view.read(cx);
         app.own_window(window, cx);
-        // Quit and close both close the window, which records its place;
-        // the last one closed detaches.
-        app.on_close_request(move |_, window, cx| {
-            placement.save(window, cx);
-            window.remove_window();
+        app.on_close_request(move |request, window, cx| match request {
+            CloseRequest::Quit => {
+                placement.save(window, cx);
+                cx.quit();
+            }
+            _ => {
+                let mut state = desktop.borrow_mut();
+                if state.can_close() {
+                    placement.save(window, cx);
+                    state.window = None;
+                    state.active.send_replace(false);
+                    state.shell.release();
+                    drop(state);
+                    window.remove_window();
+                }
+            }
         });
         app.load_with_config(config);
         let focus = view.read(cx).focus_handle(cx);
@@ -315,13 +367,107 @@ fn open(
     .map_err(|error| error.to_string())
 }
 
-struct ConnectedView {
+struct Desktop {
+    config: EngineConfig,
+    window: Option<WindowHandle<AppView>>,
+    quitting: bool,
+    paused: bool,
+    placement: Rc<Placement>,
+    shell: Shell,
+    active: watch::Sender<bool>,
+    #[cfg(target_os = "linux")]
+    tray: Tray,
+    #[cfg(target_os = "macos")]
+    tray: StatusMenu,
+}
+
+impl Desktop {
+    fn can_close(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.tray.ready()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = &self.tray;
+            true
+        }
+    }
+
+    fn show(this: &Rc<RefCell<Self>>, cx: &mut App) -> Result<(), String> {
+        if this.borrow().quitting {
+            return Ok(());
+        }
+        if let Some(window) = this.borrow().window {
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+            return Ok(());
+        }
+        let (config, placement, active) = {
+            let state = this.borrow();
+            let mut config = state.config.clone();
+            config.host = nsh_engine::HostChannel::new();
+            (
+                state.shell.attach(config),
+                state.placement.clone(),
+                state.active.clone(),
+            )
+        };
+        let window = match open(config, placement, this.clone(), cx) {
+            Ok(window) => window,
+            Err(error) => {
+                this.borrow().shell.release();
+                return Err(error);
+            }
+        };
+        this.borrow_mut().window = Some(window);
+        let paused = this.borrow().paused;
+        let _ = window.update(cx, |view, window, cx| {
+            if paused {
+                view.pause_input(window, cx, |_| {});
+            }
+            active.send_replace(window.is_window_active());
+            cx.observe_window_activation(window, move |_, window, _| {
+                active.send_replace(window.is_window_active());
+            })
+            .detach();
+        });
+        Ok(())
+    }
+
+    fn present(this: &Rc<RefCell<Self>>, cx: &mut App) {
+        if let Err(error) = Self::show(this, cx) {
+            eprintln!("maka-desktop-shell: cannot reopen the workbench: {error}");
+        }
+        cx.activate(true);
+    }
+
+    fn save(this: &Rc<RefCell<Self>>, cx: &mut App) {
+        let state = this.borrow();
+        if let Some(window) = state.window {
+            let _ = window.update(cx, |_, window, cx| state.placement.save(window, cx));
+        }
+    }
+
+    fn reload(&self, cx: &mut App) {
+        if let Some(window) = self.window {
+            let mut config = self.config.clone();
+            config.host = nsh_engine::HostChannel::new();
+            let config = self.shell.attach(config);
+            let _ = window.update(cx, |view, window, cx| {
+                view.load_with_config(config);
+                window.focus(&view.focus_handle(cx), cx);
+            });
+        }
+    }
+}
+
+struct ConnectedHost {
     host: (PathBuf, uuid::Uuid),
     config: EngineConfig,
     reloading: tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>,
 }
 
-impl ConnectedView {
+impl ConnectedHost {
     fn new(host: (PathBuf, uuid::Uuid), config: EngineConfig) -> Self {
         let reloading = config
             .context
@@ -341,12 +487,11 @@ impl ConnectedView {
 /// and loads the workbench again on it. The workbench starts over, as it
 /// does when the desktop opens.
 fn follow(
-    window: WindowHandle<AppView>,
-    mut current: ConnectedView,
+    desktop: Rc<RefCell<Desktop>>,
+    mut current: ConnectedHost,
     root: Root,
     runtime: Handle,
     detach: &Detach,
-    shell: Shell,
     cx: &mut App,
 ) {
     let detach = detach.clone();
@@ -361,20 +506,31 @@ fn follow(
                     _ = &mut stopped => break,
                     request = current.reloading.recv() => {
                         let Some(request) = request else { return };
-                        if window.update(cx, |view, window, cx| {
+                        cx.update(|cx| {
+                            let mut state = desktop.borrow_mut();
                             match request {
                                 maka_workbench::reload::Request::Pause(ready) => {
-                                    view.pause_input(window, cx, move |result| { let _ = ready.send(result); });
+                                    state.paused = true;
+                                    if let Some(window) = state.window {
+                                        let _ = window.update(cx, |view, window, cx| {
+                                            view.pause_input(window, cx, move |result| { let _ = ready.send(result); });
+                                        });
+                                    } else {
+                                        let _ = ready.send(Ok(()));
+                                    }
                                 }
-                                maka_workbench::reload::Request::Resume => view.resume_input(window, cx),
+                                maka_workbench::reload::Request::Resume => {
+                                    state.paused = false;
+                                    if let Some(window) = state.window {
+                                        let _ = window.update(cx, |view, window, cx| view.resume_input(window, cx));
+                                    }
+                                }
                                 maka_workbench::reload::Request::Reload => {
-                                    view.load_with_config(current.config.clone());
-                                    window.focus(&view.focus_handle(cx), cx);
+                                    state.paused = false;
+                                    state.reload(cx);
                                 }
                             }
-                        }).is_err() {
-                            return;
-                        }
+                        });
                     }
                 }
             }
@@ -427,15 +583,13 @@ fn follow(
                 return;
             }
             drop(moving);
-            current = ConnectedView::new((endpoint, epoch), shell.attach(config));
-            if window
-                .update(cx, |view, _, _| {
-                    view.load_with_config(current.config.clone());
-                })
-                .is_err()
-            {
-                return;
-            }
+            current = ConnectedHost::new((endpoint, epoch), config);
+            cx.update(|cx| {
+                let mut state = desktop.borrow_mut();
+                state.config = current.config.clone();
+                state.paused = false;
+                state.reload(cx);
+            });
         }
     })
     .detach();
@@ -546,8 +700,15 @@ impl Detach {
         })
     }
 
-    /// Detaches, then quits the app.
+    fn finished(&self) -> bool {
+        *self.0.borrow().done.borrow()
+    }
+
+    /// Detaches, then re-enters the quit admission gate.
     fn then_quit(&self, cx: &mut App) {
+        if self.0.borrow().quitting {
+            return;
+        }
         let detached = self.start(cx);
         cx.spawn(async move |cx| {
             detached.await;
