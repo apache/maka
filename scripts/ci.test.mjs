@@ -383,6 +383,7 @@ test('documentation is cheap while shared and unknown source inputs request full
   assert.deepEqual(docs.workers, []);
   for (const path of [
     '.cargo/config.toml',
+    'scripts/ci/archive-lock.rs',
     'third-party/nsh/Cargo.lock',
     'new-runtime/source.ts',
   ]) {
@@ -465,20 +466,39 @@ test('Host identity inputs execute real macOS tests, including changes outside C
   }
 });
 
-test('Windows shell changes run native Git Bash behavior tests on Windows', () => {
-  for (const path of [
-    'platform/process/src/shell.rs',
-    'plugins/settings/native/src/preferences.rs',
+test('Windows shell and CI helper changes run their behavior suites on Windows', async () => {
+  for (const [path, suite] of [
+    ['platform/process/src/shell.rs', 'windows-shell'],
+    ['plugins/settings/native/src/preferences.rs', 'windows-shell'],
+    ['scripts/ci/archive-lock.rs', 'windows-ci'],
+    ['scripts/ci/run.mjs', 'windows-ci'],
+    ['scripts/ci.test.mjs', 'windows-ci'],
   ]) {
     const plan = fixture()([path]);
-    assert.ok(plan.suites['windows-shell'], path);
-    const runners = plan.workers.filter((worker) => worker.suites.includes('windows-shell'));
+    assert.ok(plan.suites[suite], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes(suite));
     assert.deepEqual(
       runners.map((worker) => worker.runner),
       ['windows-latest'],
       path,
     );
   }
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (executable, args) => {
+        calls.push({ executable, args });
+        return '';
+      },
+    },
+  );
+  await exec.prepare('windows-ci');
+  await exec.verify('windows-ci');
+  assert.deepEqual(calls, [
+    { executable: process.execPath, args: ['--test', 'scripts/ci.test.mjs'] },
+  ]);
 });
 
 test('native behavior verification selects nextest on macOS and Windows', () => {
@@ -793,6 +813,101 @@ process.stdout.write(JSON.stringify([
         }
       },
     );
+  }
+});
+
+test('overlapping split archives serialize staging across local and CI consumers', async (t) => {
+  for (const consumer of ['local', 'CI']) {
+    await t.test(consumer, async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'maka-ci-overlapping-root-'));
+      try {
+        const target = join(directory, 'target');
+        const build = join(directory, 'build');
+        const product = 'debug/build/maka-cli-fixture/out/product';
+        mkdirSync(join(build, product), { recursive: true });
+        writeFileSync(join(build, product, 'asset.txt'), 'immutable product');
+        mkdirSync(target);
+        writeFileSync(join(target, 'unrelated.txt'), 'foreign sentinel');
+        const lock = `${target}.maka-ci.lock`;
+        writeFileSync(lock, 'stable lock inode');
+        mkdirSync(join(directory, '.config'));
+        writeFileSync(join(directory, '.config/nextest.toml'), '[profile.ci]\n');
+        let active = 0,
+          maximum = 0,
+          archived = 0;
+        const observed = [];
+        const options = {
+          env: { ...process.env, CARGO_TARGET_DIR: join(directory, 'ignored target') },
+          run: async (_executable, args) => {
+            const value = (option) => args[args.indexOf(option) + 1];
+            if (args[1] === 'list')
+              return JSON.stringify({
+                'rust-build-meta': {
+                  'target-directory': target,
+                  'build-directory': build,
+                  'build-script-out-dirs': { cli: dirname(product) },
+                },
+                'rust-suites': {
+                  cli: {
+                    'package-name': 'maka-cli',
+                    'package-id': 'cli',
+                    'binary-id': 'maka-cli::owned',
+                    testcases: { owned: { 'filter-match': { status: 'matches' } } },
+                  },
+                },
+              });
+            if (args[1] === 'archive') {
+              active++;
+              maximum = Math.max(maximum, active);
+              try {
+                const contents = readFileSync(join(target, product, 'asset.txt'), 'utf8');
+                await new Promise((resolve) => setImmediate(resolve));
+                writeFileSync(value('--archive-file'), contents);
+                archived++;
+                return '';
+              } finally {
+                active--;
+              }
+            }
+            assert.equal(args[1], 'run');
+            observed.push(readFileSync(value('--archive-file'), 'utf8'));
+            return '';
+          },
+        };
+        const first = executor(directory, {}, options);
+        const second = executor(directory, {}, options);
+        const extra = [
+          '--target-dir',
+          join(directory, 'also ignored'),
+          '--config',
+          'build.build-dir="ignored"',
+        ];
+        const results = await Promise.allSettled([
+          first.verify('root', 'package(=maka-cli)', extra),
+          consumer === 'local'
+            ? second.verify('root', 'package(=maka-cli)', extra)
+            : second.archive(
+                { suites: { root: { filter: 'all()' } } },
+                join(directory, 'tests.tar.zst'),
+              ),
+        ]);
+        for (const result of results) if (result.status === 'rejected') throw result.reason;
+        assert.equal(archived, 2);
+        assert.equal(maximum, 1);
+        assert.deepEqual(
+          observed,
+          consumer === 'local' ? ['immutable product', 'immutable product'] : ['immutable product'],
+        );
+        if (consumer === 'CI')
+          assert.deepEqual(results[1].value, [{ group: 'cli', partition: 'slice:1/1' }]);
+        assert.equal(existsSync(join(target, product)), false);
+        assert.equal(readFileSync(join(build, product, 'asset.txt'), 'utf8'), 'immutable product');
+        assert.equal(readFileSync(join(target, 'unrelated.txt'), 'utf8'), 'foreign sentinel');
+        assert.equal(readFileSync(lock, 'utf8'), 'stable lock inode');
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   }
 });
 

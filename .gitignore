@@ -3,6 +3,7 @@ dist
 test-results
 .DS_Store
 *.log
+*.maka-ci.lock
 *.tsbuildinfo
 __pycache__/
 *.pyc

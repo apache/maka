@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { spawn } from 'node:child_process';
 import {
   copyFileSync,
   cpSync,
@@ -30,6 +31,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { command } from './command.mjs';
 import { manifests, suites } from './suites.mjs';
 
@@ -143,25 +145,75 @@ function archiveConfiguration(config, listing, binaries, profile = 'ci', inherit
   };
 }
 
+async function archiveLock(target) {
+  await using cleanup = new AsyncDisposableStack();
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-lock-'));
+  cleanup.defer(() => rmSync(temporary, { recursive: true, force: true }));
+  const executable = join(
+    temporary,
+    process.platform === 'win32' ? 'archive-lock.exe' : 'archive-lock',
+  );
+  await command('rustc', [
+    '--edition=2024',
+    '--crate-name=maka_ci_archive_lock',
+    join(import.meta.dirname, 'archive-lock.rs'),
+    '-o',
+    executable,
+  ]);
+  const child = spawn(executable, [`${target}.maka-ci.lock`], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    windowsHide: true,
+  });
+  const errors = [];
+  child.on('error', (error) => errors.push(error));
+  child.stdin.on('error', (error) => errors.push(error));
+  const closed = new Promise((resolve) =>
+    child.once('close', (code, signal) => resolve({ code, signal })),
+  );
+  cleanup.defer(async () => {
+    try {
+      child.stdin.end();
+    } catch (error) {
+      errors.push(error);
+    }
+    const { code, signal } = await closed;
+    if (code !== 0 && !errors.length)
+      errors.push(new Error(`Archive lock failed: ${signal ?? code}`));
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Archive lock failed');
+  });
+  const lines = createInterface({ input: child.stdout });
+  cleanup.defer(() => lines.close());
+  await Promise.race([
+    (async () => {
+      for await (const line of lines) {
+        if (line !== 'acquired') throw new Error(`Unexpected archive lock response: ${line}`);
+        return;
+      }
+      throw new Error('Archive lock closed before acquisition');
+    })(),
+    closed.then(() => {
+      throw errors[0] ?? new Error('Archive lock exited before acquisition');
+    }),
+  ]);
+  return cleanup.move();
+}
+
 async function withArchiveResources(listing, resources, create) {
   const metadata = listing['rust-build-meta'];
   const target = metadata['target-directory'];
   const build = metadata['build-directory'] ?? target;
-  const owned = [];
-  try {
-    if (build !== target) {
-      for (const path of resources) {
-        const destination = join(target, path);
-        mkdirSync(dirname(destination), { recursive: true });
-        mkdirSync(destination);
-        owned.push(destination);
-        cpSync(join(build, path), destination, { recursive: true, dereference: true });
-      }
-    }
-    return await create();
-  } finally {
-    for (const path of owned.reverse()) rmSync(path, { recursive: true, force: true });
+  if (build === target || !resources.length) return await create();
+  await using lock = await archiveLock(target);
+  await using owned = new AsyncDisposableStack();
+  for (const path of resources) {
+    const destination = join(target, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    mkdirSync(destination);
+    owned.defer(() => rmSync(destination, { recursive: true, force: true }));
+    cpSync(join(build, path), destination, { recursive: true, dereference: true });
   }
+  return await create();
 }
 
 export function executor(
@@ -211,6 +263,7 @@ export function executor(
   async function check(id) {
     if (id === 'format') {
       await cargo(['fmt', '--all', '--', '--check']);
+      await run('rustfmt', ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs']);
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
     } else if (id === 'tooling-tests') {
       await node([
@@ -297,7 +350,7 @@ export function executor(
       await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
     } else if (id === 'native') {
       await cargo(['check', ...suites.native.cargoArgs]);
-    } else if (id !== 'tooling') {
+    } else if (!['tooling', 'windows-ci'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }
   }
@@ -305,6 +358,8 @@ export function executor(
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
       for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
+    } else if (id === 'windows-ci') {
+      await node(['--test', 'scripts/ci.test.mjs']);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([

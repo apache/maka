@@ -203,6 +203,12 @@ export const suites = {
     packages: ['maka-skills-native'],
     cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
   },
+  'windows-ci': {
+    workspace: 'root',
+    packages: [],
+    cargoArgs: [],
+    extraInputs: ['scripts/ci', 'scripts/ci.mjs', 'scripts/ci.test.mjs'],
+  },
   'windows-nsh': {
     workspace: 'nsh',
     packages: ['nsh-platform-windows', 'nsh-windows-app', 'nsh-windows-host', 'gallery-native'],
@@ -319,7 +325,14 @@ export const workers = [
     id: `native-${os}`,
     suites:
       os === 'windows'
-        ? ['native', 'windows-shell', 'windows-desktop', 'windows-skills', 'windows-nsh']
+        ? [
+            'native',
+            'windows-shell',
+            'windows-desktop',
+            'windows-skills',
+            'windows-nsh',
+            'windows-ci',
+          ]
         : os === 'macos'
           ? ['native', 'macos-host']
           : ['native'],
