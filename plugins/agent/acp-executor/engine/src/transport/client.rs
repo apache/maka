@@ -230,6 +230,3 @@ pub(super) fn v2(
             std::future::pending::<sdk::Result<()>>().await
         })
 }
-
-#[cfg(test)]
-mod tests;

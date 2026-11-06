@@ -19,6 +19,7 @@
 
 use super::provider::{ModelRequest, Provider};
 use agent_client_protocol::v2::schema as acp;
+use maka_agent_facts::configuration::ModelOverride;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::{
     application::{host::Client as Native, transport::wire::Reply},
@@ -132,6 +133,9 @@ impl Fixture {
     }
 
     pub async fn open() -> Self {
+        Self::with_model_override(ModelOverride::default()).await
+    }
+    pub async fn with_model_override(model: ModelOverride) -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces {
@@ -146,6 +150,7 @@ impl Fixture {
         super::provider::configure(
             RootOwner::create(&root, &namespaces).unwrap(),
             &provider.base_url,
+            model,
         )
         .await;
         let mut product = crate::application::open_host(

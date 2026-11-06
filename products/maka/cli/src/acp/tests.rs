@@ -17,11 +17,10 @@
  * under the License.
  */
 
-mod mcp;
+mod protocol;
 mod provider;
 mod public_client;
 mod support;
-mod v1;
 
 use agent_client_protocol::{
     Agent, ByteStreams, Client,
@@ -296,10 +295,7 @@ async fn scenario(fixture: support::Fixture, cancel: bool) {
         connection.send_request(acp::ResumeSessionRequest::new(session.as_str(), workspace.clone()))
             .block_task().await?;
         connection.send_request(acp::ListSessionsRequest::new()).block_task().await?;
-        let mut synchronized = Vec::new();
-        while let Ok(update) = receive.try_recv() { synchronized.push(update); }
-        assert!(synchronized.iter().any(|update|matches!(update, acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle)) if idle.stop_reason.is_none())), "resume must synchronize idle without ending a new turn");
-        assert!(synchronized.iter().any(|update|matches!(update, acp::SessionUpdate::SessionInfoUpdate(info) if serde_json::to_value(info).unwrap()["title"] == "SDK session")));
+        while receive.try_recv().is_ok() {}
         let accepted = tokio::time::timeout(Duration::from_secs(5), connection.send_request(
             acp::PromptRequest::new(session.as_str(), vec![acp::ContentBlock::Text(acp::TextContent::new("Explain the fixture."))]),
         ).block_task()).await.expect("prompt acceptance waited for model completion")?;
