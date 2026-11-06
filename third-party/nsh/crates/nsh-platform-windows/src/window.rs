@@ -545,6 +545,12 @@ unsafe extern "system" fn window_proc(
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
     }
+    if msg == WM_CLOSE {
+        if !crate::app::resident::should_close(hwnd) {
+            return LRESULT(0);
+        }
+        crate::app::resident::save_placement(hwnd);
+    }
     let surface = data.surface.upgrade();
     if let Some(surface) = surface
         && let Some(result) = handle(&surface, data, hwnd, msg, wparam, lparam)
@@ -561,7 +567,8 @@ unsafe extern "system" fn window_proc(
             o.set(o.get().saturating_sub(1));
             o.get()
         });
-        if left == 0 {
+        let resident = crate::app::resident::window_closed(hwnd);
+        if left == 0 && !resident {
             // SAFETY: plain call.
             unsafe { PostQuitMessage(0) };
         }

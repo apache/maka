@@ -59,6 +59,8 @@ mod transition;
 mod view;
 mod window;
 
+pub use app::resident::{TrayOptions, run_resident_app};
+
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
     App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root,

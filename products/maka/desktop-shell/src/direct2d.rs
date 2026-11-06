@@ -25,7 +25,11 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-use nsh_platform_windows::{AppOptions, AppSource, quit_app, run_app, with_running_view};
+use nsh_platform_windows::{
+    AppOptions, TrayOptions, quit_app, run_resident_app, with_running_view,
+};
+#[cfg(test)]
+use nsh_platform_windows::{AppSource, run_app};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::watch,
@@ -55,6 +59,10 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         endpoint,
         epoch,
     } = first;
+    let directory = config
+        .data_dir
+        .clone()
+        .expect("Host admission sets the client directory");
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     let reloading = config
@@ -64,8 +72,25 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .take_requests();
     carry_out(requests, &runtime);
     refuse_reloads(reloading, runtime.handle());
-    let result = run_app(
-        AppSource::Config(shell.attach(config)),
+    drop(config);
+    let view_bindings = bindings.clone();
+    let handle = runtime.handle().clone();
+    let closed = shell.clone();
+    let closing = shell.clone();
+    let mut tray = TrayOptions::default();
+    tray.title = TITLE.into();
+    tray.open_label = "Open Maka".into();
+    tray.quit_label = "Quit".into();
+    let result = run_resident_app(
+        move || {
+            let mut config =
+                maka_workbench::configuration(view_bindings.registry(None), handle.clone());
+            config.context = config.context.with(view_bindings.reload());
+            config.data_dir = Some(directory.clone());
+            config.assets = Some(view_bindings.assets());
+            config.chunk_loader = Some(view_bindings.chunk_loader());
+            shell.attach(config)
+        },
         AppOptions {
             app_id: APP_ID.into(),
             title: TITLE.into(),
@@ -73,9 +98,12 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
             ..Default::default()
         },
+        tray,
         move |is_active| {
             active.send_replace(is_active);
         },
+        move || closed.release(),
+        move || closing.prepare_close(),
     );
     runtime.block_on(host::detach(bindings, &endpoint, epoch));
     runtime.shutdown_background();
@@ -88,11 +116,17 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
 
 fn carry_out(requests: Requests, runtime: &Runtime) {
     let Requests {
+        mut close_ready,
         mut exits,
         mut folders,
         mut text_sizes,
         mut notices,
     } = requests;
+    runtime.spawn(async move {
+        while close_ready.recv().await.is_some() {
+            with_running_view(|view| view.request_close());
+        }
+    });
     runtime.spawn(async move {
         while let Some(call) = notices.recv().await {
             call.reject("the Direct2D window does not support system notifications");

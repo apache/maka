@@ -81,8 +81,13 @@ impl UiReload {
         self.0.restored.lock().unwrap().clone()
     }
 
-    pub(crate) fn request(&self, state: JsonValue) {
+    /// Remembers presentation state while the native window is closed.
+    pub fn remember(&self, state: JsonValue) {
         *self.0.restored.lock().unwrap() = state;
+    }
+
+    pub(crate) fn request(&self, state: JsonValue) {
+        self.remember(state);
         self.0
             .sender
             .send(Request::Reload)

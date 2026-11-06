@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, importModule, signal, type JSX, type Signal } from 'nsh';
+import { batch, cleanup, computed, host, importModule, signal, type JSX, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import type {
   UiCatalog,
@@ -231,6 +231,39 @@ export function createPlugins() {
     instance: entry.instance.instance,
     packageId: entry.instance.package.id,
   });
+  const snapshot = async (): Promise<RestoredUi> => {
+    const instances: RestoredInstance[] = [];
+    for (const entry of entries()) {
+      const state = entry.state();
+      if (state.kind !== 'active') continue;
+      const saved = (await state.activation.prepareReload?.()) ?? null;
+      if (!alive) throw new UiError('The window closed during state capture.');
+      instances.push({ ...identityFor(entry), state: saved });
+    }
+    return { instances };
+  };
+  cleanup(host.on('desktop.prepareClose', (request: unknown) => {
+    const id = (request as { id: string }).id;
+    if (processing || acceptedReload) {
+      host.post('desktop.closeReady', { id, error: 'UI reload is in progress. Try closing again when it finishes.' });
+      return;
+    }
+    reloading.set(true);
+    void snapshot().then(
+      (state) => { if (alive) host.post('desktop.closeReady', { id, state }); },
+      (reason) => {
+        if (!alive) return;
+        reloading.set(false);
+        updateError.set(reason);
+        host.post('desktop.closeReady', { id, error: String(reason) });
+      },
+    );
+  }));
+  cleanup(host.on('desktop.closeFailed', (reason: unknown) => {
+    if (!alive) return;
+    reloading.set(false);
+    updateError.set(new UiError(String(reason)));
+  }));
   const reconcile = async () => {
     if (processing || acceptedReload || !alive || !desired) return;
     processing = true;
@@ -242,14 +275,7 @@ export function createPlugins() {
         paused = true;
         await nativeHost.beginUiReload();
         if (!alive) return;
-        const instances: RestoredInstance[] = [];
-        for (const entry of entries()) {
-          const state = entry.state();
-          if (state.kind !== 'active') continue;
-          const snapshot = (await state.activation.prepareReload?.()) ?? null;
-          if (!alive) return;
-          instances.push({ ...identityFor(entry), state: snapshot });
-        }
+        const { instances } = await snapshot();
         if (!alive) return;
         validate(desired!);
         if (needsReload(desired!)) {
