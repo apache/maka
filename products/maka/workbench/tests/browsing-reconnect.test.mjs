@@ -30,6 +30,7 @@ const native = {
       return read;
     };
     export const batch = fn => fn();
+    export const host = { on: () => {} };
     export const cleanup = () => {};`,
   locale: `export const tr = key => key;`,
 };
