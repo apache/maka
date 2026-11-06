@@ -38,6 +38,10 @@ use maka_event_log::{
 };
 use maka_model::{ModelPreparationResources, ModelRequest, ProviderKind};
 use serde_json::{Value, json};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const WIDTH: u32 = 390;
 const HEIGHT: u32 = 45480;
@@ -213,6 +217,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(tool: bool, width: u32, height: u32) -> Self {
+        Self::with_images(tool, width, height, 1).await
+    }
+    async fn with_images(tool: bool, width: u32, height: u32, images: usize) -> Self {
         let (directory, root) = crate::test_support::root().await;
         let store = crate::test_support::session(&root, "session").await;
         let original = tokio::task::spawn_blocking(move || row_image(width, height))
@@ -229,16 +236,19 @@ impl Fixture {
                 ToolSuccess::projected(
                     ToolOutput::Json(json!({"source":"immutable image"})),
                     DurableToolProjection::Content {
-                        parts: vec![ProjectionPart::Artifact {
-                            image: ImageOutput {
-                                detail: Some(ImageDetail::High),
-                                mime_type: "image/png".into(),
-                                reference: StorageRef::SessionFile {
-                                    session_id: "session".into(),
-                                    relative_path: "source-image".into(),
+                        parts: vec![
+                            ProjectionPart::Artifact {
+                                image: ImageOutput {
+                                    detail: Some(ImageDetail::High),
+                                    mime_type: "image/png".into(),
+                                    reference: StorageRef::SessionFile {
+                                        session_id: "session".into(),
+                                        relative_path: "source-image".into(),
+                                    },
                                 },
-                            },
-                        }],
+                            };
+                            images
+                        ],
                     },
                 ),
             )
@@ -248,7 +258,7 @@ impl Fixture {
         } else {
             append(&store, Fact::InvocationOpened { configuration: None, input: InvocationInput::Message {
                 source_messages: Vec::new(), request_fingerprint: None,
-                content: serde_json::from_value(json!({"text":"Describe the image", "attachments":[{"kind":"image","name":"source.png","mimeType":"image/png","bytes":original.len(),"ref":{"kind":"session_file","sessionId":"session","relativePath":"source-image"}}]})).unwrap(),
+                content: serde_json::from_value(json!({"text":"Describe the image", "attachments":vec![json!({"kind":"image","name":"source.png","mimeType":"image/png","bytes":original.len(),"ref":{"kind":"session_file","sessionId":"session","relativePath":"source-image"}}); images]})).unwrap(),
             }}).await
         };
         let execution = store.execution_scope(None).await.unwrap().accept();
@@ -285,6 +295,7 @@ impl Fixture {
     ) -> PreparedPrompt {
         let history = crate::history::prepare_view(
             &self.log,
+            &crate::cleanup::Evidence::default(),
             self.selection.clone(),
             Language::En,
             true,
@@ -1199,6 +1210,192 @@ async fn long_image_cannot_decode_before_its_complete_peak_is_admitted() {
     fixture.unchanged().await;
     prompt.close().await.unwrap();
     drop(prompt);
+    fixture.close().await;
+}
+
+enum ImageInterruption {
+    Cancel(CancellationToken),
+    ReadFailure,
+}
+struct InterruptImage {
+    source: SourceBytes,
+    opens: AtomicUsize,
+    interruption: Mutex<Option<ImageInterruption>>,
+}
+impl ByteSource for InterruptImage {
+    fn len(&self) -> Option<u64> {
+        self.source.len()
+    }
+    fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        let interruption = self.interruption.lock().unwrap().take();
+        match interruption {
+            Some(ImageInterruption::Cancel(cancellation)) => {
+                cancellation.cancel();
+                self.source.open(budget)
+            }
+            Some(ImageInterruption::ReadFailure) => Box::new(FailedImageRead),
+            None => self.source.open(budget),
+        }
+    }
+}
+struct FailedImageRead;
+impl ByteCursor for FailedImageRead {
+    fn read_chunk(&mut self, _buffer: ChargedBuffer) -> ReadSource<'_> {
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "one image read failed",
+            ))
+        })
+    }
+}
+async fn interrupt_image_inputs(prompt: &mut PreparedPrompt) -> Vec<Arc<InterruptImage>> {
+    let original = prompt.body.clone();
+    let base = original.recipes().unwrap().clone();
+    let mut images = Vec::new();
+    visit_images(base.as_ref(), &mut |key, media, options| {
+        images.push((key, media, options));
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut inputs = Vec::new();
+    let mut replacements = BTreeMap::new();
+    for (key, mut media, options) in images {
+        let input = Arc::new(InterruptImage {
+            source: media.bytes,
+            opens: AtomicUsize::new(0),
+            interruption: Mutex::new(None),
+        });
+        media.bytes = SourceBytes::Source(input.clone());
+        replacements.insert(
+            key,
+            source::Replacement {
+                part: ContentRecipe::Media {
+                    media,
+                    provider_options: options,
+                },
+            },
+        );
+        inputs.push(input);
+    }
+    let identity = original.identity().to_owned();
+    let mapped = source::mapped(base, Arc::new(replacements), identity.clone(), Arc::new(()));
+    prompt.body = maka_model::prompt::Prompt::from_recipes(
+        mapped,
+        identity,
+        original.len(),
+        original.breakdown().clone(),
+    )
+    .with_instructions_from(&original);
+    if let Some(normalization) = original.normalization() {
+        prompt.body = prompt
+            .body
+            .clone()
+            .with_normalization(normalization.clone());
+    }
+    prompt.rebuild_recipes();
+    inputs
+}
+
+#[tokio::test]
+async fn partial_image_failure_and_cancellation_resume_materialization_with_a_fresh_token() {
+    let fixture = Fixture::with_images(false, 128, 128, 2).await;
+    let mut provider = provider(ProviderKind::OpenaiChatCompletions);
+    provider.image_input = Some(ImageInput {
+        max_width: Some(64),
+        max_height: Some(64),
+        ..Default::default()
+    });
+    for cancel in [false, true] {
+        let mut prompt = fixture.capture(&provider).await;
+        let inputs = interrupt_image_inputs(&mut prompt).await;
+        assert_eq!(inputs.len(), 2);
+        let cancellation = CancellationToken::new();
+        prompt
+            .prepare_media(&provider, &cancellation)
+            .await
+            .unwrap();
+        let opened = [
+            inputs[0].opens.load(Ordering::Relaxed),
+            inputs[1].opens.load(Ordering::Relaxed),
+        ];
+        *inputs[1].interruption.lock().unwrap() = Some(if cancel {
+            ImageInterruption::Cancel(cancellation.clone())
+        } else {
+            ImageInterruption::ReadFailure
+        });
+        let peak = prompt.resident_bytes();
+        let result = prompt.promote(peak, &cancellation).await;
+        if cancel {
+            assert!(matches!(result, Err(RunError::Cancelled)));
+        } else {
+            assert!(
+                matches!(result, Err(RunError::Preparation(ref error)) if error.to_string().contains("one image read failed"))
+            );
+        }
+        assert_eq!(
+            [
+                inputs[0].opens.load(Ordering::Relaxed),
+                inputs[1].opens.load(Ordering::Relaxed),
+            ],
+            [opened[0] + 1, opened[1] + 1],
+            "the second image fails after the first image has been encoded"
+        );
+        {
+            let logical = prompt.model();
+            let mut outputs = Vec::new();
+            visit_images(logical.recipes().unwrap().as_ref(), &mut |_, media, _| {
+                outputs.push(media.bytes);
+                Ok(())
+            })
+            .await
+            .unwrap();
+            let work = prompt.resources().unwrap().acquire_work().await.unwrap();
+            let mut cursor = outputs[0].open(work.budget());
+            let read = cursor
+                .read_chunk(work.budget().allocate(64).await.unwrap())
+                .await;
+            assert!(
+                matches!(read, Err(ref error) if error.kind() == io::ErrorKind::WouldBlock),
+                "a completed image remains unpublished until the whole view is sealed"
+            );
+        }
+
+        let retry = CancellationToken::new();
+        prompt.promote(peak, &retry).await.unwrap();
+        let actual = views(&prompt).await;
+        assert_eq!(actual.len(), 2);
+        for view in &actual {
+            let image = image::load_from_memory(&view.bytes).unwrap().to_rgb8();
+            assert_eq!(image.dimensions(), (64, 64));
+            assert!(image.get_pixel(0, 0)[1] < 4);
+            assert!(image.get_pixel(0, 63)[1] > 120);
+        }
+        assert_eq!(
+            [
+                inputs[0].opens.load(Ordering::Relaxed),
+                inputs[1].opens.load(Ordering::Relaxed),
+            ],
+            [opened[0] + 1, opened[1] + 2],
+            "resuming only reads the image whose materialization did not finish"
+        );
+        prompt.promote(peak, &retry).await.unwrap();
+        assert_eq!(views(&prompt).await, actual);
+        assert_eq!(
+            [
+                inputs[0].opens.load(Ordering::Relaxed),
+                inputs[1].opens.load(Ordering::Relaxed),
+            ],
+            [opened[0] + 1, opened[1] + 2],
+            "repeated successful promotion keeps the original materialized outputs"
+        );
+        prompt.close().await.unwrap();
+        drop(prompt);
+        drop(inputs);
+    }
+    fixture.unchanged().await;
     fixture.close().await;
 }
 

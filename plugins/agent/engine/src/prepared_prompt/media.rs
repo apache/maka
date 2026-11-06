@@ -139,17 +139,20 @@ struct Work {
     media_type: TextSource,
     codec: Option<codec::CodecPlan>,
     output: codec::Geometry,
-    actual: OnceLock<codec::Geometry>,
     pending: Arc<PendingImage>,
 }
-struct PendingImage(OnceLock<SourceBytes>);
+struct MaterializedImage {
+    geometry: codec::Geometry,
+    source: SourceBytes,
+}
+struct PendingImage(OnceLock<MaterializedImage>);
 impl ByteSource for PendingImage {
     fn len(&self) -> Option<u64> {
-        self.0.get().and_then(SourceBytes::len)
+        self.0.get().and_then(|image| image.source.len())
     }
     fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
         match self.0.get() {
-            Some(source) => source.open(budget),
+            Some(image) => image.source.open(budget),
             None => Box::new(Unmaterialized),
         }
     }
@@ -164,6 +167,11 @@ impl ByteCursor for Unmaterialized {
         })
     }
 }
+enum Materialization {
+    ImagesPending,
+    SealPending,
+    Ready,
+}
 pub(super) struct MediaView {
     works: Vec<Work>,
     base: Arc<dyn MessageSource>,
@@ -173,7 +181,7 @@ pub(super) struct MediaView {
     limits: ImageInput,
     peak: usize,
     _directory: Arc<maka_model::DirectoryLease>,
-    materialization: tokio::sync::Mutex<bool>,
+    materialization: tokio::sync::Mutex<Materialization>,
     #[cfg(test)]
     decoded_jobs: std::sync::atomic::AtomicUsize,
 }
@@ -185,10 +193,12 @@ impl MediaView {
         let mut works = Vec::with_capacity(self.works.len());
         let mut changed = false;
         for item in &self.works {
-            let current = *item
-                .actual
+            let materialized = item
+                .pending
+                .0
                 .get()
                 .ok_or_else(|| failure("image has not been materialized"))?;
+            let current = materialized.geometry;
             let next = smaller_geometry(item.probe.geometry, current, &self.limits);
             let (output, codec, bytes, media_type) = if let Some(next) = next {
                 let format = item.format.ok_or_else(|| failure("selected route accepts no available whole-image resize encoding (PNG or JPEG)"))?;
@@ -216,27 +226,17 @@ impl MediaView {
                 (
                     current,
                     None,
-                    Some(
-                        item.pending
-                            .0
-                            .get()
-                            .ok_or_else(|| failure("image bytes have not been materialized"))?
-                            .clone(),
-                    ),
+                    Some(materialized.source.clone()),
                     item.media_type.clone(),
                 )
             };
-            let pending = Arc::new(PendingImage(OnceLock::new()));
-            let actual = OnceLock::new();
-            if let Some(bytes) = bytes {
-                pending
-                    .0
-                    .set(bytes)
-                    .map_err(|_| failure("image bytes initialized twice"))?;
-                actual
-                    .set(output)
-                    .map_err(|_| failure("image geometry initialized twice"))?;
-            }
+            let pending = Arc::new(PendingImage(match bytes {
+                Some(source) => OnceLock::from(MaterializedImage {
+                    geometry: output,
+                    source,
+                }),
+                None => OnceLock::new(),
+            }));
             works.push(Work {
                 key: item.key,
                 media: item.media.clone(),
@@ -246,7 +246,6 @@ impl MediaView {
                 media_type,
                 codec,
                 output,
-                actual,
                 pending,
             });
         }
@@ -269,7 +268,7 @@ impl MediaView {
             limits: self.limits.clone(),
             peak: self.peak,
             _directory: self._directory.clone(),
-            materialization: tokio::sync::Mutex::new(false),
+            materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
             #[cfg(test)]
             decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
         })))
@@ -279,72 +278,96 @@ impl MediaView {
         active: Arc<maka_capabilities::model_preparation::ActivePreparation>,
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
-        let mut done = tokio::select! {
+        let mut phase = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-            done = self.materialization.lock() => done,
+            phase = self.materialization.lock() => phase,
         };
-        if *done {
-            return Ok(());
-        }
-        self.arena.promote_to_file().await.map_err(failure)?;
-        let work = self.resources.acquire_work().await.map_err(failure)?;
-        let budget = work.budget();
-        for item in &self.works {
-            if cancellation.is_cancelled() {
-                return Err(RunError::Cancelled);
-            }
-            let Some(plan) = &item.codec else {
-                continue;
-            };
-            let lease = active.directory(plan.peak_bytes).map_err(failure)?;
-            let encoded = read_owned(
-                &item.media.bytes,
-                plan.input_bytes,
-                budget.clone(),
-                cancellation,
-            )
-            .await?;
-            let plan = plan.clone();
-            let original = item.output;
-            let mut output = original;
-            let limits = self.limits.clone();
-            let cancelled = cancellation.clone();
-            #[cfg(test)]
-            self.decoded_jobs
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // The arena worker is physically awaited even after cancellation; its
-            // directory lease owns the complete decoder/encoder peak until drain.
-            let (range, output) = self.arena.with_writer(move |writer| {
-                // Keep the typed codec result inside the arena result so the captured
-                // worker boundary cannot flatten cancellation or writer errors.
-                let _lease = lease;
-                let image = codec::decode(&encoded, &plan).map_err(io::Error::other)?;
-                loop {
-                    let start = writer.position();
-                    if let Err(error) = image.write_image(output, plan.output_format, &mut CancelWriter {writer, cancellation: &cancelled}) {
-                        return Ok(Err(error));
+        match *phase {
+            Materialization::Ready => return Ok(()),
+            Materialization::SealPending => {}
+            Materialization::ImagesPending => {
+                self.arena.promote_to_file().await.map_err(failure)?;
+                let work = self.resources.acquire_work().await.map_err(failure)?;
+                let budget = work.budget();
+                for item in &self.works {
+                    if cancellation.is_cancelled() {
+                        return Err(RunError::Cancelled);
                     }
-                    let range = start..writer.position();
-                    if limits.max_bytes.is_none_or(|limit| range.end - range.start <= limit) {
-                        return Ok(Ok((range, output)));
+                    if item.pending.0.get().is_some() {
+                        continue;
                     }
-                    let Some(next) = smaller_geometry(original, output, &limits) else {
-                        return Ok(Err(io::Error::other("whole image cannot satisfy the selected route's image byte limit and minimum dimensions")));
+                    let Some(plan) = &item.codec else {
+                        continue;
                     };
-                    output = next;
+                    let lease = active.directory(plan.peak_bytes).map_err(failure)?;
+                    let encoded = read_owned(
+                        &item.media.bytes,
+                        plan.input_bytes,
+                        budget.clone(),
+                        cancellation,
+                    )
+                    .await?;
+                    let plan = plan.clone();
+                    let original = item.output;
+                    let mut output = original;
+                    let limits = self.limits.clone();
+                    let cancelled = cancellation.clone();
+                    #[cfg(test)]
+                    self.decoded_jobs
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // The arena worker is physically awaited even after cancellation; its
+                    // directory lease owns the complete decoder/encoder peak until drain.
+                    let (range, output) = self
+                        .arena
+                        .with_writer(move |writer| {
+                            // Keep the typed codec result inside the arena result so the
+                            // worker cannot flatten cancellation or writer errors.
+                            let _lease = lease;
+                            let image = codec::decode(&encoded, &plan).map_err(io::Error::other)?;
+                            loop {
+                                let start = writer.position();
+                                if let Err(error) = image.write_image(
+                                    output,
+                                    plan.output_format,
+                                    &mut CancelWriter {
+                                        writer,
+                                        cancellation: &cancelled,
+                                    },
+                                ) {
+                                    return Ok(Err(error));
+                                }
+                                let range = start..writer.position();
+                                if limits
+                                    .max_bytes
+                                    .is_none_or(|limit| range.end - range.start <= limit)
+                                {
+                                    return Ok(Ok((range, output)));
+                                }
+                                let Some(next) = smaller_geometry(original, output, &limits) else {
+                                    return Ok(Err(io::Error::other(
+                                        "whole image cannot satisfy the selected route's image byte limit and minimum dimensions",
+                                    )));
+                                };
+                                output = next;
+                            }
+                        })
+                        .await
+                        .map_err(RunError::Preparation)?
+                        .map_err(RunError::preparation)?;
+                    item.pending
+                        .0
+                        .set(MaterializedImage {
+                            geometry: output,
+                            source: self.arena.pending(range),
+                        })
+                        .map_err(|_| failure("image was materialized twice"))?;
                 }
-            }).await.map_err(RunError::Preparation)?.map_err(RunError::preparation)?;
-            item.actual
-                .set(output)
-                .map_err(|_| failure("image geometry was materialized twice"))?;
-            item.pending
-                .0
-                .set(self.arena.pending(range))
-                .map_err(|_| failure("image bytes were materialized twice"))?;
+                *phase = Materialization::SealPending;
+            }
         }
         self.arena.seal().await.map_err(failure)?;
-        *done = true;
+        *phase = Materialization::Ready;
         Ok(())
     }
 }
@@ -617,17 +640,14 @@ pub(super) async fn prepare(
             };
             peak = peak.max(add(plan.peak_bytes, future_row)?);
         }
-        let pending = Arc::new(PendingImage(OnceLock::new()));
-        let actual = OnceLock::new();
-        if !transform {
-            pending
-                .0
-                .set(media.bytes.clone())
-                .map_err(|_| failure("image bytes initialized twice"))?;
-            actual
-                .set(output)
-                .map_err(|_| failure("image geometry initialized twice"))?;
-        }
+        let pending = Arc::new(PendingImage(if transform {
+            OnceLock::new()
+        } else {
+            OnceLock::from(MaterializedImage {
+                geometry: output,
+                source: media.bytes.clone(),
+            })
+        }));
         let media_type = if transform {
             generated::text(if format == Some(image::ImageFormat::Jpeg) {
                 "image/jpeg"
@@ -646,7 +666,6 @@ pub(super) async fn prepare(
             media_type,
             codec: if transform { plan } else { None },
             output,
-            actual,
             pending,
         });
     }
@@ -667,7 +686,7 @@ pub(super) async fn prepare(
         limits,
         peak,
         _directory: Arc::new(directory),
-        materialization: tokio::sync::Mutex::new(false),
+        materialization: tokio::sync::Mutex::new(Materialization::ImagesPending),
         #[cfg(test)]
         decoded_jobs: std::sync::atomic::AtomicUsize::new(0),
     });

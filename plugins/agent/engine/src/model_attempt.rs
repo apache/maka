@@ -134,6 +134,7 @@ pub(super) async fn prompt<W>(
 ) -> Result<PreparedPrompt, RunError> {
     prompt_with_resources(
         &inner.log,
+        &inner.cleanup,
         inner.shared.preparation_resources.clone(),
         &PromptSettings::from_input(input),
         source,
@@ -151,6 +152,7 @@ pub(super) async fn prompt<W>(
 #[allow(clippy::too_many_arguments)] // Keep the admitted history policy explicit at each model request.
 pub(super) async fn prompt_with_resources(
     log: &Arc<maka_event_log::root_store::SessionStore>,
+    cleanup: &crate::cleanup::Evidence,
     resources: maka_model::ModelPreparationResources,
     settings: &PromptSettings<'_>,
     source: &Arc<ContextView>,
@@ -207,6 +209,7 @@ pub(super) async fn prompt_with_resources(
     })?;
     let body = history::prepare_view(
         log,
+        cleanup,
         selection,
         settings.language,
         true,
@@ -241,14 +244,14 @@ pub(super) async fn prompt_with_resources(
         prompt
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed)?;
+            .map_err(|error| cleanup.preparation_failed(error))?;
         return Err(error);
     }
     if let Err(error) = prompt.prepare_media(settings.provider, cancellation).await {
         prompt
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed)?;
+            .map_err(|error| cleanup.preparation_failed(error))?;
         return Err(error);
     }
     Ok(prompt)
@@ -511,7 +514,7 @@ async fn execute_retry_chain(
             if progressed {
                 // Accepted progress replaces the frozen retry prompt. Release it
                 // before materializing the next canonical source.
-                close_retry(&mut retry).await?;
+                close_retry(&inner.cleanup, &mut retry).await?;
                 let context = read_source(inner, input, cancellation).await?;
                 high_water = context.source_evidence.high_water;
                 source = RequestSource::from(context.as_ref());
@@ -545,7 +548,7 @@ async fn execute_retry_chain(
     let result = if result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
         result
     } else {
-        match close_retry(&mut retry).await {
+        match close_retry(&inner.cleanup, &mut retry).await {
             Ok(()) => result,
             Err(error) => additional_failure(result, error),
         }
@@ -627,12 +630,15 @@ async fn wait_retry(delay: std::time::Duration) {
     }
 }
 
-async fn close_retry(retry: &mut Option<RetryPrompt>) -> Result<(), RunError> {
+async fn close_retry(
+    cleanup: &crate::cleanup::Evidence,
+    retry: &mut Option<RetryPrompt>,
+) -> Result<(), RunError> {
     if let Some(RetryPrompt::Materialized(prompt)) = retry.take() {
         prompt
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed)?;
+            .map_err(|error| cleanup.preparation_failed(error))?;
     }
     Ok(())
 }
@@ -684,7 +690,7 @@ pub(super) async fn execute_once(
             prompt
                 .close()
                 .await
-                .map_err(crate::cleanup::preparation_failed)?;
+                .map_err(|error| inner.cleanup.preparation_failed(error))?;
         }
         return Err(RunError::Cancelled);
     }
@@ -711,12 +717,15 @@ pub(super) async fn execute_once(
             prepared = &mut wire => prepared,
         }
     };
+    if let Err(error) = &prepared_wire {
+        inner.cleanup.observe(error);
+    }
     if steering.is_cancelled() && !cancellation.is_cancelled() {
         if purpose == ModelPurpose::Main {
             prompt
                 .close()
                 .await
-                .map_err(crate::cleanup::preparation_failed)?;
+                .map_err(|error| inner.cleanup.preparation_failed(error))?;
         }
         return Ok(AttemptOutput::Steered);
     }
@@ -725,7 +734,7 @@ pub(super) async fn execute_once(
             prompt
                 .close()
                 .await
-                .map_err(crate::cleanup::preparation_failed)?;
+                .map_err(|error| inner.cleanup.preparation_failed(error))?;
         }
         return Err(error);
     }
@@ -744,7 +753,7 @@ pub(super) async fn execute_once(
         }) {
         Ok(prepared) => prepared,
         Err(error) => {
-            close_materialization(&cleanup).await?;
+            close_materialization(&inner.cleanup, &cleanup).await?;
             return Err(error);
         }
     };
@@ -799,7 +808,7 @@ pub(super) async fn execute_once(
         Ok(committed) => committed,
         Err(error) => {
             drop(prepared.request);
-            close_materialization(&cleanup).await?;
+            close_materialization(&inner.cleanup, &cleanup).await?;
             return Err(error);
         }
     };
@@ -832,7 +841,7 @@ pub(super) async fn execute_once(
         Ok(writer) => writer,
         Err(error) => {
             drop(prepared.request);
-            close_materialization(&cleanup).await?;
+            close_materialization(&inner.cleanup, &cleanup).await?;
             return Err(error.into());
         }
     };
@@ -873,7 +882,8 @@ pub(super) async fn execute_once(
             .await
         }
         Err(error) => {
-            close_materialization(&cleanup).await?;
+            inner.cleanup.observe_model(&error);
+            close_materialization(&inner.cleanup, &cleanup).await?;
             if steering.is_cancelled() && !cancellation.is_cancelled() {
                 drop(writer);
                 record_steered(inner, &finalizer).await?;
@@ -907,13 +917,14 @@ pub(super) async fn execute_once(
 }
 
 async fn close_materialization(
+    evidence: &crate::cleanup::Evidence,
     cleanup: &Option<Arc<dyn maka_capabilities::http::UploadCleanup>>,
 ) -> Result<(), RunError> {
     if let Some(cleanup) = cleanup {
         cleanup
             .close()
             .await
-            .map_err(|error| crate::cleanup::preparation_failed(std::io::Error::other(error)))?;
+            .map_err(|error| evidence.preparation_failed(std::io::Error::other(error)))?;
     }
     Ok(())
 }
@@ -1183,12 +1194,12 @@ where
                 _ = steering.cancelled() => { steered = true; break; }
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
                 execution = approvals.next(), if !approvals.is_empty() => {
-                    running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+                    running.push(catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")).boxed());
                 }
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let prepared: maka_tools::PreparedCall<'_> = prepared.expect("nonempty preparation set")?;
-                    let (published, execution) = publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
-                    install_call(published, &mut running, &mut approvals);
+                    let (published, execution) = publish_while_executing(&inner.cleanup, prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
+                    install_call(&inner.cleanup, published, &mut running, &mut approvals);
                     execution?;
                 }
                 event = stream.next() => {
@@ -1196,6 +1207,9 @@ where
                     let observations = ready_observations(&mut writer, event, || {
                         stream.next().now_or_never().flatten()
                     });
+                    if let Some(error) = &observations.error {
+                        inner.cleanup.observe_model(error);
+                    }
                     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
                     let writes = observations.events.iter().map(|event| {
                         EventWrite::plain(RuntimeEvent::new(binding.invocation.clone(), Fact::ModelObserved {
@@ -1215,7 +1229,7 @@ where
                             && !call.provider_executed
                             && let Some(tools) = tools.as_mut()
                         {
-                            preparing.push(catch_tool(tools.prepare(call.clone(), tool_cancellation.clone())).boxed());
+                            preparing.push(catch_tool(inner.cleanup.clone(), tools.prepare(call.clone(), tool_cancellation.clone())).boxed());
                         }
                     }
                     // One natural poll: a pending preparation never holds back model facts.
@@ -1226,17 +1240,17 @@ where
                     };
                     if let Some(prepared) = prepared {
                         let prepared = prepared?;
-                        let (published, execution) = publish_while_executing(prepared, &writes, &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
+                        let (published, execution) = publish_while_executing(&inner.cleanup, prepared, &writes, &mut running, &mut preparing, &mut approvals, &tool_cancellation).await?;
                         record_prefix(&mut writer, &writes, &published.prefix_sequences);
                         if !writes.is_empty() {
                             finalizer.receipt_prefix(&writes, writer.snapshot());
                         }
                         inner.attempts.publish(finalizer, writer.snapshot());
                         // The receipt authorizes completion even when the ready model tail failed.
-                        install_call(published, &mut running, &mut approvals);
+                        install_call(&inner.cleanup, published, &mut running, &mut approvals);
                         execution?;
                     } else if !writes.is_empty() {
-                        let (sequences, execution) = wait_while_executing(inner.log.append_batch(&writes), &mut running, &mut preparing, &mut approvals, &tool_cancellation).await;
+                        let (sequences, execution) = wait_while_executing(&inner.cleanup, inner.log.append_batch(&writes), &mut running, &mut preparing, &mut approvals, &tool_cancellation).await;
                         let sequences = match sequences {
                             Ok(sequences) => sequences,
                             Err(error) => return merge_execution(Err(error.into()), execution),
@@ -1265,11 +1279,11 @@ where
     if steered && !cancellation.is_cancelled() {
         release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
         let cleanup = stream.cancel_and_wait().await;
-        cleanup.map_err(|_| crate::cleanup::unconfirmed())?;
+        cleanup.map_err(|_| inner.cleanup.unconfirmed())?;
         record_steered(inner, finalizer).await?;
         drop(writer);
-        close_retry(retry).await?;
-        close_retry(&mut retired_prompt).await?;
+        close_retry(&inner.cleanup, retry).await?;
+        close_retry(&inner.cleanup, &mut retired_prompt).await?;
         return Ok(AttemptOutput::Steered);
     }
     let mut result = result;
@@ -1278,6 +1292,7 @@ where
         tool_cancellation.cancel();
     }
     let (stream_cleanup, execution) = wait_while_executing(
+        &inner.cleanup,
         stream.cancel_and_wait(),
         &mut running,
         &mut preparing,
@@ -1303,11 +1318,12 @@ where
             );
             *retry = retired_prompt.take();
         }
-        additional_failure(result, crate::cleanup::unconfirmed())
+        additional_failure(result, inner.cleanup.unconfirmed())
     } else {
         result
     };
     let (confirmed, execution) = wait_while_executing(
+        &inner.cleanup,
         confirm_prefix(finalizer, confirm),
         &mut running,
         &mut preparing,
@@ -1335,6 +1351,7 @@ where
     let mut result = match confirmation {
         Ok(()) => {
             let (mut finished, execution) = wait_while_executing(
+                &inner.cleanup,
                 finish(
                     inner,
                     writer,
@@ -1369,7 +1386,8 @@ where
     if finalizer.terminal_confirmed() {
         inner.attempts.remove(&binding.step_id);
         let (closed, execution) = wait_while_executing(
-            close_retry(&mut retired_prompt),
+            &inner.cleanup,
+            close_retry(&inner.cleanup, &mut retired_prompt),
             &mut running,
             &mut preparing,
             &mut approvals,
@@ -1390,7 +1408,7 @@ where
     }
     if result.is_ok() && steering.is_cancelled() && !cancellation.is_cancelled() {
         release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
-        close_retry(&mut retired_prompt).await?;
+        close_retry(&inner.cleanup, &mut retired_prompt).await?;
         return Ok(AttemptOutput::Steered);
     }
     while !preparing.is_empty() || !running.is_empty() || (result.is_err() && !approvals.is_empty())
@@ -1399,20 +1417,20 @@ where
             biased;
             _ = steering.cancelled(), if result.is_ok() && cleanup.is_ok() && !cancellation.is_cancelled() => {
                 release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
-                close_retry(&mut retired_prompt).await?;
+                close_retry(&inner.cleanup, &mut retired_prompt).await?;
                 return Ok(AttemptOutput::Steered);
             }
             execution = approvals.next(), if !approvals.is_empty() => {
-                running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+                running.push(catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")).boxed());
             }
             prepared = preparing.next(), if !preparing.is_empty() => {
                 let published = match prepared.expect("nonempty preparation set") {
-                    Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
+                    Ok(prepared) => publish_while_executing(&inner.cleanup, prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
                     Err(error) => Err(error.into()),
                 };
                 match published {
                     Ok((published, execution)) => {
-                        install_call(published, &mut running, &mut approvals);
+                        install_call(&inner.cleanup, published, &mut running, &mut approvals);
                         if let Err(error) = execution {
                             tool_cancellation.cancel();
                             preparing.clear();
@@ -1436,7 +1454,8 @@ where
         }
     }
     let (closed, execution) = wait_while_executing(
-        close_retry(&mut retired_prompt),
+        &inner.cleanup,
+        close_retry(&inner.cleanup, &mut retired_prompt),
         &mut running,
         &mut preparing,
         &mut approvals,
@@ -1464,7 +1483,7 @@ where
                 return Ok(AttemptOutput::Steered);
             }
             ready = approvals.next(), if !approvals.is_empty() => {
-                running.push(catch_tool(ready.expect("nonempty approval set")).boxed());
+                running.push(catch_tool(inner.cleanup.clone(), ready.expect("nonempty approval set")).boxed());
             }
             settled = running.next(), if !running.is_empty() => {
                 if let Err(error) = tool_result(settled.expect("nonempty completion set")) {
@@ -1514,7 +1533,7 @@ async fn record_steered(
             },
         ))?;
     let crate::preview::PublicationSelection::New(write) = finalizer.prepare(write) else {
-        return Err(crate::cleanup::unconfirmed());
+        return Err(inner.cleanup.unconfirmed());
     };
     let sequence = inner.log.append(&write).await?;
     finalizer.receipt_terminal(&write, sequence);
@@ -1536,6 +1555,7 @@ type PreparingCalls<'a> = futures_util::stream::FuturesUnordered<
 >;
 
 async fn wait_while_executing<'a, F: std::future::Future>(
+    cleanup: &crate::cleanup::Evidence,
     future: F,
     running: &mut RunningCalls<'a>,
     preparing: &mut PreparingCalls<'a>,
@@ -1560,7 +1580,7 @@ async fn wait_while_executing<'a, F: std::future::Future>(
                 ready.push(prepared.expect("nonempty preparation set"));
             }
             ready = approvals.next(), if !approvals.is_empty() => {
-                running.push(catch_tool(ready.expect("nonempty approval set")).boxed());
+                running.push(catch_tool(cleanup.clone(), ready.expect("nonempty approval set")).boxed());
             }
             result = running.next(), if !running.is_empty() => {
                 if let Err(error) = tool_result(result.expect("nonempty completion set")) {
@@ -1583,6 +1603,7 @@ fn merge_execution<T>(
 }
 
 async fn publish_while_executing<'a>(
+    cleanup: &crate::cleanup::Evidence,
     prepared: maka_tools::PreparedCall<'a>,
     prefix: &[maka_agent_facts::event::EventWrite],
     running: &mut RunningCalls<'a>,
@@ -1591,7 +1612,8 @@ async fn publish_while_executing<'a>(
     cancellation: &CancellationToken,
 ) -> Result<(maka_tools::PublishedCall, Result<(), RunError>), RunError> {
     let (published, execution) = wait_while_executing(
-        catch_tool(prepared.publish(prefix)),
+        cleanup,
+        catch_tool(cleanup.clone(), prepared.publish(prefix)),
         running,
         preparing,
         approvals,
@@ -1608,6 +1630,7 @@ async fn publish_while_executing<'a>(
 }
 
 fn install_call<'a>(
+    cleanup: &crate::cleanup::Evidence,
     published: maka_tools::PublishedCall,
     running: &mut RunningCalls<'a>,
     approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
@@ -1615,24 +1638,29 @@ fn install_call<'a>(
     use futures_util::FutureExt;
     match published.start() {
         maka_tools::CallContinuation::Executing(execution) => {
-            running.push(catch_tool(execution).boxed())
+            running.push(catch_tool(cleanup.clone(), execution).boxed())
         }
         maka_tools::CallContinuation::Approval(approval) => approvals.push(approval),
     }
 }
 
 pub(super) async fn catch_tool<T>(
+    cleanup: crate::cleanup::Evidence,
     future: impl std::future::Future<Output = Result<T, maka_agent_facts::tools::ToolError>>,
 ) -> Result<T, maka_agent_facts::tools::ToolError> {
     use futures_util::FutureExt;
-    std::panic::AssertUnwindSafe(future)
+    let result = std::panic::AssertUnwindSafe(future)
         .catch_unwind()
         .await
         .unwrap_or_else(|_| {
             Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
                 "tool panicked".into(),
             ))
-        })
+        });
+    if let Err(error) = &result {
+        cleanup.observe_tool(error);
+    }
+    result
 }
 
 fn record_prefix(
@@ -1787,7 +1815,7 @@ async fn finish(
                 let crate::preview::PublicationSelection::New(publication) =
                     finalizer.prepare(publication)
                 else {
-                    return Err(crate::cleanup::unconfirmed());
+                    return Err(inner.cleanup.unconfirmed());
                 };
                 match inner.log.append(&publication).await {
                     Ok(sequence) => {
@@ -1828,7 +1856,7 @@ async fn finish(
     ))?;
     let crate::preview::PublicationSelection::New(completion) = finalizer.prepare(completion)
     else {
-        return Err(crate::cleanup::unconfirmed());
+        return Err(inner.cleanup.unconfirmed());
     };
     let mut writes = vec![completion.clone()];
     if incomplete && !item_acceptance {
@@ -1890,7 +1918,11 @@ async fn finish(
                 && !call.provider_executed
             {
                 preparing.push(
-                    catch_tool(step.prepare(call.clone(), tool_cancellation.clone())).boxed(),
+                    catch_tool(
+                        inner.cleanup.clone(),
+                        step.prepare(call.clone(), tool_cancellation.clone()),
+                    )
+                    .boxed(),
                 );
             }
         }
@@ -1902,6 +1934,7 @@ async fn finish(
             let sequence = match prepared {
                 Some(Ok(prepared)) => {
                     let (published, execution) = publish_while_executing(
+                        &inner.cleanup,
                         prepared,
                         &writes,
                         &mut running,
@@ -1911,7 +1944,7 @@ async fn finish(
                     )
                     .await?;
                     let sequence = published.prefix_sequences[0];
-                    install_call(published, &mut running, &mut approvals);
+                    install_call(&inner.cleanup, published, &mut running, &mut approvals);
                     cleanup = merge_execution(cleanup, execution);
                     sequence
                 }
@@ -1933,7 +1966,8 @@ async fn finish(
         drop(writes);
         drop(completion);
         let (closed, execution) = wait_while_executing(
-            close_retry(retry),
+            &inner.cleanup,
+            close_retry(&inner.cleanup, retry),
             &mut running,
             &mut preparing,
             &mut approvals,
@@ -1956,16 +1990,16 @@ async fn finish(
                     return Ok(AttemptOutput::Steered);
                 }
                 execution = approvals.next(), if !approvals.is_empty() => {
-                    running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
+                    running.push(catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")).boxed());
                 }
                 prepared = preparing.next(), if !preparing.is_empty() => {
                     let published = match prepared.expect("nonempty preparation set") {
-                        Ok(prepared) => publish_while_executing(prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
+                        Ok(prepared) => publish_while_executing(&inner.cleanup, prepared, &[], &mut running, &mut preparing, &mut approvals, &tool_cancellation).await,
                         Err(error) => Err(error.into()),
                     };
                     match published {
                         Ok((published, execution)) => {
-                            install_call(published, &mut running, &mut approvals);
+                            install_call(&inner.cleanup, published, &mut running, &mut approvals);
                             if let Err(error) = execution {
                                 tool_cancellation.cancel();
                                 preparing.clear();
@@ -2116,7 +2150,7 @@ where
                 | crate::preview::PublicationSelection::Existing(publication) => publication,
                 crate::preview::PublicationSelection::Confirmed => return error,
                 crate::preview::PublicationSelection::PrefixPending => {
-                    return crate::cleanup::unconfirmed();
+                    return inner.cleanup.unconfirmed();
                 }
             };
             match inner.log.append(&publication).await {

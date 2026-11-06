@@ -82,10 +82,7 @@ impl PreparedPrediction {
     pub async fn close(self) -> Result<(), RunError> {
         let Self { request, prompt } = self;
         drop(request);
-        prompt
-            .close()
-            .await
-            .map_err(crate::cleanup::preparation_failed)
+        prompt.close().await.map_err(RunError::PreparationCleanup)
     }
 }
 
@@ -108,10 +105,12 @@ impl Engine {
             return Err(RunError::Cancelled);
         }
         let store = Arc::new(store);
+        let cleanup = crate::cleanup::Evidence::default();
         let adapter = self.0.model.binding(&input.provider)?;
         let replay = FrozenReplay::for_prediction(
             store.clone(),
             self.0.preparation_resources.clone(),
+            cleanup.clone(),
             &input,
             adapter,
         );
@@ -197,7 +196,7 @@ impl Engine {
         let closed = original
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed);
+            .map_err(|error| cleanup.preparation_failed(error));
         drop(original_model);
         drop(original);
         closed?;
@@ -206,6 +205,7 @@ impl Engine {
         let current = Arc::new(store.read_model_view(&invocation.session_id, None).await?);
         let mut prompt = model_attempt::prompt_with_resources(
             &store,
+            &cleanup,
             self.0.preparation_resources.clone(),
             &settings,
             &current,
@@ -267,7 +267,7 @@ impl Engine {
                 prompt
                     .close()
                     .await
-                    .map_err(crate::cleanup::preparation_failed)?;
+                    .map_err(|error| cleanup.preparation_failed(error))?;
                 Err(error)
             }
         }

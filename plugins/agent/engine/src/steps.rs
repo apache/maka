@@ -262,7 +262,7 @@ async fn run_from(
                 } else {
                     if let Some(pause) = handoff
                         .boundary(cancellation, |intent| async {
-                            if let Err(error) = auto_context::drain(&mut pending).await {
+                            if let Err(error) = auto_context::drain(inner, &mut pending).await {
                                 handoff_cleanup = Some(error);
                                 return None;
                             }
@@ -293,13 +293,14 @@ async fn run_from(
                                 Ok(checkpoint) => checkpoint,
                                 Err(error) => {
                                     handoff_cleanup = Some(match prompt.close().await {
-                                        Err(cleanup) => crate::cleanup::preparation_failed(cleanup),
+                                        Err(cleanup) => inner.cleanup.preparation_failed(cleanup),
                                         Ok(()) => error.into(),
                                     });
                                     return None;
                                 }
                             };
                             let replay = crate::continuation::replay(
+                                &inner.cleanup,
                                 input,
                                 prompt,
                                 tools.replay_selected(&checkpoint.loaded),
@@ -340,7 +341,7 @@ async fn run_from(
                     if cancellation.is_cancelled() {
                         return Err(RunError::Cancelled);
                     }
-                    auto_context::settle(&mut pending).await?;
+                    auto_context::settle(inner, &mut pending).await?;
                     input.refresh_model(cancellation).await?;
                     let mut context =
                         model_attempt::read_source(inner, input, cancellation).await?;
@@ -377,7 +378,7 @@ async fn run_from(
                         prompt
                             .close()
                             .await
-                            .map_err(crate::cleanup::preparation_failed)?;
+                            .map_err(|error| inner.cleanup.preparation_failed(error))?;
                         drop(prompt);
                         drop(context);
                         drop(request_tools);
@@ -466,7 +467,7 @@ async fn run_from(
                 }
                 Ok(model_attempt::Outcome::Response(output)) => output,
                 Ok(model_attempt::Outcome::ParkRetry(plan)) => {
-                    auto_context::drain(&mut pending).await?;
+                    auto_context::drain(inner, &mut pending).await?;
                     if !tools.is_idle() || !effects.is_idle() {
                         return Err(RunError::ReconciliationRequired(
                             "model retry cannot park while execution remains active".into(),
@@ -581,7 +582,7 @@ async fn run_from(
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
             if tools.is_idle() && effects.is_idle() {
-                auto_context::settle(&mut pending).await?;
+                auto_context::settle(inner, &mut pending).await?;
                 if pending.is_none() {
                     prune::run(inner, input, cancellation, &mut inspected_through).await?;
                 }
@@ -625,7 +626,7 @@ async fn run_from(
                 replay
                     .close()
                     .await
-                    .map_err(crate::cleanup::preparation_failed)?;
+                    .map_err(|error| inner.cleanup.preparation_failed(error))?;
                 confirmation?;
             }
             main_progress = true;
@@ -633,9 +634,12 @@ async fn run_from(
     })
     .catch_unwind()
     .await
-    .unwrap_or_else(|_| Err(crate::cleanup::unconfirmed()));
-    let summary_cleanup = auto_context::drain(&mut pending).await;
+    .unwrap_or_else(|_| Err(inner.cleanup.unconfirmed()));
+    let summary_cleanup = auto_context::drain(inner, &mut pending).await;
     let tool_cleanup = tools.shutdown().await;
+    if let Err(error) = &tool_cleanup {
+        inner.cleanup.observe_tool(error);
+    }
     if matches!(&result, Err(error) if error.is_cleanup_unconfirmed())
         || matches!(&summary_cleanup, Err(error) if error.is_cleanup_unconfirmed())
         || matches!(
@@ -644,7 +648,7 @@ async fn run_from(
         )
     {
         tracing::error!(execution_error = ?result.as_ref().err(), summary_error = ?summary_cleanup.as_ref().err(), tool_error = ?tool_cleanup.as_ref().err(), "step cleanup unconfirmed");
-        return Err(crate::cleanup::unconfirmed());
+        return Err(inner.cleanup.unconfirmed());
     }
     tool_cleanup?;
     summary_cleanup?;
@@ -755,7 +759,7 @@ async fn approval_frontier(
     // Summary cleanup may await physical provider work. Keep answering the
     // original calls while that independent owner confirms its cleanup.
     {
-        let cleanup = auto_context::drain(summary);
+        let cleanup = auto_context::drain(inner, summary);
         tokio::pin!(cleanup);
         loop {
             tokio::select! {
@@ -767,7 +771,7 @@ async fn approval_frontier(
                     break;
                 }
                 execution = approvals.next(), if !approvals.is_empty() => {
-                    running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                    running.push(model_attempt::catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")));
                 }
                 result = running.next(), if !running.is_empty() => {
                     if let Err(error) = model_attempt::tool_result(result.expect("nonempty native execution set")) {
@@ -782,7 +786,7 @@ async fn approval_frontier(
     loop {
         // Poll answers before capturing the immutable transaction proposal.
         while let Some(Some(execution)) = approvals.next().now_or_never() {
-            running.push(model_attempt::catch_tool(execution));
+            running.push(model_attempt::catch_tool(inner.cleanup.clone(), execution));
         }
         if approvals.is_empty() && running.is_empty() {
             return failure.map_or(Ok(None), Err);
@@ -855,7 +859,7 @@ async fn approval_frontier(
                         // Answer reads may own queued fair permits needed by the
                         // proposal. Keep polling them, but freeze original effects
                         // until this exact proposal has an authoritative result.
-                        running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                        running.push(model_attempt::catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")));
                     }
                 }
             };
@@ -870,7 +874,7 @@ async fn approval_frontier(
         }
         tokio::select! {
             execution = approvals.next(), if !approvals.is_empty() => {
-                running.push(model_attempt::catch_tool(execution.expect("nonempty approval set")));
+                running.push(model_attempt::catch_tool(inner.cleanup.clone(), execution.expect("nonempty approval set")));
                 reconsider = true;
             }
             result = running.next(), if !running.is_empty() => {

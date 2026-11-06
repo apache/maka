@@ -110,6 +110,7 @@ pub(super) async fn rehydrate_frozen_request<'tools>(
 pub(super) struct FrozenReplay {
     log: Arc<maka_event_log::root_store::SessionStore>,
     resources: maka_model::ModelPreparationResources,
+    cleanup: crate::cleanup::Evidence,
     invocation: maka_agent_facts::event::Invocation,
     original: String,
     provider: Arc<maka_model::ProviderConfig>,
@@ -122,12 +123,14 @@ impl FrozenReplay {
     pub(super) fn for_prediction(
         log: Arc<maka_event_log::root_store::SessionStore>,
         resources: maka_model::ModelPreparationResources,
+        cleanup: crate::cleanup::Evidence,
         input: &crate::PredictionInput,
         adapter: maka_agent_ports::model::Binding,
     ) -> Self {
         Self {
             log,
             resources,
+            cleanup,
             invocation: input.frozen.request.event.invocation.clone(),
             original: input.frozen.request.event.id.clone(),
             provider: Arc::new(input.provider.clone()),
@@ -157,6 +160,7 @@ impl FrozenReplay {
         Self {
             log: inner.log.clone(),
             resources: inner.shared.preparation_resources.clone(),
+            cleanup: inner.cleanup.clone(),
             invocation: input.invocation.clone(),
             original,
             provider: Arc::new(input.provider.clone()),
@@ -295,6 +299,7 @@ impl FrozenReplay {
             .calibration(&self.provider, configuration.model.as_ref())?;
         let mut prompt = model_attempt::prompt_with_resources(
             &self.log,
+            &self.cleanup,
             self.resources.clone(),
             &settings,
             &Arc::new(frozen.view),
@@ -336,7 +341,7 @@ impl FrozenReplay {
             prompt
                 .close()
                 .await
-                .map_err(crate::cleanup::preparation_failed)?;
+                .map_err(|error| self.cleanup.preparation_failed(error))?;
             return Err(error);
         }
         Ok(prompt)
@@ -352,6 +357,7 @@ impl maka_agent_ports::model::FrozenPrompt for FrozenReplay {
     > {
         Box::pin(async move {
             let prepared = self.prepared(&cancellation).await.map_err(|error| {
+                self.cleanup.observe(&error);
                 if error.is_cleanup_unconfirmed() {
                     maka_model::ModelError::CleanupUnconfirmed
                 } else if matches!(error, RunError::Cancelled) {

@@ -89,7 +89,7 @@ impl Engine {
             .as_ref()
             .is_some_and(|next| next.as_ref().is_err_and(RunError::is_cleanup_unconfirmed))
         {
-            return Err(crate::cleanup::unconfirmed());
+            return Err(RunError::CleanupUnconfirmed);
         }
         let execution = store.execution_scope(permission_basis).await?;
         let context = RunContext::new(self.0.clone(), execution.store(), &invocation)?;
@@ -227,7 +227,7 @@ async fn run(
             .log
             .activation_checkpoint(&invocation.session_id)
             .await
-            .map_err(|_| crate::cleanup::unconfirmed())?;
+            .map_err(|_| context.cleanup.unconfirmed())?;
         match latest {
             Some(latest)
                 if latest.receipt == current.receipt
@@ -243,7 +243,7 @@ async fn run(
         result
     };
     if result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
-        return Err(crate::cleanup::unconfirmed());
+        return Err(context.cleanup.unconfirmed());
     }
     crate::runner::finish(
         &context,

@@ -211,7 +211,7 @@ pub(super) async fn capture(
         arena
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed)?;
+            .map_err(|error| inner.cleanup.preparation_failed(error))?;
     }
     result
 }
@@ -365,7 +365,7 @@ impl Job {
             arena
                 .close()
                 .await
-                .map_err(crate::cleanup::preparation_failed)?;
+                .map_err(|error| inner.cleanup.preparation_failed(error))?;
         }
         result
     }

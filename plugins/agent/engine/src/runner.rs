@@ -234,11 +234,20 @@ pub(super) async fn finish(
     handoff: Option<&crate::HandoffGate>,
     effects: &maka_event_log::root_store::InvocationEffects,
 ) -> Result<crate::ActivationExit, RunError> {
+    if let Err(error) = &result {
+        inner.cleanup.observe(error);
+    }
     let result = match effects.settle().await {
         Ok(()) => result,
-        Err(error) => crate::model_attempt::additional_failure(result, error.into()),
+        Err(error) => {
+            inner.cleanup.observe_tool(&error);
+            crate::model_attempt::additional_failure(result, error.into())
+        }
     };
     let result = crate::model_attempt::seal_unfinished_attempts(inner, result).await;
+    if let Err(error) = &result {
+        inner.cleanup.observe(error);
+    }
     if let Ok((steps::StepExit::Parked(receipt), _)) = &result {
         return Ok(crate::ActivationExit::Parked(receipt.clone()));
     }
