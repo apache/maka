@@ -214,6 +214,16 @@ export interface PlanHistoryCompactionInput {
    */
   loadProjectionSnapshot?: () => Promise<LoadedModelProjectionTransitions>;
   summarize: HistoryCompactionSummarizer;
+  /**
+   * The portable text summarizer, supplied when the configured native
+   * compactor hides its text fallback behind the capacity gate (#6415). The
+   * planner spends it only where a retreat cannot: an input-too-large
+   * rejection on a session whose history carries no same-route accepted reply
+   * (a migrated or copied session) has no proven boundary to shrink to, and
+   * the fold would otherwise fail open outright. One attempt; the fallback's
+   * own refusal still fails open (#4559).
+   */
+  summarizeTextFallback?: HistoryCompactionSummarizer;
 }
 
 export type PlanHistoryCompactionResult =
@@ -412,41 +422,80 @@ export async function planHistoryCompaction(
       );
       if (typeof compacted === 'string') compacted = compacted.trim();
     } catch (error) {
-      if (error instanceof HistoryCompactSummarizerError) {
-        if (error.reason === 'input_too_large') {
-          // The summarizer's provider said this span does not fit its own
-          // window; that is the only fit signal the fold listens to. Retreat to
-          // the span the last accepted request's input covered: that span was
-          // accepted by this model on this connection, so it is provably within
-          // capacity, where halving the range is a guess that can overshoot
-          // (throwing away verbatim history for nothing) or undershoot (paying
-          // another round trip). Only one retreat is available, because there
-          // is only one proven boundary; a rejection of that span too is the
-          // provider saying this fold cannot be made, and the fold fails open
-          // (#4559).
-          const proven = acceptedInputBoundary(
-            input.orderedEvents,
-            input.invocations ?? [],
-            input.acceptedRoute,
-          );
-          if (proven === undefined || proven >= boundary.coveredCount) {
-            return {
-              decision: 'fail_open',
-              reason: 'summarizer_failed',
-              diagnosticReason: error.reason,
-            };
-          }
+      if (error instanceof HistoryCompactSummarizerError && error.reason === 'input_too_large') {
+        // The summarizer's provider said this span does not fit its own
+        // window; that is the only fit signal the fold listens to. Retreat to
+        // the span the last accepted request's input covered: that span was
+        // accepted by this model on this connection, so it is provably within
+        // capacity, where halving the range is a guess that can overshoot
+        // (throwing away verbatim history for nothing) or undershoot (paying
+        // another round trip). Only one retreat is available, because there
+        // is only one proven boundary; a rejection of that span too is the
+        // provider saying this fold cannot be made, and the fold fails open
+        // (#4559).
+        const proven = acceptedInputBoundary(
+          input.orderedEvents,
+          input.invocations ?? [],
+          input.acceptedRoute,
+        );
+        const noBoundary = proven === undefined || proven >= boundary.coveredCount;
+        if (!noBoundary) {
           maxCoveredCount = proven;
           retreated = true;
           continue;
         }
+        // No untried proven boundary is left: either the history never
+        // carried this route's reply (a migrated or copied session, #6415),
+        // or the retreat to the proven span was itself refused above - native
+        // is exhausted either way, and the portable text summarizer, which
+        // never carries the reasoning blobs the native request does, may
+        // still fit. When the caller supplies one, make a single text
+        // attempt; its own refusal still fails open (#4559). A proven
+        // boundary keeps the native retreat first.
+        if (!input.summarizeTextFallback) {
+          return {
+            decision: 'fail_open',
+            reason: 'summarizer_failed',
+            diagnosticReason: error.reason,
+          };
+        }
+        try {
+          compacted = await Promise.resolve(
+            input.summarizeTextFallback({
+              coveredRuntimeEvents: effectiveCoveredRuntimeEvents ?? coveredRuntimeEvents,
+              newlyFoldedRuntimeEvents:
+                effectiveNewlyFoldedRuntimeEvents ?? newlyFoldedRuntimeEvents,
+              ...(previousCheckpoint ? { previousCheckpoint } : {}),
+            }),
+          );
+          if (typeof compacted === 'string') compacted = compacted.trim();
+        } catch (fallbackError) {
+          compacted = undefined;
+          return {
+            decision: 'fail_open',
+            reason: 'summarizer_failed',
+            diagnosticReason:
+              fallbackError instanceof HistoryCompactSummarizerError
+                ? fallbackError.reason
+                : error.reason,
+          };
+        }
+        if (!compacted) {
+          return {
+            decision: 'fail_open',
+            reason: 'summarizer_failed',
+            diagnosticReason: error.reason,
+          };
+        }
+      } else if (error instanceof HistoryCompactSummarizerError) {
         return {
           decision: 'fail_open',
           reason: 'summarizer_failed',
           diagnosticReason: error.reason,
         };
+      } else {
+        compacted = undefined;
       }
-      compacted = undefined;
     }
     if (!compacted) {
       return { decision: 'fail_open', reason: 'summarizer_failed' };

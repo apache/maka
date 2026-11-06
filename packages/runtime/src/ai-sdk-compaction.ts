@@ -403,6 +403,34 @@ export class AiSdkCompaction {
         // the summary can never quote a body a durable transition removed, and
         // a later transition invalidates the checkpoint at replay (#4845).
         loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
+        ...(this.input.summarizeHistoryCompactTextFallback
+          ? {
+              summarizeTextFallback: async ({
+                coveredRuntimeEvents,
+                newlyFoldedRuntimeEvents,
+                previousCheckpoint,
+              }) => {
+                return await this.summarizeWithFailureCircuit(
+                  this.input.summarizeHistoryCompactTextFallback!,
+                  {
+                    sessionId: this.sessionId,
+                    turnId: input.turnId,
+                    runId: input.runId,
+                    source: {
+                      foldedRuntimeEvents: [...coveredRuntimeEvents],
+                      ...(input.runtimeContextInvocations
+                        ? { invocations: input.runtimeContextInvocations }
+                        : {}),
+                    },
+                    newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+                    ...(previousCheckpoint ? { previousCheckpoint } : {}),
+                    abortSignal: historyCompactAbortController.signal,
+                    ...(tracker ? { providerRequestTracker: tracker } : {}),
+                  },
+                );
+              },
+            }
+          : {}),
         summarize: async ({
           coveredRuntimeEvents,
           newlyFoldedRuntimeEvents,
@@ -1097,6 +1125,32 @@ export class AiSdkCompaction {
           }
         : {}),
       loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
+      ...(this.input.summarizeHistoryCompactTextFallback
+        ? {
+            summarizeTextFallback: async ({
+              coveredRuntimeEvents,
+              newlyFoldedRuntimeEvents,
+              previousCheckpoint,
+            }) => {
+              return await this.summarizeWithFailureCircuit(
+                this.input.summarizeHistoryCompactTextFallback!,
+                {
+                  sessionId: this.sessionId,
+                  turnId,
+                  ...(input.origin.runId ? { runId: input.origin.runId } : {}),
+                  source: {
+                    foldedRuntimeEvents: [...coveredRuntimeEvents],
+                    invocations: state.priorInvocations,
+                  },
+                  ...(previousCheckpoint ? { previousCheckpoint } : {}),
+                  newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+                  ...(abortSignal ? { abortSignal } : {}),
+                  ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
+                },
+              );
+            },
+          }
+        : {}),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
         // Same contract as the standalone path: the planner hands the
         // effective (transition-folded) view to the summarizer and pins its
