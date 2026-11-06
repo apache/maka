@@ -17,9 +17,9 @@
  * under the License.
  */
 
-use maka_process::{SHELL_NAME, ShellExecutor};
 use maka_agent_facts::terminal::TerminalSize;
 use maka_agent_facts::tools::ToolExecutor;
+use maka_process::{SHELL_NAME, ShellExecutor};
 use maka_sandbox::{
     Destination, Network, Sandbox,
     filesystem::{Access, Policy},
@@ -71,7 +71,7 @@ pub(super) async fn verify(state: &Path, work: &Path) {
         };
         let backend = Arc::new(maka_host_runtime::sandbox::windows::Backend::new(
             state,
-            Path::new(env!("CARGO_BIN_EXE_maka")),
+            &crate::maka_executable(),
         ));
         let executor = ShellExecutor::new(
             work,

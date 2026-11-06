@@ -25,7 +25,7 @@ fn read(directory: &Path, name: &str) -> Value {
 }
 
 fn compose(configuration: &Path, output: &Path, isolated: &Path) {
-    let result = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let result = Command::new(crate::maka_executable())
         .args(["application", "compose", "--configuration"])
         .arg(configuration)
         .arg("--output")

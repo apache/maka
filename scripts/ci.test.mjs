@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { parse } from 'yaml';
@@ -505,6 +505,298 @@ test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PR
     calls[0].options.env.MAKA_TEST_GIT_BASH,
     join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
   );
+});
+
+test('local root runs consume owned artifacts after the compiler cache disappears and release them', async (t) => {
+  const cases = ['unified', 'split'].flatMap((layout) =>
+    [null, 'archive', 'run'].map((failure) => ({ layout, failure })),
+  );
+  for (const { layout, failure } of cases) {
+    await t.test(
+      `${layout} ${failure === null ? 'successful replay' : `${failure} failure`}`,
+      async () => {
+        const directory = mkdtempSync(join(tmpdir(), 'maka-ci-owned-root-'));
+        let owned;
+        try {
+          const target = join(directory, 'target');
+          const cache = layout === 'split' ? join(directory, 'compiler-cache') : target;
+          const cliOut = 'debug/build/maka-cli-fixture/out';
+          const terminalOut = 'debug/build/maka-terminal-shell-fixture/out';
+          const binary = 'debug/deps/owned-test.mjs';
+          const files = {
+            [binary]: `
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const target = process.argv[2];
+process.stdout.write(JSON.stringify([
+  readFileSync(join(target, ${JSON.stringify(cliOut)}, 'product/nested/asset.txt'), 'utf8'),
+  readFileSync(join(target, ${JSON.stringify(terminalOut)}, 'product/nested/asset.txt'), 'utf8'),
+  execFileSync(process.execPath, [join(target, 'debug/maka.mjs')], { encoding: 'utf8' }),
+]));
+`,
+            'debug/maka.mjs': 'process.stdout.write("owned CLI");\n',
+            [`${cliOut}/product/nested/asset.txt`]: 'CLI product',
+            [`${terminalOut}/product/nested/asset.txt`]: 'Terminal product',
+          };
+          for (const [path, contents] of Object.entries(files)) {
+            const source = join(path === 'debug/maka.mjs' ? target : cache, path);
+            mkdirSync(dirname(source), { recursive: true });
+            writeFileSync(source, contents);
+          }
+          const configuration = join(directory, 'custom.toml');
+          const config = 'nextest-version = "0.9.145"\n[profile.custom]\nretries = 0\n';
+          writeFileSync(configuration, config);
+          const build = [
+            '--features',
+            'first second',
+            '-Fthird',
+            '--no-default-features',
+            '--target=fixture-target',
+          ];
+          const shared = ['--config', 'target.fixture-target.runner="fixture runner"'];
+          const runtime = [
+            '-E',
+            'test(owned)',
+            '--partition',
+            'slice:1/2',
+            '-j1',
+            '--config-file',
+            configuration,
+            '--profile=custom',
+            ...shared,
+            '--',
+            '--features',
+            '--no-run',
+          ];
+          const expectedFailure = new Error(`${failure} failed`);
+          const calls = [];
+          let observed;
+          const exec = executor(
+            directory,
+            {},
+            {
+              env: { ...process.env, CARGO_TARGET_DIR: target },
+              run: async (executable, args, options) => {
+                assert.equal(executable, 'cargo');
+                assert.equal(options.cwd, directory);
+                calls.push(args);
+                const value = (option) => args[args.indexOf(option) + 1];
+                if (args[1] === 'list') {
+                  assert.deepEqual(args.slice(2, 2 + build.length + shared.length + 2), [
+                    '--locked',
+                    '--workspace',
+                    ...build,
+                    ...shared,
+                  ]);
+                  assert.equal(args.includes('-E'), false);
+                  assert.equal(value('--config-file'), configuration);
+                  assert.equal(value('--profile'), 'custom');
+                  return JSON.stringify({
+                    'rust-build-meta': {
+                      'target-directory': target,
+                      ...(layout === 'split' ? { 'build-directory': cache } : {}),
+                      'build-script-out-dirs': { cli: cliOut, terminal: terminalOut },
+                    },
+                    'rust-suites': {
+                      cli: { 'package-name': 'maka-cli', 'package-id': 'cli' },
+                      terminal: { 'package-name': 'maka-terminal-shell', 'package-id': 'terminal' },
+                    },
+                  });
+                }
+                if (args[1] === 'archive') {
+                  assert.deepEqual(args.slice(2, 2 + build.length + shared.length + 2), [
+                    '--locked',
+                    '--workspace',
+                    ...build,
+                    ...shared,
+                  ]);
+                  assert.equal(args.includes('-E'), false);
+                  const archive = value('--archive-file');
+                  owned = dirname(archive);
+                  const generated = readFileSync(value('--config-file'), 'utf8');
+                  assert(
+                    generated.includes(config),
+                    'archive configuration must retain the caller configuration',
+                  );
+                  const includes = Array.from(
+                    generated.matchAll(/\{\s*path\s*=\s*("(?:\\.|[^"\\])*")/g),
+                    (match) => JSON.parse(match[1]),
+                  );
+                  const archived = Object.fromEntries(
+                    Object.keys(files)
+                      .filter(
+                        (path) =>
+                          path.endsWith('.mjs') ||
+                          includes.some((include) => path.startsWith(include + '/')),
+                      )
+                      .map((path) => [
+                        path,
+                        readFileSync(join(path === binary ? cache : target, path), 'utf8'),
+                      ]),
+                  );
+                  writeFileSync(archive, JSON.stringify(archived));
+                  if (failure === 'archive') throw expectedFailure;
+                  return '';
+                }
+                assert.equal(args[1], 'run');
+                assert.deepEqual(args.slice(-runtime.length), runtime);
+                assert.equal(value('--workspace-remap'), directory);
+                assert.equal(options.env.NEXTEST_PROFILE, 'ci');
+                assert.equal(args.includes('--workspace'), false);
+                const extraction = value('--extract-to');
+                assert.equal(dirname(extraction), owned);
+                assert(existsSync(join(extraction, 'target/tmp')));
+                const archived = JSON.parse(readFileSync(value('--archive-file'), 'utf8'));
+                if (layout === 'split') {
+                  for (const path of [cliOut, terminalOut])
+                    assert.equal(
+                      existsSync(join(target, path, 'product')),
+                      false,
+                      'archive staging must end before replay',
+                    );
+                }
+                for (const [path, contents] of Object.entries(files))
+                  assert.equal(
+                    readFileSync(join(path === 'debug/maka.mjs' ? target : cache, path), 'utf8'),
+                    contents,
+                    'archive must leave source artifacts unchanged',
+                  );
+                rmSync(cache, { recursive: true, force: true });
+                if (target !== cache) rmSync(target, { recursive: true, force: true });
+                assert.equal(existsSync(join(cache, binary)), false);
+                assert.equal(existsSync(join(target, 'debug/maka.mjs')), false);
+                for (const [path, contents] of Object.entries(archived)) {
+                  const destination = join(extraction, 'target', path);
+                  mkdirSync(dirname(destination), { recursive: true });
+                  writeFileSync(destination, contents);
+                }
+                observed = JSON.parse(
+                  execFileSync(
+                    process.execPath,
+                    [join(extraction, 'target', binary), join(extraction, 'target')],
+                    { encoding: 'utf8' },
+                  ),
+                );
+                if (failure === 'run') throw expectedFailure;
+                return '';
+              },
+            },
+          );
+          const replay = exec.verify('root', 'package(=maka-cli)', [...build, ...runtime]);
+          if (failure === null) await replay;
+          else await assert.rejects(replay, (error) => error === expectedFailure);
+          assert.equal(
+            existsSync(owned),
+            false,
+            'the caller must release its archive and extraction on every terminal result',
+          );
+          assert.equal(calls.length, failure === 'archive' ? 2 : 3);
+          if (failure !== 'archive')
+            assert.deepEqual(observed, ['CLI product', 'Terminal product', 'owned CLI']);
+          else {
+            for (const path of [cliOut, terminalOut]) {
+              assert.equal(
+                readFileSync(join(cache, path, 'product/nested/asset.txt'), 'utf8'),
+                path === cliOut ? 'CLI product' : 'Terminal product',
+              );
+              if (layout === 'split')
+                assert.equal(existsSync(join(target, path, 'product')), false);
+            }
+          }
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    );
+  }
+});
+
+test('split archive staging releases only owned products on conflict or missing input', async (t) => {
+  for (const failure of ['conflict', 'missing']) {
+    await t.test(failure, async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'maka-ci-product-owner-'));
+      try {
+        const target = join(directory, 'target');
+        const build = join(directory, 'build');
+        const paths = { cli: 'debug/build/cli/out', terminal: 'debug/build/terminal/out' };
+        mkdirSync(join(directory, '.config'));
+        writeFileSync(join(directory, '.config/nextest.toml'), '[profile.ci]\n');
+        for (const [name, path] of Object.entries(paths)) {
+          if (failure === 'missing' && name === 'terminal') continue;
+          mkdirSync(join(build, path, 'product'), { recursive: true });
+          writeFileSync(join(build, path, 'product/asset.txt'), name);
+        }
+        const conflict = join(target, paths.terminal, 'product');
+        if (failure === 'conflict') {
+          mkdirSync(conflict, { recursive: true });
+          writeFileSync(join(conflict, 'asset.txt'), 'another archive owns this');
+        }
+        const exec = executor(
+          directory,
+          {},
+          {
+            env: { ...process.env, CARGO_TARGET_DIR: target },
+            run: async (_executable, args) => {
+              assert.equal(args[1], 'list', 'an incomplete snapshot must never be archived');
+              return JSON.stringify({
+                'rust-build-meta': {
+                  'target-directory': target,
+                  'build-directory': build,
+                  'build-script-out-dirs': paths,
+                },
+                'rust-suites': {
+                  cli: { 'package-name': 'maka-cli', 'package-id': 'cli' },
+                  terminal: { 'package-name': 'maka-terminal-shell', 'package-id': 'terminal' },
+                },
+              });
+            },
+          },
+        );
+        await assert.rejects(
+          exec.verify('root'),
+          (error) => error.code === (failure === 'conflict' ? 'EEXIST' : 'ENOENT'),
+        );
+        assert.equal(existsSync(join(target, paths.cli, 'product')), false);
+        assert.equal(readFileSync(join(build, paths.cli, 'product/asset.txt'), 'utf8'), 'cli');
+        if (failure === 'conflict') {
+          assert.equal(
+            readFileSync(join(conflict, 'asset.txt'), 'utf8'),
+            'another archive owns this',
+          );
+          assert.equal(
+            readFileSync(join(build, paths.terminal, 'product/asset.txt'), 'utf8'),
+            'terminal',
+          );
+        } else assert.equal(existsSync(conflict), false);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test('local root help and build-only requests retain the direct nextest command', async () => {
+  for (const flag of ['--help', '--no-run']) {
+    const calls = [];
+    const exec = executor(
+      root,
+      {},
+      {
+        run: async (executable, args) => {
+          calls.push({ executable, args });
+          return '';
+        },
+      },
+    );
+    await exec.verify('root', 'all()', ['--features=fixture', flag]);
+    assert.deepEqual(calls, [
+      {
+        executable: 'cargo',
+        args: ['nextest', 'run', '--locked', '--workspace', '--features=fixture', flag],
+      },
+    ]);
+  }
 });
 
 test('the external-agent UI worker fixture reaches real CLI tests', () => {

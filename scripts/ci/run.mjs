@@ -19,6 +19,7 @@
 
 import {
   copyFileSync,
+  cpSync,
   globSync,
   mkdirSync,
   mkdtempSync,
@@ -28,9 +29,136 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { command } from './command.mjs';
 import { manifests, suites } from './suites.mjs';
+
+const buildValues = new Set([
+  '-p',
+  '--package',
+  '--exclude',
+  '--bin',
+  '--example',
+  '--test',
+  '--bench',
+  '-F',
+  '--features',
+  '--build-jobs',
+  '--cargo-profile',
+  '--target',
+  '--target-dir',
+  '--manifest-path',
+  '--cargo-message-format',
+  '-Z',
+]);
+const buildFlags = new Set([
+  '--workspace',
+  '--all',
+  '--lib',
+  '--bins',
+  '--examples',
+  '--tests',
+  '--benches',
+  '--all-targets',
+  '--all-features',
+  '--no-default-features',
+  '-r',
+  '--release',
+  '--unit-graph',
+  '--timings',
+  '--frozen',
+  '--locked',
+  '--offline',
+  '--cargo-quiet',
+  '--cargo-verbose',
+  '--ignore-rust-version',
+  '--future-incompat-report',
+]);
+const sharedValues = new Set(['--color', '--config', '--user-config-file', '--tool-config-file']);
+const sharedFlags = new Set(['--no-pager', '-v', '--verbose', '--override-version-check']);
+
+function rootArguments(extra) {
+  const build = [],
+    runtime = [];
+  let configFile, profile;
+  for (let index = 0; index < extra.length; index++) {
+    const argument = extra[index];
+    if (argument === '--') {
+      runtime.push(...extra.slice(index));
+      break;
+    }
+    const attached = /^-([pFZP])(.+)$/.exec(argument);
+    const name = attached ? `-${attached[1]}` : argument.split('=', 1)[0];
+    let value = attached
+      ? attached[2].replace(/^=/, '')
+      : argument.includes('=')
+        ? argument.slice(argument.indexOf('=') + 1)
+        : undefined;
+    const values = [argument];
+    if (
+      (buildValues.has(name) ||
+        sharedValues.has(name) ||
+        ['--config-file', '--profile', '-P'].includes(name)) &&
+      value === undefined
+    ) {
+      value = extra[++index];
+      if (value === undefined) throw new Error(`Missing value for ${name}`);
+      values.push(value);
+    }
+    if (name === '--config-file') configFile = value;
+    if (name === '--profile' || name === '-P') profile = value;
+    if (
+      buildValues.has(name) ||
+      buildFlags.has(name) ||
+      sharedValues.has(name) ||
+      sharedFlags.has(name)
+    )
+      build.push(...values);
+    if (!buildValues.has(name) && !buildFlags.has(name)) runtime.push(...values);
+  }
+  return { build, runtime, configFile, profile };
+}
+
+function archiveConfiguration(config, listing, binaries, profile = 'ci', inherits) {
+  const runtimePackages = new Set(
+    binaries
+      .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
+      .map((suite) => suite['package-id']),
+  );
+  const includes = [];
+  for (const [id, path] of Object.entries(listing['rust-build-meta']['build-script-out-dirs'])) {
+    if (runtimePackages.has(id)) includes.push(`${path}/product`);
+  }
+  const parent =
+    inherits === undefined
+      ? ''
+      : `\n[profile.${JSON.stringify(profile)}]\ninherits = ${JSON.stringify(inherits)}\n`;
+  return {
+    contents: `${config}\n${parent}[profile.${JSON.stringify(profile)}.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+    resources: includes,
+  };
+}
+
+async function withArchiveResources(listing, resources, create) {
+  const metadata = listing['rust-build-meta'];
+  const target = metadata['target-directory'];
+  const build = metadata['build-directory'] ?? target;
+  const owned = [];
+  try {
+    if (build !== target) {
+      for (const path of resources) {
+        const destination = join(target, path);
+        mkdirSync(dirname(destination), { recursive: true });
+        mkdirSync(destination);
+        owned.push(destination);
+        cpSync(join(build, path), destination, { recursive: true, dereference: true });
+      }
+    }
+    return await create();
+  } finally {
+    for (const path of owned.reverse()) rmSync(path, { recursive: true, force: true });
+  }
+}
 
 export function executor(
   root,
@@ -180,7 +308,9 @@ export function executor(
         'scripts/rust/pack-cli.test.mjs',
         'scripts/rust/run-cli.test.mjs',
       ]);
-    } else if (id === 'root' || id === 'windows-shell') {
+    } else if (id === 'root') {
+      await verifyRoot(filter ?? 'all()', extra);
+    } else if (id === 'windows-shell') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
@@ -227,6 +357,84 @@ export function executor(
       await node(['--test', 'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs']);
     } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
+    }
+  }
+
+  async function verifyRoot(filter, extra) {
+    const separator = extra.indexOf('--');
+    if (
+      extra
+        .slice(0, separator < 0 ? extra.length : separator)
+        .some((arg) => ['--help', '-h', '--no-run'].includes(arg))
+    ) {
+      await nextest('root', false, filter, extra);
+      return;
+    }
+    const { build, runtime, configFile, profile = suites.root.profile } = rootArguments(extra);
+    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-run-'));
+    try {
+      const listing = JSON.parse(
+        await cargo(
+          [
+            'nextest',
+            'list',
+            ...suites.root.cargoArgs,
+            ...build,
+            '--config-file',
+            resolve(root, configFile ?? '.config/nextest.toml'),
+            '--profile',
+            profile,
+            '--message-format',
+            'json',
+          ],
+          { capture: true },
+        ),
+      );
+      const config = join(temporary, 'nextest.toml');
+      const archiveProfile = basename(temporary);
+      const generated = archiveConfiguration(
+        readFileSync(resolve(root, configFile ?? '.config/nextest.toml'), 'utf8'),
+        listing,
+        Object.values(listing['rust-suites']),
+        archiveProfile,
+        profile,
+      );
+      writeFileSync(config, generated.contents);
+      const archive = join(temporary, 'tests.tar.zst');
+      await withArchiveResources(listing, generated.resources, () =>
+        cargo([
+          'nextest',
+          'archive',
+          ...suites.root.cargoArgs,
+          ...build,
+          '--profile',
+          archiveProfile,
+          '--config-file',
+          config,
+          '--archive-file',
+          archive,
+        ]),
+      );
+      const extraction = join(temporary, 'run');
+      mkdirSync(join(extraction, 'target/tmp'), { recursive: true });
+      await cargo(
+        [
+          'nextest',
+          'run',
+          '--archive-file',
+          archive,
+          '--extract-to',
+          extraction,
+          '--extract-overwrite',
+          '--workspace-remap',
+          root,
+          ...(filter === 'all()' ? [] : ['-E', filter]),
+          ...runtime,
+        ],
+        { env: { ...env, NEXTEST_PROFILE: suites.root.profile } },
+      );
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
     }
   }
 
@@ -293,36 +501,25 @@ export function executor(
         if (!binaries.length) continue;
         // Archives select binaries; the consumers retain the original test filter.
         const filter = binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ');
-        const runtimePackages = new Set(
-          binaries
-            .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
-            .map((suite) => suite['package-id']),
-        );
-        const includes = [];
-        for (const [id, path] of Object.entries(
-          listing['rust-build-meta']['build-script-out-dirs'],
-        )) {
-          if (runtimePackages.has(id)) includes.push(`${path}/product`);
-        }
         const configFile = join(temporary, 'nextest.toml');
-        writeFileSync(
-          configFile,
-          `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
-        );
+        const generated = archiveConfiguration(config, listing, binaries);
+        writeFileSync(configFile, generated.contents);
         mkdirSync(dirname(output), { recursive: true });
-        await cargo([
-          'nextest',
-          'archive',
-          ...args,
-          '--profile',
-          'ci',
-          '--config-file',
-          configFile,
-          '-E',
-          filter,
-          '--archive-file',
-          join(dirname(output), `root-tests-${group}.tar.zst`),
-        ]);
+        await withArchiveResources(listing, generated.resources, () =>
+          cargo([
+            'nextest',
+            'archive',
+            ...args,
+            '--profile',
+            'ci',
+            '--config-file',
+            configFile,
+            '-E',
+            filter,
+            '--archive-file',
+            join(dirname(output), `root-tests-${group}.tar.zst`),
+          ]),
+        );
         const tests = binaries
           .flatMap((suite) => Object.values(suite.testcases))
           .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;

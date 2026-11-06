@@ -47,11 +47,11 @@ async fn query(client: &Client, endpoint: &str, method: &str, input: Value) -> V
 fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_client() {
     let mut startup_fixture = RootStartupFixture::new();
     let root = startup_fixture.root.clone();
-    let executable = Path::new(env!("CARGO_BIN_EXE_maka"));
+    let executable = crate::maka_executable();
     let started = Instant::now();
     eprintln!(
         "root startup lifecycle: executable_bytes={}",
-        fs::metadata(executable).unwrap().len()
+        fs::metadata(&executable).unwrap().len()
     );
     let stage = |phase: &str| {
         eprintln!(
@@ -64,7 +64,7 @@ fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_
         tokio::time::timeout(Duration::from_secs(60), async {
             assert!(!root.exists());
             stage("initial-connect");
-            let mut first = startup::connect_root(executable, &root).await.unwrap();
+            let mut first = startup::connect_root(&executable, &root).await.unwrap();
             let fixture = startup_fixture.adopt();
             stage("initial-admission");
             let found = discovery::read(&root).unwrap();
@@ -93,7 +93,7 @@ fn root_startup_initializes_an_empty_root_reuses_its_host_and_preserves_another_
             assert!(error.starts_with("local Host startup helper:"), "{error}");
             stage("reuse-connect");
             startup_fixture.begin_admission();
-            let mut second = startup::connect_root(executable, &root).await.unwrap();
+            let mut second = startup::connect_root(&executable, &root).await.unwrap();
             startup_fixture.adopt();
             stage("reuse-admission");
             assert_eq!(second.epoch(), first.epoch());
@@ -177,12 +177,12 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                 endpoints: endpoints.clone(),
                 native: vec![],
             };
-            let executable = Path::new(env!("CARGO_BIN_EXE_maka"));
+            let executable = crate::maka_executable();
             // No candidate is launched by the fixture. Both public entry calls must
             // reach the actual CLI ensure/launch serialization and converge.
             let (first, second) = tokio::join!(
-                startup::connect(executable, request()),
-                startup::connect(executable, request()),
+                startup::connect(&executable, request()),
+                startup::connect(&executable, request()),
             );
             let mut first = first.unwrap();
             let mut second = second.unwrap();
@@ -267,7 +267,7 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                     .unwrap(),
                 "local Host startup executable must be absolute"
             );
-            let mut reused = startup::connect(executable, request()).await.unwrap();
+            let mut reused = startup::connect(&executable, request()).await.unwrap();
             assert_eq!(
                 reused.epoch(),
                 second.epoch(),
@@ -283,11 +283,11 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                     "0"
                 },
             );
-            assert!(startup::connect(executable, wrong_domain).await.is_err());
+            assert!(startup::connect(&executable, wrong_domain).await.is_err());
             let mut wrong_deployment = request();
             wrong_deployment.deployment = Uuid::new_v4();
             assert!(
-                startup::connect(executable, wrong_deployment)
+                startup::connect(&executable, wrong_deployment)
                     .await
                     .is_err()
             );
@@ -305,7 +305,7 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
             let mut stale: Value = serde_json::from_slice(&original).unwrap();
             stale["pid"] = json!(status.pid.get() + 1);
             fs::write(&fixture.registration, serde_json::to_vec(&stale).unwrap()).unwrap();
-            let rejected = startup::connect(executable, request()).await;
+            let rejected = startup::connect(&executable, request()).await;
             fs::write(&fixture.registration, original).unwrap();
             assert!(rejected.is_err(), "stale Host discovery must be rejected");
 
@@ -324,7 +324,7 @@ fn owned_startup_connects_concurrently_and_preserves_original_effect_and_last_cl
                 .collect();
             complete.validate().unwrap();
             assert!(serde_json::to_vec(&complete).unwrap().len() > 512 * 1024);
-            let mut complete_client = startup::connect(executable, complete).await.unwrap();
+            let mut complete_client = startup::connect(&executable, complete).await.unwrap();
             assert_eq!(
                 complete_client.epoch(),
                 second.epoch(),

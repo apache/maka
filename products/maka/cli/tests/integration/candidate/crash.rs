@@ -45,7 +45,7 @@ async fn activity(client: &AppClient, session: &str) -> Value {
 async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
     let mut fixture = RootStartupFixture::new();
     let root = fixture.root.clone();
-    let executable = Path::new(env!("CARGO_BIN_EXE_maka"));
+    let executable = crate::maka_executable();
     let journal = fixture.directory().join("client.db");
     let owner = Arc::new(
         RootOwner::create(&root, &RootNamespaces::for_current_account().unwrap()).unwrap(),
@@ -69,7 +69,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         }
     });
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut first_host = tokio::process::Command::new(executable)
+        let mut first_host = tokio::process::Command::new(&executable)
             .args(["host", "serve", "--root"])
             .arg(&root)
             .stdin(Stdio::null())
@@ -109,7 +109,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         drop(client);
 
         fixture.begin_admission();
-        let host = startup::connect_root(executable, &root).await.unwrap();
+        let host = startup::connect_root(&executable, &root).await.unwrap();
         fixture.adopt();
         assert_ne!(host.epoch(), first_epoch);
         let client = AppClient::new(

@@ -23,7 +23,7 @@ fn desktop_reports_an_invalid_root_without_starting_a_host() {
     let root = directory.path().join("root is a file");
     std::fs::write(&root, b"not a directory").unwrap();
     let expected = std::fs::create_dir_all(&root).unwrap_err().to_string();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_maka"))
+    let output = std::process::Command::new(crate::maka_executable())
         .args(["desktop", "--root"])
         .arg(&root)
         .output()
@@ -40,7 +40,7 @@ fn finite_host_command_reports_an_invalid_root_in_observer_and_worker() {
     let root = directory.path().join("root is a file");
     std::fs::write(&root, b"not a directory").unwrap();
     for worker in [false, true] {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut command = std::process::Command::new(crate::maka_executable());
         if worker {
             command.arg("--operation-worker");
         }
