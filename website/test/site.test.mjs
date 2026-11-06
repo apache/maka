@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const dist = new URL('../dist/', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
@@ -107,6 +108,82 @@ test('every copy button on the downloads page has its own accessible name', () =
     const names = buttons.map(([button]) => /aria-label="([^"]*)"/u.exec(button)?.[1]);
     assert.ok(names.every((name) => name?.trim()), locale);
     assert.equal(new Set(names).size, names.length, locale);
+  }
+});
+
+test('copy feedback lasts from the latest successful copy independently for each button', async () => {
+  for (const locale of locales) {
+    const script = [
+      ...page(`${locale}/downloads/index.html`).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gu),
+    ]
+      .map(([, source]) => source)
+      .find((source) => source.includes('navigator.clipboard.writeText'));
+    const button = (label, code) => ({
+      dataset: { label, copy: 'Copy', copied: 'Copied' },
+      textContent: 'Copy',
+      attributes: { 'aria-label': `Copy: ${label}` },
+      parentElement: { querySelector: () => ({ textContent: code }) },
+      setAttribute(name, value) {
+        this.attributes[name] = value;
+      },
+      addEventListener(name, listener) {
+        this[name] = listener;
+      },
+    });
+    const buttons = [button('Signature', 'first command'), button('Checksum', 'second command')];
+    const written = [];
+    const timers = new Map();
+    let now = 0;
+    let nextTimer = 0;
+    let rejectCopy = false;
+    const advance = (milliseconds) => {
+      now += milliseconds;
+      for (const [id, timer] of timers) {
+        if (timer.at > now) continue;
+        timers.delete(id);
+        timer.run();
+      }
+    };
+    runInNewContext(script, {
+      document: { querySelectorAll: (selector) => (selector === '.copy' ? buttons : []) },
+      navigator: {
+        clipboard: {
+          writeText: async (text) => {
+            if (rejectCopy) throw new Error('Clipboard unavailable');
+            written.push(text);
+          },
+        },
+      },
+      IntersectionObserver: class {
+        observe() {}
+      },
+      setTimeout: (run, delay) => {
+        const id = ++nextTimer;
+        timers.set(id, { run, at: now + delay });
+        return id;
+      },
+      clearTimeout: (id) => timers.delete(id),
+    });
+
+    await buttons[0].click();
+    advance(500);
+    await buttons[1].click();
+    advance(500);
+    await buttons[0].click();
+    advance(500);
+    assert.equal(buttons[0].textContent, 'Copied', locale);
+    assert.equal(buttons[0].attributes['aria-label'], 'Copied: Signature', locale);
+    rejectCopy = true;
+    await buttons[0].click();
+    rejectCopy = false;
+    advance(500);
+    assert.equal(buttons[1].textContent, 'Copy', locale);
+    assert.equal(buttons[1].attributes['aria-label'], 'Copy: Checksum', locale);
+    assert.equal(buttons[0].textContent, 'Copied', locale);
+    advance(500);
+    assert.equal(buttons[0].textContent, 'Copy', locale);
+    assert.equal(buttons[0].attributes['aria-label'], 'Copy: Signature', locale);
+    assert.deepEqual(written, ['first command', 'second command', 'first command'], locale);
   }
 });
 
