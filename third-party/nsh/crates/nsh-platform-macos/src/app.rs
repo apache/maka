@@ -521,6 +521,7 @@ struct Resident {
     configure: RefCell<Box<dyn FnMut() -> EngineConfig>>,
     on_active: Rc<dyn Fn(bool)>,
     on_close: Box<dyn Fn()>,
+    should_close: Box<dyn Fn() -> bool>,
 }
 
 thread_local! {
@@ -611,6 +612,10 @@ define_class!(
 
         #[unsafe(method(windowShouldClose:))]
         fn should_close(&self, window: &NSWindow) -> bool {
+            let resident = RESIDENT.with(|resident| resident.borrow().clone());
+            if let Some(resident) = resident {
+                return (resident.should_close)();
+            }
             let keep_alive = RUNNING.with(|running| {
                 running
                     .borrow()
@@ -811,7 +816,10 @@ pub fn run_app_with_config(
 /// Closing the window stops and drops its engine and native views, but keeps
 /// the application event loop alive. Open and Dock reopen call `configure` on
 /// the main thread to create a fresh engine; an existing window is just raised.
-/// `on_close` runs after each UI is destroyed, including on Quit. Quit returns
+/// `should_close` gates ordinary window close without blocking the main thread:
+/// return false while preparing state, then reissue the close when ready.
+/// Explicit Quit bypasses this gate. `on_close` runs after each UI is destroyed,
+/// including on Quit. Quit returns
 /// control to the caller for its own bounded cleanup. Other runners retain
 /// their existing close behavior. Must be called on the main thread.
 pub fn run_resident_app_with_config(
@@ -819,6 +827,7 @@ pub fn run_resident_app_with_config(
     configure: impl FnMut() -> EngineConfig + 'static,
     on_active: impl Fn(bool) + 'static,
     on_close: impl Fn() + 'static,
+    should_close: impl Fn() -> bool + 'static,
 ) -> std::process::ExitCode {
     let mut options = options;
     options.keep_alive_on_close = false;
@@ -827,6 +836,7 @@ pub fn run_resident_app_with_config(
         configure: RefCell::new(Box::new(configure)),
         on_active: Rc::new(on_active),
         on_close: Box::new(on_close),
+        should_close: Box::new(should_close),
     });
     let initial = resident.clone();
     run_window(
