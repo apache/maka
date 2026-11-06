@@ -367,10 +367,7 @@ export function SessionActions(props: {
               current={target.current}
               close={target.close}
               notice={props.notice}
-              change={async (action) => {
-                await props.change(action);
-                await target.refresh();
-              }}
+              change={(action) => target.run(() => props.change(action))}
             />
           )}
           openSession={(id) => {

@@ -2381,7 +2381,9 @@ async fn desktop_child_conversations_manage_nested_and_archived_workers() {
             .await;
         desktop
             .until("tree action menu did not settle", || {
-                desktop.controls(action).is_empty().then_some(())
+                (desktop.controls(action).is_empty()
+                    && desktop.controls("Close child conversations").len() == 1)
+                    .then_some(())
             })
             .await;
         desktop.control("Open Verification worker").await;
@@ -2402,9 +2404,8 @@ async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     desktop.press("Confirm delete conversation").await;
     desktop
         .until("deleted worker remained in the tree", || {
-            desktop
-                .controls("Open Disposable worker")
-                .is_empty()
+            (desktop.controls("Open Disposable worker").is_empty()
+                && desktop.controls("Close child conversations").len() == 1)
                 .then_some(())
         })
         .await;
