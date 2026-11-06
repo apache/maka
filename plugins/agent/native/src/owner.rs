@@ -1469,8 +1469,12 @@ impl Owner {
             },
             behavior: self.bot_behavior(
                 &id,
-                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
-                    .await?,
+                self.capture_behavior(
+                    (!host_bridge).then_some(&session.configuration.workspace),
+                    &snapshot,
+                    language,
+                )
+                .await?,
                 &snapshot,
                 language,
                 self.admitted_tools(&id, &session.configuration.tools)
