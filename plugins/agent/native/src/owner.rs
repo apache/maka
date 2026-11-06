@@ -1016,7 +1016,7 @@ impl Owner {
             .get_session::<StoredSessionConfiguration>(&input.session_id)
             .await
             .map_err(|_| "agent_store_unavailable")?;
-        if session.is_none_or(|session| session.archived) {
+        if session.is_none() {
             return Ok(MarkReadResult::Rejected {
                 reason: Rejection::SessionUnavailable,
             });

@@ -2264,7 +2264,7 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandchild() {
+async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     use maka_agent_api::session::StoredSessionConfiguration;
     let fixture = Fixture::open().await;
     let original = fixture
@@ -2280,9 +2280,11 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     let prefix = fixture.session.rsplit_once('_').unwrap().0;
     let child = format!("{prefix}_{}", Uuid::new_v4().simple());
     let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
+    let disposable = format!("{prefix}_{}", Uuid::new_v4().simple());
     for (id, parent, title) in [
         (&child, &fixture.session, "Archived worker"),
         (&grandchild, &child, "Verification worker"),
+        (&disposable, &fixture.session, "Disposable worker"),
     ] {
         let mut configuration = original.clone();
         configuration.parent_session_id = Some(parent.clone());
@@ -2334,6 +2336,87 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
         "deep rows stay inside the dialog's viewport"
     );
     desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
+    for (id, title, action, archived) in [
+        (
+            &grandchild,
+            "Verification worker",
+            "Archive conversation",
+            true,
+        ),
+        (
+            &grandchild,
+            "Verification worker",
+            "Restore conversation",
+            false,
+        ),
+        (&child, "Archived worker", "Restore conversation", false),
+        (
+            &disposable,
+            "Disposable worker",
+            "Archive conversation",
+            true,
+        ),
+    ] {
+        desktop.right_click(&format!("Open {title}")).await;
+        desktop.control(action).await;
+        desktop.artifact(&format!(
+            "child-menu-{}-{theme}-{layout}",
+            if archived { "archive" } else { "restore" }
+        ));
+        desktop.press(action).await;
+        desktop
+            .wait("tree action did not change the targeted worker", async {
+                loop {
+                    let observed = desktop
+                        .client
+                        .query("agent", "observe", json!({"sessionId":id}))
+                        .await
+                        .unwrap();
+                    if observed["session"]["archived"] == archived {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+        desktop
+            .until("tree action menu did not settle", || {
+                (desktop.controls(action).is_empty()
+                    && desktop.controls("Close child conversations").len() == 1)
+                    .then_some(())
+            })
+            .await;
+        desktop.control("Open Verification worker").await;
+    }
+    desktop.press("Actions for Disposable worker").await;
+    desktop.press("Delete conversation").await;
+    desktop.control("Confirm delete conversation").await;
+    assert!(
+        fixture
+            .store
+            .get_session::<StoredSessionConfiguration>(&disposable)
+            .await
+            .unwrap()
+            .is_some(),
+        "opening delete confirmation must not delete the worker"
+    );
+    desktop.artifact(&format!("child-delete-confirmation-{theme}-{layout}"));
+    desktop.press("Confirm delete conversation").await;
+    desktop
+        .until("deleted worker remained in the tree", || {
+            (desktop.controls("Open Disposable worker").is_empty()
+                && desktop.controls("Close child conversations").len() == 1)
+                .then_some(())
+        })
+        .await;
+    assert!(
+        fixture
+            .store
+            .get_session::<StoredSessionConfiguration>(&disposable)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let previous = desktop.platform.text_input_target();
     desktop.press("Open Verification worker").await;
     desktop.target_after(previous).await;
