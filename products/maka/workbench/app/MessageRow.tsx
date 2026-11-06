@@ -29,6 +29,7 @@ import { messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
+import { SkillMessage } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
@@ -483,9 +484,7 @@ export function MessageRow({
                   gap: 8,
                 }}
               >
-                <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
-                  <SourceText row={row} sourceId={sourceId()} />
-                </Text>
+                <SkillMessage row={row} sourceId={sourceId()} />
                 <If when={(row().attachments?.length ?? 0) > 0}>
                   <HistoryAttachments
                     userScroll={userScroll}

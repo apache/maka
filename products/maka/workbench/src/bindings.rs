@@ -219,14 +219,23 @@ pub fn ui_set_description() -> nsh_core::element::description::SetDescription {
 }
 
 fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 'static) -> Registry {
+    let mut registry = ui_registry();
+    registry.value("host", make_host);
+    registry
+}
+
+/// Native workbench components and classes, independent of the Host connection.
+#[must_use]
+pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
+    registry.register::<crate::composer_input::ComposerInput>();
+    registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
     registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
-    registry.value("host", make_host);
     registry
 }
 

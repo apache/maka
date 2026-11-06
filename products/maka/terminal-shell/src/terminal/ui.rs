@@ -571,7 +571,7 @@ mod tests {
 
     fn collapsed_workspace_pages(scenario: &'static str) {
         use nsh_core::platform::{Idiom, Renderer};
-        use nsh_core::prelude::{Instance, Registry, class};
+        use nsh_core::prelude::{Instance, class};
 
         #[class]
         struct Presentation {
@@ -607,7 +607,7 @@ mod tests {
                 thread::yield_now();
             }
         };
-        let mut registry = Registry::ui_set("maka/host");
+        let mut registry = maka_workbench::bindings::ui_registry();
         registry.value("host", move || {
             Instance::new(Presentation {
                 scenario: scenario.into(),
