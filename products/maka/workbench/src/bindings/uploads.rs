@@ -198,16 +198,19 @@ pub struct UploadSubscription {
 }
 
 struct UploadWatch {
+    parent: watch::Receiver<Client>,
     receiver: watch::Receiver<()>,
     initial: bool,
 }
 
 impl UploadSubscription {
     pub(super) fn new(scope: Arc<Scope>) -> Self {
-        let receiver = scope.owner.client.watch_uploads();
+        let parent = scope.owner.client.subscribe();
+        let receiver = parent.borrow().watch_uploads();
         Self {
             scope,
             updates: Arc::new(Mutex::new(UploadWatch {
+                parent,
                 receiver,
                 initial: true,
             })),
@@ -238,10 +241,17 @@ impl UploadSubscription {
         // subscription must not keep Bindings::close waiting for another upload.
         let mut updates = updates.lock().await;
         if !updates.initial {
+            let UploadWatch {
+                parent, receiver, ..
+            } = &mut *updates;
             tokio::select! {
                 biased;
                 () = closed.cancelled() => return Ok(JsonValue::Null),
-                changed = updates.receiver.changed() => {
+                changed = parent.changed() => {
+                    if changed.is_err() { return Ok(JsonValue::Null); }
+                    *receiver = parent.borrow_and_update().watch_uploads();
+                }
+                changed = receiver.changed() => {
                     if changed.is_err() { return Ok(JsonValue::Null); }
                 }
             }
@@ -458,7 +468,7 @@ impl UploadIntake {
         let worker_name = name.clone();
         let owner = scope.owner.clone();
         let admitted = owner.spawn(async move {
-            match scope.client.local(&scope.owner).await {
+            match scope.client.resolve(&scope.owner).await {
                 Ok(client) => settle(scope, client, snapshot, id, &worker_name, &updates).await,
                 Err(error) => updates.emit(status(id, "failed", &worker_name, Some(&error))),
             }
@@ -563,7 +573,6 @@ async fn intake(
     updates: &Updates,
     clipboard_id: Uuid,
 ) -> Result<(), String> {
-    let client = scope.client.local(&scope.owner).await?;
     let directory_text = !matches!(&selection, Selection::Files(_));
     let selected = match selection {
         Selection::Files(files) | Selection::Paste(files) => {
@@ -597,12 +606,15 @@ async fn intake(
                     updates.emit(serde_json::json!({"kind": "text", "text": text}));
                     return Ok(());
                 }
+                let client = scope.client.resolve(&scope.owner).await?;
                 upload_files(scope, client, files, updates).await;
             } else {
+                let client = scope.client.resolve(&scope.owner).await?;
                 upload_files(scope, client, files, updates).await;
             }
         }
         crate::clipboard::Selection::Image(snapshot) => {
+            let client = scope.client.resolve(&scope.owner).await?;
             let name = snapshot.metadata()["name"]
                 .as_str()
                 .map(clean_name)

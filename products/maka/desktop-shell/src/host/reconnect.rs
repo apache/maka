@@ -65,6 +65,13 @@ impl Root {
     /// Connects to the Host serving the Root. When none runs, the launcher
     /// starts one, as `maka desktop` does.
     pub async fn connect(&self, runtime: Handle) -> Result<Connection, String> {
+        let (host, endpoint) = self.connect_host().await?;
+        Connection::admit(host, endpoint, &self.path, runtime).await
+    }
+
+    pub async fn connect_host(
+        &self,
+    ) -> Result<(maka_host_runtime::application::host::Client, PathBuf), String> {
         // The launcher would initialize a new Root where this one was moved
         // or deleted.
         match root::resolve(&self.path) {
@@ -86,7 +93,7 @@ impl Root {
                 });
             }
         };
-        Connection::admit(host, endpoint, &self.path, runtime).await
+        Ok((host, endpoint))
     }
 }
 

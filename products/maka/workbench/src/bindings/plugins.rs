@@ -235,7 +235,7 @@ async fn load_package(
     entry
         .get_or_try_init(|| async {
             let stream = owner
-                .client
+                .client()
                 .subscribe(
                     "management",
                     "exportPackage",

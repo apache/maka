@@ -98,7 +98,8 @@ pub(super) async fn recover(scope: Arc<Scope>, operation_id: String) -> Result<J
     execute(scope.owner.clone(), async move {
         let client = scope.client.local(&scope.owner).await?;
         client.operation_for_terminal(id, &scope.session).await?;
-        serde_json::to_value(client.recover(id).await?).map_err(|error| error.to_string())
+        serde_json::to_value(scope.owner.client().recover(id).await?)
+            .map_err(|error| error.to_string())
     })
     .await
 }

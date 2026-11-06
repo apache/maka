@@ -55,7 +55,7 @@ pub struct Bindings {
     owner: Arc<Owner>,
 }
 struct Owner {
-    client: Client,
+    client: tokio::sync::watch::Sender<Client>,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
     plugins: plugins::Packages,
@@ -87,7 +87,7 @@ enum ApplicationClient {
 impl ApplicationClient {
     async fn resolve(&self, owner: &Owner) -> Result<Client, String> {
         match self {
-            Self::Root => Ok(owner.client.clone()),
+            Self::Root => Ok(owner.client()),
             Self::Ui(services) => services.client().await,
         }
     }
@@ -104,8 +104,8 @@ impl ApplicationClient {
             Err(_) if !was_retired && client.binding_retired() => {
                 let fresh = match self {
                     Self::Root => {
-                        owner.client.refresh().await?;
-                        owner.client.clone()
+                        owner.client().refresh().await?;
+                        owner.client()
                     }
                     Self::Ui(services) => services.client().await?,
                 };
@@ -117,19 +117,19 @@ impl ApplicationClient {
 
     async fn local(&self, owner: &Owner) -> Result<Client, String> {
         match self {
-            Self::Root => Ok(owner.client.clone()),
+            Self::Root => Ok(owner.client()),
             Self::Ui(services) => services.local_client().await,
         }
     }
 
     async fn refresh(&self, owner: &Owner) -> Result<(), String> {
         match self {
-            Self::Root => owner.client.refresh().await,
+            Self::Root => owner.client().refresh().await,
             Self::Ui(services) => {
                 owner.read_ui(serde_json::json!({})).await?;
                 services.client().await?;
                 // Changed UI bindings must be adopted before recapturing public endpoints.
-                owner.client.refresh().await
+                owner.client().refresh().await
             }
         }
     }
@@ -140,7 +140,7 @@ impl ApplicationClient {
         endpoint: String,
     ) -> Result<(Client, String, JsonValue), String> {
         match self {
-            Self::Root => Ok((owner.client.clone(), endpoint, JsonValue::Null)),
+            Self::Root => Ok((owner.client(), endpoint, JsonValue::Null)),
             Self::Ui(services) => services.mutation_context(&endpoint).await,
         }
     }
@@ -163,7 +163,7 @@ impl Bindings {
     pub fn new(client: Client, runtime: Handle) -> Self {
         Self {
             owner: Arc::new(Owner {
-                client,
+                client: tokio::sync::watch::channel(client).0,
                 runtime,
                 tasks: StdMutex::new(Some(TaskTracker::new())),
                 plugins: Default::default(),
@@ -186,6 +186,32 @@ impl Bindings {
         self.owner.reload.clone()
     }
 
+    /// End only this Host generation. The window and local input remain alive.
+    pub async fn disconnect(&self) -> Result<(), String> {
+        self.owner.client().close().await
+    }
+
+    /// Select an admitted client for future calls without moving existing calls
+    /// or native UI resources out of their original custody.
+    pub async fn reconnect(&self, client: Client) -> Result<(), String> {
+        let previous = self.owner.client();
+        let before = previous.source();
+        let after = client.source();
+        if before.state_domain != after.state_domain || before.deployment != after.deployment {
+            let _ = client.close().await;
+            return Err("the replacement Host belongs to another application".into());
+        }
+        {
+            let tasks = self.owner.tasks.lock().unwrap();
+            if tasks.is_some() {
+                self.owner.client.send_replace(client);
+                return Ok(());
+            }
+        }
+        let _ = client.close().await;
+        Err("application bindings are closing".into())
+    }
+
     /// Native objects own subscriptions; the launcher owns calls and durable recovery.
     pub fn registry(&self, initial_session: Option<String>) -> Registry {
         let owner = self.owner.clone();
@@ -201,7 +227,7 @@ impl Bindings {
     /// Fence new native tasks, close the original Host session and finish admitted IO.
     pub async fn close(&self) -> Result<(), String> {
         let tasks = self.owner.tasks.lock().unwrap().take();
-        let (closed, ()) = tokio::join!(self.owner.client.close(), async move {
+        let (closed, ()) = tokio::join!(self.disconnect(), async move {
             if let Some(tasks) = tasks {
                 tasks.close();
                 tasks.wait().await;
@@ -231,13 +257,23 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 }
 
 impl Owner {
+    fn client(&self) -> Client {
+        self.client.borrow().clone()
+    }
+
     async fn read_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
+        let mut selected = self.client.subscribe();
+        let client = selected.borrow_and_update().clone();
         require_contract(
             "management",
             "readUi",
-            &self.client.describe("management").await?.contract,
+            &client.describe("management").await?.contract,
         )?;
-        let value = self.client.query("management", "readUi", input).await?;
+        let value = client.query("management", "readUi", input).await?;
+        let _current = self.client.borrow();
+        if selected.has_changed().unwrap_or(true) {
+            return Err("the Host changed while reading UI bindings".into());
+        }
         self.plugins
             .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
         Ok(value)
@@ -639,7 +675,7 @@ impl ApplicationHost {
                 .await?;
             Ok(system_permission::actions(
                 &record,
-                &owner.client.source().state_domain,
+                &owner.client().source().state_domain,
             ))
         })
         .await
@@ -656,7 +692,8 @@ impl ApplicationHost {
         execute(owner.clone(), async move {
             let client = source.resolve(&owner).await?;
             let record = system_permission::read(&client, &session_id, &request_id).await?;
-            system_permission::perform(&record, &owner.client.source().state_domain, &action).await
+            system_permission::perform(&record, &owner.client().source().state_domain, &action)
+                .await
         })
         .await
     }
@@ -871,7 +908,7 @@ impl ApplicationHost {
         execute(owner.clone(), async move {
             let client = source.local(&owner).await?;
             client.operation_for_settings(id).await?;
-            let reply = client.recover(id).await?;
+            let reply = owner.client().recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -917,7 +954,7 @@ impl ApplicationHost {
         execute(owner.clone(), async move {
             let client = source.local(&owner).await?;
             client.operation_for_control(id).await?;
-            let reply = client.recover(id).await?;
+            let reply = owner.client().recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -1090,7 +1127,7 @@ impl ScopedHost {
             client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
-            client.recover(id).await?;
+            scope.owner.client().recover(id).await?;
             let operation = client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
@@ -1126,7 +1163,7 @@ impl ScopedHost {
     ) -> Result<String, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            let client = scope.client.local(&scope.owner).await?;
+            let client = scope.client.resolve(&scope.owner).await?;
             let id = Uuid::new_v4();
             let mutation = client
                 .reserve_send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
@@ -1168,7 +1205,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.local(&scope.owner).await?;
+            let client = scope.client.resolve(&scope.owner).await?;
             scope.owned_operation(&client, original).await?;
             let id = Uuid::new_v4();
             let send = client.retry_send(original, id, selection).await?;
@@ -1225,7 +1262,7 @@ impl ScopedHost {
         execute(scope.owner.clone(), async move {
             let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
-            let reply = client.recover(id).await?;
+            let reply = scope.owner.client().recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await

@@ -18,8 +18,7 @@
  */
 
 //! The workbench in a window of NSH's AppKit backend, macOS's default. It
-//! follows the Root's Host, but refuses an in-place UI reload rather than
-//! pausing its input for one.
+//! follows the Root's Host while keeping the workbench and local input alive.
 
 use crate::{
     host::{self, Connection, FIRST_PAUSE, RECONNECT_LIMIT, Root, STEADY},
@@ -29,10 +28,7 @@ use maka_workbench::reload::Request;
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
 use std::time::Instant;
-use tokio::{
-    runtime::Runtime,
-    sync::{oneshot, watch},
-};
+use tokio::{runtime::Runtime, sync::watch};
 
 pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
     let directory = first
@@ -46,7 +42,8 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let config = shell.attach(first.config.clone());
     let (quit, quitting) = watch::channel(false);
     carry_out(requests, &runtime);
-    let mut following = runtime.spawn(follow(first, root, shell, quitting));
+    refuse_reloads(first.bindings.reload().take_requests(), &runtime);
+    let mut following = runtime.spawn(follow(first, root, quitting));
     let options = AppOptions {
         app_id: APP_ID.into(),
         title: TITLE.into(),
@@ -112,97 +109,73 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
 }
 
-async fn follow(
-    mut current: Connection,
-    root: Root,
-    shell: Shell,
-    mut quitting: watch::Receiver<bool>,
-) {
+async fn follow(mut current: Connection, root: Root, mut quitting: watch::Receiver<bool>) {
     let mut pause = FIRST_PAUSE;
     loop {
         let reached = Instant::now();
-        let mut reloading = current.bindings.reload().take_requests();
-        let state = {
-            let preparing = async {
-                host::stopped(current.endpoint.clone(), current.epoch).await;
-                loop {
-                    let (ready, paused) = oneshot::channel();
-                    with_running_view(move |view| {
-                        view.pause_input(move |result| {
-                            let _ = ready.send(result);
-                        })
-                    });
-                    let result = async {
-                        paused
-                            .await
-                            .map_err(|_| "the window closed while pausing input".to_owned())??;
-                        maka_workbench::reload::prepare(&current.config.host).await
-                    }
-                    .await;
-                    match result {
-                        Ok(state) => break state,
-                        Err(error) => {
-                            eprintln!("maka-desktop-shell: preserving the workbench: {error}");
-                            with_running_view(|view| view.resume_input());
-                            tokio::time::sleep(pause).await;
-                            pause = (pause * 2).min(RECONNECT_LIMIT);
-                        }
-                    }
-                }
-            };
-            tokio::pin!(preparing);
-            loop {
-                if *quitting.borrow() {
-                    break None;
-                }
-                tokio::select! {
-                    _ = quitting.changed() => break None,
-                    state = &mut preparing => break Some(state),
-                    Some(request) = reloading.recv() => {
-                        if let Request::Pause(ready) = request {
-                            let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
-                        }
-                    }
-                }
-            }
-        };
-        // Settle the old client's journal before admitting the next client.
-        host::detach(current.bindings, &current.endpoint, current.epoch).await;
-        drop(current.config);
-        let Some(state) = state else { return };
         if *quitting.borrow() {
-            return;
+            break;
         }
+        tokio::select! {
+            _ = quitting.changed() => break,
+            () = host::stopped(current.endpoint.clone(), current.epoch) => {}
+        }
+        // Only the disconnected transport generation closes. Local journal
+        // writes, native file selections and the JS workbench stay alive.
+        let _ = tokio::time::timeout(host::DETACH_LIMIT, current.bindings.disconnect()).await;
         let mut wait = reached.elapsed() < STEADY;
         if !wait {
             pause = FIRST_PAUSE;
         }
-        current = loop {
+        loop {
             if wait {
                 tokio::select! {
-                    _ = quitting.changed() => return,
+                    _ = quitting.changed() => break,
                     _ = tokio::time::sleep(pause) => {}
                 }
                 pause = (pause * 2).min(RECONNECT_LIMIT);
             }
             if *quitting.borrow() {
-                return;
+                break;
             }
             wait = true;
-            match root.connect(tokio::runtime::Handle::current()).await {
-                Ok(connection) => break connection,
+            let connecting = async {
+                let (host, endpoint) = root.connect_host().await?;
+                let epoch = host.epoch();
+                let (client, _) = maka_workbench::host::admit(host, root.path(), "desktop").await?;
+                current.bindings.reconnect(client).await?;
+                Ok::<_, String>((endpoint, epoch))
+            };
+            let result = tokio::select! {
+                _ = quitting.changed() => break,
+                result = connecting => result,
+            };
+            match result {
+                Ok((endpoint, epoch)) => {
+                    current.endpoint = endpoint;
+                    current.epoch = epoch;
+                    let _ = current
+                        .config
+                        .host
+                        .send("workbench.reconnected", JsonValue::Null);
+                    break;
+                }
                 Err(error) => eprintln!("maka-desktop-shell: reconnecting: {error}"),
             }
-        };
-        if *quitting.borrow() {
-            host::detach(current.bindings, &current.endpoint, current.epoch).await;
-            return;
         }
-        current.bindings.reload().restore(state);
-        let config = shell.attach(current.config.clone());
-        with_running_view(move |view| {
-            view.resume_input();
-            view.load_with_config(config);
-        });
+        if *quitting.borrow() {
+            break;
+        }
     }
+    host::detach(current.bindings, &current.endpoint, current.epoch).await;
+}
+
+fn refuse_reloads(mut reloading: tokio::sync::mpsc::UnboundedReceiver<Request>, runtime: &Runtime) {
+    runtime.spawn(async move {
+        while let Some(request) = reloading.recv().await {
+            if let Request::Pause(ready) = request {
+                let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
+            }
+        }
+    });
 }

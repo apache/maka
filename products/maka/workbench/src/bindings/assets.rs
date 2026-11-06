@@ -113,7 +113,7 @@ impl Assets for HostAssets {
                 closed?;
                 Ok(captured)
             } else {
-                read_asset(&owner.client, source).await
+                read_asset(&owner.client(), source).await
             }
         }))?;
         match captured {

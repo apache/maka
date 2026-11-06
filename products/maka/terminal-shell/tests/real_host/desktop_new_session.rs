@@ -545,6 +545,20 @@ impl Desktop {
         .await
     }
 
+    async fn reconnect(&mut self, fixture: &Fixture) {
+        let _ = self
+            .wait("old client did not settle", self.bindings.disconnect())
+            .await;
+        self.client = fixture.client().await;
+        self.wait(
+            "new client was not admitted",
+            self.bindings.reconnect(self.client.clone()),
+        )
+        .await
+        .unwrap();
+        self.event("workbench.reconnected", Value::Null);
+    }
+
     async fn restart(
         mut self,
         fixture: &Fixture,
@@ -602,6 +616,61 @@ async fn images_fixture() -> Fixture {
         ..Options::default()
     })
     .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_reconnect_preserves_an_unconfirmed_creation_without_replaying_it() {
+    let mut fixture = images_fixture().await;
+    let (path, bytes) = image_file(&fixture);
+    let gate = ReplyGate::create(fixture.directory.path(), fixture.address.clone());
+    let mut desktop = Desktop::open(&fixture, &gate.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    std::fs::write(&path, b"changed after selection").unwrap();
+    desktop.type_text("UNCONFIRMED_CREATION_DRAFT").await;
+    gate.arm();
+    desktop.submit().await;
+    desktop.held(&gate).await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+    // Lose the held receipt and every old connection. Keep the original editor
+    // and selected file; only the admitted Host client changes.
+    drop(gate);
+    desktop.reconnect(&fixture).await;
+    desktop.expect_text("UNCONFIRMED_CREATION_DRAFT").await;
+    desktop.control("Send message").await;
+    // A consecutive reconnect must not clear a recovered local draft either.
+    desktop.reconnect(&fixture).await;
+    desktop.expect_text("UNCONFIRMED_CREATION_DRAFT").await;
+    desktop.control("Send message").await;
+    assert_eq!(desktop.sessions().await.len(), 2);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert_image(&request, "UNCONFIRMED_CREATION_DRAFT", &bytes);
+    assert_eq!(desktop.sessions().await.len(), 2);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+    desktop
+        .wait("the recovered draft did not finish", request.finish())
+        .await;
+    let roots = desktop
+        .client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    mutate(
+        &desktop.client,
+        "create",
+        json!({
+            "title":"Reconnected catalog entry", "labels":[],
+            "workspace":{"kind":"directory", "path":roots["roots"][0]["path"]}
+        }),
+    )
+    .await;
+    desktop
+        .control("Actions for Reconnected catalog entry")
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

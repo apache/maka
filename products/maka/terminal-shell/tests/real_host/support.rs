@@ -785,6 +785,9 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
+    pub fn create(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "create", "mutation")
+    }
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }

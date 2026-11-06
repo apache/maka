@@ -62,6 +62,7 @@ struct Selection {
 }
 struct Binding {
     client: Client,
+    parent: tokio::sync::watch::Receiver<Client>,
     imports: BTreeMap<String, Vec<String>>,
     binding_basis: String,
 }
@@ -147,9 +148,13 @@ impl Services {
         let mut binding = self.binding.lock().await;
         let mut refreshed_catalog = false;
         loop {
+            let parent = self.owner.client.subscribe();
+            let owner = parent.borrow().clone();
             let (source, metadata) = self.current_source()?;
             if let Some(bound) = binding.as_ref() {
-                if bound.binding_basis == metadata.binding_basis && !bound.client.binding_retired()
+                if bound.binding_basis == metadata.binding_basis
+                    && !bound.client.binding_retired()
+                    && !bound.parent.has_changed().unwrap_or(true)
                 {
                     return Ok(binding);
                 }
@@ -162,22 +167,25 @@ impl Services {
                     continue;
                 }
             }
-            let captured = self
-                .owner
-                .client
-                .bind_ui(source.clone(), self.instance.clone())
-                .await;
+            let captured = owner.bind_ui(source.clone(), self.instance.clone()).await;
             match (captured, self.current_source()) {
                 (Ok((client, imports)), Ok((_, latest))) => {
-                    if latest.binding_basis != metadata.binding_basis || client.binding_retired() {
+                    let _current = self.owner.client.borrow();
+                    if latest.binding_basis != metadata.binding_basis
+                        || client.binding_retired()
+                        || parent.has_changed().unwrap_or(true)
+                    {
+                        drop(_current);
                         let _ = self.owner.spawn(async move { client.retire().await });
                         continue;
                     }
                     let old = binding.replace(Binding {
                         client,
+                        parent,
                         imports,
                         binding_basis: metadata.binding_basis.clone(),
                     });
+                    drop(_current);
                     if let Some(old) = old {
                         let _ = self.owner.spawn(async move { old.client.retire().await });
                     }
@@ -430,7 +438,11 @@ impl UiScope {
         drop(this);
         execute(services.owner.clone(), async move {
             services.ensure_open()?;
-            let operations = services.owner.client.pending_ui(&services.instance).await?;
+            let operations = services
+                .owner
+                .client()
+                .pending_ui(&services.instance)
+                .await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
         .await
@@ -444,10 +456,10 @@ impl UiScope {
             services.ensure_open()?;
             services
                 .owner
-                .client
+                .client()
                 .operation_for_ui(&services.instance, id)
                 .await?;
-            let reply = services.owner.client.recover(id).await?;
+            let reply = services.owner.client().recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -461,10 +473,10 @@ impl UiScope {
             services.ensure_open()?;
             services
                 .owner
-                .client
+                .client()
                 .operation_for_ui(&services.instance, id)
                 .await?;
-            let operation = services.owner.client.abandon_unprepared(id).await?;
+            let operation = services.owner.client().abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await

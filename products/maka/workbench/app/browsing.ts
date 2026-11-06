@@ -18,7 +18,7 @@
  */
 
 import { createText, errorText, errorMessage, isObservationCancelled, UiError } from './text';
-import { batch, cleanup, signal } from 'nsh';
+import { batch, cleanup, host as shell, signal } from 'nsh';
 import type { Host } from './host';
 import type {
   AgentSessionListScope,
@@ -361,6 +361,9 @@ export function createBrowsing(host: Host): Browsing {
       void restart(true);
     });
   };
+  // A newly admitted Host is an explicit reason to renew read projections.
+  // Preserve paging intent and editor state; only observations restart.
+  shell.on('workbench.reconnected', () => void refresh());
   void refresh();
   return {
     scope,

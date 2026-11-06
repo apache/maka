@@ -40,35 +40,22 @@ async fn reconnect_preserves_the_last_edit_accepted_by_the_old_workbench() {
     support::wait_draft(&client, &fixture.session, "SAVED_DRAFT").await;
 
     view.handle_event(Event::Paste("_LAST_EDIT".into()));
-    view.surface_mut().set_input_paused(true);
-    commit_native_events(&mut view).await;
-    let channel = view.host();
-    let preparing = maka_workbench::reload::prepare(&channel);
-    tokio::pin!(preparing);
-    let deadline = tokio::time::sleep(support::WAIT_TIMEOUT);
-    tokio::pin!(deadline);
-    let state = loop {
-        support::tick(&mut view);
-        tokio::select! {
-            state = &mut preparing => break state.unwrap(),
-            _ = &mut deadline => panic!("the workbench did not finish saving its draft"),
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-        }
-    };
-    bindings.close().await.unwrap();
-    drop(view);
-
-    let client = fixture.client().await;
-    let bindings =
-        maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-    bindings.reload().restore(state);
-    let mut view = AppView::new(Default::default());
-    support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
+    for _ in 0..2 {
+        bindings.disconnect().await.unwrap();
+        // The same runtime still accepts edits while its old transport is closed.
+        commit_native_events(&mut view).await;
+        let client = fixture.client().await;
+        bindings.reconnect(client).await.unwrap();
+        view.host()
+            .send("workbench.reconnected", Value::Null)
+            .unwrap();
+    }
     wait_editable_composer(&mut view).await;
     assert_eq!(
         view.surface().input_context().unwrap().text.as_deref(),
         Some("SAVED_DRAFT_LAST_EDIT")
     );
+    support::wait_draft(&client, &fixture.session, "SAVED_DRAFT_LAST_EDIT").await;
     drop(view);
     bindings.close().await.unwrap();
 }
