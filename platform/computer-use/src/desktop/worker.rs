@@ -20,6 +20,10 @@
 //! Private, parent-owned desktop worker. There is no listener or reconnect path.
 mod callbacks;
 mod connection;
+#[cfg(all(target_os = "macos", feature = "native-desktop"))]
+mod macos;
+#[cfg(all(target_os = "macos", feature = "native-desktop"))]
+pub(crate) use macos::{MacRole, macos_finite};
 #[cfg(feature = "native-desktop")]
 mod epochs;
 #[cfg(all(target_os = "windows", feature = "native-desktop"))]
@@ -591,6 +595,10 @@ pub fn bootstrap() -> Option<ExitCode> {
     }
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(ENTRY)) {
         return None;
+    }
+    #[cfg(all(target_os = "macos", feature = "native-desktop"))]
+    if let Some(result) = macos::bootstrap(&std::env::args_os().skip(2).collect::<Vec<_>>()) {
+        return Some(result);
     }
     let audio_enabled =
         std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--audio"));

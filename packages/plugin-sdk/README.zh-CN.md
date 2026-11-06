@@ -52,7 +52,7 @@ UI 模块导出同步的 `activate(context)`，返回 `UiActivation`：`{ export
 
 使用 `context.application`，让应用调用经过 UI 实例声明的服务绑定。它是原生应用客户端，保留 Client、journal 和原始 receipt。`context.services[importName][index]` 选择具体的绑定提供者，也支持有多个提供者的导入；`context.operations` 恢复该实例的原始 mutation receipt。可信 UI 代码仍可使用完整的 `context.host` 和 `maka/host` 客户端，包括根界面与目录集成。控制器应持有所属激活实例的应用客户端。
 
-嵌入视图声明 `{ kind: 'view', contract: 'shared.contract.id' }`，并返回具有 `render({ context, runtime, input })` 的匹配实现。用 `defineUiViewContract<Input>(id)` 定义共享输入类型。消费方选择 `UiTarget`（`{ path, id }`），调用 `runtime.renderView(target, contract, input)`；`runtime.view(target, contract)` 解析贡献并检查其声明的种类与契约。目标可以来自插件配置，让其他已安装 UI 实例提供该界面。`workbench-views.ts`、`composer-view.ts` 和 `workspace-view.ts` 中的契约覆盖会话导航、会话界面、会话预览、输入区、设置和工作区预览；它们定义输入及所有权回调，不向消费方暴露提供者的私有状态。
+嵌入视图声明 `{ kind: 'view', contract: 'shared.contract.id' }`，并返回具有 `render({ context, runtime, input })` 的匹配实现。用 `defineUiViewContract<Input>(id)` 定义共享输入类型。消费方选择 `UiTarget`（`{ path, id }`），调用 `runtime.renderView(target, contract, input, options?)`（挂载仅呈现浮层的视图时可传入 `{ loading: false }`，避免加载态占位占据布局空间）；`runtime.view(target, contract)` 解析贡献并检查其声明的种类与契约。目标可以来自插件配置，让其他已安装 UI 实例提供该界面。`workbench-views.ts`、`composer-view.ts` 和 `workspace-view.ts` 中的契约覆盖会话导航、会话界面、会话预览、输入区、设置和工作区预览；它们定义输入及所有权回调，不向消费方暴露提供者的私有状态。
 
 命令实现 `run({ sessionId, argument? })` 和可选的 `enabled(context)`。声明提供 `title`，以及可选的 `description`、`shortcut`、`order`、`trigger`、`takesArgument` 和 `hint` 元数据；接受参数的命令必须声明触发词。根界面可以查看贡献目录，用 `runtime.commandEnabled(...)` 判断可用性，通过 `runtime.invoke(...)` 执行命令。
 

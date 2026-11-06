@@ -467,7 +467,7 @@ async fn run_from(
                 }
                 Ok(model_attempt::Outcome::Response(output)) => output,
                 Ok(model_attempt::Outcome::ParkRetry(plan)) => {
-                    auto_context::drain(inner, &mut pending).await?;
+                    let _ = auto_context::drain(inner, &mut pending).await?;
                     if !tools.is_idle() || !effects.is_idle() {
                         return Err(RunError::ReconciliationRequired(
                             "model retry cannot park while execution remains active".into(),
@@ -651,7 +651,7 @@ async fn run_from(
         return Err(inner.cleanup.unconfirmed());
     }
     tool_cleanup?;
-    summary_cleanup?;
+    let checkpoint = summary_cleanup?;
     if matches!(
         result,
         Ok(StepExit::Terminal(
@@ -685,6 +685,9 @@ async fn run_from(
                 }
                 error => RunError::Store(error),
             })?;
+        if let Some(checkpoint) = checkpoint {
+            auto_context::record(inner, checkpoint).await?;
+        }
     }
     result
 }

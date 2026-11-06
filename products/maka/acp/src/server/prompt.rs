@@ -19,76 +19,175 @@
 
 use super::App;
 use crate::foreground::{Foreground, Prompt};
-use agent_client_protocol::{Client, Responder, V2ConnectionTo, schema::v2 as acp};
-use std::{sync::Arc, time::Duration};
+use agent_client_protocol::{v1, v2};
+use std::sync::Arc;
 
 pub(super) fn dispatch(
     app: Arc<App>,
-    request: acp::PromptRequest,
-    responder: Responder<acp::PromptResponse>,
-    cx: V2ConnectionTo<Client>,
+    request: v2::schema::PromptRequest,
+    responder: v2::Responder<v2::schema::PromptResponse>,
 ) -> agent_client_protocol::Result<()> {
-    let capabilities = match app.initialized() {
-        Ok(capabilities) => capabilities,
-        Err(error) => {
+    let initialized = match app.initialized() {
+        Ok(i) => i,
+        Err(e) => {
             return responder.respond_with_error(
-                agent_client_protocol::Error::invalid_request().data(error.to_string()),
+                agent_client_protocol::Error::invalid_request().data(e.to_string()),
             );
         }
     };
-    // Reserve before returning to SDK dispatch so a following
-    // cancel (including in the same batch) cannot miss this work.
+    let peer = initialized.peer.clone();
+    let capabilities = initialized.capabilities;
+    let content = match request
+        .prompt
+        .into_iter()
+        .map(crate::transport::v2::content)
+        .collect::<Result<_, _>>()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params().data(e.to_string()),
+            );
+        }
+    };
     let reserved = app
         .sessions
         .get(&request.session_id.to_string())
         .and_then(|session| session.enter(&app.stop).map(|active| (session, active)));
     let (session, active) = match reserved {
-        Ok(reserved) => reserved,
-        Err(error) => {
+        Ok(pair) => pair,
+        Err(e) => {
             return responder.respond_with_error(
-                agent_client_protocol::Error::invalid_params().data(error.to_string()),
+                agent_client_protocol::Error::invalid_params().data(e.to_string()),
             );
         }
     };
-    let cancellation = active.cancel.clone();
     let session_id = session.id.clone();
-    let peer = app.peer(cx);
+    let cancellation = active.cancel.clone();
     let tasks = app.tasks.clone();
     tasks.spawn(async move {
-        let preparing = Foreground::prepare(
-            app.client.clone(), peer, session, active, capabilities,
-            Prompt { content: request.prompt },
-        );
-        tokio::pin!(preparing);
-        let result = match tokio::time::timeout(Duration::from_secs(15), &mut preparing).await {
-            Ok(result) => {
-                let response = match &result {
-                    Ok((id, _)) => responder.respond(acp::PromptResponse::new(id.clone())),
-                    Err(error) => responder.respond_with_error(
-                        agent_client_protocol::Error::internal_error().data(error.to_string()),
-                    ),
-                };
-                if response.is_err() { cancellation.cancel(); }
-                result
+        match Foreground::prepare(
+            app.client.clone(),
+            peer.clone(),
+            session,
+            active,
+            capabilities,
+            Prompt { content },
+        )
+        .await
+        {
+            Ok((id, foreground)) => {
+                if responder
+                    .respond(v2::schema::PromptResponse::new(id))
+                    .is_err()
+                {
+                    cancellation.cancel();
+                }
+                let result = foreground.run().await;
+                if let Err(error) = peer.complete(&session_id, result).await {
+                    eprintln!("ACP completion: {error}");
+                }
             }
-            Err(_) => {
-                // Timeout ends this RPC wait, not the original Host receipt.
-                // Connection shutdown supplies the bounded settlement deadline.
-                let data = serde_json::json!({
-                    "message": "Admission timed out; retaining the original receipt for cancellation",
-                    "sessionId": session_id,
-                });
+            Err(error) => {
                 let _ = responder.respond_with_error(
-                    agent_client_protocol::Error::internal_error().data(data),
+                    agent_client_protocol::Error::internal_error().data(error.to_string()),
                 );
-                cancellation.cancel();
-                preparing.await
             }
-        };
-        match result {
-            Ok((_, foreground)) => foreground.run().await,
-            Err(error) => eprintln!("ACP prompt: {error}"),
         }
     });
     Ok(())
+}
+
+pub(super) fn v1(
+    app: Arc<App>,
+    request: v1::schema::PromptRequest,
+    responder: v1::Responder<v1::schema::PromptResponse>,
+) -> agent_client_protocol::Result<()> {
+    let initialized = match app.initialized() {
+        Ok(i) => i,
+        Err(e) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_request().data(e.to_string()),
+            );
+        }
+    };
+    let peer = initialized.peer.clone();
+    let capabilities = initialized.capabilities;
+    let content = match request
+        .prompt
+        .into_iter()
+        .map(crate::transport::v1::content)
+        .collect::<Result<_, _>>()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params().data(e.to_string()),
+            );
+        }
+    };
+    let reserved = app
+        .sessions
+        .get(&request.session_id.to_string())
+        .and_then(|session| session.enter(&app.stop).map(|active| (session, active)));
+    let (session, active) = match reserved {
+        Ok(pair) => pair,
+        Err(e) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params().data(e.to_string()),
+            );
+        }
+    };
+    let session_id = session.id.clone();
+    let tasks = app.tasks.clone();
+    tasks.spawn(async move {
+        let prepared = Foreground::prepare(
+            app.client.clone(),
+            peer.clone(),
+            session,
+            active,
+            capabilities,
+            Prompt { content },
+        )
+        .await;
+        let result = match prepared {
+            Ok((_, foreground)) => {
+                let result = foreground.run().await;
+                peer.reset(&session_id);
+                let response = match result {
+                    Ok(crate::presentation::Completion::Completed) => Ok(
+                        v1::schema::PromptResponse::new(v1::schema::StopReason::EndTurn),
+                    ),
+                    Ok(crate::presentation::Completion::Cancelled) => Ok(
+                        v1::schema::PromptResponse::new(v1::schema::StopReason::Cancelled),
+                    ),
+                    Ok(crate::presentation::Completion::Failed) => {
+                        Err("Agent execution failed; see transcript".into())
+                    }
+                    Ok(crate::presentation::Completion::Paused) => {
+                        Err("Agent execution paused; continue in the Maka workbench".into())
+                    }
+                    Err(error) => Err(error),
+                };
+                respond_v1(responder, response)
+            }
+            Err(error) => respond_v1(responder, Err(error)),
+        };
+        if let Err(error) = result {
+            eprintln!("ACP completion: {error}");
+        }
+    });
+    Ok(())
+}
+
+fn respond_v1(
+    responder: v1::Responder<v1::schema::PromptResponse>,
+    result: Result<v1::schema::PromptResponse, crate::Error>,
+) -> agent_client_protocol::Result<()> {
+    match result {
+        Ok(response) => responder.respond(response),
+        Err(error) => responder.respond_with_error(
+            agent_client_protocol::Error::internal_error().data(error.to_string()),
+        ),
+    }
 }

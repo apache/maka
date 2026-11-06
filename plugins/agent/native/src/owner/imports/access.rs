@@ -44,7 +44,8 @@ impl SourceRead {
             .to_owned();
         let selected = workspace::observed(
             owner.import_roots.clone(),
-            source.location.directory().clone(),
+            source.location.path(),
+            owner.home.as_deref(),
             private.clone(),
         )
         .await
@@ -53,7 +54,7 @@ impl SourceRead {
         if selected.path != source.path {
             return Err(Failure::Changed);
         }
-        let selection = source.location.directory().clone();
+        let identity = selected.identity;
         let path = std::path::PathBuf::from(&source.path);
         let read_path = path.clone();
         let root = tokio::task::spawn_blocking(move || {
@@ -65,7 +66,7 @@ impl SourceRead {
             }
             .compile()
             .map_err(|_| Failure::Unavailable)?;
-            let dir = maka_fs_tools::directory::open(&read_path, &selection.directory_identity)
+            let dir = maka_fs_tools::directory::open(&read_path, &identity)
                 .map_err(|_| Failure::Unavailable)?;
             ReadRoot::from_handle(dir, read_path)
                 .restrict(Arc::new(policy))
@@ -114,7 +115,8 @@ impl SourceRead {
             .to_owned();
         let observed = workspace::observed(
             owner.import_roots.clone(),
-            self.source.location.directory().clone(),
+            self.source.location.path(),
+            owner.home.as_deref(),
             private,
         )
         .await

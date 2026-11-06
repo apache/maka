@@ -353,6 +353,9 @@ impl Owner {
         runs.controls.insert(
             invocation.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),
@@ -397,6 +400,12 @@ impl Owner {
             .session(&source.session_id)
             .await
             .map_err(RunError::Internal)?;
+        if !self.runs.workspace_available(
+            &source.session_id,
+            std::path::Path::new(&session.configuration.workspace.path),
+        ) {
+            return Ok(());
+        }
         drop(runs);
         let store = self
             .store
@@ -446,6 +455,10 @@ impl Owner {
             return Err(RunError::Cancelled);
         }
         if runs.busy(&source.session_id)
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&current.configuration.workspace.path),
+            )
             || self
                 .has_parked_invocation(&source.session_id)
                 .await
@@ -524,6 +537,10 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::Archived));
         }
         if runs.busy(&input.session_id)
+            || !self.runs.workspace_available(
+                &input.session_id,
+                std::path::Path::new(&session.configuration.workspace.path),
+            )
             || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
@@ -669,8 +686,15 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
 
+        let selected_catalog = if matches!(purpose, ResumePurpose::Admit) {
+            self.mcp_projects
+                .with_client(&input.session_id, selected_catalog)?
+        } else {
+            selected_catalog
+        };
         let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),

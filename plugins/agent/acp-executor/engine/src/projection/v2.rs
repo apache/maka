@@ -19,7 +19,7 @@
 
 use super::{emit, emit_result, emit_text};
 use crate::Error;
-use agent_client_protocol::schema::{MaybeUndefined, v2 as acp};
+use agent_client_protocol::{schema::MaybeUndefined, v2::schema as acp};
 use maka_agent_facts::executor::Output;
 use maka_agent_ports::executor::OutputSink;
 use std::collections::BTreeMap;

@@ -25,7 +25,7 @@ impl Foreground {
         peer: Peer,
         session: Arc<Session>,
         active: Active,
-        capabilities: acp::ClientCapabilities,
+        capabilities: Capabilities,
         prompt: Prompt,
     ) -> Result<(String, Self), Error> {
         let preferences = session.preferences.lock().await.clone();

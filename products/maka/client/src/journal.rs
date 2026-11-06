@@ -538,6 +538,7 @@ impl Journal {
             .bind(&correlation)
             .bind(&correlation)
             .bind(&correlation)
+            .bind(&correlation)
             .fetch_all(&self.pool)
             .await
             .map_err(error)?;

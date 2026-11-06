@@ -65,13 +65,13 @@ impl Manager {
     pub(super) async fn read_package(&self, input: Value) -> Result<Value> {
         let request: PackageSourceRead =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
-        let _read = self.writes.lock().await;
-        let loaded = self.source_at(Some(request.source)).await?;
-        let package = loaded
-            .packages()
-            .iter()
-            .find(|p| p.application_ref() == request.package)
-            .ok_or("package is not installed in this source")?;
+        let package = self
+            .package_at(
+                &request.source,
+                &request.package,
+                "package is not installed in this source",
+            )
+            .await?;
         let paths = package.files().keys().cloned().collect();
         let (text, next) = if let Some(path) = request.path {
             let text = std::str::from_utf8(package.file(&path).ok_or("package file unavailable")?)

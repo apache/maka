@@ -384,6 +384,11 @@ impl Owner {
         // Main execution also moves the public revision. Retry metadata only;
         // each attempt gives queued manual changes and shutdown a turn at the gate.
         loop {
+            let _admission = tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Ok(()),
+                admission = self.runs.ordered(&invocation.session_id) => admission,
+            };
             let runs = tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Ok(()),

@@ -133,51 +133,50 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
         revoke,
     } = scenario;
     let decision = if deny { "deny" } else { "allow" };
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let directory = tempfile::tempdir().unwrap();
-        let record = directory.path().join("record");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::configured(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-            None,
-            None,
-            |settings| {
-                let mut config = server(&record, preapproved);
-                if enveloped {
-                    let maka_mcp::TransportConfiguration::Stdio { args, .. } =
-                        &mut config.transport
-                    else {
-                        unreachable!("the MCP fixture uses stdio");
-                    };
-                    args[1] = "object-union".into();
-                }
-                if trusted_readonly {
-                    config.read_only_tools = vec!["echo".into()];
-                }
-                settings.mcp_servers = vec![config];
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("record");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fixture = Fixture::configured(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        None,
+        None,
+        None,
+        |settings| {
+            let mut config = server(&record, preapproved);
+            if enveloped {
+                let maka_mcp::TransportConfiguration::Stdio { args, .. } = &mut config.transport
+                else {
+                    unreachable!("the MCP fixture uses stdio");
+                };
+                args[1] = "object-union".into();
+            }
+            if trusted_readonly {
+                config.read_only_tools = vec!["echo".into()];
+            }
+            settings.mcp_servers = vec![config];
+        },
+    )
+    .await;
+    selection::edit(&fixture, |changes| {
+        changes.model_overrides = Patch::Set(BTreeMap::from([(
+            "fixture-model".into(),
+            ModelOverride {
+                code_mode: Some(code),
+                ..Default::default()
             },
-        )
-        .await;
-        selection::edit(&fixture, |changes| {
-            changes.model_overrides = Patch::Set(BTreeMap::from([(
-                "fixture-model".into(),
-                ModelOverride {
-                    code_mode: Some(code),
-                    ..Default::default()
-                },
-            )]))
-        })
-        .await;
-        let session = fixture.create("MCP permissions").await;
-        if read_only {
-            files::change(&fixture, &session, "read_only", false, true).await;
-        }
-        fixture.send(&session).await.unwrap();
+        )]))
+    })
+    .await;
+    let session = fixture.create("MCP permissions").await;
+    if read_only {
+        files::change(&fixture, &session, "read_only", false, true).await;
+    }
+    fixture.send(&session).await.unwrap();
 
-        let (mut first, _) = listener.accept().await.unwrap();
-        let prompt = request(&mut first).await;
+    let (mut first, _) = listener.accept().await.unwrap();
+    let prompt = request(&mut first).await;
 
+    tokio::time::timeout(Duration::from_secs(60), async {
         if code {
             assert!(
                 prompt["tools"]
@@ -265,11 +264,11 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
                 |fact| matches!(fact,Fact::ToolRejected{name,..} if name=="mcp__fixture__echo")
             ));
         }
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
     })
     .await
     .expect("MCP permission scenario completes");
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
 }
 
 fn portable(record: &std::path::Path) -> Value {
@@ -367,7 +366,7 @@ async fn exercise_file_consent() {
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
     let workspace_b = f.owner.session(&b).await.unwrap().configuration.workspace;
     let record_a = home.path().join("a-record");
     let record_b = home.path().join("b-record");
@@ -538,7 +537,7 @@ async fn mcp_slow_startup_does_not_block_other_session_stop_or_owner_shutdown() 
         let f = Arc::new(Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await);
         let a = f.create("slow MCP").await;
         let roots = f.query("directories",json!({"kind":"roots"})).await.unwrap();
-        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
         let running = f.send(&b).await.unwrap();
         let (mut socket,_) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -617,7 +616,7 @@ async fn mcp_management_preserves_file_fields_and_targets_physical_instances_wit
         .mutation(
             2,
             "selectWorkspace",
-            roots["roots"][0]["selection"].clone(),
+            json!({"path":roots["roots"][0]["path"]}),
             Uuid::new_v4(),
         )
         .await

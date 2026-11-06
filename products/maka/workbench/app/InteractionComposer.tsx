@@ -66,7 +66,7 @@ import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { SessionApprovalRequest, interactionPermissions } from './SessionApprovalRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
-import { SystemPermissionRequest, systemPermissionName } from './SystemPermissionRequest';
+import { SystemPermissionRequest } from './SystemPermissionRequest';
 import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
@@ -189,41 +189,6 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
   return uiMessage('Request closed · {reason}', { reason: outcome.reason.replaceAll('_', ' ') });
 }
 
-export function SystemPermissionActions(props: {
-  request: SystemPermissionRequest;
-  actions: string[];
-  disabled?: boolean;
-  onCancel: () => void;
-  onAction: (action: string) => void;
-}) {
-  return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
-      <InteractionAction
-        label={tr('Cancel request')}
-        disabled={props.disabled}
-        onPress={props.onCancel}
-      />
-      <Each of={props.request.grants.filter((grant) => props.actions.includes(grant))}>
-        {(grant) => (
-          <InteractionAction
-            label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
-            primary={grant() === props.request.grants[0]}
-            disabled={props.disabled}
-            onPress={() => props.onAction(grant())}
-          />
-        )}
-      </Each>
-      <If when={props.actions.includes('reveal_application')}>
-        <InteractionAction
-          label={tr('Show permission application in Finder')}
-          disabled={props.disabled}
-          onPress={() => props.onAction('reveal_application')}
-        />
-      </If>
-    </View>
-  );
-}
-
 export function InteractionComposer({
   sessionId,
   requestId,
@@ -258,7 +223,6 @@ export function InteractionComposer({
   const argumentBusy = signal(false),
     argumentError = createText();
   let argumentPosition: HistoryRowPosition | null = null;
-  const systemActions = signal<string[]>([]);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -509,11 +473,6 @@ export function InteractionComposer({
       ]);
       if (!alive) return;
       if (!sameRecord(canonical)) throw new UiError('The Host returned a different request.');
-      const actions =
-        canonical.request.kind === 'system_permission' && !canonical.outcome
-          ? await host.systemPermissionActions(sessionId, requestId)
-          : [];
-      if (!alive) return;
       child.set(null);
       childTitle.set('');
       if (canonical.request.kind === 'session_approval' && !canonical.outcome) {
@@ -536,7 +495,6 @@ export function InteractionComposer({
         child.set(original);
         childTitle.set(observed.session.title || tr('Untitled conversation'));
       }
-      systemActions.set(actions);
       record.set(canonical);
       uncertain.set(unresolved);
       pending.set(list.entries.some((entry) => entry.requestId === requestId));
@@ -636,7 +594,7 @@ export function InteractionComposer({
     } else if (current.kind === 'client_capability' && computerCapability(current)) {
       return { kind: 'client_capability', decision: 'allow' };
     } else if (current.kind === 'computer_app') {
-      return { kind: 'computer_app', decision: 'once' };
+      return { kind: 'computer_app', decision: 'session' };
     }
     return null;
   };
@@ -664,15 +622,6 @@ export function InteractionComposer({
     if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
-  const openSystemPermissionAction = async (action: string) => {
-    error.set('');
-    try {
-      await host.systemPermissionAction(sessionId, requestId, action);
-    } catch (reason) {
-      if (alive) error.set(String(reason));
-    }
-  };
-
   const deny = () => {
     const answer = denialAnswer();
     if (answer) void respond(answer);
@@ -1127,7 +1076,17 @@ export function InteractionComposer({
                 <If when={systemPermissionRequest()}>
                   <SystemPermissionRequest
                     request={systemPermissionRequest()!}
-                    canLocate={systemActions().includes('reveal_application')}
+                    sessionId={sessionId}
+                    requestId={requestId}
+                    disabled={blocked()}
+                    onCancel={answerBinding({ kind: 'system_permission_cancel' })}
+                    onOutcome={(outcome) => {
+                      const current = record();
+                      if (alive && sameRecord(current)) {
+                        record.set({ ...current!, outcome });
+                        pending.set(false);
+                      }
+                    }}
                   />
                 </If>
               </View>
@@ -1204,15 +1163,6 @@ export function InteractionComposer({
               gap: 8,
             }}
           >
-            <If when={systemPermissionRequest() && !record()?.outcome}>
-              <SystemPermissionActions
-                request={systemPermissionRequest()!}
-                actions={systemActions()}
-                disabled={blocked()}
-                onCancel={answerBinding({ kind: 'system_permission_cancel' })}
-                onAction={(action) => void openSystemPermissionAction(action)}
-              />
-            </If>
             <If when={computerAppRequest() && !record()?.outcome}>
               <InteractionAction
                 label={tr('Cancel request')}
@@ -1223,7 +1173,7 @@ export function InteractionComposer({
                 {(option) => (
                   <InteractionAction
                     label={renderText(option().label)}
-                    primary={option().answer.decision === 'once'}
+                    primary={option().answer.decision === 'session'}
                     disabled={blocked()}
                     onPress={answerBinding(option().answer)}
                   />

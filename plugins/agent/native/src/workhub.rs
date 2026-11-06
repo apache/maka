@@ -55,7 +55,8 @@ pub(crate) fn prompt(language: maka_agent_facts::language::Language) -> &'static
 #[serde(deny_unknown_fields)]
 struct Intent {
     operation: RecoveryRef,
-    workspace: crate::contract::DirectorySelection,
+    /// The coordinator's directory as the Host resolved it.
+    workspace: String,
 }
 pub(crate) struct Hub {
     agent: Agent,
@@ -225,25 +226,24 @@ impl Hub {
         let intent = match self.intent().await? {
             Some(intent) => intent,
             None => {
-                // Validate the selected directory before committing the immutable
-                // intent. A later replacement cannot retarget this coordinator.
-                let roots = self.agent.0.workspace_roots.clone();
-                let page = maka_workspace_support::query(
-                    roots,
-                    crate::contract::Directories::Children {
-                        selection: input.workspace.clone(),
-                        after: None,
-                    },
+                // Resolve the selected directory before committing the immutable
+                // intent, which keeps the Host's canonical path.
+                let owner = &self.agent.0;
+                let located = maka_workspace_support::selected(
+                    owner.workspace_roots.clone(),
+                    &input.workspace,
+                    owner.home.as_deref(),
+                    owner.managed_worktrees.clone(),
                 )
                 .await;
-                if !matches!(page, Ok(crate::contract::DirectoryPage::Children { .. })) {
+                let Ok(Some(located)) = located else {
                     return Ok(Coordinator::Rejected {
                         reason: crate::contract::Rejection::WorkspaceUnavailable,
                     });
-                }
+                };
                 let candidate = Intent {
                     operation,
-                    workspace: input.workspace,
+                    workspace: located.path,
                 };
                 if scope.cancellation.is_cancelled() {
                     return Err("workhub_call_cancelled".into());
@@ -291,7 +291,7 @@ impl Hub {
                     title: "WorkHub".into(),
                     labels: vec![],
                     workspace: crate::contract::WorkspaceSelection::Directory {
-                        selection: intent.workspace,
+                        path: intent.workspace,
                     },
                 },
                 &intent.operation,

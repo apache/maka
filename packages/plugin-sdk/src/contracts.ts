@@ -1946,6 +1946,587 @@ export const contracts = {
           },
           resources: {},
         },
+        checkpointReceipt: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointReceiptRead',
+            type: 'object',
+            properties: {
+              reference: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+              input: {
+                description:
+                  'The exact original input. Changed input cannot select another publication.',
+                $ref: '#/$defs/AgentCheckpointPublish',
+              },
+            },
+            additionalProperties: false,
+            required: ['reference', 'input'],
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              AgentCheckpointPublish: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  expectedRevision: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  confirmedSubtreeDigest: {
+                    description:
+                      'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  workspaceConsistency: {
+                    description:
+                      'Null captures history only. Otherwise the caller explicitly selects the\nWorkspace consistency guarantee; other applications are never fenced.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'sessionId',
+                  'expectedRevision',
+                  'confirmedSubtreeDigest',
+                  'workspaceConsistency',
+                ],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointReceipt',
+            type: 'object',
+            properties: {
+              operation: {
+                description:
+                  'Original Host observation. Domain success never fabricates Host cleanup confirmation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/OperationObservation',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              publication: {
+                description:
+                  'Authoritative domain result even when the Host response was lost.\nAbsence is not permission to recapture under a replacement operation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCheckpointPublication',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              OperationObservation: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
+                  },
+                  outcome: {
+                    $ref: '#/$defs/OperationOutcome',
+                  },
+                  cleanup: {
+                    $ref: '#/$defs/OperationCleanup',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'outcome', 'cleanup'],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              OperationOutcome: {
+                description:
+                  'Unresolved means no durable result is known, including after process loss.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unresolved',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'returned',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              AgentCheckpointPublication: {
+                type: 'object',
+                properties: {
+                  state: {
+                    $ref: '#/$defs/AgentHistoryCheckpointState',
+                  },
+                  cleanupPending: {
+                    description: 'Cleanup failure does not undo a successful publication.',
+                    type: 'boolean',
+                  },
+                  workspace: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentCheckpointWorkspaceNotice',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['state', 'cleanupPending'],
+              },
+              AgentHistoryCheckpointState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capturing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'prepared',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'published',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: ['string', 'null'],
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interrupted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentCheckpointWorkspaceNotice: {
+                type: 'object',
+                properties: {
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                },
+                additionalProperties: false,
+                required: ['consistency', 'warning'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         compact: {
           mode: 'mutation',
           input: {
@@ -2764,20 +3345,23 @@ export const contracts = {
               AgentWorkspaceSelection: {
                 oneOf: [
                   {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'isolated_git',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
+                    description: 'A registered Project at one of its locations.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -2787,26 +3371,30 @@ export const contracts = {
                       project: {
                         $ref: '#/$defs/AgentProjectRef',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'selection'],
+                    required: ['kind', 'project', 'path'],
                   },
                   {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'directory',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -2824,27 +3412,6 @@ export const contracts = {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -3748,46 +4315,26 @@ export const contracts = {
                 additionalProperties: false,
               },
               {
+                description:
+                  'The directories inside `path`, a page at a time; `after` is the last\nname of the previous page.',
                 type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
                     const: 'children',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   after: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'after'],
+                required: ['kind', 'path', 'after'],
               },
             ],
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -3845,33 +4392,9 @@ export const contracts = {
                   path: {
                     type: 'string',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                 },
                 additionalProperties: false,
-                required: ['name', 'path', 'selection'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
+                required: ['name', 'path'],
               },
             },
           },
@@ -7620,20 +8143,18 @@ export const contracts = {
           },
           resources: {},
         },
-        historyCheckpointReceipt: {
+        historyCheckpointLoadReceipt: {
           mode: 'query',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentHistoryCheckpointReceiptRead',
+            title: 'AgentCheckpointLoadReceiptRead',
             type: 'object',
             properties: {
               reference: {
                 $ref: '#/$defs/RecoveryRef',
               },
               input: {
-                description:
-                  'The exact original input. Changed input cannot select another publication.',
-                $ref: '#/$defs/AgentHistoryCheckpointPublish',
+                $ref: '#/$defs/AgentHistoryCheckpointRead',
               },
             },
             additionalProperties: false,
@@ -7739,37 +8260,31 @@ export const contracts = {
                 type: 'string',
                 enum: ['journal_v1'],
               },
-              AgentHistoryCheckpointPublish: {
+              AgentHistoryCheckpointRead: {
                 type: 'object',
                 properties: {
                   sessionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  expectedRevision: {
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                  },
-                  confirmedSubtreeDigest: {
+                  revision: {
                     description:
-                      'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                      'Only the exact currently retained revision is readable; no latest fallback.',
                     type: 'string',
-                    pattern: '^[a-f0-9]{64}$',
+                    format: 'uuid',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+                required: ['sessionId', 'revision'],
               },
             },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentHistoryCheckpointReceipt',
+            title: 'AgentCheckpointLoadReceipt',
             type: 'object',
             properties: {
               operation: {
-                description:
-                  'Original Host observation. Domain success never fabricates Host cleanup confirmation.',
                 anyOf: [
                   {
                     $ref: '#/$defs/OperationObservation',
@@ -7779,12 +8294,10 @@ export const contracts = {
                   },
                 ],
               },
-              publication: {
-                description:
-                  'Authoritative domain result even when the Host response was lost.\nAbsence is not permission to recapture under a replacement operation.',
+              load: {
                 anyOf: [
                   {
-                    $ref: '#/$defs/AgentHistoryCheckpointPublication',
+                    $ref: '#/$defs/AgentCheckpointLoad',
                   },
                   {
                     type: 'null',
@@ -7993,96 +8506,21 @@ export const contracts = {
                   },
                 ],
               },
-              AgentHistoryCheckpointPublication: {
+              AgentCheckpointLoad: {
                 type: 'object',
                 properties: {
-                  state: {
-                    $ref: '#/$defs/AgentHistoryCheckpointState',
+                  head: {
+                    $ref: '#/$defs/AgentHistoryCheckpointHead',
                   },
-                  cleanupPending: {
-                    description: 'Cleanup failure does not undo a successful publication.',
-                    type: 'boolean',
+                  inspection: {
+                    $ref: '#/$defs/AgentCheckpointInspection',
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentCheckpointLoadState',
                   },
                 },
                 additionalProperties: false,
-                required: ['state', 'cleanupPending'],
-              },
-              AgentHistoryCheckpointState: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'capturing',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'prepared',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'published',
-                      },
-                      head: {
-                        $ref: '#/$defs/AgentHistoryCheckpointHead',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'head'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: ['string', 'null'],
-                        format: 'uuid',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'interrupted',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unavailable',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                ],
+                required: ['head', 'inspection', 'state'],
               },
               AgentHistoryCheckpointHead: {
                 type: 'object',
@@ -8114,6 +8552,119 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
+              },
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              AgentCheckpointLoadState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'preparing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'ready',
+                      },
+                      sessionIds: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentCheckpointWorkspaceSnapshot',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionIds'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceSnapshot: {
+                type: 'object',
+                properties: {
+                  identity: {
+                    type: 'string',
+                  },
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                  inventory: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['identity', 'consistency', 'warning', 'inventory'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
               },
             },
           },
@@ -8504,8 +9055,9 @@ export const contracts = {
                   selection: {
                     $ref: '#/$defs/AgentImportSelection',
                   },
-                  directory: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   title: {
                     type: 'string',
@@ -8513,7 +9065,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'directory', 'title'],
+                required: ['kind', 'selection', 'path', 'title'],
               },
             ],
             $defs: {
@@ -8526,12 +9078,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8540,12 +9093,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8554,8 +9108,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -8563,30 +9118,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentImportSelection: {
                 type: 'object',
@@ -8745,12 +9279,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8759,12 +9294,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8773,8 +9309,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -8782,30 +9319,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentSession: {
                 type: 'object',
@@ -9251,46 +9767,26 @@ export const contracts = {
                 additionalProperties: false,
               },
               {
+                description:
+                  'The directories inside `path`, a page at a time; `after` is the last\nname of the previous page.',
                 type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
                     const: 'children',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   after: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'after'],
+                required: ['kind', 'path', 'after'],
               },
             ],
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -9348,33 +9844,9 @@ export const contracts = {
                   path: {
                     type: 'string',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                 },
                 additionalProperties: false,
-                required: ['name', 'path', 'selection'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
+                required: ['name', 'path'],
               },
             },
           },
@@ -9657,12 +10129,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -9671,12 +10144,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -9685,8 +10159,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -9694,30 +10169,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentImportSourceRef: {
                 type: 'object',
@@ -12351,6 +12805,1220 @@ export const contracts = {
           },
           resources: {},
         },
+        loadHistoryCheckpoint: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              revision: {
+                description:
+                  'Only the exact currently retained revision is readable; no latest fallback.',
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointLoad',
+            type: 'object',
+            properties: {
+              head: {
+                $ref: '#/$defs/AgentHistoryCheckpointHead',
+              },
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              state: {
+                $ref: '#/$defs/AgentCheckpointLoadState',
+              },
+            },
+            additionalProperties: false,
+            required: ['head', 'inspection', 'state'],
+            $defs: {
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              AgentCheckpointLoadState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'preparing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'ready',
+                      },
+                      sessionIds: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentCheckpointWorkspaceSnapshot',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionIds'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceSnapshot: {
+                type: 'object',
+                properties: {
+                  identity: {
+                    type: 'string',
+                  },
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                  inventory: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['identity', 'consistency', 'warning', 'inventory'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedHistoryCheckpointArtifact: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointArtifactRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              artifactId: {
+                type: 'string',
+                minLength: 1,
+              },
+              offset: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'sessionId', 'artifactId', 'offset'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentCheckpointArtifactChunk',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentCheckpointArtifactChunk',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentCheckpointArtifactChunk: {
+                type: 'object',
+                properties: {
+                  artifact: {
+                    $ref: '#/$defs/AgentCheckpointArtifact',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  data: {
+                    description: 'Base64, at most 32 KiB decoded. Empty only at the end.',
+                    type: 'string',
+                    maxLength: 43692,
+                  },
+                },
+                additionalProperties: false,
+                required: ['artifact', 'offset', 'data'],
+              },
+              AgentCheckpointArtifact: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: ['string', 'null'],
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedHistoryCheckpointArtifacts: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointArtifactsRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              offset: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'sessionId', 'offset'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointArtifacts',
+            type: 'object',
+            properties: {
+              artifacts: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentCheckpointArtifact',
+                },
+              },
+              nextOffset: {
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['artifacts', 'nextOffset'],
+            $defs: {
+              AgentCheckpointArtifact: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: ['string', 'null'],
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
+        loadedHistoryCheckpointHistory: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentCheckpointHistoryRead',
+            type: 'object',
+            properties: {
+              inspection: {
+                $ref: '#/$defs/AgentCheckpointInspection',
+              },
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              position: {
+                $ref: '#/$defs/HistoryPosition',
+              },
+              includeThinking: {
+                type: 'boolean',
+                default: false,
+              },
+            },
+            additionalProperties: false,
+            required: ['inspection', 'sessionId', 'position'],
+            $defs: {
+              AgentCheckpointInspection: {
+                type: 'object',
+                properties: {
+                  sourceSessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  operationId: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSessionId', 'operationId'],
+              },
+              HistoryPosition: {
+                description:
+                  'Row reveals an exact field; Before/After continue at byte boundaries and\nEvent addresses the raw event log. Returned chunks retain ascending presentation\norder, including a reverse window.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tail',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description:
+                      'Reveal this exact row field from its beginning, including empty tool rows.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'row',
+                      },
+                      position: {
+                        $ref: '#/$defs/HistoryRowPosition',
+                      },
+                      field: {
+                        $ref: '#/$defs/HistoryField',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'position', 'field'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/Cursor',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cursor'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'after',
+                      },
+                      cursor: {
+                        $ref: '#/$defs/Cursor',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'cursor'],
+                  },
+                  {
+                    description:
+                      'Locate canonical output at an execution event, including sparse rows.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'event',
+                      },
+                      sequence: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 1,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sequence'],
+                  },
+                ],
+              },
+              HistoryRowPosition: {
+                description:
+                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
+                type: 'object',
+                properties: {
+                  sourceSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSequence', 'itemIndex'],
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Cursor: {
+                description:
+                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
+                type: 'object',
+                properties: {
+                  field: {
+                    $ref: '#/$defs/HistoryField',
+                    default: 'body',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryPage',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  through: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  chunks: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryChunk',
+                    },
+                  },
+                  before: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Cursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  after: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Cursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'through', 'chunks', 'before', 'after'],
+              },
+            ],
+            $defs: {
+              AgentHistoryChunk: {
+                type: 'object',
+                properties: {
+                  modelPart: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelPartIdentity',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  hasReferences: {
+                    description:
+                      'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
+                    type: 'boolean',
+                  },
+                  finalOutput: {
+                    description:
+                      "Part of the successfully completed native Turn's final output at `through`.\nIncludes all body parts and source citations; never a Thinking field.",
+                    type: 'boolean',
+                  },
+                  model: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryModel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  origin: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/MessageOrigin',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  compaction: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryCompaction',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  attachments: {
+                    description:
+                      'Display metadata only, on the first user-message fragment; no storage capability.',
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryAttachment',
+                    },
+                  },
+                  timing: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryTurnTiming',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  field: {
+                    $ref: '#/$defs/HistoryField',
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  timestamp: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  role: {
+                    $ref: '#/$defs/Role',
+                  },
+                  order: {
+                    description:
+                      'Stable display order; position remains the canonical source read address.',
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  totalBytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  tool: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryTool',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'field',
+                  'messageId',
+                  'turnId',
+                  'timestamp',
+                  'role',
+                  'order',
+                  'position',
+                  'offset',
+                  'totalBytes',
+                  'text',
+                  'tool',
+                ],
+              },
+              ModelPartIdentity: {
+                type: 'object',
+                properties: {
+                  stepId: {
+                    type: 'string',
+                  },
+                  ordinal: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stepId', 'ordinal'],
+              },
+              HistoryModel: {
+                description: 'Model identity recorded for the exact historical assistant step.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native',
+                      },
+                      requestedModelId: {
+                        type: 'string',
+                      },
+                      reportedModelId: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'requestedModelId', 'reportedModelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'imported',
+                      },
+                      modelId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'modelId'],
+                  },
+                ],
+              },
+              MessageOrigin: {
+                description:
+                  'Trusted producer attribution, preserved independently of editable content.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'taskId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
+                ],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+              },
+              HistoryCompaction: {
+                description:
+                  'Duration of a successfully adopted context checkpoint, in recorded milliseconds.',
+                type: 'object',
+                properties: {
+                  durationMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['durationMs'],
+              },
+              AgentHistoryAttachment: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  mimeType: {
+                    type: 'string',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AttachmentKind',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'mimeType', 'bytes', 'kind'],
+              },
+              AttachmentKind: {
+                type: 'string',
+                enum: ['image', 'pdf', 'doc', 'code', 'other'],
+              },
+              HistoryTurnTiming: {
+                description:
+                  'Recorded logical Turn boundaries at the same history fence. An unfinished\nhistorical boundary alone does not establish that execution is still live.',
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  finished: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryTurnFinished',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt', 'finished'],
+              },
+              HistoryTurnFinished: {
+                type: 'object',
+                properties: {
+                  at: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  outcome: {
+                    $ref: '#/$defs/HistoryTurnOutcome',
+                  },
+                },
+                additionalProperties: false,
+                required: ['at', 'outcome'],
+              },
+              HistoryTurnOutcome: {
+                type: 'string',
+                enum: ['completed', 'failed', 'aborted'],
+              },
+              HistoryField: {
+                description: 'A readable field in a conversation window, in presentation order.',
+                type: 'string',
+                enum: ['thinking', 'body'],
+              },
+              Role: {
+                description:
+                  'Canonical message author/kind; the field identifies body versus thinking.\nTool body JSON contributes string values, never its keys.',
+                type: 'string',
+                enum: ['compaction', 'failure', 'user', 'assistant', 'tool_call', 'tool_result'],
+              },
+              HistoryRowPosition: {
+                description:
+                  'Disposable presentation locator, never authority or a canonical execution fact.\nThe source is the original emitting fact; the index precedes UI filtering.',
+                type: 'object',
+                properties: {
+                  sourceSequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  itemIndex: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sourceSequence', 'itemIndex'],
+              },
+              HistoryTool: {
+                description:
+                  'Canonical references at the requested fence, never execution authority.\nBoth references are present only for a unique same-Turn call/result pair\nwith matching origin and parentage. An unpaired row retains its own reference.',
+                type: 'object',
+                properties: {
+                  toolUseId: {
+                    type: 'string',
+                  },
+                  call: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolCall',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  result: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryToolResult',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['toolUseId', 'call', 'result'],
+              },
+              HistoryToolCall: {
+                type: 'object',
+                properties: {
+                  ancestorToolUseIds: {
+                    description:
+                      'Recorded ancestors in this Turn, nearest first; display references only.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
+                  presentation: {
+                    description:
+                      'Opaque display contract captured at dispatch; no execution authority.',
+                    type: ['string', 'null'],
+                    default: null,
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  title: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/DisplayText',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  pending: {
+                    description:
+                      'This native Turn is still open at the history fence; not execution authority.',
+                    type: 'boolean',
+                  },
+                  dispatched: {
+                    description:
+                      'A unique original Host dispatch is recorded at this fence; not liveness.',
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'ancestorToolUseIds',
+                  'origin',
+                  'position',
+                  'name',
+                  'title',
+                  'pending',
+                  'dispatched',
+                ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
+              },
+              DisplayText: {
+                description:
+                  'Presentation text is distinct from the stable identity used for navigation.',
+                type: 'object',
+                properties: {
+                  fallback: {
+                    type: 'string',
+                  },
+                  translations: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'string',
+                    },
+                    default: {},
+                  },
+                },
+                additionalProperties: false,
+                required: ['fallback'],
+              },
+              HistoryToolResult: {
+                type: 'object',
+                properties: {
+                  settlement: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ToolSettlement',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  isError: {
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
+                    type: 'boolean',
+                  },
+                  image: {
+                    description:
+                      'Canonical content is an image; this does not grant artifact reads.',
+                    type: 'boolean',
+                  },
+                  images: {
+                    description:
+                      'Images the model received beside non-image content, readable by index.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['settlement', 'position', 'isError', 'image', 'images'],
+              },
+              ToolSettlement: {
+                description:
+                  'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
+                type: 'string',
+                enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              Cursor: {
+                description:
+                  "Byte offset in one message field's UTF-8 text, not a bearer capability.",
+                type: 'object',
+                properties: {
+                  field: {
+                    $ref: '#/$defs/HistoryField',
+                    default: 'body',
+                  },
+                  position: {
+                    $ref: '#/$defs/HistoryRowPosition',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset'],
+              },
+            },
+          },
+          resources: {},
+        },
         manageMcpServer: {
           mode: 'mutation',
           input: {
@@ -14964,20 +16632,23 @@ export const contracts = {
               AgentWorkspaceSelection: {
                 oneOf: [
                   {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'isolated_git',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
+                    description: 'A registered Project at one of its locations.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -14987,26 +16658,30 @@ export const contracts = {
                       project: {
                         $ref: '#/$defs/AgentProjectRef',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'selection'],
+                    required: ['kind', 'project', 'path'],
                   },
                   {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'directory',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -15024,27 +16699,6 @@ export const contracts = {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15310,8 +16964,9 @@ export const contracts = {
                     type: 'string',
                     const: 'register',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   expected: {
                     anyOf: [
@@ -15325,7 +16980,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'expected'],
+                required: ['kind', 'path', 'expected'],
               },
               {
                 type: 'object',
@@ -15383,8 +17038,9 @@ export const contracts = {
                   project: {
                     $ref: '#/$defs/AgentProjectRef',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   destination: {
                     anyOf: [
@@ -15398,31 +17054,10 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'project', 'selection', 'destination'],
+                required: ['kind', 'project', 'path', 'destination'],
               },
             ],
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentProjectRef: {
                 type: 'object',
                 properties: {
@@ -15520,22 +17155,13 @@ export const contracts = {
                   available: {
                     type: 'boolean',
                   },
-                  selection: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
                   path: {
+                    description: 'The location the Project was last used at, when it is available.',
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['reference', 'name', 'archived', 'available', 'selection', 'path'],
+                required: ['reference', 'name', 'archived', 'available', 'path'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15551,27 +17177,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
             },
           },
@@ -15721,12 +17326,13 @@ export const contracts = {
                     type: 'string',
                     const: 'directory',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection'],
+                required: ['kind', 'path'],
               },
             ],
             $defs: {
@@ -15744,27 +17350,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['revision', 'after'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
             },
           },
@@ -15858,22 +17443,13 @@ export const contracts = {
                   available: {
                     type: 'boolean',
                   },
-                  selection: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
                   path: {
+                    description: 'The location the Project was last used at, when it is available.',
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['reference', 'name', 'archived', 'available', 'selection', 'path'],
+                required: ['reference', 'name', 'archived', 'available', 'path'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15889,27 +17465,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectCursor: {
                 type: 'object',
@@ -15929,9 +17484,6 @@ export const contracts = {
               AgentProjectLocation: {
                 type: 'object',
                 properties: {
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                   path: {
                     type: 'string',
                     minLength: 1,
@@ -15952,17 +17504,17 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['selection', 'path', 'name', 'project'],
+                required: ['path', 'name', 'project'],
               },
             },
           },
           resources: {},
         },
-        publishHistoryCheckpoint: {
+        publishCheckpoint: {
           mode: 'mutation',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentHistoryCheckpointPublish',
+            title: 'AgentCheckpointPublish',
             type: 'object',
             properties: {
               sessionId: {
@@ -15979,13 +17531,48 @@ export const contracts = {
                 type: 'string',
                 pattern: '^[a-f0-9]{64}$',
               },
+              workspaceConsistency: {
+                description:
+                  'Null captures history only. Otherwise the caller explicitly selects the\nWorkspace consistency guarantee; other applications are never fenced.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
             },
             additionalProperties: false,
-            required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+            required: [
+              'sessionId',
+              'expectedRevision',
+              'confirmedSubtreeDigest',
+              'workspaceConsistency',
+            ],
+            $defs: {
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentHistoryCheckpointPublication',
+            title: 'AgentCheckpointPublication',
             type: 'object',
             properties: {
               state: {
@@ -15994,6 +17581,16 @@ export const contracts = {
               cleanupPending: {
                 description: 'Cleanup failure does not undo a successful publication.',
                 type: 'boolean',
+              },
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceNotice',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
             },
             additionalProperties: false,
@@ -16106,6 +17703,45 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['digest', 'bytes'],
+              },
+              AgentCheckpointWorkspaceNotice: {
+                type: 'object',
+                properties: {
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                },
+                additionalProperties: false,
+                required: ['consistency', 'warning'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
               },
             },
           },
@@ -16641,12 +18277,13 @@ export const contracts = {
               AgentHistoryCheckpointFrame: {
                 oneOf: [
                   {
-                    description: 'The following bytes use the MAKA-SESSION v2 history format.',
+                    description:
+                      'MAKA-SESSION v2 history bytes follow; Workspace objects are separate.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'native_history_v1',
+                        const: 'checkpoint',
                       },
                       head: {
                         $ref: '#/$defs/AgentHistoryCheckpointHead',
@@ -16656,6 +18293,16 @@ export const contracts = {
                       },
                       bundle: {
                         $ref: '#/$defs/AgentHistoryCheckpointObject',
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentCheckpointWorkspaceSnapshot',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                     },
                     additionalProperties: false,
@@ -16770,6 +18417,51 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
+              },
+              AgentCheckpointWorkspaceSnapshot: {
+                type: 'object',
+                properties: {
+                  identity: {
+                    type: 'string',
+                  },
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                  inventory: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['identity', 'consistency', 'warning', 'inventory'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
               },
             },
           },
@@ -17567,6 +19259,160 @@ export const contracts = {
               AgentRecapFailure: {
                 type: 'string',
                 enum: ['empty_or_oversized_output', 'incomplete_output', 'model_unavailable'],
+              },
+            },
+          },
+          resources: {},
+        },
+        requestSystemPermission: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRequestSystemPermission',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              requestId: {
+                type: 'string',
+                minLength: 1,
+              },
+              grant: {
+                $ref: '#/$defs/SystemPermissionGrant',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'requestId', 'grant'],
+            $defs: {
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSystemPermissionStatus',
+            type: 'object',
+            properties: {
+              outcome: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSystemPermissionOutcome',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              grants: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentSystemPermissionState',
+                },
+              },
+              requestable: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['outcome', 'grants', 'requestable'],
+            $defs: {
+              AgentSystemPermissionOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ClosureReason',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reason', 'committedAt'],
+                  },
+                ],
+              },
+              ClosureReason: {
+                type: 'string',
+                enum: [
+                  'steered',
+                  'turn_stopped',
+                  'turn_terminal',
+                  'producer_cancelled',
+                  'timed_out',
+                  'host_restarted',
+                  'provider_disconnected',
+                ],
+              },
+              AgentSystemPermissionState: {
+                type: 'object',
+                properties: {
+                  grant: {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  effective: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['grant', 'effective'],
+              },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
               },
             },
           },
@@ -19229,6 +21075,287 @@ export const contracts = {
                   'unavailable',
                   'invalid_answer',
                   'unsupported',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        restoreSessionCheckpoint: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionCheckpointRestore',
+            description:
+              'Restore files into a new child of a selected directory and rebind the same,\nunchanged local Session. It never starts a model/tool call or rewinds history.',
+            type: 'object',
+            properties: {
+              checkpoint: {
+                $ref: '#/$defs/AgentHistoryCheckpointRead',
+              },
+              parent: {
+                description:
+                  'Absolute parent path. The Host captures and validates its directory identity.',
+                type: 'string',
+                minLength: 1,
+              },
+              permissions: {
+                $ref: '#/$defs/AgentWorkspacePermissions',
+              },
+              backend: {
+                $ref: '#/$defs/AgentBackendPreference',
+              },
+              acceptExternalWritersRisk: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: [
+              'checkpoint',
+              'parent',
+              'permissions',
+              'backend',
+              'acceptExternalWritersRisk',
+            ],
+            $defs: {
+              AgentHistoryCheckpointRead: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  revision: {
+                    description:
+                      'Only the exact currently retained revision is readable; no latest fallback.',
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'revision'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionCheckpointRestored',
+            type: 'object',
+            properties: {
+              operation: {
+                type: 'string',
+                format: 'uuid',
+              },
+              sessionId: {
+                type: 'string',
+              },
+              sessionRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+              head: {
+                $ref: '#/$defs/AgentHistoryCheckpointHead',
+              },
+              workspace: {
+                $ref: '#/$defs/AgentCheckpointWorkspaceSnapshot',
+              },
+              path: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['operation', 'sessionId', 'sessionRevision', 'head', 'workspace', 'path'],
+            $defs: {
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentCheckpointWorkspaceSnapshot: {
+                type: 'object',
+                properties: {
+                  identity: {
+                    type: 'string',
+                  },
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                  inventory: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['identity', 'consistency', 'warning', 'inventory'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
                 ],
               },
             },
@@ -21847,26 +23974,18 @@ export const contracts = {
           mode: 'mutation',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentDirectorySelection',
+            title: 'AgentDirectoryPath',
+            description:
+              'A directory on the Host: an absolute path, `~` standing for the home\ndirectory, within the configured workspace locations.',
             type: 'object',
             properties: {
-              rootId: {
+              path: {
                 type: 'string',
                 minLength: 1,
               },
-              segments: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                },
-              },
-              directoryIdentity: {
-                type: 'string',
-                pattern: '^sha256:[a-f0-9]{64}$',
-              },
             },
             additionalProperties: false,
-            required: ['rootId', 'segments', 'directoryIdentity'],
+            required: ['path'],
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -22352,6 +24471,803 @@ export const contracts = {
                 enum: ['maka', 'agents', 'custom'],
               },
             },
+          },
+          resources: {},
+        },
+        sessionCheckpointRestoreReceipt: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionCheckpointRestoreReceiptRead',
+            type: 'object',
+            properties: {
+              reference: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+              input: {
+                $ref: '#/$defs/AgentSessionCheckpointRestore',
+              },
+            },
+            additionalProperties: false,
+            required: ['reference', 'input'],
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              AgentSessionCheckpointRestore: {
+                description:
+                  'Restore files into a new child of a selected directory and rebind the same,\nunchanged local Session. It never starts a model/tool call or rewinds history.',
+                type: 'object',
+                properties: {
+                  checkpoint: {
+                    $ref: '#/$defs/AgentHistoryCheckpointRead',
+                  },
+                  parent: {
+                    description:
+                      'Absolute parent path. The Host captures and validates its directory identity.',
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  backend: {
+                    $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  acceptExternalWritersRisk: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'checkpoint',
+                  'parent',
+                  'permissions',
+                  'backend',
+                  'acceptExternalWritersRisk',
+                ],
+              },
+              AgentHistoryCheckpointRead: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  revision: {
+                    description:
+                      'Only the exact currently retained revision is readable; no latest fallback.',
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'revision'],
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionCheckpointRestoreReceipt',
+            type: 'object',
+            properties: {
+              operation: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/OperationObservation',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              restore: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSessionCheckpointRestored',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              OperationObservation: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
+                  },
+                  outcome: {
+                    $ref: '#/$defs/OperationOutcome',
+                  },
+                  cleanup: {
+                    $ref: '#/$defs/OperationCleanup',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'outcome', 'cleanup'],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              OperationOutcome: {
+                description:
+                  'Unresolved means no durable result is known, including after process loss.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unresolved',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'returned',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              AgentSessionCheckpointRestored: {
+                type: 'object',
+                properties: {
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  sessionRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  head: {
+                    $ref: '#/$defs/AgentHistoryCheckpointHead',
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceSnapshot',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'operation',
+                  'sessionId',
+                  'sessionRevision',
+                  'head',
+                  'workspace',
+                  'path',
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentCheckpointWorkspaceSnapshot: {
+                type: 'object',
+                properties: {
+                  identity: {
+                    type: 'string',
+                  },
+                  consistency: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceConsistency',
+                  },
+                  warning: {
+                    $ref: '#/$defs/AgentCheckpointWorkspaceWarning',
+                  },
+                  inventory: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['identity', 'consistency', 'warning', 'inventory'],
+              },
+              AgentCheckpointWorkspaceConsistency: {
+                oneOf: [
+                  {
+                    description:
+                      'The caller confirms all other writers remain paused for the entire copy.',
+                    type: 'string',
+                    const: 'caller_confirmed_quiescent',
+                  },
+                  {
+                    description:
+                      'Files may not represent one instant; successful digest checks do not change this.',
+                    type: 'string',
+                    const: 'unverified',
+                  },
+                ],
+              },
+              AgentCheckpointWorkspaceWarning: {
+                oneOf: [
+                  {
+                    description:
+                      'Display to users: pause editors, terminals and other writers for the entire\ncapture. Hash verification is not a point-in-time consistency guarantee.',
+                    type: 'string',
+                    const: 'external_writers_not_fenced',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        sessionMcp: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionMcp',
+            description:
+              'Client-provided MCP servers whose lifetime is the original subscription.\nConfigurations and credentials are never saved as installation settings.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              servers: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/McpServerConfiguration',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'servers'],
+            $defs: {
+              McpServerConfiguration: {
+                description:
+                  'Explicit trust for an external MCP server; tool annotations never expand it.\nInstallation changes require reactivation; client subscriptions own their scope.',
+                type: 'object',
+                properties: {
+                  name: {
+                    description:
+                      'Stable namespace, using ASCII letters, digits, underscores and hyphens.',
+                    type: 'string',
+                  },
+                  transport: {
+                    $ref: '#/$defs/McpTransport',
+                  },
+                  tools: {
+                    description:
+                      'Omitted selects all tools discovered from this explicitly trusted server.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  readOnlyTools: {
+                    description:
+                      "Explicitly permit these remote tools in read-only workspaces.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                    default: [],
+                  },
+                  preapproved: {
+                    description:
+                      'Skip per-call confirmation only when the installer explicitly grants it.',
+                    type: 'boolean',
+                    default: false,
+                  },
+                  startupTimeoutMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 10000,
+                  },
+                  callTimeoutMs: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 120000,
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'transport'],
+              },
+              McpTransport: {
+                oneOf: [
+                  {
+                    description:
+                      'Explicitly trusted process. Runs outside the session filesystem sandbox.',
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'stdio',
+                      },
+                      command: {
+                        type: 'string',
+                      },
+                      args: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                      cwd: {
+                        description:
+                          'Absolute working directory, independent of model-controlled arguments.',
+                        type: 'string',
+                      },
+                      env: {
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                      passEnv: {
+                        description:
+                          'Environment variable names explicitly forwarded from the Host.',
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                        default: [],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['type', 'command', 'cwd'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'streamable_http',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      headers: {
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                      headerEnv: {
+                        description:
+                          'Header name to Host environment variable; keeps tokens out of config.',
+                        type: 'object',
+                        additionalProperties: {
+                          type: 'string',
+                        },
+                        default: {},
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['type', 'url'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionMcpAttached',
+            type: 'object',
+            properties: {
+              tools: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['tools'],
           },
           resources: {},
         },
@@ -23906,6 +26822,138 @@ export const contracts = {
             },
             additionalProperties: false,
             required: ['requested'],
+          },
+          resources: {},
+        },
+        systemPermissionStatus: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentInteractionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              requestId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'requestId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSystemPermissionStatus',
+            type: 'object',
+            properties: {
+              outcome: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSystemPermissionOutcome',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              grants: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentSystemPermissionState',
+                },
+              },
+              requestable: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['outcome', 'grants', 'requestable'],
+            $defs: {
+              AgentSystemPermissionOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ClosureReason',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reason', 'committedAt'],
+                  },
+                ],
+              },
+              ClosureReason: {
+                type: 'string',
+                enum: [
+                  'steered',
+                  'turn_stopped',
+                  'turn_terminal',
+                  'producer_cancelled',
+                  'timed_out',
+                  'host_restarted',
+                  'provider_disconnected',
+                ],
+              },
+              AgentSystemPermissionState: {
+                type: 'object',
+                properties: {
+                  grant: {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  effective: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['grant', 'effective'],
+              },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
           },
           resources: {},
         },
@@ -27859,7 +30907,7 @@ export const contracts = {
                     const: 'pending',
                   },
                   workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -27896,27 +30944,6 @@ export const contracts = {
             title: 'WorkHubCoordinator',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentSession: {
                 type: 'object',
                 additionalProperties: false,
@@ -29348,36 +32375,15 @@ export const contracts = {
             additionalProperties: false,
             properties: {
               workspace: {
-                $ref: '#/$defs/AgentDirectorySelection',
-                description: 'Used only when freezing the first coordinator creation intent.',
+                type: 'string',
+                description:
+                  "The coordinator's directory, used only when freezing the first\ncreation intent.",
+                minLength: 1,
               },
             },
             required: ['workspace'],
             title: 'WorkHubResolve',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             oneOf: [
@@ -29401,7 +32407,7 @@ export const contracts = {
                     const: 'pending',
                   },
                   workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -29438,27 +32444,6 @@ export const contracts = {
             title: 'WorkHubCoordinator',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentSession: {
                 type: 'object',
                 additionalProperties: false,

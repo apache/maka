@@ -95,3 +95,50 @@ pub enum InteractionRejection {
     InvalidAnswer,
     Unsupported,
 }
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSystemPermissionState")]
+pub struct SystemPermissionState {
+    pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
+    pub effective: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSystemPermissionStatus")]
+pub struct SystemPermissionStatus {
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SystemPermissionOutcome>")]
+    pub outcome: Option<SystemPermissionOutcome>,
+    pub grants: Vec<SystemPermissionState>,
+    pub requestable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentSystemPermissionOutcome")]
+pub enum SystemPermissionOutcome {
+    SystemPermissionGranted {
+        committed_at: u64,
+    },
+    Closure {
+        reason: maka_agent_facts::interaction::ClosureReason,
+        committed_at: u64,
+    },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRequestSystemPermission")]
+pub struct RequestSystemPermission {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(length(min = 1))]
+    pub request_id: String,
+    pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
+}

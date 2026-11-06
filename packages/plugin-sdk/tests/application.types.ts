@@ -381,13 +381,7 @@ void [
   unfencedSessionPage,
 ];
 
-const resolveCoordinator: WorkHubResolve = {
-  workspace: {
-    rootId: 'root-1',
-    segments: [],
-    directoryIdentity: `sha256:${'0'.repeat(64)}`,
-  },
-};
+const resolveCoordinator: WorkHubResolve = { workspace: '~/projects/hub' };
 function coordinatorSession(value: WorkHubCoordinator): string | null {
   return value.kind === 'ready' ? value.session.id : null;
 }
@@ -542,10 +536,19 @@ function renderSessionView(runtime: UiRuntime<string>, target: UiTarget) {
   const rendered: string = runtime.renderView(target, sessionViewContract, {
     sessionId: 'session',
   });
+  const withoutLoading: string = runtime.renderView(
+    target,
+    sessionViewContract,
+    { sessionId: 'session' },
+    { loading: false },
+  );
   // @ts-expect-error The contract token supplies the input type to the renderer.
   runtime.renderView(target, sessionViewContract, { sessionId: 42 });
   // @ts-expect-error An embedded view cannot omit its contract's required input.
   runtime.renderView(target, sessionViewContract, {});
+  // @ts-expect-error Render options are typed booleans, not arbitrary strings.
+  runtime.renderView(target, sessionViewContract, { sessionId: 'session' }, { loading: 'no' });
+  void withoutLoading;
   return rendered;
 }
 void [sessionViewModule, renderSessionView];

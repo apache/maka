@@ -32,6 +32,7 @@ impl Lifecycle {
     pub(super) async fn start(
         logs: Vec<Arc<EventLog>>,
         gates: Arc<gates::Gates>,
+        inspections: Arc<checkpoints::load::Inspections>,
     ) -> Result<Self, StoreError> {
         let (ready, started) = tokio::sync::oneshot::channel();
         let (done, closed) = tokio::sync::oneshot::channel();
@@ -45,6 +46,7 @@ impl Lifecycle {
                 {
                     Ok(runtime) => runtime,
                     Err(error) => {
+                        inspections.request_shutdown();
                         for log in &logs {
                             log.request_shutdown();
                         }
@@ -59,6 +61,7 @@ impl Lifecycle {
                 if ready.send(Ok(())).is_err() {
                     gates.close();
                 }
+                let mut cached_inspections = Vec::new();
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let (unconfirmed, premature_close) = runtime.block_on(async {
                         let receipts = logs.iter().map(|log| log.close_receipt()).collect::<Vec<_>>();
@@ -88,8 +91,9 @@ impl Lifecycle {
                         // can still persist known results before quarantining.
                         return Err("accepted Root work cleanup is unconfirmed".into());
                     }
-                    for log in &logs { log.request_shutdown(); }
-                    let results = runtime.block_on(futures_util::future::join_all(logs.iter().map(|log| log.shutdown())));
+                    cached_inspections = inspections.take_all();
+                    for log in logs.iter().chain(&cached_inspections) { log.request_shutdown(); }
+                    let results = runtime.block_on(futures_util::future::join_all(logs.iter().chain(&cached_inspections).map(|log| log.shutdown())));
                     let mut failures: Vec<String> = results.into_iter().filter_map(Result::err).map(|error| error.to_string()).collect();
                     if let Some(error) = premature_close { failures.push(error); }
                     if failures.is_empty() {
@@ -103,6 +107,8 @@ impl Lifecycle {
                 });
                 let failed = result.is_err();
                 if !failed {
+                    drop(cached_inspections);
+                    drop(inspections);
                     drop(logs);
                     drop(gates);
                 }

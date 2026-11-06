@@ -21,8 +21,8 @@ use super::*;
 
 pub(crate) struct ModelMetadataUpdate {
     key: (String, String, MessageKind),
-    meta: acp::Meta,
-    pub update: acp::SessionUpdate,
+    meta: Meta,
+    pub update: Update,
 }
 
 impl Projection {
@@ -94,14 +94,15 @@ impl Projection {
         } else {
             metadata.remove("model");
         }
-        let update = if kind == MessageKind::Thinking {
-            acp::SessionUpdate::AgentThought(
-                acp::AgentThought::new(format!("thinking:{}", chunk.message_id)).meta(meta.clone()),
-            )
-        } else {
-            acp::SessionUpdate::AgentMessage(
-                acp::AgentMessage::new(chunk.message_id.clone()).meta(meta.clone()),
-            )
+        let update = Update::Message {
+            id: if kind == MessageKind::Thinking {
+                format!("thinking:{}", chunk.message_id)
+            } else {
+                chunk.message_id.clone()
+            },
+            kind,
+            text: Text::Metadata,
+            meta: meta.clone(),
         };
         Ok(Some(ModelMetadataUpdate { key, meta, update }))
     }
@@ -119,8 +120,8 @@ impl Projection {
         id: &str,
         kind: MessageKind,
         next: &str,
-        meta: acp::Meta,
-    ) -> Vec<acp::SessionUpdate> {
+        meta: Meta,
+    ) -> Vec<Update> {
         let key = (turn.to_owned(), id.to_owned(), kind);
         let previous = self.streams.get(&key);
         if previous.is_some_and(|p| p.text == next && p.meta == meta)
@@ -132,24 +133,11 @@ impl Projection {
             MessageKind::Thinking => format!("thinking:{id}"),
             _ => id.to_owned(),
         };
-        let content = MaybeUndefined::Value(vec![acp::ContentBlock::from(next)]);
-        let metadata = MaybeUndefined::Value(meta.clone());
-        let update = match kind {
-            MessageKind::User => acp::SessionUpdate::UserMessage(
-                acp::UserMessage::new(message_id)
-                    .content(content)
-                    .meta(metadata),
-            ),
-            MessageKind::Text => acp::SessionUpdate::AgentMessage(
-                acp::AgentMessage::new(message_id)
-                    .content(content)
-                    .meta(metadata),
-            ),
-            MessageKind::Thinking => acp::SessionUpdate::AgentThought(
-                acp::AgentThought::new(message_id)
-                    .content(content)
-                    .meta(metadata),
-            ),
+        let update = Update::Message {
+            id: message_id,
+            kind,
+            text: Text::Snapshot(next.into()),
+            meta: meta.clone(),
         };
         let canonical = previous.is_some_and(|message| message.canonical);
         self.streams.insert(
@@ -202,11 +190,11 @@ mod tests {
                 .is_empty()
         );
         let seed = projection.preview(&preview_page(1, 4, 8, "中!")).unwrap();
-        let seed = serde_json::to_value(&seed[0]).unwrap();
+        let seed = crate::presentation::wire(&seed[0]).unwrap();
         assert_eq!(seed["sessionUpdate"], "agent_message");
         assert_eq!(seed["content"][0]["text"], "🦀中!");
         let suffix = projection.preview(&preview_page(2, 8, 9, "?")).unwrap();
-        let suffix = serde_json::to_value(&suffix[0]).unwrap();
+        let suffix = crate::presentation::wire(&suffix[0]).unwrap();
         assert_eq!(suffix["sessionUpdate"], "agent_message_chunk");
         assert_eq!(suffix["content"]["text"], "?");
         assert!(
@@ -313,7 +301,7 @@ mod tests {
         projection.append("t", "m", &ContentKind::Text, "🦀中");
         let update = projection.append("t", "m", &ContentKind::Text, "!");
         assert_eq!(
-            serde_json::to_value(&update[0]).unwrap()["content"]["text"],
+            crate::presentation::wire(&update[0]).unwrap()["content"]["text"],
             "!"
         );
         let mut chunk = HistoryChunk {
@@ -357,7 +345,7 @@ mod tests {
         assert!(projection.chunk(&chunk).unwrap().is_empty());
         chunk.offset = 2;
         chunk.text = "vised".into();
-        let update = serde_json::to_value(&projection.chunk(&chunk).unwrap()[0]).unwrap();
+        let update = crate::presentation::wire(&projection.chunk(&chunk).unwrap()[0]).unwrap();
         assert_eq!(update["sessionUpdate"], "agent_message");
         assert_eq!(update["messageId"], "m");
         assert_eq!(update["content"][0]["text"], "revised");
@@ -368,7 +356,7 @@ mod tests {
         chunk.field = HistoryField::Thinking;
         chunk.text = "Check".into();
         chunk.total_bytes = 5;
-        let thinking = serde_json::to_value(&projection.chunk(&chunk).unwrap()[0]).unwrap();
+        let thinking = crate::presentation::wire(&projection.chunk(&chunk).unwrap()[0]).unwrap();
         assert_eq!(thinking["sessionUpdate"], "agent_thought");
         assert_eq!(thinking["content"][0]["text"], "Check");
         assert_eq!(thinking["_meta"]["maka"]["model"], expected);
@@ -442,7 +430,7 @@ mod tests {
             text: String::new(),
             tool: None,
         };
-        let update = serde_json::to_value(&projection.chunk(&chunk).unwrap()[0]).unwrap();
+        let update = crate::presentation::wire(&projection.chunk(&chunk).unwrap()[0]).unwrap();
         assert_eq!(update["sessionUpdate"], "user_message");
         assert_eq!(
             update["_meta"]["maka"]["origin"],
@@ -498,7 +486,7 @@ mod tests {
         chunk.text = "offline".into();
         let updates = projection.chunk(&chunk).unwrap();
         assert_eq!(updates.len(), 1);
-        let update = serde_json::to_value(&updates[0]).unwrap();
+        let update = crate::presentation::wire(&updates[0]).unwrap();
         assert_eq!(update["sessionUpdate"], "agent_message");
         assert_eq!(update["content"][0]["text"], "Provider offline");
         assert_eq!(update["_meta"]["maka"]["role"], "failure");
@@ -534,7 +522,7 @@ mod tests {
             reported_model_id: Some("concrete".into()),
         });
         let update = projection.prepare_model_metadata(&chunk).unwrap().unwrap();
-        let value = serde_json::to_value(&update.update).unwrap();
+        let value = crate::presentation::wire(&update.update).unwrap();
         assert_eq!(value["messageId"], "accepted");
         assert_eq!(
             value["_meta"]["maka"]["model"]["reportedModelId"],

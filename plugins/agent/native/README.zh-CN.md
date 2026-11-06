@@ -21,12 +21,14 @@
 
 [English](README.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
+[`CheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
 和原 `RecoveryRef` 绑定到 Root 持有的历史捕获与恢复流程。
 [服务适配层](src/owner/checkpoints.rs)通过 Host 准入、原操作回执授权和有界订阅读取提供显式管理方法。
 领域回执可确认 checkpoint 成功，但不伪造通用 Host 的清理确认。
 参见 [API 工作流](../api/README.zh-CN.md#历史-checkpoint-管理)和[手动性能基线](src/owner/tests/checkpoints/benchmark.rs)。
-Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
+模型工具和跨 Root 恢复激活不在此 API 范围内；Workspace 与同 Root 恢复见下文。
+
+[检查适配层](src/owner/checkpoints/load.rs)通过相同 Host 管理边界提供精确加载及有界历史、Artifact 查询。加载的历史保留原 ID，放在隔离存储中，不向本 Owner 的执行或消息恢复注册。响应未知时使用原操作及原输入查询 `historyCheckpointLoadReceipt`。Workspace 发布与显式的同 Root 目录恢复分别见 [Session 适配器](src/owner/checkpoints/session.rs)和[恢复适配器](src/owner/checkpoints/restore.rs)。这两者保留条件一致性提示，要求明确的目标权限与模型，不自动发起消息。跨 Root 恢复及系统级外部停写仍未提供，详见 [API 支持范围](../api/README.zh-CN.md#workspace-发布与本地继续执行)。
 
 `agent.fork` 捕获源会话版本和显式 `position`：`end`、带逻辑 Turn ID 的 `through_turn` 或 `before_turn`，以及表示空历史的 `start`。`before_turn` 排除目标完整轮次，指定第一轮可创建空对话。Host 在复制事务中从规范历史计算边界，客户端无需寻找上一轮或依赖采样的历史导航点。返回的分支保留该位置，源会话保持不变。
 
@@ -72,7 +74,7 @@ Windows 命令须选择原生 `.exe`，或显式使用 `node.exe` 加 CLI 脚本
 
 Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保持地址和私有配置路径稳定。每轮捕获不可变工具定义。本轮工具选择收紧时可保留公开定义以复用缓存，但不可用调用仍会被拒绝；新增工具或定义变化只在上一轮结算后刷新目录，不因描述或插件更新丢失原生会话身份。每个 invocation 使用新 bearer 和隔离的 MCP transport session，不共享调用权限。Codex 刷新 thread 级 `http_headers`；Claude 和 agy 在原配置路径原子刷新凭据。已关闭的凭据和旧 transport session 不能借用下一轮权限；已接受调用在取消或断连后仍归原 invocation 和原操作回执。空闲会话仅保留 endpoint、目录和配置，删除会话及 Host 关闭会在物理结算后释放。Host 重启会创建新 listener 和私有目录，并捕获当前目录，同时保留原生身份、已完成的初始化标记与说明交付摘要。凭据不出现在 argv 或日志中。
 
-启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。其他全局和项目指令文件放在后面。指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
+启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。内置模型会话还会在后面追加其他全局和项目指令文件。外部 Codex、Claude 和 agy 会话只接收 Maka 身份、选中的全局偏好和 Maka 工具／技能说明（以及已配置的 Maka 角色）。CLI 自己发现并加载其原生全局和项目规则；Maka 不再将这些文件复制进注入块，也不关闭原生发现。工作区指令开关只控制 Maka 的采集，不控制 CLI 原生加载。Maka 指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
 
 新指令按业务 Root 保存的语言偏好、组合配置语言、原生环境的顺序选择英文、简体中文或繁体中文；显式「自动」使用原生环境。一次策略快照同时决定内置指令、技能包装、默认摘要及运行指引的语言。工具 schema 保持英文，用户、自定义及外部内容保留原文。
 

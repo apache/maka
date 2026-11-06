@@ -114,7 +114,7 @@ enum Input {
         dependencies: Vec<String>,
         preset: String,
         title: String,
-        workspace: crate::contract::DirectorySelection,
+        workspace: String,
         note: String,
     },
     Control {
@@ -254,7 +254,7 @@ pub(super) fn prepare(
         vec![ToolRegistration {
         definition: ToolDefinition {
             provider: None, name: NAME.into(),
-            description: "Coordinate work through selected Agent services. Workers, sessions, presets, tools, executors and directories expose available targets and published choices. route sends the original request, attachments and note; route_preset freezes the preset's worker, model, thinking level and tool restrictions. New targets use complete directory selections and a tagged backend: kind:model with connectionId/modelId/thinkingLevel, or kind:executor with selection{executor,settings{runtime,model,thinkingLevel}}. Executor settings use the worker backend, not Host model credentials; executor tasks cannot resume as native invocations. tools: null uses installed tools; [] disables tools. Restricted sessions cannot use external executors.
+            description: "Coordinate work through selected Agent services. Workers, sessions, presets, tools, executors and directories expose available targets and published choices. route sends the original request, attachments and note; route_preset freezes the preset's worker, model, thinking level and tool restrictions. New targets use a directory path from directories and a tagged backend: kind:model with connectionId/modelId/thinkingLevel, or kind:executor with selection{executor,settings{runtime,model,thinkingLevel}}. Executor settings use the worker backend, not Host model credentials; executor tasks cannot resume as native invocations. tools: null uses installed tools; [] disables tools. Restricted sessions cannot use external executors.
 
 Dependencies are existing taskIds; successful final answers are frozen into downstream input. Deferred tasks advance automatically and notify this conversation; failed or shared dependencies reject downstream work. Replacement work requires an explicit route. cancel_pending applies only before input resolution; already_resolved is not a confirmed stop. Use control stop for admitted work.
 

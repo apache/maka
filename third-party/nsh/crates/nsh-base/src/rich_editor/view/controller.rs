@@ -323,12 +323,27 @@ impl Rv {
                 }
             });
         });
+        let editable = {
+            let rv = self.clone();
+            computed(move || {
+                rv.notified.get();
+                rv.props.editable.get();
+                rv.editable()
+            })
+        };
         let rv = self.clone();
         effect(move || {
-            if !rv.focused.get() {
+            if !rv.focused.get() || rv.composition.get().is_some() {
                 return;
             }
-            for spec in keys::key_table() {
+            let tab_navigation = rv.props.tab_navigation.get();
+            for spec in keys::key_table(editable.get()) {
+                if tab_navigation
+                    && spec.event.key == "Tab"
+                    && !(spec.event.ctrl || spec.event.alt || spec.event.meta)
+                {
+                    continue;
+                }
                 let rv = rv.clone();
                 let event = spec.event.clone();
                 on_key_with(
@@ -662,8 +677,8 @@ impl Rv {
         if let Some(held) = held {
             self.sink_edited(&held);
         }
-        self.composition
-            .set((composing && !text.is_empty()).then(|| text.to_owned()));
+        self.composition.set(composing.then(|| text.to_owned()));
+        self.cx.emit(RichEditorEvent::CompositionChange(composing));
     }
 
     /// A key the sink reports itself (soft keyboards: Backspace in an
@@ -907,6 +922,14 @@ impl Rv {
                 .word_step(&doc, head, m.dir)
                 .map(|p| (p, Affinity::Downstream, None)),
             Unit::LineEdge => {
+                let head = if sel.as_text().is_none() {
+                    match doc.resolve(head) {
+                        Ok(pos) => Selection::near(&pos, -m.dir).head(),
+                        Err(_) => return,
+                    }
+                } else {
+                    head
+                };
                 let geo = self.geo.borrow();
                 geo.line_edge(head, affinity, m.dir > 0).map(|p| {
                     let side = if m.dir > 0 {

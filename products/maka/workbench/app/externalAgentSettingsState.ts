@@ -274,6 +274,9 @@ export function createExternalAgentSettings(
     acknowledge,
     cancel,
     reload,
+    refresh() {
+      if (!confirmation() && !disabled()) void load();
+    },
     enable: (request: ExternalAgentAction) => save(request, confirmation()?.runtime ?? '', true),
     disable: (request: ExternalAgentAction & { runtime: string }) =>
       save(request, request.runtime, false),
@@ -290,7 +293,8 @@ export function createExternalAgentSettings(
       }
       return true;
     },
-    title: () => tr('External agents'),
+    title: () =>
+      confirmation() ? tr('Enable {name}', { name: confirmation()!.name }) : tr('External agents'),
   };
 }
 export type ExternalAgentSettingsOwner = ReturnType<typeof createExternalAgentSettings>;

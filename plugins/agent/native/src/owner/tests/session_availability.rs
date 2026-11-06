@@ -43,6 +43,8 @@ async fn session_read_guards_reject_foreign_missing_and_logically_removed_sessio
         ];
         for id in ["foreign_session", missing.as_str(), session.as_str()] {
             assert_eq!(fixture.owner.require_session(id).await.unwrap_err(), "agent_session_unavailable");
+            assert_eq!(fixture.mutation(2, "markRead", json!({"sessionId":id,"messageId":"unavailable-tail"}), Uuid::new_v4()).await.unwrap(),
+                json!({"kind":"rejected","reason":"session_unavailable"}));
             for (method, input) in &requests {
                 let mut input = input.clone();
                 input["sessionId"] = json!(id);
@@ -121,6 +123,102 @@ async fn history_visibility_does_not_decode_configuration_but_source_still_requi
         {
             assert!(read.result().await.is_err());
         }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn archived_session_mark_read_acknowledges_only_the_exact_tail_without_restoring() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let session = fixture.create("Archived unread conversation").await;
+        let mut tails = Vec::new();
+        for _ in 0..2 {
+            fixture.send(&session).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            request(&mut socket).await;
+            response(&mut socket).await;
+            fixture.drained().await;
+            let observed = fixture
+                .query("observe", json!({"sessionId":session}))
+                .await
+                .unwrap();
+            assert_eq!(observed["session"]["hasUnread"], true);
+            tails.push(
+                observed["session"]["tailMessageId"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        assert_ne!(tails[0], tails[1]);
+        let revision = fixture.owner.session(&session).await.unwrap().revision;
+        let archived = fixture
+            .mutation(
+                2,
+                "changeSession",
+                json!({
+                    "sessionId":session,"expectedRevision":revision,"action":"archive"
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(archived["kind"], "changed");
+        assert_eq!(archived["session"]["archived"], true);
+        assert_eq!(archived["session"]["hasUnread"], true);
+
+        let stale = fixture
+            .mutation(
+                2,
+                "markRead",
+                json!({
+                    "sessionId":session,"messageId":tails[0]
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale["kind"], "observed");
+        assert_eq!(stale["session"]["hasUnread"], true);
+        assert_eq!(
+            stale["session"]["revision"],
+            archived["session"]["revision"]
+        );
+
+        let read = fixture
+            .mutation(
+                2,
+                "markRead",
+                json!({
+                    "sessionId":session,"messageId":tails[1]
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read["kind"], "observed");
+        assert_eq!(read["session"]["archived"], true);
+        assert_eq!(read["session"]["hasUnread"], false);
+        let observed = fixture
+            .query("observe", json!({"sessionId":session}))
+            .await
+            .unwrap();
+        assert_eq!(observed["session"]["archived"], true);
+        assert_eq!(observed["session"]["hasUnread"], false);
+        let stored = fixture.owner.session(&session).await.unwrap();
+        assert_eq!(
+            stored.read_state.last_read_message_id.as_deref(),
+            Some(tails[1].as_str())
+        );
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     })

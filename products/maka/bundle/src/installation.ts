@@ -186,7 +186,7 @@ export function installation(
     [
       'create',
       'SessionCreate',
-      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
+      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
     ],
     [
       'fork',

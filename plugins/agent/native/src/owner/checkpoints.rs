@@ -19,7 +19,10 @@
 
 //! Authorized history publication and bounded reads through the Agent service.
 use super::*;
-use crate::checkpoints::{Capture, HistoryCheckpointPublisher};
+mod load;
+mod restore;
+mod session;
+use crate::checkpoints::{Capture, CheckpointPublisher};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_capabilities::call::Scope;
 use maka_event_log::{StoreError, checkpoints as storage};
@@ -27,9 +30,162 @@ use maka_host_runtime::application::Context;
 use maka_plugin_core::operation::RecoveryRef;
 use tokio::io::AsyncReadExt;
 
+pub(super) struct CheckpointAdmission {
+    _workspace: runs::Checkpoint,
+    _session: runs::Ordered,
+    _goal: runs::Ordered,
+    _wake: WakeAfterCheckpoint,
+}
+
+struct WakeAfterCheckpoint(std::sync::Weak<Owner>);
+
+impl Drop for WakeAfterCheckpoint {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.upgrade() {
+            owner.wake_after_checkpoint();
+        }
+    }
+}
+
 impl Owner {
-    fn history_checkpoints(&self) -> HistoryCheckpointPublisher {
-        HistoryCheckpointPublisher::new(
+    fn wake_after_checkpoint(self: &Arc<Self>) {
+        if self.stop.is_cancelled() || self.workers.is_closed() {
+            return;
+        }
+        self.goals.execution_changed();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let owner = self.clone();
+            self.workers.spawn(async move {
+                if owner.stop.is_cancelled() {
+                    return;
+                }
+                owner.schedule().await;
+                let _ = owner.schedule_activations(now()).await;
+            });
+        }
+    }
+
+    pub(super) async fn checkpoint_admission(
+        self: &Arc<Self>,
+        id: &str,
+        extra_path: Option<&std::path::Path>,
+    ) -> Result<(CheckpointAdmission, SessionRecord<ResolvedConfiguration>), String> {
+        let goal = self
+            .goals
+            .admissions
+            .try_ordered(id)
+            .map_err(|_| "agent_checkpoint_busy")?;
+        let ordered = self
+            .runs
+            .try_ordered(id)
+            .map_err(|_| "agent_checkpoint_busy")?;
+        let session = self.session(id).await?;
+        let mut paths = vec![std::path::PathBuf::from(
+            &session.configuration.workspace.path,
+        )];
+        if let Some(extra) = extra_path {
+            let extra = extra.to_path_buf();
+            if !paths.contains(&extra) {
+                paths.push(extra);
+            }
+        }
+        let workspace = self.runs.checkpoint(id, paths.clone())?;
+        let admission = CheckpointAdmission {
+            _workspace: workspace,
+            _session: ordered,
+            _goal: goal,
+            _wake: WakeAfterCheckpoint(Arc::downgrade(self)),
+        };
+        let mut active = {
+            let runs = self.runs.state().await;
+            if runs.closing
+                || self.stop.is_cancelled()
+                || runs.controls.contains_key(id)
+                || runs.preparing.contains_key(id)
+                || runs.retained_cleanup.contains(id)
+                || self.mcp_projects.has_any_client(id)
+            {
+                return Err("agent_checkpoint_busy".into());
+            }
+            runs.controls
+                .keys()
+                .chain(runs.preparing.keys())
+                .chain(runs.retained_cleanup.iter())
+                .cloned()
+                .chain(self.runs.ordered_sessions())
+                .chain(self.goals.admissions.ordered_sessions())
+                .chain(self.mcp_projects.client_sessions())
+                .filter(|active| active != id)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if self.has_parked_invocation(id).await?
+            || !self
+                .store
+                .session(id)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .message_queue(id)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .entries
+                .is_empty()
+        {
+            return Err("agent_checkpoint_busy".into());
+        }
+        let mut after = None;
+        loop {
+            let pending = self
+                .store
+                .pending_message_sessions(&self.prefix, after.as_deref())
+                .await
+                .map_err(|_| "agent_store_unavailable")?;
+            if pending.is_empty() {
+                break;
+            }
+            after = pending.last().cloned();
+            active.extend(pending.into_iter().filter(|active| active != id));
+        }
+        active.extend(
+            self.store
+                .ready_native_approval_sessions()
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .into_iter()
+                .filter(|active| self.owns(active) && active != id),
+        );
+        active.extend(
+            self.store
+                .due_model_retry_sessions(i64::MAX as u64)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .into_iter()
+                .filter(|active| self.owns(active) && active != id),
+        );
+        for active in active {
+            if self.runs.checkpointed(&active) {
+                continue;
+            }
+            let Some(other) = self
+                .store
+                .get_session::<StoredSessionConfiguration>(&active)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+            else {
+                continue;
+            };
+            let other = resolve_session(other)?;
+            let other_path = std::path::Path::new(&other.configuration.workspace.path);
+            if paths.iter().any(|path| runs::overlaps(path, other_path)) {
+                return Err("agent_checkpoint_busy".into());
+            }
+        }
+        Ok((admission, session))
+    }
+}
+
+impl Owner {
+    fn history_checkpoints(&self) -> CheckpointPublisher {
+        CheckpointPublisher::new(
             self.store.clone(),
             storage::Scope {
                 state_domain: self.data_source.state_domain.clone(),
@@ -65,27 +221,6 @@ impl Owner {
         .await
     }
 
-    pub async fn publish_history_checkpoint(
-        self: &Arc<Self>,
-        input: HistoryCheckpointPublish,
-        operation: &RecoveryRef,
-        scope: &Scope,
-    ) -> Result<HistoryCheckpointPublication, String> {
-        management(scope)?;
-        let operation = operation.clone();
-        self.resource_work(scope, move |owner, _| {
-            Box::pin(async move {
-                owner
-                    .history_checkpoints()
-                    .publish(capture(input), &operation)
-                    .await
-                    .map(publication)
-                    .map_err(failure)
-            })
-        })
-        .await
-    }
-
     pub async fn history_checkpoint_head(
         self: &Arc<Self>,
         input: SessionRead,
@@ -105,42 +240,6 @@ impl Owner {
         .await
     }
 
-    pub async fn history_checkpoint_receipt(
-        self: &Arc<Self>,
-        input: HistoryCheckpointReceiptRead,
-        context: Context,
-    ) -> Result<HistoryCheckpointReceipt, String> {
-        management(context.scope())?;
-        let scope = context.scope().clone();
-        self.resource_work(&scope, move |owner, _| {
-            Box::pin(async move {
-                let publisher = owner.history_checkpoints();
-                let capture = capture(input.input);
-                // Validate domain identity before invoking the separately authorized Host lookup.
-                publisher
-                    .validate_request(&capture, &input.reference)
-                    .map_err(failure)?;
-                let operation = context.recover(input.reference.clone())?.await?;
-                let publication = if operation.is_some() {
-                    publisher
-                        .receipt(capture, &input.reference)
-                        .await
-                        .map_err(failure)?
-                        .map(publication)
-                } else {
-                    None
-                };
-                // Host cleanup and a committed domain result are different facts. In
-                // particular a lookup must never manufacture an original DispatchClaim.
-                Ok(HistoryCheckpointReceipt {
-                    operation,
-                    publication,
-                })
-            })
-        })
-        .await
-    }
-
     pub async fn read_history_checkpoint(
         self: &Arc<Self>,
         input: HistoryCheckpointRead,
@@ -155,7 +254,12 @@ impl Owner {
                     .checkout_exact(&input.session_id, storage::Revision(input.revision))
                     .await
                     .map_err(failure)?;
-                let storage::Manifest::NativeHistory {
+                let workspace = checkout
+                    .manifest
+                    .workspace()
+                    .cloned()
+                    .map(workspace_snapshot);
+                let storage::Manifest {
                     inventory: members,
                     bundle,
                     ..
@@ -165,10 +269,11 @@ impl Owner {
                     &context,
                     &owner,
                     &scope,
-                    HistoryCheckpointFrame::NativeHistoryV1 {
+                    HistoryCheckpointFrame::Checkpoint {
                         head: head(checkout.head),
                         inventory: inventory(members),
                         bundle: object(bundle),
+                        workspace,
                     },
                 )
                 .await?;
@@ -222,7 +327,10 @@ impl Owner {
 }
 
 fn management(scope: &Scope) -> Result<(), String> {
-    if scope.identity.agent().is_some() {
+    if !matches!(
+        scope.identity,
+        maka_capabilities::call::Identity::Remote { .. }
+    ) {
         return Err("agent_history_checkpoint_user_action_required".into());
     }
     Ok(())
@@ -240,17 +348,31 @@ async fn emit(
         .emit(serde_json::to_value(frame).map_err(|_| "agent_history_checkpoint_output_invalid")?)
         .await
 }
-fn capture(input: HistoryCheckpointPublish) -> Capture {
+fn capture(input: CheckpointPublish) -> Capture {
     Capture {
         session_id: input.session_id,
         expected_checkpoint_revision: input.expected_revision.map(storage::Revision),
         confirmed_subtree_digest: input.confirmed_subtree_digest,
+        workspace: None,
     }
 }
 fn object(value: storage::ObjectRef) -> HistoryCheckpointObject {
     HistoryCheckpointObject {
         digest: value.digest,
         bytes: value.bytes,
+    }
+}
+fn workspace_snapshot(w: storage::WorkspaceSnapshot) -> CheckpointWorkspaceSnapshot {
+    CheckpointWorkspaceSnapshot {
+        identity: w.identity,
+        inventory: object(w.inventory),
+        consistency: match w.consistency {
+            storage::WorkspaceConsistency::CallerConfirmedQuiescent => {
+                CheckpointWorkspaceConsistency::CallerConfirmedQuiescent
+            }
+            storage::WorkspaceConsistency::Unverified => CheckpointWorkspaceConsistency::Unverified,
+        },
+        warning: CheckpointWorkspaceWarning::ExternalWritersNotFenced,
     }
 }
 fn head(value: storage::Head) -> HistoryCheckpointHead {
@@ -273,7 +395,7 @@ fn inventory(value: maka_event_log::bundle::Inventory) -> HistoryCheckpointInven
             .collect(),
     }
 }
-fn publication(value: storage::Publication) -> HistoryCheckpointPublication {
+fn publication(value: storage::Publication) -> CheckpointPublication {
     let state = match value.state {
         storage::PublicationState::Capturing => HistoryCheckpointState::Capturing,
         storage::PublicationState::Prepared { .. } => HistoryCheckpointState::Prepared,
@@ -286,9 +408,10 @@ fn publication(value: storage::Publication) -> HistoryCheckpointPublication {
         storage::PublicationState::Interrupted => HistoryCheckpointState::Interrupted,
         storage::PublicationState::Unavailable { .. } => HistoryCheckpointState::Unavailable,
     };
-    HistoryCheckpointPublication {
+    CheckpointPublication {
         state,
         cleanup_pending: value.cleanup_pending,
+        workspace: None,
     }
 }
 fn failure(error: StoreError) -> String {

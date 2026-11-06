@@ -112,7 +112,7 @@ impl Owner {
         if self.graph_selected(id).await? {
             return Err("graph_background_conflict".into());
         }
-        let session = self.session(id).await?;
+        let session = self.mutable_session(id).await?;
         if session.configuration.workspace != target.workspace
             || session.configuration.permissions != target.permissions
             || session.configuration.boundary_revision != target.boundary_revision
@@ -155,7 +155,7 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        let current = self.session(id).await?;
+        let current = self.mutable_session(id).await?;
         if current.configuration != session.configuration || current.archived {
             return Err("scheduler_authorization_changed".into());
         }
@@ -163,8 +163,10 @@ impl Owner {
             return Err("graph_background_conflict".into());
         }
 
+        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
         Ok(MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
@@ -182,7 +184,7 @@ impl Owner {
             internal_bindings: selected_catalog.bindings.clone(),
             behavior: self.bot_behavior(
                 &target.session_id,
-                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                self.capture_behavior(Some(&session.configuration.workspace), &snapshot, language)
                     .await?,
                 &snapshot,
                 language,

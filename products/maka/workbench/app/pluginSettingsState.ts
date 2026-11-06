@@ -291,6 +291,9 @@ export function createPluginSettings(
       }
     },
     back,
+    refresh() {
+      if (visible() && !editor() && !selected() && !operations.busy() && !loading()) void load();
+    },
     reload(request: PluginAction) {
       if (!current(request) || operations.busy() || loading()) return;
       cancelRead();

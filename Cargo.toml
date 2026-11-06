@@ -130,7 +130,7 @@ maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761" }
-agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
+agent-client-protocol = { version = "5.0.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"

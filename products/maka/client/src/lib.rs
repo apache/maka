@@ -61,6 +61,7 @@ const CONTROL_METHODS: &[&str] = &[
     "stop",
     "stopComputerApp",
     "respond",
+    "requestSystemPermission",
     "editQueue",
     "metadata",
     "changeSession",
@@ -132,7 +133,7 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
     let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
         "stop" => Some("invocationId"),
-        "respond" => Some("requestId"),
+        "respond" | "requestSystemPermission" => Some("requestId"),
         "stopComputerApp" => Some("operationId"),
         _ => None,
     };
@@ -147,6 +148,14 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
                 "agent control requires a valid invocationId or requestId"
             })?;
         correlation[key] = Value::String(target.to_owned());
+    }
+    if method == "requestSystemPermission" {
+        let grant = input
+            .get("grant")
+            .and_then(Value::as_str)
+            .filter(|grant| !grant.is_empty())
+            .ok_or("system permission control requires a grant")?;
+        correlation["grant"] = Value::String(grant.to_owned());
     }
     if matches!(
         method,
@@ -826,15 +835,15 @@ impl Client {
             .await
     }
 
-    /// Move a directory to the front, or remove its recent entry when `workspace` is None.
+    /// Move a directory to the front, or remove its recent entry unless `remember`.
     pub async fn set_recent_workspace(
         &self,
         path: String,
-        workspace: Option<Value>,
+        remember: bool,
     ) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
-            .set_recent_workspace(self.workspace_owner().await?, path, workspace)
+            .set_recent_workspace(self.workspace_owner().await?, path, remember)
             .await
     }
 

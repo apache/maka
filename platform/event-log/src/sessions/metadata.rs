@@ -104,7 +104,7 @@ impl EventLog {
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, false, None, None, update)
+        self.mutate_session_metadata(id, expected, false, None, None, None, update)
             .await
     }
 
@@ -122,7 +122,7 @@ impl EventLog {
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
         validate_time(now)?;
-        self.mutate_session_metadata(id, expected, false, Some(now), None, update)
+        self.mutate_session_metadata(id, expected, false, Some(now), None, None, update)
             .await
     }
 
@@ -137,13 +137,14 @@ impl EventLog {
     where
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
     {
-        self.mutate_session_metadata(id, expected, true, None, None, move |current| {
+        self.mutate_session_metadata(id, expected, true, None, None, None, move |current| {
             *current = configuration;
             Ok(())
         })
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // One SQL transaction owns metadata and optional checkpoint receipt.
     pub(crate) async fn mutate_session_metadata<T, F>(
         &self,
         id: &str,
@@ -151,6 +152,7 @@ impl EventLog {
         always_advance: bool,
         permission_time: Option<u64>,
         root_app_control: Option<std::sync::Arc<EventLog>>,
+        checkpoint: Option<crate::root_store::checkpoints::restore::Commit>,
         update: F,
     ) -> Result<SessionMutation<T>, StoreError>
     where
@@ -169,6 +171,9 @@ impl EventLog {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                     super::removal::require_mutable(&mut tx, &id).await?;
+                    if let Some(commit) = &checkpoint {
+                        commit.validate(&mut tx).await?;
+                    }
                     let record: SessionRecord<T> = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
@@ -247,6 +252,9 @@ impl EventLog {
                     let record = read(&mut tx, &id)
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
+                    if let Some(commit) = checkpoint {
+                        commit.record(&mut tx, next_revision).await?;
+                    }
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if approval_revoked {
                         commits.activations();

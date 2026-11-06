@@ -1,0 +1,75 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+use objc2::rc::{Retained, autoreleasepool};
+use objc2_foundation::{NSBundle, NSString, NSURL};
+use std::{ffi::c_void, path::Path};
+
+#[link(name = "CoreServices", kind = "framework")]
+unsafe extern "C" {
+    fn LSRegisterURL(url: *const c_void, update: u8) -> i32;
+}
+
+pub(super) fn register(bundle: &Path) -> Result<(), String> {
+    identifier(bundle)?;
+    autoreleasepool(|_| {
+        let url = file_url(bundle)?;
+        // SAFETY: NSURL is toll-free bridged to CFURLRef. The retained URL
+        // remains alive through the synchronous call; Boolean is UInt8.
+        let status = unsafe { LSRegisterURL((&*url as *const NSURL).cast(), 1) };
+        if status != 0 {
+            return Err(format!(
+                "LSRegisterURL failed for {} (OSStatus {status})",
+                bundle.display()
+            ));
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn identifier(bundle: &Path) -> Result<String, String> {
+    autoreleasepool(|_| {
+        let url = file_url(bundle)?;
+        NSBundle::bundleWithURL(&url)
+            .and_then(|application| application.bundleIdentifier())
+            .map(|identifier| identifier.to_string())
+            .ok_or_else(|| {
+                format!(
+                    "Application bundle {} has no bundle identifier",
+                    bundle.display()
+                )
+            })
+    })
+}
+
+fn file_url(bundle: &Path) -> Result<Retained<NSURL>, String> {
+    let path = bundle.canonicalize().map_err(|error| {
+        format!(
+            "Cannot resolve application bundle {}: {error}",
+            bundle.display()
+        )
+    })?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("Application bundle path is not UTF-8: {}", path.display()))?;
+    Ok(NSURL::fileURLWithPath_isDirectory(
+        &NSString::from_str(path),
+        true,
+    ))
+}

@@ -410,21 +410,20 @@ impl Manager {
     async fn export_package(&self, input: Value, context: Context) -> Result<Value> {
         let request: PackageBundleRead =
             serde_json::from_value(input).map_err(|error| error.to_string())?;
-        let package = {
-            let _read = self.writes.lock().await;
-            let loaded = self.source_at(Some(request.source)).await?;
-            loaded
-                .packages()
-                .iter()
-                .find(|package| package.application_ref() == request.package)
-                .cloned()
-                .ok_or("package is not installed in this source")?
-        };
         let mut ticket = context
             .scope()
             .resources
             .reserve()
             .map_err(|error| error.to_string())?;
+        // The UI exports each plugin's package while it starts. Loading the whole
+        // source here would read and hash every installed package per export.
+        let package = self
+            .package_at(
+                &request.source,
+                &request.package,
+                "package is not installed in this source",
+            )
+            .await?;
         ticket.start();
         let bytes = tokio::task::spawn_blocking(move || {
             let bytes = package.to_bundle();

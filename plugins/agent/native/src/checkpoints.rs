@@ -28,7 +28,7 @@ use maka_plugin_core::operation::RecoveryRef;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct HistoryCheckpointPublisher {
+pub struct CheckpointPublisher {
     store: Arc<RootStore>,
     scope: Scope,
     prefix: String,
@@ -39,9 +39,10 @@ pub struct Capture {
     pub session_id: String,
     pub expected_checkpoint_revision: Option<Revision>,
     pub confirmed_subtree_digest: String,
+    pub workspace: Option<maka_event_log::checkpoints::WorkspaceCapture>,
 }
 
-impl HistoryCheckpointPublisher {
+impl CheckpointPublisher {
     /// Called by trusted native assembly, never with model-authored scope.
     pub fn new(store: Arc<RootStore>, scope: Scope, coordinator: bool) -> Self {
         let prefix = maka_agent_authority::session_namespace(
@@ -57,7 +58,7 @@ impl HistoryCheckpointPublisher {
         }
     }
 
-    async fn repository(&self, session: &str) -> Result<HistoryCheckpoints, StoreError> {
+    pub(crate) async fn repository(&self, session: &str) -> Result<HistoryCheckpoints, StoreError> {
         if !crate::owner::owns_session(&self.prefix, session) {
             return Err(StoreError::SessionNotFound);
         }
@@ -66,7 +67,7 @@ impl HistoryCheckpointPublisher {
             .await
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         capture: &Capture,
         operation: &RecoveryRef,
@@ -78,7 +79,7 @@ impl HistoryCheckpointPublisher {
             || operation.source.deployment != self.scope.deployment
             || operation.namespace != self.scope.namespace
             || operation.export != maka_agent_api::EXPORT
-            || operation.method != "publishHistoryCheckpoint"
+            || operation.method != "publishCheckpoint"
         {
             return Err(StoreError::InvalidTransition(
                 "checkpoint operation belongs to another authority".into(),
@@ -90,6 +91,7 @@ impl HistoryCheckpointPublisher {
             fingerprint: hex::encode(sha2::Sha256::digest(serde_json::to_vec(operation)?)),
             expected_revision: capture.expected_checkpoint_revision,
             confirmed_subtree_digest: capture.confirmed_subtree_digest.clone(),
+            workspace: capture.workspace.clone(),
         })
     }
 
@@ -102,6 +104,33 @@ impl HistoryCheckpointPublisher {
             return Err(StoreError::SessionNotFound);
         }
         self.request(capture, operation).map(|_| ())
+    }
+
+    pub(crate) fn load_request(
+        &self,
+        input: &maka_agent_api::contract::HistoryCheckpointRead,
+        operation: &RecoveryRef,
+    ) -> Result<maka_event_log::checkpoints::LoadOperation, StoreError> {
+        operation
+            .validate()
+            .map_err(|e| StoreError::InvalidTransition(e.to_string()))?;
+        if !crate::owner::owns_session(&self.prefix, &input.session_id)
+            || operation.source.state_domain != self.scope.state_domain
+            || operation.source.deployment != self.scope.deployment
+            || operation.namespace != self.scope.namespace
+            || operation.export != maka_agent_api::EXPORT
+            || operation.method != "loadHistoryCheckpoint"
+        {
+            return Err(StoreError::InvalidTransition(
+                "checkpoint load belongs to another authority".into(),
+            ));
+        }
+        use sha2::Digest;
+        Ok(maka_event_log::checkpoints::LoadOperation {
+            operation: operation.operation,
+            fingerprint: hex::encode(sha2::Sha256::digest(serde_json::to_vec(operation)?)),
+            revision: Revision(input.revision),
+        })
     }
 
     pub async fn publish(
@@ -174,7 +203,7 @@ mod tests {
             deployment: Uuid::from_u128(1),
             namespace: InstanceId(vec![Uuid::from_u128(2)]),
         };
-        let publisher = HistoryCheckpointPublisher::new(store.clone(), scope.clone(), false);
+        let publisher = CheckpointPublisher::new(store.clone(), scope.clone(), false);
         let id = format!("{}{}", publisher.prefix, "1".repeat(32));
         store
             .create_session(&id, "create", &serde_json::json!({}), 1)
@@ -184,6 +213,7 @@ mod tests {
             session_id: id.clone(),
             expected_checkpoint_revision: None,
             confirmed_subtree_digest: store.preview_bundle(&id).await.unwrap().subtree_digest,
+            workspace: None,
         };
         let operation = RecoveryRef {
             source: DeploymentRef {
@@ -193,7 +223,7 @@ mod tests {
             },
             namespace: scope.namespace,
             export: maka_agent_api::EXPORT.into(),
-            method: "publishHistoryCheckpoint".into(),
+            method: "publishCheckpoint".into(),
             operation: Uuid::from_u128(3),
             fingerprint: format!("sha256-{}", "b".repeat(64)),
             contract: RecoveryContract {

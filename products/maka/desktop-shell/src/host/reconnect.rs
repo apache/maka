@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! GPUI Host-following lifecycle.
+//! Desktop Host-following lifecycle.
 
 use super::{Connection, runs};
 use maka_event_log::root;

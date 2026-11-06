@@ -393,28 +393,7 @@ impl Driver {
             let controller = {
                 let mut driver = driver.lock().await;
                 driver.mac_admission()?;
-                match driver.mac_controllers.entry(pid) {
-                    std::collections::hash_map::Entry::Occupied(entry)
-                        if entry.get().generation == generation =>
-                    {
-                        Ok(entry.get().controller.clone())
-                    }
-                    std::collections::hash_map::Entry::Occupied(entry) => {
-                        Err(entry.get().controller.clone())
-                    }
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        let controller = crate::macos::controller::Controller::new(
-                            pid,
-                            generation.to_owned(),
-                            application.bundle_identifier.clone(),
-                        );
-                        entry.insert(MacController {
-                            generation: generation.to_owned(),
-                            controller: controller.clone(),
-                        });
-                        Ok(controller)
-                    }
-                }
+                driver.select_mac_controller(pid, generation, application.bundle_identifier.clone())
             };
             match controller {
                 Ok(controller) => {
@@ -424,10 +403,39 @@ impl Driver {
                     return Ok(controller);
                 }
                 Err(controller) => {
-                    // A recycled PID must not drop a live native thread. Keep
-                    // its custody until Stop ACK and join both succeed.
+                    // A recycled PID or closed owner must settle before a new
+                    // getApp can replace it; never reopen its issued handles.
                     Self::retire_mac_controller_owner(driver, pid, controller).await?;
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn select_mac_controller(
+        &mut self,
+        pid: i32,
+        generation: &str,
+        bundle: Option<String>,
+    ) -> Result<crate::macos::controller::Controller, crate::macos::controller::Controller> {
+        match self.mac_controllers.entry(pid) {
+            std::collections::hash_map::Entry::Occupied(entry)
+                if entry.get().generation == generation
+                    && entry.get().controller.accepts_bindings() =>
+            {
+                Ok(entry.get().controller.clone())
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                Err(entry.get().controller.clone())
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let controller =
+                    crate::macos::controller::Controller::new(pid, generation.to_owned(), bundle);
+                entry.insert(MacController {
+                    generation: generation.to_owned(),
+                    controller: controller.clone(),
+                });
+                Ok(controller)
             }
         }
     }
@@ -1059,6 +1067,32 @@ impl Driver {
                 "Computer Use cancelled before dispatch".into(),
             ));
         }
+        #[cfg(target_os = "macos")]
+        if let Some(role) = match name {
+            "list_apps" => Some(crate::desktop::worker::MacRole::ListApps),
+            "list_windows" => Some(crate::desktop::worker::MacRole::ListWindows),
+            _ => None,
+        } {
+            // Inventory must not initialize the serving Host's native runtime.
+            driver.lock().await.admit_epoch(epoch)?;
+            let inventory_cancellation = cancellation.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::desktop::worker::macos_finite(role, &|| {
+                    inventory_cancellation.is_cancelled()
+                })
+            })
+            .await
+            .map_err(|error| {
+                ToolError::Failed(format!("finite native inventory stopped: {error}"))
+            })??;
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Failed("Computer Use inventory cancelled".into()));
+            }
+            return Ok(CallResult {
+                content: vec![],
+                structured_content: Some(result),
+            });
+        }
         #[cfg(target_os = "windows")]
         let result = Self::invoke_windows(
             driver,
@@ -1106,11 +1140,7 @@ impl Driver {
         }
     }
 
-    fn bind_epoch(
-        &mut self,
-        epoch: NativeEpochId,
-        language: Language,
-    ) -> Result<Arc<BoundSession>, ToolError> {
+    fn admit_epoch(&mut self, epoch: NativeEpochId) -> Result<(), ToolError> {
         self.reap_retired_epochs();
         if let Some(retirement) = self.retiring_epochs.get(&epoch) {
             return Err(retirement
@@ -1123,6 +1153,18 @@ impl Driver {
                     ToolError::CleanupUnconfirmed("native epoch is still closing".into())
                 }));
         }
+        if !matches!(self.state, State::Idle | State::Active(_)) {
+            return Err(ToolError::Failed("Computer Use Session is closed".into()));
+        }
+        Ok(())
+    }
+
+    fn bind_epoch(
+        &mut self,
+        epoch: NativeEpochId,
+        language: Language,
+    ) -> Result<Arc<BoundSession>, ToolError> {
+        self.admit_epoch(epoch)?;
         if matches!(self.state, State::Idle) {
             self.state = State::Active(
                 CuaDriver::create_configured(native_configuration(self.audio_enabled))
@@ -1538,6 +1580,60 @@ mod tests {
         );
         driver.release_epoch(epoch).await.unwrap();
         driver.close().await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn fresh_binding_replaces_failed_controller_without_restarting_old_owner() {
+        let driver = Arc::new(Mutex::new(Driver::default()));
+        let (original, unaffected) = {
+            let mut driver = driver.lock().await;
+            (
+                driver
+                    .select_mac_controller(-1, "same-process", None)
+                    .unwrap(),
+                driver
+                    .select_mac_controller(-2, "another-process", None)
+                    .unwrap(),
+            )
+        };
+        // A deterministic startup failure before AX I/O follows the same
+        // ready-error / confirmed-join path as an unavailable AX application.
+        assert!(matches!(original.ensure_started().await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller requires an actual process"));
+        driver
+            .lock()
+            .await
+            .release_epoch(NativeEpochId::new())
+            .await
+            .unwrap();
+        let retired = driver
+            .lock()
+            .await
+            .select_mac_controller(-1, "same-process", None)
+            .expect_err("a failed owner cannot accept a new getApp binding");
+        Driver::retire_mac_controller_owner(&driver, -1, retired)
+            .await
+            .unwrap();
+        let replacement = driver
+            .lock()
+            .await
+            .select_mac_controller(-1, "same-process", None)
+            .unwrap();
+        assert!(!replacement.same_owner(&original));
+        assert!(
+            driver
+                .lock()
+                .await
+                .select_mac_controller(-2, "another-process", None)
+                .unwrap()
+                .same_owner(&unaffected)
+        );
+        assert!(matches!(original.primary_window_id().await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller is closed"));
+        assert!(matches!(replacement.ensure_started().await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller requires an actual process"));
+        driver.lock().await.close().await.unwrap();
     }
 
     #[cfg(target_os = "macos")]

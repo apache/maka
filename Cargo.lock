@@ -155,12 +155,13 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "3.5.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bbe69c878aef64a3d92041e256e75acdb1bf2ea8e55ef3313e69dbb2f5bd75a"
+checksum = "80ce60ce096020c2d0aa10445bc27b8856109e288abaf564ab517031ae819d69"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
+ "anyhow",
  "futures",
  "futures-concurrency",
  "rustc-hash 2.1.3",
@@ -172,9 +173,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "3.5.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25b7ae92f0d1ba46ca61e7e03d4a9758e877d100b783aa1c62b140d5a9d59fb2"
+checksum = "a12951a4e9a163a9384dec4e5681bd774c0fdb3871c5ed1deb7b44bc630df17a"
 dependencies = [
  "quote",
  "syn 3.0.9",
@@ -182,9 +183,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.12.0"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "430e900fdb40a811c1a3e0d85b1134e485d96699f8b90889a15c1da6a0b26c3f"
+checksum = "1b2316d2cd561917bc2c16e3c64771c77e24363b56d40b58fdad091d02059992"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -7461,6 +7462,7 @@ dependencies = [
  "maka-assistant",
  "maka-capabilities",
  "maka-code-runtime",
+ "maka-computer-use",
  "maka-config",
  "maka-decisions-api-native",
  "maka-event-log",
@@ -7864,6 +7866,8 @@ dependencies = [
  "nsh-platform-gpui",
  "nsh-platform-macos",
  "nsh-platform-windows",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",
@@ -7874,8 +7878,11 @@ dependencies = [
 name = "maka-event-log"
 version = "0.2.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "futures-util",
  "hex",
+ "ignore",
  "libc",
  "maka-agent-facts",
  "maka-agent-ports",
@@ -8849,6 +8856,7 @@ name = "maka-workspace-support"
 version = "0.2.0"
 dependencies = [
  "maka-agent-api",
+ "maka-agent-facts",
  "maka-fs-tools",
  "maka-host-runtime",
  "maka-plugin-core",

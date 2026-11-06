@@ -56,6 +56,7 @@ import {
   type ConversationPreviewInput,
   type ConversationSessionHandle,
   type ComposerSession,
+  type ComposerFocusHandle,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
@@ -97,10 +98,7 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import {
-  WorkspacePicker,
-  locateWorkspaceDirectory,
-} from '../../../../products/maka/workbench/app/WorkspacePicker';
+import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -282,10 +280,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+  const setRecentWorkspace = (path: string, remember: boolean) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -295,9 +293,7 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
-      report,
-    );
+    void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -392,7 +388,7 @@ export function createConversationUi(
   };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   const fileDragging = signal(false);
-  let editor: { focus(): void } | undefined;
+  let editor: ComposerFocusHandle | undefined;
   const composerSession = computed(() => {
     const owner = handle();
     return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
@@ -433,7 +429,7 @@ export function createConversationUi(
       } else {
         await host.query('agent', 'directories', {
           kind: 'children',
-          selection: workspace.selection,
+          path: workspace.path,
           after: null,
         });
       }
@@ -756,26 +752,13 @@ export function createConversationUi(
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
-          : (workspace.selection.segments.at(-1) ?? ''));
+          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
       if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
-        if (!observed.session.workspace.worktree) {
-          const roots = await host.query('agent', 'directories', { kind: 'roots' });
-          if (!alive || selected() !== expectedSessionId) return;
-          const found =
-            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
-          if (found)
-            recentWorkspace = {
-              kind: 'directory',
-              selection: {
-                rootId: found.root.selection.rootId,
-                segments: [...found.root.selection.segments, ...found.names!],
-                directoryIdentity: observed.session.workspace.directoryIdentity,
-              },
-            };
-        }
+        if (!observed.session.workspace.worktree)
+          recentWorkspace = { kind: 'directory', path: label };
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
@@ -1629,23 +1612,30 @@ export function createConversationUi(
   // A side pane binds its conversation's keys within itself, so they take
   // over from the main pane's only while focus is there.
   const unbindKeys: (() => void)[] = [];
+  const unbindEditorKeys: (() => void)[] = [];
   cleanup(() => {
-    for (const unbind of unbindKeys.splice(0)) unbind();
+    for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
   });
-  const bindKeys = (within?: ViewRef) => {
+  const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
+    if (input)
+      unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
     const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
-    unbindKeys.push(keymap.bind('mod+p', () => invokeOwn('commands'), options));
-    if (ownTitleBar) unbindKeys.push(keymap.bind('mod+f', () => invokeOwn('find'), options));
-    unbindKeys.push(keymap.bind('mod+g', () => invokeOwn('models'), options));
-    unbindKeys.push(keymap.bind('mod+l', () => invokeOwn('latest'), options));
-    unbindKeys.push(keymap.bind('alt+up', () => invokeOwn('history-focus'), options));
-    unbindKeys.push(keymap.bind('alt+down', () => invokeOwn('activity-focus'), options));
-    if (within) return;
-    unbindKeys.push(keymap.bind('mod+o', () => invokeOwn('sessions'), options));
-    unbindKeys.push(keymap.bind('mod+n', () => invokeOwn('new'), options));
+    const bind = (key: string, action: () => void) => {
+      const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);
+      (input ? unbindEditorKeys : unbindKeys).push(unbind);
+    };
+    bind('mod+p', () => invokeOwn('commands'));
+    if (ownTitleBar) bind('mod+f', () => invokeOwn('find'));
+    bind('mod+g', () => invokeOwn('models'));
+    bind('mod+l', () => invokeOwn('latest'));
+    bind('alt+up', () => invokeOwn('history-focus'));
+    bind('alt+down', () => invokeOwn('activity-focus'));
+    if (side) return;
+    bind('mod+o', () => invokeOwn('sessions'));
+    bind('mod+n', () => invokeOwn('new'));
     if (ownTitleBar) {
-      unbindKeys.push(keymap.bind('mod+shift+]', () => stepSession(1), options));
-      unbindKeys.push(keymap.bind('mod+shift+[', () => stepSession(-1), options));
+      bind('mod+shift+]', () => stepSession(1));
+      bind('mod+shift+[', () => stepSession(-1));
     }
   };
   let sideKeys: ViewRef | undefined;
@@ -1934,7 +1924,7 @@ export function createConversationUi(
       recentKnown.set(true);
       recentWorkspaces.set(recent);
       if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
-        await create(recent[0].workspace, null, recent[0].path, false);
+        await create({ kind: 'directory', path: recent[0].path }, null, recent[0].path, false);
     },
   });
   createPendingRecovery({
@@ -2088,6 +2078,11 @@ export function createConversationUi(
           report,
           attach: (next) => {
             if (workspace() !== next) workspace.set(next);
+          },
+        },
+        {
+          get loading() {
+            return input.surface !== 'overlays';
           },
         },
       );
@@ -2441,7 +2436,9 @@ export function createConversationUi(
                 </View>
               }
               attach={(node) => {
+                for (const unbind of unbindEditorKeys.splice(0)) unbind();
                 editor = node;
+                bindKeys(side ? paneRoot : undefined, node);
               }}
               commands={composerCommands}
               models={
@@ -2517,11 +2514,11 @@ export function createConversationUi(
                     disabled={() => pendingSending() || pendingFileBusy()}
                     forget={(path) => {
                       recentOpen.set(false);
-                      void setRecentWorkspace(path, null).catch(report);
+                      void setRecentWorkspace(path, false).catch(report);
                     }}
                     choose={(item) => {
                       recentOpen.set(false);
-                      void create(item.workspace, selected(), item.path);
+                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
                     }}
                     browse={() => {
                       recentOpen.set(false);

@@ -31,12 +31,14 @@
 //!
 //! The window opens where it was when it last closed (see [`Placement`]).
 
+mod permissions;
+
 use crate::{
     host::{self, Connection, Root},
     placement::Placement,
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
-use maka_workbench::bindings::Bindings;
+use maka_workbench::bindings::{Bindings, SystemPermissionWindow};
 use nsh_engine::{EngineConfig, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
@@ -81,7 +83,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     })?;
     #[cfg(target_os = "macos")]
     if std::env::var_os(GPUI).is_none_or(|value| value.is_empty()) {
-        return crate::appkit::run(first, runtime);
+        return crate::appkit::run(first, root, runtime);
     }
     run(first, root, runtime)
 }
@@ -99,6 +101,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         .as_ref()
         .expect("Host admission sets the client directory");
     let handle = runtime.handle().clone();
+    let permission_requests = permission_requests(&bindings);
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (
@@ -118,16 +121,10 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let application = gpui_platform::application().with_quit_mode(gpui::QuitMode::Explicit);
     application.run(move |cx| {
         cx.set_app_identity(APP_ID, TITLE);
-        let closed = detach.clone();
-        cx.on_window_closed(move |cx, _| {
-            if cx.windows().is_empty() {
-                closed.then_quit(cx);
-            }
-        })
-        .detach();
         let (config, placement, endpoint, epoch, root) = start.take().expect("the app starts once");
         let placement = Rc::new(placement);
-        let current = ConnectedView::new((endpoint, epoch), shell.attach(config));
+        let current =
+            ConnectedView::new((endpoint, epoch), shell.attach(config), permission_requests);
         let window = match open(current.config.clone(), placement.clone(), cx) {
             Ok(window) => window,
             Err(error) => {
@@ -135,6 +132,16 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                 std::process::exit(1);
             }
         };
+        let permission_windows = permissions::Windows::default();
+        let closing_permissions = permission_windows.clone();
+        let closed = detach.clone();
+        cx.on_window_closed(move |cx, _| {
+            if window.update(cx, |_, _, _| ()).is_err() {
+                closing_permissions.close_all(cx);
+                closed.then_quit(cx);
+            }
+        })
+        .detach();
         let _ = window.update(cx, |_, window, cx| {
             active.send_replace(window.is_window_active());
             cx.observe_window_activation(window, move |_, window, _| {
@@ -242,6 +249,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             handle.clone(),
             &detach,
             shell.clone(),
+            permission_windows,
             cx,
         );
         cx.activate(true);
@@ -319,10 +327,15 @@ struct ConnectedView {
     host: (PathBuf, uuid::Uuid),
     config: EngineConfig,
     reloading: tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>,
+    permissions: tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow>,
 }
 
 impl ConnectedView {
-    fn new(host: (PathBuf, uuid::Uuid), config: EngineConfig) -> Self {
+    fn new(
+        host: (PathBuf, uuid::Uuid),
+        config: EngineConfig,
+        permissions: tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow>,
+    ) -> Self {
         let reloading = config
             .context
             .get::<maka_workbench::reload::UiReload>()
@@ -332,6 +345,7 @@ impl ConnectedView {
             host,
             config,
             reloading,
+            permissions,
         }
     }
 }
@@ -347,10 +361,12 @@ fn follow(
     runtime: Handle,
     detach: &Detach,
     shell: Shell,
+    permission_windows: permissions::Windows,
     cx: &mut App,
 ) {
     let detach = detach.clone();
     cx.spawn(async move |cx| {
+        let (close_window, mut closing_windows) = tokio::sync::mpsc::unbounded_channel();
         let mut pause = FIRST_PAUSE;
         loop {
             let reached = Instant::now();
@@ -359,6 +375,8 @@ fn follow(
             loop {
                 tokio::select! {
                     _ = &mut stopped => break,
+                    Some(id) = closing_windows.recv() => cx.update(|cx| permission_windows.command(id, cx)),
+                    Some(request) = current.permissions.recv() => cx.update(|cx| permission_windows.open(request, close_window.clone(), &current.config, window, cx)),
                     request = current.reloading.recv() => {
                         let Some(request) = request else { return };
                         if window.update(cx, |view, window, cx| {
@@ -378,6 +396,8 @@ fn follow(
                     }
                 }
             }
+            cx.update(|cx| permission_windows.close_all(cx));
+            if window.update(cx, |view, _, _| view.stop()).is_err() { return; }
             // The client closes first, as when the desktop is reopened: what
             // it leaves in its journal is settled before the next client
             // opens the journal.
@@ -420,6 +440,7 @@ fn follow(
                 epoch,
                 ..
             } = connection;
+            let permissions = permission_requests(&bindings);
             if let Err(bindings) = detach.put(bindings, (endpoint.clone(), epoch)) {
                 // Quitting began during the attempt: this client detaches
                 // too, before the app quits.
@@ -427,7 +448,7 @@ fn follow(
                 return;
             }
             drop(moving);
-            current = ConnectedView::new((endpoint, epoch), shell.attach(config));
+            current = ConnectedView::new((endpoint, epoch), shell.attach(config), permissions);
             if window
                 .update(cx, |view, _, _| {
                     view.load_with_config(current.config.clone());
@@ -565,4 +586,12 @@ impl Drop for Moving {
     fn drop(&mut self) {
         self.0.send_replace(false);
     }
+}
+
+fn permission_requests(
+    bindings: &Bindings,
+) -> tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow> {
+    let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+    bindings.set_system_permission_windows(send);
+    receive
 }

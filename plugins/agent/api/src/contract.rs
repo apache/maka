@@ -335,38 +335,47 @@ pub struct Create {
 )]
 #[schemars(rename = "AgentWorkspaceSelection")]
 pub enum WorkspaceSelection {
+    /// A Git worktree of the directory at `path`, managed by the Host.
     IsolatedGit {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
+    /// A registered Project at one of its locations.
     Project {
         project: ProjectRef,
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
+    /// The directory at `path`: absolute, `~` standing for the home directory,
+    /// within the configured workspace locations.
     Directory {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
     Session {
         #[schemars(length(min = 1))]
         session_id: String,
     },
 }
+/// A directory on the Host: an absolute path, `~` standing for the home
+/// directory, within the configured workspace locations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentDirectorySelection")]
-pub struct DirectorySelection {
+#[schemars(rename = "AgentDirectoryPath")]
+pub struct DirectoryPath {
     #[schemars(length(min = 1))]
-    pub root_id: String,
-    pub segments: Vec<String>,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
+    pub path: String,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentDirectories")]
 pub enum Directories {
     Roots,
+    /// The directories inside `path`, a page at a time; `after` is the last
+    /// name of the previous page.
     Children {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
         after: Option<String>,
     },
@@ -377,7 +386,6 @@ pub enum Directories {
 pub struct Directory {
     pub name: String,
     pub path: String,
-    pub selection: DirectorySelection,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1476,6 +1484,55 @@ pub enum HistoryPage {
     },
 }
 
+impl From<maka_agent_ports::session::history::Page> for HistoryPage {
+    fn from(value: maka_agent_ports::session::history::Page) -> Self {
+        let maka_agent_ports::session::history::Page::Ready {
+            through,
+            chunks,
+            before,
+            after,
+        } = value;
+        HistoryPage::Ready {
+            through,
+            before,
+            after,
+            chunks: chunks
+                .into_iter()
+                .map(|chunk| HistoryChunk {
+                    model_part: chunk.model_part,
+                    has_references: chunk.has_references,
+                    final_output: chunk.final_output,
+                    model: chunk.model,
+                    origin: chunk.origin,
+                    compaction: chunk.compaction,
+                    attachments: chunk
+                        .attachments
+                        .into_iter()
+                        .map(|attachment| HistoryAttachment {
+                            name: attachment.name,
+                            mime_type: attachment.mime_type,
+                            bytes: attachment.bytes,
+                            kind: attachment.kind,
+                        })
+                        .collect(),
+                    timing: chunk.timing,
+                    field: chunk.field,
+                    message_id: chunk.message_id,
+                    turn_id: chunk.turn_id,
+                    timestamp: chunk.timestamp,
+                    role: chunk.role,
+                    order: chunk.order,
+                    position: chunk.position,
+                    offset: chunk.offset,
+                    total_bytes: chunk.total_bytes,
+                    text: chunk.text,
+                    tool: chunk.tool,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistorySourceRead")]
@@ -1648,6 +1705,7 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),
                 (
@@ -1782,7 +1840,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "selectWorkspace".into(),
-                    method::<DirectorySelection, Option<Workspace>>(MethodMode::Mutation),
+                    method::<DirectoryPath, Option<Workspace>>(MethodMode::Mutation),
                 ),
                 (
                     "observe".into(),
@@ -1833,12 +1891,12 @@ pub fn contract() -> Contract {
                     method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
                 ),
                 (
-                    "publishHistoryCheckpoint".into(),
-                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                    "publishCheckpoint".into(),
+                    method::<CheckpointPublish, CheckpointPublication>(MethodMode::Mutation),
                 ),
                 (
-                    "historyCheckpointReceipt".into(),
-                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                    "checkpointReceipt".into(),
+                    method::<CheckpointReceiptRead, CheckpointReceipt>(MethodMode::Query),
                 ),
                 (
                     "historyCheckpointHead".into(),
@@ -1848,6 +1906,13 @@ pub fn contract() -> Contract {
                     "readHistoryCheckpoint".into(),
                     method::<HistoryCheckpointRead, Option<HistoryCheckpointFrame>>(MethodMode::Subscription),
                 ),
+                ("loadHistoryCheckpoint".into(), method::<HistoryCheckpointRead, CheckpointLoad>(MethodMode::Mutation)),
+                ("restoreSessionCheckpoint".into(), method::<SessionCheckpointRestore, SessionCheckpointRestored>(MethodMode::Mutation)),
+                ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
+                ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
+                ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
                     "fork".into(),
                     method::<Fork, ForkResult>(MethodMode::Mutation),
@@ -1992,6 +2057,14 @@ pub fn contract() -> Contract {
                     method::<InteractionRead, maka_agent_facts::interaction::InteractionRecord>(
                         MethodMode::Query,
                     ),
+                ),
+                (
+                    "systemPermissionStatus".into(),
+                    method::<InteractionRead, SystemPermissionStatus>(MethodMode::Query),
+                ),
+                (
+                    "requestSystemPermission".into(),
+                    method::<RequestSystemPermission, SystemPermissionStatus>(MethodMode::Mutation),
                 ),
                 (
                     "respond".into(),

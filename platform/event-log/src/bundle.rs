@@ -38,6 +38,7 @@ mod relocation;
 mod stage;
 mod validation;
 pub use export::BundleSummary;
+pub(crate) use export::{history_cut, require_idle};
 pub use reader::inspect;
 pub use stage::StagedBundle;
 

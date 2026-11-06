@@ -338,7 +338,7 @@ pub(super) async fn selection(fixture: &Fixture) -> Value {
     fixture
         .query("directories", json!({"kind":"roots"}))
         .await
-        .unwrap()["roots"][0]["selection"]
+        .unwrap()["roots"][0]["path"]
         .clone()
 }
 
@@ -448,7 +448,7 @@ async fn worker_mutation(fixture: &Fixture, method: &str, input: Value) -> Value
 }
 async fn worker_session(fixture: &Fixture) -> String {
     let roots = query_import(fixture, "worker", "directories", json!({"kind":"roots"})).await;
-    worker_mutation(fixture,"create",json!({"title":"Worker","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await["session"]["id"].as_str().unwrap().into()
+    worker_mutation(fixture,"create",json!({"title":"Worker","labels":[],"workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})).await["session"]["id"].as_str().unwrap().into()
 }
 async fn task_response(socket: &mut TcpStream, input: Value) {
     let input = json!({"request": input});
@@ -729,8 +729,8 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
         let ready=resolve(&fixture,selection(&fixture).await,Uuid::new_v4()).await;
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         let directories=control_turn(&fixture,&listener,&coordinator,json!({"operation":"directories","worker":"worker","location":{"kind":"roots"}})).await;
-        let directory=directories["roots"][0]["selection"].clone();
-        assert!(directory.is_object());
+        let directory=directories["roots"][0]["path"].clone();
+        assert!(directory.is_string());
         let files: Vec<_> = (0..9).map(|index| (format!("transfer-{index}.txt"), if index == 0 { "original user attachment\n中\0".repeat(6000).into_bytes() } else { format!("original user attachment {index}\n中\0tail-{index}").into_bytes() })).collect();
         let mut sources=Vec::new();
         for (name,bytes) in &files {
@@ -813,7 +813,7 @@ async fn workhub_dependencies_wait_cancel_and_dispatch_once_with_complete_origin
         let worker = worker_session(&fixture).await;
         let (coordinator, parent, mut running) = active_task(&fixture, &listener, &worker).await;
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"}))
-            .await["roots"][0]["selection"]
+            .await["roots"][0]["path"]
             .clone();
         let route = |title: &str, model: ModelSelection| {
             json!({"operation":"route","worker":"worker",

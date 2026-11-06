@@ -27,11 +27,15 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
     let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
         settings.tools = vec![super::external_support::host_tool("observe", "SessionRead")];
         let home = settings.workspace_roots[0].path.clone();
+        std::fs::create_dir(home.join(".maka")).unwrap();
         std::fs::write(
-            std::path::Path::new(&home).join("AGENTS.md"),
+            home.join(".maka/AGENTS.md"),
             "CAPTURED EXTERNAL GUIDANCE 中文",
         )
         .unwrap();
+        for name in ["CLAUDE.md", "GEMINI.md"] {
+            std::fs::write(home.join(".maka").join(name), "CLI GLOBAL RULES").unwrap();
+        }
         settings.assistant = Some(crate::contract::AssistantConfiguration {
             home: Some(home.to_str().unwrap().into()),
         });
@@ -59,7 +63,11 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
             } else {
                 "UPDATED EXTERNAL GUIDANCE 中文"
             };
-            std::fs::write(f.workspace.join("AGENTS.md"), guidance).unwrap();
+            std::fs::write(f.workspace.join(".maka/AGENTS.md"), guidance).unwrap();
+            for name in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
+                std::fs::write(f.workspace.join(name), format!("CLI PROJECT RULES {round}"))
+                    .unwrap();
+            }
             let operation = Uuid::new_v4();
             let input = input_runtime(&session, runtime, "complete");
             tokio::time::timeout(Duration::from_secs(60), async {
@@ -85,7 +93,11 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                     let instructions = opened["request"]["instructions"].as_str().unwrap();
                     assert!(instructions.starts_with("<maka_system_instructions>\n"));
                     assert!(instructions.ends_with("\n</maka_system_instructions>"));
-                    assert!(instructions.contains(guidance));
+                    assert!(instructions.contains("You are [Maka](https://github.com/apache/maka), an AI agent."));
+                    assert!(instructions.contains(&format!("<global_instruction>\n{guidance}\n</global_instruction>")));
+                    assert!(!instructions.contains("CLI GLOBAL RULES"));
+                    assert!(!instructions.contains("CLI PROJECT RULES"));
+                    assert!(!instructions.contains("<workspace-instructions"));
                     assert!(instructions.contains("replace all earlier Maka instruction blocks"));
                     if round == 2 {
                         assert!(!instructions.contains("CAPTURED EXTERNAL GUIDANCE"));
@@ -617,6 +629,7 @@ async fn native_external_skill_instructions_arrive_after_none_and_clear_without_
 async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_digest() {
     let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
         let home = settings.workspace_roots[0].path.clone();
+        std::fs::create_dir(home.join(".maka")).unwrap();
         settings.assistant = Some(crate::contract::AssistantConfiguration {
             home: Some(home.to_str().unwrap().into()),
         });
@@ -635,7 +648,7 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
     })
     .await;
     for runtime in ["codex", "antigravity", "claude"] {
-        std::fs::write(f.workspace.join("AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
+        std::fs::write(f.workspace.join(".maka/AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
         let session = f
             .create("Native instruction acknowledgement cancellation")
             .await;
@@ -652,7 +665,11 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
         packet(&mut control, "opened").await;
         complete_instruction_turn(&f, &session, &first, &mut control).await;
         let before = super::external_support::record_runtime(&f, &session, runtime).await;
-        std::fs::write(f.workspace.join("AGENTS.md"), "CANCEL_UNCONFIRMED_GUIDANCE").unwrap();
+        std::fs::write(
+            f.workspace.join(".maka/AGENTS.md"),
+            "CANCEL_UNCONFIRMED_GUIDANCE",
+        )
+        .unwrap();
         tokio::time::timeout(Duration::from_secs(90), async {
             let cancelled = f
                 .mutation(

@@ -80,9 +80,10 @@ fn read(directory: &Dir, agents: bool) -> Vec<WorkspaceInstruction> {
 
 impl Owner {
     /// Capture once at message acceptance. Recovery replays the persisted basis.
+    /// Native CLIs own their rule files; omit the workspace to capture only Maka preferences.
     pub(super) async fn capture_behavior(
         &self,
-        workspace: &Workspace,
+        workspace: Option<&Workspace>,
         snapshot: &RuntimePolicySnapshot,
         language: Language,
     ) -> Result<Option<SystemPrompt>, String> {
@@ -107,19 +108,13 @@ impl Owner {
             workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };
         let (global_instruction, instructions) = if preferences.workspace_instructions {
-            let workspace = workspace.clone();
+            let workspace = workspace.cloned();
             let home = self.instruction_home.clone();
             tokio::task::spawn_blocking(move || {
-                let project = maka_fs_tools::workspace::open_directory(
-                    Path::new(&workspace.path),
-                    &workspace.identity,
-                )
-                .map_err(|_| "agent_workspace_unavailable")?;
                 let mut global_instruction = String::new();
-                let mut global = Vec::new();
-                if let Some(home) = home {
-                    if let Ok(source) = global_instructions::selected(&home)
-                        && let Ok(Some(text)) = global_instructions::read_selected(&home, source)
+                if let Some(home) = &home {
+                    if let Ok(source) = global_instructions::selected(home)
+                        && let Ok(Some(text)) = global_instructions::read_selected(home, source)
                     {
                         global_instruction = parse_instruction_files([(
                             InstructionFile::Agents,
@@ -129,10 +124,19 @@ impl Owner {
                         .map(|instruction| instruction.text)
                         .unwrap_or_default();
                     }
-                    if let Ok(directory) = home.open_dir(".maka") {
-                        global.extend(read(&directory, false));
-                    }
                 }
+                let Some(workspace) = workspace else {
+                    return Ok((global_instruction, String::new()));
+                };
+                let project = maka_fs_tools::workspace::open_directory(
+                    Path::new(&workspace.path),
+                    &workspace.identity,
+                )
+                .map_err(|_| "agent_workspace_unavailable")?;
+                let global = home
+                    .and_then(|home| home.open_dir(".maka").ok())
+                    .map(|directory| read(&directory, false))
+                    .unwrap_or_default();
                 Ok::<_, String>((
                     global_instruction,
                     maka_assistant::prompt::workspace::render(

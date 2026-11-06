@@ -19,7 +19,7 @@
 
 //! Validate the entire prompt before publishing any caller-owned attachments.
 use crate::client::Client;
-use agent_client_protocol::schema::v2 as acp;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_agent_facts::artifact;
 use std::path::PathBuf;
@@ -28,10 +28,28 @@ use tokio_util::sync::CancellationToken;
 mod io;
 mod upload;
 
-pub fn capabilities() -> acp::PromptCapabilities {
-    acp::PromptCapabilities::new()
-        .image(acp::PromptImageCapabilities::default())
-        .embedded_context(acp::PromptEmbeddedContextCapabilities::default())
+#[derive(Clone, Debug)]
+pub(crate) enum Input {
+    Text(String),
+    Link {
+        uri: String,
+        name: String,
+        mime: Option<String>,
+    },
+    EmbeddedText {
+        uri: String,
+        text: String,
+    },
+    EmbeddedBlob {
+        uri: String,
+        blob: String,
+        mime: Option<String>,
+    },
+    Image {
+        data: String,
+        mime: String,
+        uri: Option<String>,
+    },
 }
 
 struct Pending {
@@ -54,7 +72,7 @@ struct Prepared {
 pub async fn prepare(
     client: &Client,
     session: &str,
-    blocks: Vec<acp::ContentBlock>,
+    blocks: Vec<Input>,
     cancel: &CancellationToken,
 ) -> Result<Message, crate::Error> {
     let (mut content, pending) = validate(blocks)?;
@@ -82,15 +100,15 @@ pub async fn prepare(
     Ok(content)
 }
 
-fn validate(blocks: Vec<acp::ContentBlock>) -> Result<(Message, Vec<Pending>), crate::Error> {
+fn validate(blocks: Vec<Input>) -> Result<(Message, Vec<Pending>), crate::Error> {
     let mut parts = Vec::new();
     let mut pending = Vec::new();
     let mut text_bytes = 0usize;
     for block in blocks {
         let text = match block {
-            acp::ContentBlock::Text(value) => Some(value.text),
-            acp::ContentBlock::ResourceLink(value) => {
-                let uri = resource_uri(&value.uri)?;
+            Input::Text(text) => Some(text),
+            Input::Link { uri, name, mime } => {
+                let uri = resource_uri(&uri)?;
                 if uri.scheme() == "file" {
                     if uri
                         .host_str()
@@ -103,61 +121,57 @@ fn validate(blocks: Vec<acp::ContentBlock>) -> Result<(Message, Vec<Pending>), c
                     let path = uri
                         .to_file_path()
                         .map_err(|_| "Invalid local resource URI")?;
-                    let name = if value.name.is_empty() {
+                    let name = if name.is_empty() {
                         path.file_name()
                             .and_then(|s| s.to_str())
                             .ok_or("Invalid resource filename")?
                             .to_owned()
                     } else {
-                        value.name
+                        name
                     };
                     pending.push(Pending {
                         name: name.clone(),
-                        mime: value.mime_type.map(|mime| mime.to_string()),
+                        mime,
                         source: Source::File(path),
                     });
-                    Some(format!("Resource: {name}\n{}", value.uri))
+                    Some(format!("Resource: {name}\n{}", uri))
                 } else {
                     // A link is context, not a claim that its contents were retrieved.
-                    Some(format!("Resource: {}\n{}", value.name, value.uri))
+                    Some(format!("Resource: {}\n{}", name, uri))
                 }
             }
-            acp::ContentBlock::Resource(value) => match value.resource {
-                acp::EmbeddedResourceResource::TextResourceContents(value) => {
-                    resource_uri(&value.uri)?;
-                    Some(format!("Resource: {}\n{}", value.uri, value.text))
-                }
-                acp::EmbeddedResourceResource::BlobResourceContents(value) => {
-                    let uri = resource_uri(&value.uri)?;
-                    pending.push(Pending {
-                        name: uri
-                            .path_segments()
-                            .and_then(|mut p| p.next_back())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("resource")
-                            .into(),
-                        mime: value.mime_type.map(|mime| mime.to_string()),
-                        source: Source::Bytes(decode(&value.blob)?),
-                    });
-                    Some(format!("Resource: {}", value.uri))
-                }
-                _ => return Err("Unsupported embedded resource type".into()),
-            },
-            acp::ContentBlock::Image(value) => {
-                if !value.mime_type.as_ref().starts_with("image/") {
+            Input::EmbeddedText { uri, text } => {
+                resource_uri(&uri)?;
+                Some(format!("Resource: {uri}\n{text}"))
+            }
+            Input::EmbeddedBlob { uri, blob, mime } => {
+                let parsed = resource_uri(&uri)?;
+                pending.push(Pending {
+                    name: parsed
+                        .path_segments()
+                        .and_then(|mut p| p.next_back())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("resource")
+                        .into(),
+                    mime,
+                    source: Source::Bytes(decode(&blob)?),
+                });
+                Some(format!("Resource: {uri}"))
+            }
+            Input::Image { data, mime, uri } => {
+                if !mime.starts_with("image/") {
                     return Err("Invalid image MIME type".into());
                 }
-                if let Some(uri) = &value.uri {
+                if let Some(uri) = &uri {
                     resource_uri(uri)?;
                 }
                 pending.push(Pending {
                     name: "image".into(),
-                    mime: Some(value.mime_type.to_string()),
-                    source: Source::Bytes(decode(&value.data)?),
+                    mime: Some(mime),
+                    source: Source::Bytes(decode(&data)?),
                 });
                 None
             }
-            _ => return Err("Unsupported prompt content type".into()),
         };
         if let Some(text) = text {
             text_bytes = text_bytes
@@ -224,13 +238,13 @@ fn active(cancel: &CancellationToken) -> Result<(), crate::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn block(value: serde_json::Value) -> acp::ContentBlock {
-        serde_json::from_value(value).unwrap()
+    fn block(value: serde_json::Value) -> Input {
+        crate::transport::v2::content(serde_json::from_value(value).unwrap()).unwrap()
     }
     #[test]
     fn text_links_and_embedded_resources_preserve_explicit_context() {
         let (content, files) = validate(vec![
-            "hello".into(),
+            Input::Text("hello".into()),
             block(serde_json::json!({"type":"resource_link", "uri":"https://example.com/doc", "name":"guide"})),
             block(serde_json::json!({"type":"resource", "resource":{"uri":"memory://context", "text":"actual content"}})),
         ]).unwrap();
@@ -243,7 +257,7 @@ mod tests {
     #[test]
     fn complete_context_preserves_validation_before_io() {
         assert_eq!(
-            validate(vec!["x".repeat(48 * 1024 + 1).into()])
+            validate(vec![Input::Text("x".repeat(48 * 1024 + 1))])
                 .unwrap()
                 .0
                 .text,

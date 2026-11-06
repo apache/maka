@@ -17,116 +17,42 @@
  * under the License.
  */
 
-import { cleanup, keymap, Text, View } from 'nsh';
-import { Input } from 'nsh/base';
-import { Button } from 'nsh/base';
+import { keymap } from 'nsh';
 import { tr } from './locale';
 import { uiScale } from './uiScale';
-import {
-  bodyTextStyle,
-  captionTextStyle,
-  C,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  controlDisabledStyle,
-  inputTextStyle,
-} from './ui';
+import { SettingsRow, SettingsSelect } from './SettingsPage';
+
+const presets = [75, 90, 100, 110, 125, 150, 200];
 
 export function UiScaleSettings() {
-  cleanup(uiScale.cancel);
+  const current = () => Number(uiScale.text()) || 100;
+  const choices = () =>
+    [...new Set([...presets, current()])]
+      .sort((a, b) => a - b)
+      .map((percent) => ({ value: String(percent), title: `${percent}%` }));
   return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
-        {tr('Interface scale')}
-      </Text>
-      <If when={uiScale.supported}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Choose a preset or press Enter to preview. {shortcut} restores 100%.', {
-            shortcut: keymap.label('mod+alt+0'),
-          })}
-        </Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <Input
-            value={uiScale.text()}
-            onChange={({ value }) => uiScale.change(value)}
-            onSubmit={() => uiScale.preview(uiScale.text())}
-            accessibilityLabel={tr('Interface scale percentage')}
-            readonly={!uiScale.ready() || uiScale.saving()}
-            style={{
-              ...controlStyle,
-              ...inputTextStyle,
-              width: 96,
-              borderWidth: 1,
-              borderColor: C.line,
-              backgroundColor: C.background,
-              color: C.text,
-            }}
-            focusStyle={{ borderColor: C.accent }}
-          />
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>%</Text>
-          <Each of={[75, 90, 100, 110, 125, 150, 200]} key={(percent) => percent}>
-            {(percent) => (
-              <Button
-                disabled={!uiScale.ready() || uiScale.saving()}
-                accessibilityLabel={tr('Preview interface scale {percent}%', {
-                  percent: percent(),
-                })}
-                onPress={() => uiScale.preview(String(percent()))}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ ...captionTextStyle, color: C.text }}>{percent()}%</Text>
-              </Button>
-            )}
-          </Each>
-        </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          <Button
-            disabled={!uiScale.ready() || uiScale.saving() || !uiScale.dirty() || !!uiScale.error()}
-            accessibilityLabel={tr('Save interface scale')}
-            onPress={() => void uiScale.save()}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Save')}</Text>
-          </Button>
-          <Button
-            disabled={!uiScale.ready() || uiScale.saving()}
-            accessibilityLabel={tr('Reset interface scale to 100%')}
-            onPress={uiScale.reset}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Reset to 100%')}</Text>
-          </Button>
-          <Button
-            disabled={!uiScale.ready() || uiScale.saving()}
-            accessibilityLabel={tr('Cancel interface scale preview')}
-            onPress={uiScale.cancel}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
-          </Button>
-        </View>
-        <If when={uiScale.error()}>
-          <Text style={{ ...captionTextStyle, color: C.danger }}>{uiScale.error()}</Text>
-        </If>
-      </If>
-      <If when={!uiScale.supported}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Use your terminal’s font size to scale the Unicode interface.')}
-        </Text>
-      </If>
-    </View>
+    <If
+      when={uiScale.supported}
+      else={
+        <SettingsRow
+          label={tr('Interface scale')}
+          description={tr('Use your terminal’s font size to scale the Unicode interface.')}
+        />
+      }
+    >
+      <SettingsSelect
+        label={tr('Interface scale')}
+        description={
+          uiScale.error() ||
+          tr('{shortcut} restores 100%.', { shortcut: keymap.label('mod+alt+0') })
+        }
+        value={String(current())}
+        choices={choices()}
+        disabled={!uiScale.ready() || uiScale.saving()}
+        change={(value) => {
+          if (uiScale.preview(value)) void uiScale.save();
+        }}
+      />
+    </If>
   );
 }

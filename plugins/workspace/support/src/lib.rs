@@ -17,15 +17,17 @@
  * under the License.
  */
 
-use maka_agent_api::contract::{
-    Directories, Directory, DirectoryPage, DirectorySelection, Workspace,
-};
+use maka_agent_api::contract::{Directories, Directory, DirectoryPage, Workspace};
+use maka_agent_facts::execution::DirectoryIdentity;
 use maka_fs_tools::{
     directory,
     workspace::{self, directory::PublishedDirectory},
 };
 use maka_host_runtime::DirectoryRootSpec;
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
 
 pub const PAGE_BYTES: usize = 48 * 1024;
 
@@ -109,100 +111,130 @@ pub fn open(specs: Vec<DirectoryRootSpec>, managed: &Path) -> Result<Vec<Root>, 
         .collect::<Result<_, String>>()?;
     Ok(roots)
 }
-fn root<'a>(roots: &'a [Root], id: &str) -> Result<&'a Root, String> {
-    roots
-        .iter()
-        .enumerate()
-        .find(|(index, _)| id == format!("root-{}", index + 1))
-        .map(|(_, root)| root)
-        .ok_or("agent_directory_unavailable".into())
+/// A directory found within a configured location, with the identity captured
+/// as it was opened. Only a `Workspace` the Host persisted carries an identity
+/// to the wire; callers name directories by path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Located {
+    pub name: String,
+    pub path: String,
+    pub identity: DirectoryIdentity,
 }
-fn choice(
-    root: &Root,
-    root_id: String,
-    segments: Vec<String>,
-    name: String,
-) -> Result<Directory, String> {
-    if segments.iter().any(|s| s.chars().any(char::is_control)) {
-        return Err("agent_directory_invalid".into());
+
+/// A caller's path as the directory it names: a leading `~` replaced by `home`,
+/// relative paths refused, `.` and `..` resolved before symbolic links are
+/// followed. None when nothing is there or the path is not a directory.
+pub fn resolve_path(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let path = match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            home?.join(rest.trim_start_matches(['/', '\\']))
+        }
+        _ => PathBuf::from(path),
+    };
+    if !path.is_absolute() {
+        return None;
     }
-    let selected = root
-        .directory
-        .resolve(&segments)
-        .map_err(|_| "agent_directory_unavailable")?;
-    let (path, identity) =
-        directory::capture(&selected).map_err(|_| "agent_directory_unavailable")?;
-    // Identity capture may use O_PATH; browsing also needs a readable directory.
-    let _entries = directory::open(&path, &identity)
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    let path = normalized.canonicalize().ok()?;
+    path.is_dir().then_some(path)
+}
+
+/// The most specific configured location holding the canonical `path`, and
+/// the directory as captured there.
+fn find<'a>(roots: &'a [Root], path: &Path) -> Option<(&'a Root, Located)> {
+    let root = roots
+        .iter()
+        .filter(|root| path.starts_with(root.directory.path()))
+        .max_by_key(|root| root.directory.path().as_os_str().len())?;
+    Some((root, capture(root, path)?))
+}
+
+/// The directory at `path` under `root`, opened and identified in one step.
+/// Identity capture may use O_PATH; browsing also needs a readable directory.
+fn capture(root: &Root, path: &Path) -> Option<Located> {
+    if path
+        .strip_prefix(root.directory.path())
+        .ok()?
+        .components()
+        .any(|part| {
+            part.as_os_str()
+                .to_str()
+                .is_none_or(|s| s.chars().any(char::is_control))
+        })
+    {
+        return None;
+    }
+    let (path, identity) = directory::capture(path).ok()?;
+    directory::open(&path, &identity)
         .and_then(|directory| directory.entries())
-        .map_err(|_| "agent_directory_unavailable")?;
-    root.directory
-        .validate(&path)
-        .map_err(|_| "agent_directory_unavailable")?;
-    let path = host_path(&path)?;
-    Ok(Directory {
+        .ok()?;
+    root.directory.validate(&path).ok()?;
+    let name = if path == root.directory.path() {
+        root.name.clone()
+    } else {
+        path.file_name()?.to_str()?.to_owned()
+    };
+    Some(Located {
         name,
-        path,
-        selection: DirectorySelection {
-            root_id,
-            segments,
-            directory_identity: identity,
-        },
+        path: host_path(&path).ok()?,
+        identity,
     })
 }
 fn host_path(path: &Path) -> Result<String, String> {
     let path = workspace::project::host_path(path).map_err(|_| "agent_directory_invalid")?;
     Ok(path.into())
 }
-fn root_page(roots: &[Root]) -> Result<DirectoryPage, String> {
-    Ok(DirectoryPage::Roots {
+fn entry(located: Located) -> Directory {
+    Directory {
+        name: located.name,
+        path: located.path,
+    }
+}
+fn root_page(roots: &[Root]) -> DirectoryPage {
+    DirectoryPage::Roots {
         roots: roots
             .iter()
-            .enumerate()
-            .filter_map(|(index, root)| {
-                choice(
-                    root,
-                    format!("root-{}", index + 1),
-                    vec![],
-                    root.name.clone(),
-                )
-                .ok()
-            })
+            .filter_map(|root| capture(root, root.directory.path()))
+            .map(entry)
             .collect(),
-    })
+    }
 }
 pub fn fits<T: serde::Serialize>(value: &T) -> bool {
     serde_json::to_value(value)
         .is_ok_and(|value| maka_plugin_core::json::check_delivery(&value, PAGE_BYTES).is_ok())
 }
-pub async fn query(roots: Vec<Root>, input: Directories) -> Result<DirectoryPage, String> {
-    query_excluding(roots, input, None).await
+pub async fn query(
+    roots: Vec<Root>,
+    input: Directories,
+    home: Option<&Path>,
+) -> Result<DirectoryPage, String> {
+    query_excluding(roots, input, home, None).await
 }
 pub async fn query_excluding(
     roots: Vec<Root>,
     input: Directories,
-    excluded: Option<std::path::PathBuf>,
+    home: Option<&Path>,
+    excluded: Option<PathBuf>,
 ) -> Result<DirectoryPage, String> {
+    let home = home.map(Path::to_owned);
     tokio::task::spawn_blocking(move || {
-        let Directories::Children { selection, after } = input else {
-            return root_page(&roots);
+        let Directories::Children { path, after } = input else {
+            return Ok(root_page(&roots));
         };
-        let root = root(&roots, &selection.root_id)?;
-        let name = selection
-            .segments
-            .last()
-            .cloned()
-            .unwrap_or_else(|| root.name.clone());
-        let selected = choice(
-            root,
-            selection.root_id.clone(),
-            selection.segments.clone(),
-            name,
-        )?;
-        if selected.selection.directory_identity != selection.directory_identity
-            || excluded
-                .as_ref()
-                .is_some_and(|path| Path::new(&selected.path).starts_with(path))
+        let path = resolve_path(&path, home.as_deref()).ok_or("agent_directory_unavailable")?;
+        let (root, selected) = find(&roots, &path).ok_or("agent_directory_unavailable")?;
+        if excluded
+            .as_ref()
+            .is_some_and(|excluded| path.starts_with(excluded))
         {
             return Err("agent_directory_unavailable".into());
         }
@@ -213,9 +245,16 @@ pub async fn query_excluding(
         }) {
             return Err("agent_directory_invalid".into());
         }
+        let segments = path
+            .strip_prefix(root.directory.path())
+            .map_err(|_| "agent_directory_unavailable")?
+            .components()
+            .map(|part| part.as_os_str().to_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("agent_directory_invalid")?;
         let mut names: Vec<_> = root
             .directory
-            .directory_names(&selection.segments)
+            .directory_names(&segments)
             .map_err(|_| "agent_directory_unavailable")?
             .into_iter()
             .filter(|name| {
@@ -227,28 +266,24 @@ pub async fn query_excluding(
             .collect();
         if let Some(excluded) = &excluded {
             names.retain(|name| {
-                let mut segments = selection.segments.clone();
-                segments.push(name.clone());
                 root.directory
-                    .resolve(&segments)
+                    .resolve(&[segments.clone(), vec![name.clone()]].concat())
                     .is_ok_and(|path| !path.starts_with(excluded))
             });
         }
         let mut children = Vec::new();
         let mut remaining = names.iter();
         for name in remaining.by_ref() {
-            let mut segments = selection.segments.clone();
-            segments.push(name.clone());
-            let Ok(child) = choice(root, selection.root_id.clone(), segments, name.clone()) else {
+            let Some(child) = capture(root, &path.join(name)) else {
                 continue;
             };
-            children.push(child);
+            children.push(entry(child));
             if children.len() == 32 {
                 break;
             }
         }
         let mut page = DirectoryPage::Children {
-            directory: selected,
+            directory: entry(selected.clone()),
             after: remaining
                 .next()
                 .is_some()
@@ -268,58 +303,45 @@ pub async fn query_excluding(
             children.pop();
             *after = children.last().map(|child| child.name.clone());
         }
-        let path = root
-            .directory
-            .resolve(&selection.segments)
-            .map_err(|_| "agent_directory_unavailable")?;
-        directory::open(&path, &selection.directory_identity)
-            .map_err(|_| "agent_directory_unavailable")?;
+        directory::open(&path, &selected.identity).map_err(|_| "agent_directory_unavailable")?;
         Ok(page)
     })
     .await
     .map_err(|_| "agent_directory_unavailable")?
 }
 
-/// None is a confirmed pre-effect refusal. Marker initialization errors remain Unknown.
+/// The workspace at `path`, with its directory identity captured as the
+/// directory is opened and its workspace marker ensured. None is a confirmed
+/// pre-effect refusal. Marker initialization errors remain Unknown.
 pub async fn initialize(
     roots: &[Root],
-    selection: DirectorySelection,
+    path: &str,
+    home: Option<&Path>,
     managed: &Path,
     private_root: &Path,
     control: &Path,
 ) -> Result<Option<Workspace>, String> {
-    let Ok(root) = root(roots, &selection.root_id) else {
-        return Ok(None);
-    };
-    if selection
-        .segments
-        .iter()
-        .any(|s| s.chars().any(char::is_control))
-    {
-        return Ok(None);
-    }
-    let published = root.directory.clone();
-    let captured = published.clone();
+    let roots = roots.to_vec();
+    let path = path.to_owned();
+    let home = home.map(Path::to_owned);
     let managed = managed.to_owned();
-    let expected = selection.directory_identity.clone();
     let prepared = tokio::task::spawn_blocking(move || {
-        let path = captured.resolve(&selection.segments).ok()?;
+        let path = resolve_path(&path, home.as_deref())?;
         if path.starts_with(&managed) {
             return None;
         }
-        host_path(&path).ok()?;
-        let directory = directory::open(&path, &expected).ok()?;
-        captured.validate(&path).ok()?;
+        let (root, located) = find(&roots, &path)?;
+        let directory = directory::open(&path, &located.identity).ok()?;
         match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return None,
         }
-        Some((path, directory))
+        Some((root.directory.clone(), path, directory, located.identity))
     })
     .await
     .map_err(|_| "agent_workspace_unavailable")?;
-    let Some((path, directory)) = prepared else {
+    let Some((published, path, directory, directory_identity)) = prepared else {
         return Ok(None);
     };
     let identity = workspace::ensure_directory_identity(
@@ -334,13 +356,13 @@ pub async fn initialize(
     published
         .validate(&path)
         .map_err(|_| "agent_workspace_initialization_failed")?;
-    directory::open(&path, &selection.directory_identity)
+    directory::open(&path, &directory_identity)
         .map_err(|_| "agent_workspace_initialization_failed")?;
     Ok(Some(Workspace {
         worktree: None,
         project_id: None,
         path: host_path(&path)?,
-        directory_identity: selection.directory_identity,
+        directory_identity,
         identity,
     }))
 }
@@ -393,90 +415,46 @@ pub async fn validate(roots: &[Root], selected: &Workspace, managed: &Path) -> R
 /// Re-observe a published directory without creating a workspace marker.
 pub async fn selected(
     roots: Vec<Root>,
-    selection: DirectorySelection,
-    managed: std::path::PathBuf,
-) -> Result<Option<Directory>, String> {
-    resolve_selection(roots, selection, managed, true).await
+    path: &str,
+    home: Option<&Path>,
+    managed: PathBuf,
+) -> Result<Option<Located>, String> {
+    resolve(roots, path, home, managed, true).await
 }
+/// A published directory as it is, marker or not; `excluded` and below is
+/// not published.
 pub async fn observed(
     roots: Vec<Root>,
-    selection: DirectorySelection,
-    excluded: std::path::PathBuf,
-) -> Result<Option<Directory>, String> {
-    resolve_selection(roots, selection, excluded, false).await
+    path: &str,
+    home: Option<&Path>,
+    excluded: PathBuf,
+) -> Result<Option<Located>, String> {
+    resolve(roots, path, home, excluded, false).await
 }
-async fn resolve_selection(
+async fn resolve(
     roots: Vec<Root>,
-    selection: DirectorySelection,
-    managed: std::path::PathBuf,
+    path: &str,
+    home: Option<&Path>,
+    excluded: PathBuf,
     workspace_marker: bool,
-) -> Result<Option<Directory>, String> {
+) -> Result<Option<Located>, String> {
+    let path = path.to_owned();
+    let home = home.map(Path::to_owned);
     tokio::task::spawn_blocking(move || {
-        let Ok(root) = root(&roots, &selection.root_id) else {
-            return None;
-        };
-        let selected = choice(
-            root,
-            selection.root_id.clone(),
-            selection.segments.clone(),
-            selection
-                .segments
-                .last()
-                .cloned()
-                .unwrap_or_else(|| root.name.clone()),
-        )
-        .ok()?;
-        if selected.selection.directory_identity != selection.directory_identity
-            || Path::new(&selected.path).starts_with(&managed)
-        {
+        let path = resolve_path(&path, home.as_deref())?;
+        if path.starts_with(&excluded) {
             return None;
         }
-        let path = std::path::PathBuf::from(&selected.path);
-        let directory = directory::open(&path, &selection.directory_identity).ok()?;
+        let (_, located) = find(&roots, &path)?;
+        let directory = directory::open(&path, &located.identity).ok()?;
         if !workspace_marker {
-            return Some(selected);
+            return Some(located);
         }
         match workspace::read_directory_identity(path, directory) {
-            Ok(_) => Some(selected),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(selected),
+            Ok(_) => Some(located),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(located),
             Err(_) => None,
         }
-    })
-    .await
-    .map_err(|_| "agent_directory_unavailable".into())
-}
-
-pub async fn selection_at(
-    roots: Vec<Root>,
-    path: String,
-    managed: std::path::PathBuf,
-) -> Result<Option<DirectorySelection>, String> {
-    tokio::task::spawn_blocking(move || {
-        let path = Path::new(&path);
-        if path.starts_with(&managed) {
-            return None;
-        }
-        for (index, root) in roots.iter().enumerate() {
-            let Ok(relative) = path.strip_prefix(root.directory.path()) else {
-                continue;
-            };
-            let segments = relative
-                .components()
-                .map(|part| part.as_os_str().to_str().map(str::to_owned))
-                .collect::<Option<Vec<_>>>()?;
-            let Ok(selected) = choice(
-                root,
-                format!("root-{}", index + 1),
-                segments,
-                root.name.clone(),
-            ) else {
-                continue;
-            };
-            if Path::new(&selected.path) == path {
-                return Some(selected.selection);
-            }
-        }
-        None
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())
@@ -487,6 +465,41 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    fn roots(temporary: &Path, published: &Path) -> Vec<Root> {
+        open(
+            vec![DirectoryRootSpec {
+                label: "Projects".into(),
+                path: published.to_owned(),
+            }],
+            &temporary.join("managed"),
+        )
+        .unwrap()
+    }
+    async fn children(
+        roots: &[Root],
+        path: &Path,
+        after: Option<String>,
+    ) -> Result<(Directory, Vec<Directory>, Option<String>), String> {
+        let page = query(
+            roots.to_vec(),
+            Directories::Children {
+                path: path.to_str().unwrap().into(),
+                after,
+            },
+            None,
+        )
+        .await?;
+        let DirectoryPage::Children {
+            directory,
+            children,
+            after,
+        } = page
+        else {
+            panic!("children")
+        };
+        Ok((directory, children, after))
+    }
+
     #[tokio::test]
     async fn inaccessible_children_do_not_break_paging_but_parent_failure_is_reported() {
         let temporary = tempfile::tempdir().unwrap();
@@ -496,20 +509,16 @@ mod tests {
             std::fs::create_dir(published.join(format!("folder-{index:02}"))).unwrap();
         }
         let denied = published.join("folder-01");
-        let roots = open(
-            vec![DirectoryRootSpec {
-                label: "Projects".into(),
-                path: published.clone(),
-            }],
-            &temporary.path().join("managed"),
-        )
-        .unwrap();
+        let roots = roots(temporary.path(), &published);
         let DirectoryPage::Roots { roots: entries } =
-            query(roots.clone(), Directories::Roots {}).await.unwrap()
+            query(roots.clone(), Directories::Roots {}, None)
+                .await
+                .unwrap()
         else {
             panic!("roots")
         };
-        let selection = entries[0].selection.clone();
+        assert_eq!(entries[0].name, "Projects");
+        let root = PathBuf::from(&entries[0].path);
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
         assert_eq!(
             std::fs::read_dir(&denied)
@@ -517,58 +526,31 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::PermissionDenied
         );
-        let page = query(
-            roots.clone(),
-            Directories::Children {
-                selection: selection.clone(),
-                after: None,
-            },
-        )
-        .await;
+        let page = children(&roots, &root, None).await;
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let DirectoryPage::Children {
-            children, after, ..
-        } = page.unwrap()
-        else {
-            panic!("children")
-        };
-        assert_eq!(children.len(), 32);
-        assert!(!children.iter().any(|child| child.name == "folder-01"));
+        let (directory, listed, after) = page.unwrap();
+        assert_eq!(directory.path, entries[0].path);
+        assert_eq!(listed.len(), 32);
+        assert!(!listed.iter().any(|child| child.name == "folder-01"));
         assert_eq!(after.as_deref(), Some("folder-32"));
-        let DirectoryPage::Children {
-            children, after, ..
-        } = query(
-            roots.clone(),
-            Directories::Children {
-                selection: selection.clone(),
-                after,
-            },
-        )
-        .await
-        .unwrap()
-        else {
-            panic!("children")
-        };
+        let (_, listed, after) = children(&roots, &root, after).await.unwrap();
         assert_eq!(
-            children
+            listed
                 .iter()
                 .map(|child| child.name.as_str())
                 .collect::<Vec<_>>(),
             ["folder-33", "folder-34"]
         );
         assert!(after.is_none());
-        let DirectoryPage::Children { children, .. } = query(
-            roots.clone(),
-            Directories::Children {
-                selection: selection.clone(),
-                after: None,
-            },
-        )
-        .await
-        .unwrap() else {
-            panic!("children after permission restoration")
-        };
-        assert!(children.iter().any(|child| child.name == "folder-01"));
+        let (_, listed, _) = children(&roots, &root, None).await.unwrap();
+        assert!(listed.iter().any(|child| child.name == "folder-01"));
+        // A child is named by its own path, and its page names it too.
+        let (folder, inside, _) = children(&roots, &root.join("folder-02"), None)
+            .await
+            .unwrap();
+        assert_eq!(folder.name, "folder-02");
+        assert_eq!(folder.path, listed[2].path);
+        assert!(inside.is_empty());
         std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o0)).unwrap();
         assert_eq!(
             std::fs::read_dir(&published)
@@ -576,29 +558,114 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::PermissionDenied
         );
-        let unavailable = query(
-            roots.clone(),
-            Directories::Children {
-                selection: selection.clone(),
-                after: None,
-            },
-        )
-        .await;
+        let unavailable = children(&roots, &root, None).await;
         std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(unavailable.err().unwrap(), "agent_directory_unavailable");
         std::fs::rename(&published, temporary.path().join("moved")).unwrap();
         assert_eq!(
-            query(
-                roots,
-                Directories::Children {
-                    selection,
-                    after: None
-                }
-            )
-            .await
-            .err()
-            .unwrap(),
+            children(&roots, &root, None).await.err().unwrap(),
             "agent_directory_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn directories_are_named_by_path_within_the_most_specific_location() {
+        let temporary = tempfile::tempdir().unwrap();
+        let published = temporary.path().join("published");
+        let app = published.join("code").join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(temporary.path().join("elsewhere")).unwrap();
+        let managed = temporary.path().join("managed");
+        let roots = open(
+            vec![
+                DirectoryRootSpec {
+                    label: "Projects".into(),
+                    path: published.clone(),
+                },
+                DirectoryRootSpec {
+                    label: "Code".into(),
+                    path: published.join("code"),
+                },
+            ],
+            &managed,
+        )
+        .unwrap();
+        let located = |path: String| {
+            let roots = roots.clone();
+            let managed = managed.clone();
+            async move { selected(roots, &path, None, managed).await.unwrap() }
+        };
+        let found = located(app.display().to_string()).await.unwrap();
+        let canonical = app.canonicalize().unwrap();
+        assert_eq!(found.name, "app");
+        assert_eq!(found.path, host_path(&canonical).unwrap());
+        assert_eq!(found.identity, directory::capture(&app).unwrap().1);
+        // Written with `.`, `..` and a trailing separator: the same directory.
+        let dotted = format!("{}/./code/../code/app/", published.display());
+        assert_eq!(located(dotted).await.unwrap(), found);
+        // A location names itself; the deeper of two overlapping locations wins.
+        let code = located(published.join("code").display().to_string())
+            .await
+            .unwrap();
+        assert_eq!(code.name, "Code");
+        let projects = located(published.display().to_string()).await.unwrap();
+        assert_eq!(projects.name, "Projects");
+        let DirectoryPage::Roots { roots: entries } =
+            query(roots.clone(), Directories::Roots {}, None)
+                .await
+                .unwrap()
+        else {
+            panic!("roots")
+        };
+        assert_eq!(
+            entries
+                .iter()
+                .map(|root| root.path.as_str())
+                .collect::<Vec<_>>(),
+            [projects.path.as_str(), code.path.as_str()]
+        );
+        // Outside the locations, missing, a file, relative, or managed: nothing.
+        std::fs::write(app.join("file.txt"), "x").unwrap();
+        std::fs::create_dir_all(managed.join("wt")).unwrap();
+        for absent in [
+            temporary.path().join("elsewhere").display().to_string(),
+            app.join("missing").display().to_string(),
+            app.join("file.txt").display().to_string(),
+            "code/app".to_owned(),
+            managed.join("wt").display().to_string(),
+        ] {
+            assert!(located(absent.clone()).await.is_none(), "{absent}");
+        }
+    }
+
+    #[test]
+    fn a_tilde_stands_for_the_home_directory_only_at_the_start() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        std::fs::create_dir_all(home.join("code")).unwrap();
+        let canonical = home.canonicalize().unwrap();
+        assert_eq!(resolve_path("~", Some(&home)), Some(canonical.clone()));
+        assert_eq!(
+            resolve_path("~/code", Some(&home)),
+            Some(canonical.join("code"))
+        );
+        assert_eq!(
+            resolve_path("~/code/", Some(&home)),
+            Some(canonical.join("code"))
+        );
+        assert_eq!(
+            resolve_path("~/code/..", Some(&home)),
+            Some(canonical.clone())
+        );
+        assert_eq!(resolve_path("~/missing", Some(&home)), None);
+        assert_eq!(resolve_path("~/code", None), None);
+        // `~user` and a `~` later in the path are not expansions.
+        assert_eq!(resolve_path("~someone/code", Some(&home)), None);
+        let literal = home.join("~");
+        std::fs::create_dir(&literal).unwrap();
+        assert_eq!(
+            resolve_path(literal.to_str().unwrap(), Some(&home)),
+            Some(canonical.join("~"))
         );
     }
 }

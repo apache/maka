@@ -21,8 +21,8 @@
 
 [简体中文](README.zh-CN.md)
 
-History-only checkpoints use `RootStore::history_checkpoints` and the types in
-[`checkpoints`](src/checkpoints.rs). A native Bundle and versioned manifest are
+Checkpoints use `RootStore::history_checkpoints` and the types in
+[`checkpoints`](src/checkpoints.rs). A native Bundle and manifest are
 verified and durably stored under the private Root before a separate checkpoint
 Head is created or conditionally advanced. Head and publication receipt commit
 in the Session's partition transaction; the Host operation journal can be in a
@@ -41,11 +41,13 @@ Historical success receipts do not grant access to superseded revisions.
 
 This internal facility currently requires Unix file/directory durability;
 unsupported platforms reject publication before claiming an operation. It has no
-automatic trigger, wire endpoint, workspace file snapshot, execution grant or
-restore/activation path. The format is native history, not the legacy TS
-compatibility bundle. Immutable objects are conservatively retained; only owned
+automatic trigger, wire endpoint or cross-Root execution handoff. The native
+formats are distinct from the legacy TS compatibility bundle; workspace capture
+and same-Root directory recovery are described below. Immutable objects are conservatively retained; only owned
 temporary files are cleaned. Storage usage is therefore not automatically bounded,
 and object retention/GC remains separate work.
+
+`HistoryCheckpoints::load_exact` pins an exact current Head and imports its validated native bundle into a private inspection database. The load journal lives beside the source Head; the destination native import receipt reconciles an uncertain import without overwriting live history. Root startup processes pending loads in bounded batches from their original materials. Inspections preserve historical IDs but have no live routes, execution configuration or scheduler. Only bounded history/artifact queries are exposed; the private `EventLog` is never returned. Physical workers retain Root custody until target SQL is closed. Loaded inspections remain readable after Head advances and are conservatively retained; there is no inspection GC yet.
 
 Transcript rows expose separate `position` and `order` addresses. `position` locates canonical source content; `order` places a native assistant message at its actual start even when its end arrives after a tool call. Indexed history paging, navigation and copied history use display order while source reads and fences retain canonical provenance. Native message bodies are reconstructed through invocation/message-specific indexes, not by rescanning all earlier tool output.
 
@@ -87,7 +89,6 @@ A statement failure rolls back the entire group unless it is a domain rejection 
 
 Saved application inspection uses `RootOwner::open_existing` and `EventLog::for_application_inspection`. It requires existing private coordination state and the original exclusive Root/database leases, reads committed application facts including retained WAL content, and closes without changing stored members or bytes. It performs no migration or derived initialization; missing state fails without repair. Only application queries on the owned connection belong to this opening. CLI application read and default-update preview share it; applying an update opens a fresh ordinary writer and recomputes the change.
 
-
 Original operation contracts are stored once by digest. Operation requests and receipt references carry that identity, so journal reads, caller history and UI delivery do not repeatedly copy service schemas. Reads verify the exact original request fingerprint; admission still validates the complete contract and resource requirements.
 
 The operation journal retains complete admitted requests and returned values without separate request, result or receipt-reference size quotas. Exact retries and reopened readers recover the original outcome and cleanup status.
@@ -121,3 +122,12 @@ Integration scenarios share `cargo test -p maka-event-log --test integration`; f
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 Startup recovery reads all unresolved execution authority without a separate item or byte quota; completed history stays excluded. Tool-result payloads and frozen request compositions have no application-level storage size cap. The schema migration preserves existing payloads and composition references.
+
+
+Workspace snapshots use a path inventory plus immutable file objects. Their
+`caller_confirmed_quiescent` / `unverified` declaration is independent of byte
+integrity and never claims external-writer fencing. Same-Root workspace restore
+requires unchanged live history, materializes a new directory, and commits the
+binding and original receipt atomically without advancing checkpoint Head or
+starting execution. See the [Agent API](../../plugins/agent/api/README.md#workspace-publication-and-local-continuation)
+for the supported file policy, explicit warning, recovery and scope limits.

@@ -68,7 +68,7 @@ fn rect(b: Bounds<Points>) -> View {
 
 /// The editor.
 pub(crate) fn render(rv: Rv) -> impl IntoElement {
-    let (scroll_rv, layout_rv) = (rv.clone(), rv.clone());
+    let (scroll_rv, layout_rv, focus_rv) = (rv.clone(), rv.clone(), rv.clone());
     let root = part(
         view()
             .relative()
@@ -80,7 +80,9 @@ pub(crate) fn render(rv: Rv) -> impl IntoElement {
     root.child(
         scroll()
             .element_ref(&rv.scroll)
+            .focusable(false)
             .flex_1()
+            .on_press(move || focus_rv.focus())
             .on_scroll(move |e: &ScrollEvent| {
                 scroll_rv.scroll_y.set(e.offset.y);
                 scroll_rv.scrolled.set(e.offset.y);
@@ -102,6 +104,7 @@ fn content(rv: Rv) -> impl IntoElement {
     part(
         view()
             .element_ref(&rv.content)
+            .focusable(false)
             .on_layout(move |b: &Bounds<Points>| {
                 height.set(b.size.height);
                 placed.place();
@@ -1310,11 +1313,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         .top(move || Length::from(at.get().y))
         .w(px(1.0))
         .h(px(SINK_HEIGHT))
-        .pointer_events(if is_terminal() {
-            PointerEvents::BoxNone
-        } else {
-            PointerEvents::None
-        })
+        .pointer_events(PointerEvents::BoxNone)
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)

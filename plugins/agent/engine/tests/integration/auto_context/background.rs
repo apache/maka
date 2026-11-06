@@ -407,7 +407,19 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_summary_drains_before_terminal_handoff_and_retirement() {
-    for ending in ["complete", "cancel", "handoff", "retire", "summary-tool"] {
+    use crate::support::code_mode_lifetime::{self, AnswerEffect};
+    use maka_tools::{
+        ToolCatalog, ToolHandler, ToolMode, ToolNesting, ToolRegistration, ToolSemantics,
+    };
+
+    for ending in [
+        "finish-ready",
+        "complete",
+        "cancel",
+        "handoff",
+        "retire",
+        "summary-tool",
+    ] {
         use tokio::io::AsyncReadExt;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("events.sqlite");
@@ -416,14 +428,33 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let count = Arc::new(AtomicUsize::new(0));
-        let mut next = agent_loop::input(
-            &base,
-            "next",
-            Arc::new(agent_loop::Effect {
-                log: log.clone(),
-                count: count.clone(),
-            }),
-        );
+        let effect = Arc::new(agent_loop::Effect {
+            log: log.clone(),
+            count: count.clone(),
+        });
+        let mut next = agent_loop::input(&base, "next", effect.clone());
+        let slow = Arc::new(AnswerEffect::default());
+        if ending == "finish-ready" {
+            let RunWork::Message { tools, .. } = &mut next.work else {
+                unreachable!()
+            };
+            *tools = ToolCatalog::new([
+                ToolRegistration {
+                    definition: serde_json::from_value(json!({"name":"slow","description":"controlled answer","inputSchema":{"type":"object"}})).unwrap(),
+                    nesting: ToolNesting::Nestable,
+                    semantics: ToolSemantics::Parallel,
+                    handler: ToolHandler::Immediate(slow.clone()),
+                },
+                ToolRegistration {
+                    definition: serde_json::from_value(json!({"name":"echo","description":"finish this turn","inputSchema":{"type":"object"}})).unwrap(),
+                    nesting: ToolNesting::DirectOnly,
+                    semantics: ToolSemantics::FinishTurn,
+                    handler: ToolHandler::Immediate(effect.clone()),
+                },
+            ]).unwrap();
+            next.configuration.tool_mode = ToolMode::CodeMode;
+        }
+        drop(effect);
         next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
         next.configuration.workspace_identity = Some(
             maka_agent_facts::execution::WorkspaceIdentity::from_marker_id(
@@ -458,7 +489,7 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                     .next()
                     .unwrap(),
                 ) {
-                    if ending != "summary-tool" {
+                    if !matches!(ending, "summary-tool" | "finish-ready") {
                         socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
                         let delta = json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
                             "choices":[{"index":0,"delta":{"content":"private unfinished summary"},"finish_reason":null}]});
@@ -475,11 +506,25 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             if ending == "summary-tool" {
                 agent_loop::respond(summary.as_mut().unwrap(), true).await;
             }
+            if ending == "finish-ready" {
+                code_mode_lifetime::tool(
+                    main.as_mut().unwrap(),
+                    "exec",
+                    json!({"code":"await tools.slow({});","yield_time_ms":0}),
+                )
+                .await;
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut socket).await;
+                assert!(request["messages"].to_string().contains("running"));
+                slow.entered.notified().await;
+                main = Some(socket);
+                fixture::respond(summary.as_mut().unwrap(), fixture::SUMMARY, "stop").await;
+            }
             seen.send(()).unwrap();
             released.await.unwrap();
             let mut main = main.unwrap();
             if !matches!(ending, "cancel" | "retire") {
-                agent_loop::respond(&mut main, ending == "handoff").await;
+                agent_loop::respond(&mut main, matches!(ending, "handoff" | "finish-ready")).await;
             }
             let _ = summary.unwrap().read_to_end(&mut Vec::new()).await;
         });
@@ -496,12 +541,16 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 .await
                 .unwrap();
             ready.await.unwrap();
-            if ending == "summary-tool" {
+            if matches!(ending, "summary-tool" | "finish-ready") {
                 let mut commits = log.subscribe_commits();
                 loop {
                     let prefix = log.prefix(200, 512 * 1024).await.unwrap();
                     if prefix.events.iter().any(|e| {
-                        matches!(&e.event.fact, Fact::ModelInterrupted { partial: None, .. })
+                        matches!(&e.event.fact,
+                            Fact::ModelInterrupted { partial: None, .. } if ending == "summary-tool")
+                            || matches!(&e.event.fact,
+                                Fact::ModelCompleted { output, .. }
+                                    if ending == "finish-ready" && serde_json::to_string(output).unwrap().contains("summary-marker"))
                     }) {
                         break;
                     }
@@ -579,11 +628,13 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 _ => None,
             })
             .unwrap();
-        assert!(
-            prefix.events.iter().any(|event| matches!(&event.event.fact,
-                Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)),
-            "cancel/drain seals Summary without publishing its private prose"
-        );
+        if ending != "finish-ready" {
+            assert!(
+                prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ModelInterrupted { step_id, partial: None, .. } if step_id == summary_step)),
+                "cancel/drain seals Summary without publishing its private prose"
+            );
+        }
         if ending == "summary-tool" {
             assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
                     Fact::ModelObserved { step_id, event: maka_agent_facts::model::recorded::ModelObservation::Part(_) }
@@ -627,16 +678,17 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
                 .invocations
                 .is_empty()
         );
-        assert!(
+        assert_eq!(
             log.read_model_view("session", None)
                 .await
                 .unwrap()
                 .baseline
-                .is_none()
+                .is_some(),
+            ending == "finish-ready"
         );
         assert_eq!(
             count.load(Ordering::SeqCst),
-            usize::from(ending == "handoff")
+            usize::from(matches!(ending, "handoff" | "finish-ready"))
         );
         if ending == "retire" {
             assert!(
@@ -647,9 +699,22 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             );
         }
         drop(worker);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+        log.shutdown().await.unwrap();
+        drop(log);
         let log = SessionFixture::open(&path).await.unwrap();
         assert_eq!(log.root().recover_invocations().await.unwrap(), 0);
+        if ending == "finish-ready" {
+            let baseline = log
+                .read_model_view("session", None)
+                .await
+                .unwrap()
+                .baseline
+                .unwrap();
+            assert_eq!(
+                baseline.checkpoint.summary.text_value().unwrap(),
+                fixture::SUMMARY
+            );
+        }
         log.close().await.unwrap();
     }
 }

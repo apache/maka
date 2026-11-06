@@ -130,20 +130,21 @@ async fn published_directories_are_readonly_paged_and_create_only_observed_works
     assert_eq!(roots["roots"].as_array().unwrap().len(), 2);
     assert!(!fixture.workspace.join(MARKER_FILE).exists());
     assert!(!fixture.root.join(MARKER_FILE).exists());
-    let selection = roots["roots"][0]["selection"].clone();
+    let root = roots["roots"][0]["path"].clone();
     let page = fixture
         .query(
             "directories",
-            json!({"kind":"children","selection":selection,"after":null}),
+            json!({"kind":"children","path":root,"after":null}),
         )
         .await
         .unwrap();
+    assert_eq!(page["directory"]["path"], root);
     assert_eq!(page["children"].as_array().unwrap().len(), 32);
     assert_eq!(page["after"], "dir-31");
     let tail = fixture
         .query(
             "directories",
-            json!({"kind":"children","selection":selection,"after":page["after"]}),
+            json!({"kind":"children","path":root,"after":page["after"]}),
         )
         .await
         .unwrap();
@@ -152,37 +153,41 @@ async fn published_directories_are_readonly_paged_and_create_only_observed_works
     for (children, indices) in [(&page["children"], 0..32), (&tail["children"], 32..36)] {
         let expected: Vec<_> = indices.map(|index| {
             let name = format!("dir-{index:02}");
-            let (path, identity) = maka_fs_tools::directory::capture(&fixture.workspace.join(&name)).unwrap();
-            json!({"name":name,"path":maka_fs_tools::workspace::project::host_path(&path).unwrap(),
-                "selection":{"rootId":"root-1","segments":[name],"directoryIdentity":identity}})
+            let (path, _) = maka_fs_tools::directory::capture(&fixture.workspace.join(&name)).unwrap();
+            json!({"name":name,"path":maka_fs_tools::workspace::project::host_path(&path).unwrap()})
         }).collect();
         assert_eq!(*children, json!(expected));
     }
     assert!(!fixture.workspace.join(MARKER_FILE).exists());
-    for (field, value) in [
-        ("rootId", json!("unknown")),
-        ("segments", json!([".."])),
-        (
-            "directoryIdentity",
-            json!(format!("sha256:{}", "0".repeat(64))),
-        ),
+    // Outside the published locations, missing, a file, or relative: refused
+    // before any effect.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.workspace.join("a-file"), []).unwrap();
+    for invalid in [
+        json!(outside.path().to_str().unwrap()),
+        json!(fixture.workspace.join("missing").to_str().unwrap()),
+        json!(fixture.workspace.join("a-file").to_str().unwrap()),
+        json!("dir-03"),
     ] {
-        let mut invalid = selection.clone();
-        invalid[field] = value;
-        let result = fixture.mutation(2, "create", json!({"title":"Rejected","labels":[],"workspace":{"kind":"directory","selection":invalid}}), Uuid::new_v4()).await.unwrap();
+        let result = fixture.mutation(2, "create", json!({"title":"Rejected","labels":[],"workspace":{"kind":"directory","path":invalid}}), Uuid::new_v4()).await.unwrap();
         assert_eq!(
             result,
-            json!({"kind":"rejected","reason":"workspace_unavailable"})
+            json!({"kind":"rejected","reason":"workspace_unavailable"}),
+            "{invalid}"
         );
     }
     let child = &page["children"][3];
-    let result = fixture.mutation(2, "create", json!({"title":"Selected child","labels":["research"],"workspace":{"kind":"directory","selection":child["selection"]}}), Uuid::new_v4()).await.unwrap();
+    let result = fixture.mutation(2, "create", json!({"title":"Selected child","labels":["research"],"workspace":{"kind":"directory","path":child["path"]}}), Uuid::new_v4()).await.unwrap();
     assert_eq!(result["kind"], "created");
     let session = &result["session"];
     assert_eq!(session["workspace"]["path"], child["path"]);
     assert_eq!(
         session["workspace"]["directoryIdentity"],
-        child["selection"]["directoryIdentity"]
+        json!(
+            maka_fs_tools::directory::capture(&fixture.workspace.join("dir-03"))
+                .unwrap()
+                .1
+        )
     );
     assert_eq!(session["labels"], json!(["research"]));
     assert!(fixture.workspace.join("dir-03").join(MARKER_FILE).exists());
@@ -197,12 +202,12 @@ async fn published_directories_are_readonly_paged_and_create_only_observed_works
         let repeated = fixture
             .query(
                 "directories",
-                json!({"kind":"children","selection":selection,"after":null})
+                json!({"kind":"children","path":root,"after":null})
             )
             .await?;
-        let remaining = fixture.query("directories", json!({"kind":"children","selection":selection,"after":repeated["after"]})).await?;
+        let remaining = fixture.query("directories", json!({"kind":"children","path":root,"after":repeated["after"]})).await?;
         let query_markers: Vec<_> = (0..36).map(|index| fixture.workspace.join(format!("dir-{index:02}")).join(MARKER_FILE).exists()).collect();
-        let created = fixture.mutation(2, "create", json!({"title":"Paged child","labels":[],"workspace":{"kind":"directory","selection":remaining["children"][0]["selection"]}}), Uuid::new_v4()).await?;
+        let created = fixture.mutation(2, "create", json!({"title":"Paged child","labels":[],"workspace":{"kind":"directory","path":remaining["children"][0]["path"]}}), Uuid::new_v4()).await?;
         Ok::<_, String>((repeated, remaining, query_markers, created))
     }.await;
     fixture.drained().await;
@@ -225,7 +230,11 @@ async fn published_directories_are_readonly_paged_and_create_only_observed_works
     );
     assert_eq!(
         created["session"]["workspace"]["directoryIdentity"],
-        tail["children"][0]["selection"]["directoryIdentity"]
+        json!(
+            maka_fs_tools::directory::capture(&fixture.workspace.join("dir-32"))
+                .unwrap()
+                .1
+        )
     );
     assert_eq!(
         created["session"]["workspace"]["identity"],

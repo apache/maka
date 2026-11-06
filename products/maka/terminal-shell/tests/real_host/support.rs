@@ -323,7 +323,7 @@ impl Fixture {
             .query("agent", "directories", json!({"kind":"roots"}))
             .await
             .unwrap();
-        let created = mutate(&client,"create",json!({"title":"NSH real Agent","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
+        let created = mutate(&client,"create",json!({"title":"NSH real Agent","labels":[],"workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})).await;
         fixture.session = created["session"]["id"].as_str().unwrap().to_owned();
         client.close().await.unwrap();
         fixture

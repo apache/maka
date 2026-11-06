@@ -332,7 +332,7 @@ impl Owner {
                 if runs.closing || owner.stop.is_cancelled() {
                     return Err("agent_closed".into());
                 }
-                let session = owner.session(&input.session_id).await?;
+                let session = owner.mutable_session(&input.session_id).await?;
                 let current = graphs.current(&input.session_id).await?;
                 if current.as_ref().map(|c| &c.epoch.graph_id) != input.expected_graph_id.as_ref() {
                     return graphs

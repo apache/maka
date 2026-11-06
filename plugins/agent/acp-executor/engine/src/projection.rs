@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use agent_client_protocol::schema::v1 as acp;
+use agent_client_protocol::v1::schema as acp;
 use maka_agent_facts::executor::Output;
 use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::OutputSink;

@@ -1964,3 +1964,138 @@ async fn actual_host_startup_resumes_due_model_retry_once() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn closing_session_mcp_settles_parked_work_before_allowing_reconnect() {
+    closing_session_mcp(McpClose::Reconnect).await;
+}
+
+#[tokio::test]
+async fn shutdown_wakes_session_mcp_parked_wait() {
+    closing_session_mcp(McpClose::Shutdown).await;
+}
+
+enum McpClose {
+    Reconnect,
+    Shutdown,
+}
+
+async fn closing_session_mcp(mode: McpClose) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let counter = Counter::new(Behavior::Returned);
+        let mut setup = Setup::native(counter.clone(), true);
+        setup.confirmation = contract::ToolConfirmation::Required;
+        let fixture = Fixture::with_services(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            Some(setup),
+        )
+        .await;
+        let shutdown = matches!(mode, McpClose::Shutdown);
+        fixture
+            .owner
+            .mcp_shutdown_at_parked_wait
+            .store(shutdown, Ordering::SeqCst);
+        let session = fixture.create("Session MCP disconnect").await;
+        let mut lease = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "sessionMcp".into(),
+                json!({"sessionId":session,"servers":[]}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lease.recv().await.unwrap(), json!({"tools":[]}));
+        fixture.send(&session).await.unwrap();
+        let mut socket = next_model_socket(&listener, &fixture, &session).await;
+        request(&mut socket).await;
+        tool_response(&mut socket).await;
+        let approval = pending_approval(&fixture, &session).await;
+        let store = fixture.session(&session).await;
+        let mut commits = store.subscribe_commits().unwrap();
+        let checkpoint = loop {
+            if let Some(checkpoint) = store.native_approval_checkpoint(&session).await.unwrap() {
+                break checkpoint;
+            }
+            commits.changed().await.unwrap();
+        };
+
+        if shutdown {
+            let closing = fixture.owner.clone();
+            let (closed, ()) = tokio::join!(lease.completion(), async {
+                closing.stop.cancelled().await;
+                closing.close().await.unwrap();
+            });
+            closed.cleanup.unwrap();
+            assert!(
+                store
+                    .native_approval_checkpoint(&session)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revoked
+            );
+            assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+            fixture.app.shutdown().await.unwrap();
+            fixture.config.shutdown().await.unwrap();
+            return;
+        }
+
+        lease.completion().await.cleanup.unwrap();
+        let settlements = stored_facts(&fixture, &session)
+            .await
+            .into_iter()
+            .filter(|event| {
+                matches!(&event.event.fact, Fact::ToolSettled { operation_id, .. }
+                if operation_id == &checkpoint.pending[0].operation_id)
+            })
+            .count();
+        assert_eq!(settlements, 1);
+        assert!(
+            store
+                .native_approval_checkpoint(&session)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let late = fixture
+            .mutation(
+                2,
+                "respond",
+                json!({
+                    "sessionId":session,"requestId":approval.request_id,
+                    "answer":{"kind":"service_approval","decision":"allow"},
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(late["record"]["outcome"]["kind"], "closure");
+        assert_eq!(counter.effects.load(Ordering::SeqCst), 0);
+        let mut replacement = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "sessionMcp".into(),
+                json!({"sessionId":session,"servers":[]}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replacement.recv().await.unwrap(), json!({"tools":[]}));
+        replacement.completion().await.cleanup.unwrap();
+        fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

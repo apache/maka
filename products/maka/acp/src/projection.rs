@@ -18,7 +18,7 @@
  */
 
 //! ACP presentation of public observations and durable transcript rows.
-use agent_client_protocol::schema::{MaybeUndefined, v2 as acp};
+use crate::presentation::{MessageKind, Meta, Text, ToolCard, ToolStatus, Update};
 use maka_agent_api::contract::{ContentKind, HistoryChunk, PreviewField, PreviewPage};
 use maka_agent_ports::session::history::HistoryField;
 use maka_agent_ports::session::history::Role;
@@ -28,16 +28,9 @@ use std::collections::{HashMap, HashSet};
 mod messages;
 mod tools;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum MessageKind {
-    User,
-    Text,
-    Thinking,
-}
-
 struct Message {
     text: String,
-    meta: acp::Meta,
+    meta: Meta,
     canonical: bool,
 }
 
@@ -61,19 +54,19 @@ struct CanonicalAssembly {
     position: maka_agent_ports::session::history::RowPosition,
     field: HistoryField,
     text: String,
-    meta: acp::Meta,
+    meta: Meta,
 }
 
 struct Tool {
     turn: String,
-    card: acp::ToolCallUpdate,
-    published: Option<acp::ToolCallUpdate>,
+    card: ToolCard,
+    published: Option<ToolCard>,
     authoritative: bool,
     position: Option<maka_agent_ports::session::history::RowPosition>,
 }
 
 impl Projection {
-    pub fn chunk(&mut self, chunk: &HistoryChunk) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    pub fn chunk(&mut self, chunk: &HistoryChunk) -> Result<Vec<Update>, crate::Error> {
         if chunk.offset == 0 {
             self.preview_seed
                 .retain(|(turn, id, _), _| turn != &chunk.turn_id || id != &chunk.message_id);
@@ -167,7 +160,7 @@ impl Projection {
         }
     }
 
-    pub fn preview(&mut self, page: &PreviewPage) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    pub fn preview(&mut self, page: &PreviewPage) -> Result<Vec<Update>, crate::Error> {
         let PreviewPage::Cut {
             host_epoch,
             invocation_id,
@@ -271,13 +264,7 @@ impl Projection {
         Ok(updates)
     }
 
-    pub fn append(
-        &mut self,
-        turn: &str,
-        id: &str,
-        kind: &ContentKind,
-        delta: &str,
-    ) -> Vec<acp::SessionUpdate> {
+    pub fn append(&mut self, turn: &str, id: &str, kind: &ContentKind, delta: &str) -> Vec<Update> {
         let message_kind = match kind {
             ContentKind::Text => MessageKind::Text,
             ContentKind::Thinking => MessageKind::Thinking,
@@ -299,18 +286,20 @@ impl Projection {
         });
         message.text.push_str(delta);
         message.meta = meta.clone();
-        let update = match kind {
-            ContentKind::Text => acp::SessionUpdate::AgentMessageChunk(
-                acp::ContentChunk::new(delta.into(), id).meta(meta),
-            ),
-            ContentKind::Thinking => acp::SessionUpdate::AgentThoughtChunk(
-                acp::ContentChunk::new(delta.into(), format!("thinking:{id}")).meta(meta),
-            ),
+        let update = Update::Message {
+            id: if message_kind == MessageKind::Thinking {
+                format!("thinking:{id}")
+            } else {
+                id.into()
+            },
+            kind: message_kind,
+            text: Text::Delta(delta.into()),
+            meta,
         };
         vec![update]
     }
 }
 
-fn message_meta(turn: &str, id: &str) -> acp::Meta {
-    acp::Meta::from_iter([("maka".into(), json!({"hostMessageId":id,"turnId":turn}))])
+fn message_meta(turn: &str, id: &str) -> Meta {
+    Meta::from_iter([("maka".into(), json!({"hostMessageId":id,"turnId":turn}))])
 }
