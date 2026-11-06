@@ -38,6 +38,8 @@ import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/wo
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
+  const restored = context.restored as { main?: unknown; sides?: unknown[] } | null;
+  const restoredSides = [...(restored?.sides ?? [])];
   const host = createHost(context.application);
   const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
   const window: ConversationWindow = {
@@ -49,14 +51,19 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       }),
     command: (id) => invokeFocusedConversation([views, ...sides()], id),
   };
-  const views = createConversationUi(context, host, window);
+  const views = createConversationUi({ ...context, restored: restored?.main }, host, window);
   const owner = (sessionId: string | null) =>
     [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
   const Navigation = (props: { input: ConversationNavigationInput }) =>
     views.navigation(props.input);
   const Session = (props: { input: ConversationSessionInput }) => {
     if (!props.input.shell.closePane) return views.session(props.input);
-    const side = createConversationUi(context, host, window, { browsing: views.browsing });
+    const side = createConversationUi(
+      { ...context, restored: restoredSides.shift() },
+      host,
+      window,
+      { browsing: views.browsing },
+    );
     sides.set([...sides(), side]);
     cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
     return side.session(props.input);
@@ -128,8 +135,8 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       },
     },
     prepareReload: async () => {
-      await Promise.all(sides().map((pane) => pane.prepareReload()));
-      return views.prepareReload();
+      const savedSides = await Promise.all(sides().map((pane) => pane.prepareReload()));
+      return { main: await views.prepareReload(), sides: savedSides };
     },
   };
 };

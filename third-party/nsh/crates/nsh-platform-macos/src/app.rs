@@ -272,6 +272,36 @@ pub struct AppView {
 }
 
 impl AppView {
+    /// Detaches the native surface from its window while JS finishes accepted
+    /// edits. The engine stays alive so the embedding app can save its state.
+    pub fn pause_input(&self, done: impl FnOnce(Result<(), String>) + Send + 'static) {
+        let root = self.surface.root.ns();
+        // SAFETY: AppView owns the root and container on the main thread.
+        if unsafe { root.superview() }.is_none() {
+            done(Err("input is already paused".into()));
+            return;
+        }
+        if let Some(window) = root.window() {
+            if !window.makeFirstResponder(None) {
+                done(Err("the focused view could not finish editing".into()));
+                return;
+            }
+        }
+        root.removeFromSuperview();
+        self.surface.input_barrier(done);
+    }
+
+    /// Reattaches a paused surface after a cancelled transition or before
+    /// replacing its engine. The window itself remains open throughout.
+    pub fn resume_input(&self) {
+        let root = self.surface.root.ns();
+        // SAFETY: AppView owns the root and container on the main thread.
+        if unsafe { root.superview() }.is_none() {
+            root.setFrame(self.container.bounds());
+            self.container.addSubview(root);
+        }
+    }
+
     /// A view with no app yet; it fills its superview.
     pub fn new(mtm: MainThreadMarker, options: AppOptions) -> Rc<AppView> {
         let surface = Surface::new(mtm, initial_environment());

@@ -30,6 +30,49 @@ mod send_hold;
 pub(crate) mod support;
 mod ui_plugins;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconnect_preserves_the_last_edit_accepted_by_the_old_workbench() {
+    let fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
+    view.handle_event(Event::Paste("SAVED_DRAFT".into()));
+    support::wait_draft(&client, &fixture.session, "SAVED_DRAFT").await;
+
+    view.handle_event(Event::Paste("_LAST_EDIT".into()));
+    view.surface_mut().set_input_paused(true);
+    commit_native_events(&mut view).await;
+    let channel = view.host();
+    let preparing = maka_workbench::reload::prepare(&channel);
+    tokio::pin!(preparing);
+    let deadline = tokio::time::sleep(support::WAIT_TIMEOUT);
+    tokio::pin!(deadline);
+    let state = loop {
+        support::tick(&mut view);
+        tokio::select! {
+            state = &mut preparing => break state.unwrap(),
+            _ = &mut deadline => panic!("the workbench did not finish saving its draft"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    bindings.close().await.unwrap();
+    drop(view);
+
+    let client = fixture.client().await;
+    let bindings =
+        maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
+    bindings.reload().restore(state);
+    let mut view = AppView::new(Default::default());
+    support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
+    assert_eq!(
+        view.surface().input_context().unwrap().text.as_deref(),
+        Some("SAVED_DRAFT_LAST_EDIT")
+    );
+    drop(view);
+    bindings.close().await.unwrap();
+}
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use nsh_platform_tui::{AccessibleNode, AppView};
 use serde_json::{Value, json};

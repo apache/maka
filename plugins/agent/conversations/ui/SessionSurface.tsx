@@ -251,7 +251,8 @@ export function createConversationUi(
     title: string;
   } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
-  const pending = signal<PendingDraft | null>(null);
+  const restored = context.restored as { pending?: PendingDraft } | null;
+  const pending = signal<PendingDraft | null>(restored?.pending ?? null);
   const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
     const current = pending();
     if (current) pending.set({ ...current, ...patch, revision: current.revision + 1 });
@@ -2673,13 +2674,19 @@ export function createConversationUi(
       if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
         throw new UiError('Finish or recover the pending action before reloading.');
       await pendingIntake();
+      // Staged native file handles cannot be transferred to another engine.
+      // Leave this view alive rather than silently dropping a local attachment.
+      if (pendingFiles().length > 0)
+        throw new UiError(
+          'Draft could not be saved or restored. Its existing contents are preserved.',
+        );
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(
           'Draft could not be saved or restored. Its existing contents are preserved.',
         );
       if (!alive || handle() !== owner) throw new UiError('Conversation navigation was cancelled.');
-      return null;
+      return { pending: pending() };
     },
   };
 }

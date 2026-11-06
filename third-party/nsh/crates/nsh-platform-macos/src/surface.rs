@@ -405,6 +405,38 @@ impl Surface {
         crate::shader::clear(self);
     }
 
+    /// Drains native edits queued before the surface left its window.
+    pub(crate) fn input_barrier(
+        self: &Rc<Self>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let Some(control) = self.control.borrow().clone() else {
+            done(Err("the UI engine is not running".into()));
+            return;
+        };
+        let key = self.key;
+        control.advance_clock(std::time::Duration::ZERO, move || {
+            DispatchQueue::main().exec_async(move || {
+                let Some(surface) = find(key) else {
+                    done(Err("the UI surface closed while pausing input".into()));
+                    return;
+                };
+                // Applying accepted edits can send their ChangeText back to JS.
+                surface.drain();
+                loop {
+                    let message = surface.queued.borrow_mut().pop_front();
+                    let Some(message) = message else { break };
+                    surface.handle(message, None);
+                }
+                if let Some(control) = surface.control.borrow().clone() {
+                    control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
+                } else {
+                    done(Err("the UI engine stopped while pausing input".into()));
+                }
+            });
+        });
+    }
+
     /// Calls `f` with the engine's control, if an app runs.
     pub(crate) fn control(&self, f: impl FnOnce(&EngineControl)) {
         if let Some(control) = &*self.control.borrow() {

@@ -29,7 +29,10 @@ use maka_workbench::reload::Request;
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
 use std::time::Instant;
-use tokio::{runtime::Runtime, sync::watch};
+use tokio::{
+    runtime::Runtime,
+    sync::{oneshot, watch},
+};
 
 pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
     let directory = first
@@ -119,22 +122,54 @@ async fn follow(
     loop {
         let reached = Instant::now();
         let mut reloading = current.bindings.reload().take_requests();
-        let stopped = host::stopped(current.endpoint.clone(), current.epoch);
-        tokio::pin!(stopped);
-        while !*quitting.borrow() {
-            tokio::select! {
-                _ = quitting.changed() => break,
-                _ = &mut stopped => break,
-                Some(request) = reloading.recv() => {
-                    if let Request::Pause(ready) = request {
-                        let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
+        let state = {
+            let preparing = async {
+                host::stopped(current.endpoint.clone(), current.epoch).await;
+                loop {
+                    let (ready, paused) = oneshot::channel();
+                    with_running_view(move |view| {
+                        view.pause_input(move |result| {
+                            let _ = ready.send(result);
+                        })
+                    });
+                    let result = async {
+                        paused
+                            .await
+                            .map_err(|_| "the window closed while pausing input".to_owned())??;
+                        maka_workbench::reload::prepare(&current.config.host).await
+                    }
+                    .await;
+                    match result {
+                        Ok(state) => break state,
+                        Err(error) => {
+                            eprintln!("maka-desktop-shell: preserving the workbench: {error}");
+                            with_running_view(|view| view.resume_input());
+                            tokio::time::sleep(pause).await;
+                            pause = (pause * 2).min(RECONNECT_LIMIT);
+                        }
+                    }
+                }
+            };
+            tokio::pin!(preparing);
+            loop {
+                if *quitting.borrow() {
+                    break None;
+                }
+                tokio::select! {
+                    _ = quitting.changed() => break None,
+                    state = &mut preparing => break Some(state),
+                    Some(request) = reloading.recv() => {
+                        if let Request::Pause(ready) = request {
+                            let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
+                        }
                     }
                 }
             }
-        }
+        };
         // Settle the old client's journal before admitting the next client.
         host::detach(current.bindings, &current.endpoint, current.epoch).await;
         drop(current.config);
+        let Some(state) = state else { return };
         if *quitting.borrow() {
             return;
         }
@@ -163,7 +198,11 @@ async fn follow(
             host::detach(current.bindings, &current.endpoint, current.epoch).await;
             return;
         }
+        current.bindings.reload().restore(state);
         let config = shell.attach(current.config.clone());
-        with_running_view(move |view| view.load_with_config(config));
+        with_running_view(move |view| {
+            view.resume_input();
+            view.load_with_config(config);
+        });
     }
 }

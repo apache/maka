@@ -21,6 +21,28 @@ use nsh_core::JsonValue;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
+/// After native input is paused, let every active plugin save or reject the
+/// transition before its bindings are closed. Failure leaves the old UI intact.
+pub async fn prepare(host: &nsh_engine::HostChannel) -> Result<JsonValue, String> {
+    let (sender, received) = oneshot::channel();
+    let sender = Mutex::new(Some(sender));
+    host.handle("workbench.prepared", move |mut call| {
+        let data = call.take_data();
+        if let Some(sender) = sender.lock().unwrap().take() {
+            let result = match data.get("error").and_then(JsonValue::as_str) {
+                Some(error) => Err(error.to_owned()),
+                None => Ok(data["state"].clone()),
+            };
+            let _ = sender.send(result);
+        }
+        call.resolve(JsonValue::Null);
+    });
+    host.send("workbench.prepare", JsonValue::Null)?;
+    received
+        .await
+        .map_err(|_| "the workbench closed before saving its state".to_owned())?
+}
+
 #[derive(Debug)]
 pub enum Request {
     Pause(oneshot::Sender<Result<(), String>>),
@@ -81,8 +103,12 @@ impl UiReload {
         self.0.restored.lock().unwrap().clone()
     }
 
-    pub(crate) fn request(&self, state: JsonValue) {
+    pub fn restore(&self, state: JsonValue) {
         *self.0.restored.lock().unwrap() = state;
+    }
+
+    pub(crate) fn request(&self, state: JsonValue) {
+        self.restore(state);
         self.0
             .sender
             .send(Request::Reload)

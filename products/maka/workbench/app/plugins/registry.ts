@@ -17,7 +17,16 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, importModule, signal, type JSX, type Signal } from 'nsh';
+import {
+  batch,
+  cleanup,
+  computed,
+  host as shell,
+  importModule,
+  signal,
+  type JSX,
+  type Signal,
+} from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import type {
   UiCatalog,
@@ -42,7 +51,7 @@ import type {
   UiHost,
   UiViewContract,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
-import { UiError } from '../text';
+import { UiError, errorText, renderText } from '../text';
 import { uiHost } from '../host';
 import { currentLocale } from '../locale';
 import { sameValue } from '../../../../../plugins/shared/value';
@@ -231,8 +240,34 @@ export function createPlugins() {
     instance: entry.instance.instance,
     packageId: entry.instance.package.id,
   });
+  const prepareInstances = async (): Promise<RestoredUi> => {
+    const instances: RestoredInstance[] = [];
+    for (const entry of entries()) {
+      const state = entry.state();
+      if (state.kind !== 'active') continue;
+      const snapshot = (await state.activation.prepareReload?.()) ?? null;
+      if (!alive) throw new Error('The workbench closed while saving its state.');
+      instances.push({ ...identityFor(entry), state: snapshot });
+    }
+    return { instances };
+  };
+  shell.on('workbench.prepare', async () => {
+    if (processing || reloading() || !alive) {
+      await shell.call('workbench.prepared', { error: 'The workbench is already reloading.' });
+      return;
+    }
+    try {
+      reloading.set(true);
+      const state = await prepareInstances();
+      await shell.call('workbench.prepared', { state });
+    } catch (reason) {
+      reloading.set(false);
+      updateError.set(reason);
+      await shell.call('workbench.prepared', { error: renderText(errorText(reason)) });
+    }
+  });
   const reconcile = async () => {
-    if (processing || acceptedReload || !alive || !desired) return;
+    if (processing || reloading() || acceptedReload || !alive || !desired) return;
     processing = true;
     let paused = false;
     try {
@@ -242,18 +277,11 @@ export function createPlugins() {
         paused = true;
         await nativeHost.beginUiReload();
         if (!alive) return;
-        const instances: RestoredInstance[] = [];
-        for (const entry of entries()) {
-          const state = entry.state();
-          if (state.kind !== 'active') continue;
-          const snapshot = (await state.activation.prepareReload?.()) ?? null;
-          if (!alive) return;
-          instances.push({ ...identityFor(entry), state: snapshot });
-        }
+        const state = await prepareInstances();
         if (!alive) return;
         validate(desired!);
         if (needsReload(desired!)) {
-          nativeHost.reloadUi({ instances });
+          nativeHost.reloadUi(state);
           acceptedReload = true;
           return;
         }
