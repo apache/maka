@@ -130,7 +130,10 @@ export function createSkillSettings(
       }
       document.set(result);
     } catch (error) {
-      if (alive && request === read) operations.report(error);
+      if (alive && request === read) {
+        if (!document()) screen.set('library');
+        operations.report(error);
+      }
     } finally {
       if (alive && request === read) loading.set(false);
     }
@@ -201,9 +204,10 @@ export function createSkillSettings(
       if (!alive) return;
       deleting.set(null);
       document.set(null);
-      screen.set('library');
+      if (!input.update) screen.set('library');
       operations.notice.set(tr(input.update ? 'Skill updated.' : 'Skill deleted.'));
       await load();
+      if (input.update && alive) await open(input.entry);
     });
   };
   return {
@@ -221,7 +225,11 @@ export function createSkillSettings(
     deleting,
     busy: scope.busy,
     back,
-    refresh,
+    refresh: () => {
+      if (screen() !== 'library' || deleting() || scope.busy()) return;
+      operations.error.set('');
+      refresh();
+    },
     open,
     readDocument,
     discover,

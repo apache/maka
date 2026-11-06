@@ -34,6 +34,7 @@ import type { ModelAction, ModelSettingsOwner } from './settings';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 import { errorText, renderText } from './text';
+import { SettingsButton, SettingsRow } from './SettingsPage';
 import {
   C,
   bodyTextStyle,
@@ -54,68 +55,50 @@ export function CatalogModelAssociation(props: {
   const opened = signal<ModelAction | null>(null);
   const reference = () => owner.model()?.catalogModel;
   return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...captionTextStyle, color: C.secondary, fontWeight: '500' }}>
-        {tr('Catalog model')}
-      </Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-        <View style={{ flex: 1, minWidth: 160, gap: 4 }}>
-          <Text
-            style={{
-              ...captionTextStyle,
-              color: C.text,
-              numberOfLines: 1,
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {reference()
-              ? `${reference()!.provider} / ${reference()!.modelId}`
-              : tr('Automatic matching')}
-          </Text>
-          <If when={owner.model()?.defaults?.catalogMatched === false}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {reference()
-                ? tr('Associated catalog model is unavailable.')
-                : tr('No catalog model matched.')}
-            </Text>
-          </If>
-        </View>
-        <Button
-          accessibilityLabel={tr('Associate catalog model')}
-          disabled={props.disabled}
-          onPress={inputAction((request: ModelAction) => opened.set(request), owner.modelAction())}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          activeStyle={{ backgroundColor: C.line }}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Choose model')}</Text>
-        </Button>
-        <If when={reference()}>
-          <Button
-            accessibilityLabel={tr('Clear catalog association')}
-            disabled={props.disabled}
-            onPress={inputAction(owner.chooseCatalogModel, {
-              ...owner.modelAction(),
-              reference: null,
-            })}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            activeStyle={{ backgroundColor: C.line }}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>
-              {tr('Automatic matching')}
-            </Text>
-          </Button>
-        </If>
-      </View>
+    <>
+      <SettingsRow
+        label={tr('Catalog model')}
+        description={
+          reference()
+            ? `${reference()!.provider} / ${reference()!.modelId}`
+            : tr('Automatic matching')
+        }
+        status={
+          owner.model()?.defaults?.catalogMatched === false
+            ? reference()
+              ? tr('Associated catalog model is unavailable.')
+              : tr('No catalog model matched.')
+            : undefined
+        }
+        trailing={
+          <>
+            <If when={reference()}>
+              <SettingsButton
+                label={tr('Automatic matching')}
+                accessibilityLabel={tr('Clear catalog association')}
+                tone="quiet"
+                disabled={props.disabled}
+                onPress={() =>
+                  owner.chooseCatalogModel({ ...owner.modelAction(), reference: null })
+                }
+              />
+            </If>
+            <SettingsButton
+              label={tr('Choose model')}
+              accessibilityLabel={tr('Associate catalog model')}
+              disabled={props.disabled}
+              onPress={inputAction(
+                (request: ModelAction) => opened.set(request),
+                owner.modelAction(),
+              )}
+            />
+          </>
+        }
+      />
       <If when={opened()}>
         <CatalogModelPicker settings={owner} request={opened()!} close={() => opened.set(null)} />
       </If>
-    </View>
+    </>
   );
 }
 

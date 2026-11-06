@@ -27,6 +27,38 @@ async fn click(view: &mut AppView, label: &str) {
     commit_native_events(view).await;
 }
 
+async fn choose(view: &mut AppView, select: &str, option: &str) {
+    tab_to_label(view, select).await;
+    view.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    commit_native_events(view).await;
+    let shown = |view: &AppView| {
+        let height = view.surface().viewport().height.0;
+        view.accessibility_snapshot().into_iter().find(|node| {
+            node.role == nsh_core::AccessibilityRole::Option
+                && node.label == option
+                && node.frame.origin.y.0 >= 0.0
+                && node.frame.origin.y.0 + node.frame.size.height.0 <= height
+        })
+    };
+    // The terminal presents the menu as a sheet that slides in from the bottom.
+    wait_view_state(view, |view, _| shown(view).is_some()).await;
+    let mut target = shown(view).unwrap();
+    // The sheet need not sit on the cell grid; its top row's center is always inside it.
+    target.frame.origin.x.0 += target.frame.size.width.0 / 2.0;
+    support::click_node(view, target);
+    commit_native_events(view).await;
+    wait_view_state(view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.role == nsh_core::AccessibilityRole::Listbox)
+    })
+    .await;
+}
+
 fn skill(source: &std::path::Path, name: &str, body: &str) {
     let directory = source.join(name);
     std::fs::create_dir_all(&directory).unwrap();
@@ -79,20 +111,26 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
         screen.contains("Select skills to install") && screen.contains("alpha-guide")
     })
     .await;
-    click(&mut view, home.join(".maka/skills").to_str().unwrap()).await;
+    choose(
+        &mut view,
+        "Configuration location",
+        home.join(".maka/skills").to_str().unwrap(),
+    )
+    .await;
     activate(&mut view, "alpha-guide").await;
     activate(&mut view, "beta-guide").await;
     support::evidence("skills-source-selection", &view.snapshot());
     support::evidence_cells("skills-source-selection", &view);
     click(&mut view, "Install selected skills").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("alpha-guide")
-            && screen.contains("beta-guide")
-            && screen.contains("Effective")
-    })
-    .await;
     let alpha = home.join(".maka/skills/alpha-guide");
     let beta = home.join(".maka/skills/beta-guide");
+    for (name, path) in [("alpha-guide", &alpha), ("beta-guide", &beta)] {
+        support::wait_enabled_button(
+            &mut view,
+            &format!("Details for skill {name} at {}", path.display()),
+        )
+        .await;
+    }
     assert!(alpha.join("SKILL.md").exists() && beta.join("SKILL.md").exists());
     let screen = view.snapshot();
     support::evidence("skills-managed-cards", &screen);
@@ -102,21 +140,20 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
     std::fs::write(alpha.join("local-only.txt"), "local edit").unwrap();
     click(
         &mut view,
+        &format!("Details for skill alpha-guide at {}", alpha.display()),
+    )
+    .await;
+    click(
+        &mut view,
         &format!("Update skill alpha-guide at {}", alpha.display()),
     )
     .await;
     wait_view(&mut view, |screen| screen.contains("Skill updated.")).await;
     assert!(!alpha.join("removed.txt").exists() && !alpha.join("local-only.txt").exists());
-    click(
-        &mut view,
-        &format!("Details for skill alpha-guide at {}", alpha.display()),
-    )
-    .await;
     wait_view(&mut view, |screen| {
         screen.contains("Alpha instructions after update")
     })
     .await;
-    click(&mut view, "Back").await;
     click(
         &mut view,
         &format!("Delete skill alpha-guide at {}", alpha.display()),
@@ -147,7 +184,8 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
     config["mcpServers"]["docs"]["customServer"] = json!({"preserve":true});
     config["mcpServers"]["other"] = json!({"url":"https://other.example.invalid/mcp"});
     std::fs::write(&file, serde_json::to_vec(&config).unwrap()).unwrap();
-    click(&mut view, "Refresh").await;
+    click(&mut view, "Settings section Skills").await;
+    click(&mut view, "Settings section MCP servers").await;
     wait_view(&mut view, |screen| screen.contains("other")).await;
     click(
         &mut view,
@@ -174,6 +212,11 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
     assert_eq!(status["trusted"], false);
     support::evidence("mcp-project-cards", &view.snapshot());
     support::evidence_cells("mcp-project-cards", &view);
+    click(
+        &mut view,
+        &format!("Edit MCP server docs at {}", file.display()),
+    )
+    .await;
     click(
         &mut view,
         &format!("Delete MCP server docs at {}", file.display()),
@@ -220,6 +263,11 @@ async fn configuration_pages_manage_real_host_skills_and_mcp_without_creating_co
         saved["mcpServers"]["local-docs"]["passEnv"],
         json!(["DOCS_HOME"])
     );
+    click(
+        &mut view,
+        &format!("Edit MCP server local-docs at {}", file.display()),
+    )
+    .await;
     click(
         &mut view,
         &format!("Delete MCP server local-docs at {}", file.display()),
