@@ -22,8 +22,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
     AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, ExternalPaths,
     FileDropEvent, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PlatformInput, TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point,
-    px, size,
+    MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TextInputTarget, TouchPhase,
+    WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -478,6 +478,36 @@ impl Desktop {
 
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         self.click_at(position, MouseButton::Left);
+    }
+
+    /// Scrolls whatever is under `position` down by `distance`.
+    fn scroll_at(&self, position: gpui::Point<gpui::Pixels>, distance: gpui::Pixels) {
+        self.platform
+            .dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            }))
+            .unwrap();
+        self.pump();
+    }
+
+    /// Scrolls the page until the control labelled `label` ends above the one
+    /// labelled `footer`, as a person reveals a row a fixed footer covers.
+    async fn reveal_above(&self, label: &str, footer: &str) {
+        let limit = self.control(footer).await.top();
+        let x = self.control(label).await.center().x;
+        self.retry(
+            &format!("{label} stayed under {footer}"),
+            || {
+                self.controls(label)
+                    .first()
+                    .is_some_and(|row| row.bottom() <= limit)
+            },
+            || self.scroll_at(point(x, limit - px(40.0)), px(120.0)),
+        )
+        .await;
     }
 
     fn click_at(&self, position: gpui::Point<gpui::Pixels>, button: MouseButton) {
@@ -1618,6 +1648,9 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         assert_eq!(outcome["discoveries"], 2);
     }
     desktop.artifact(&format!("connection-ready-{theme}-{layout}"));
+    desktop
+        .reveal_above("Manage models", "Delete connection")
+        .await;
     desktop.press("Manage models").await;
     desktop.control("Edit model gpt-4.1").await;
     desktop.press("Set default gpt-4.1").await;

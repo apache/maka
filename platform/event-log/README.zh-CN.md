@@ -23,8 +23,8 @@
 
 Transcript 行分别暴露 `position` 和 `order`：前者定位规范原文，后者按原生 assistant 消息真正开始的位置排序，即使消息结束记录晚于工具调用。历史分页、导航与复制历史按显示顺序使用索引，原文读取和 fence 仍保留规范来源。原生消息正文按 invocation／message 专用索引重建，不逐条重扫此前所有工具输出。
 
-仅历史 checkpoint 使用 `RootStore::history_checkpoints` 和
-[`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与版本化 Manifest
+Checkpoint 使用 `RootStore::history_checkpoints` 和
+[`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与 Manifest
 先验证并持久保存在私有 Root 内，再创建或条件更新独立的 checkpoint Head。
 Head 与发布回执在 Session 所在分区的同一事务提交；Host 操作日志可能位于
 另一分区，响应结果未知时必须先查询原发布回执。实时 Session revision 和
@@ -38,10 +38,12 @@ Root 直到工作结束。精确读取只支持当前 retained checkpoint revisi
 替换成最新版本；历史成功回执也不授予已被替代版本的读取能力。
 
 该内部能力当前要求 Unix 文件及目录持久化语义，其他平台在请求 claim 前
-拒绝发布。它不提供自动触发、协议入口、Workspace 文件快照、执行授权或恢复
-启动；原生历史格式不兼容旧 TS compatibility bundle。不可变对象暂时保守
+拒绝发布。它不提供自动触发、协议入口或跨 Root 执行交接；Workspace 捕获及
+同 Root 目录恢复见下文。原生格式不兼容旧 TS compatibility bundle。不可变对象暂时保守
 保留，只清理明确归属的临时文件，因此磁盘使用并非自动有界；retention/GC
 属于后续工作。
+
+`HistoryCheckpoints::load_exact` 固定指定的当前 Head，将校验后的原生 Bundle 导入私有检查数据库。加载日志与源 Head 同分区；目标原生导入回执用于消歧，不覆盖实时历史。Root 启动时分批使用原材料恢复未完成加载。检查副本保留历史 ID，但没有实时路由、执行配置或调度器；仅暴露有界历史和 Artifact 查询，不返回私有 `EventLog`。物理 worker 持有 Root 直到目标 SQL 关闭。已加载副本在 Head 推进后仍可读，保守保留，尚无检查副本 GC。
 
 存储通过当前 SQL 迁移初始化；不支持的内部布局和记录格式会被拒绝。规范事实及其接受、所有权、恢复和预算索引共享原事务；transcript 与 Recall 读模型属于可丢弃的 observation 缓存。
 
@@ -81,7 +83,6 @@ Control 中的调用意图、项目登记、workspace attachment、Session 路�
 
 已保存应用的检查使用 `RootOwner::open_existing` 和 `EventLog::for_application_inspection`，要求已有的私有协调状态，并持有原有的独占 Root／数据库租约。检查读取已提交的应用事实，包括保留在 WAL 中的内容，关闭后不改变存储成员或字节；不执行迁移或派生初始化，缺失状态直接报错，不做修复。该打开方式仅供原连接上的应用查询使用。CLI 的 application read 与默认更新预览共用此入口；实际应用更新时重新打开普通写入所有者，并重新计算变更。
 
-
 原始操作契约按摘要只存储一次。操作请求和回执引用只携带该身份，日志读取、调用方历史与 UI 传递不再逐次复制服务 schema。读取仍核对原始请求指纹，执行准入仍校验完整契约和资源要求。
 
 操作日志完整保存已受理的请求和返回值，不另设请求、结果或回执引用的大小额度。精确重试和重开后的读取恢复原始结果与清理状态。
@@ -115,3 +116,6 @@ Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每�
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 
 启动恢复读取全部未决执行状态，不另设条数或字节配额，已完成历史仍不参与扫描。工具结果 payload 与冻结请求配置不设应用层存储大小上限，数据库迁移保留已有内容和配置引用。
+
+
+Workspace 存档采用路径清单和不可变文件对象；`caller_confirmed_quiescent` / `unverified` 声明与字节完整性分开，不能宣称已经隔离外部写入。同 Root 目录恢复要求实时历史未推进，在新目录物化，并原子提交绑定与原回执；不推进 checkpoint Head、不自动执行。文件策略、明确风险提示、故障恢复和范围见 [Agent API](../../plugins/agent/api/README.zh-CN.md)。

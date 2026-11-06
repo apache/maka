@@ -17,74 +17,72 @@
  * under the License.
  */
 
-use crate::client::Client;
 use crate::{
-    Error, content,
+    Error,
+    client::Client,
+    interaction::Capabilities,
     session::Registry,
     transport::{self, Peer},
 };
-use agent_client_protocol::{
-    Agent, Client as AcpClient, JsonRpcResponse, Responder, V2ConnectionTo,
-    schema::{ProtocolVersion, v2 as acp},
-};
+use agent_client_protocol::{Agent, ConnectTo, JsonRpcResponse, Protocol, Responder};
 use maka_host_runtime::application::host::Client as HostClient;
 use std::{
     future::Future,
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::Semaphore,
-};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 mod input;
 mod prompt;
+mod v1;
+mod v2;
 
+struct Initialized {
+    capabilities: Capabilities,
+    peer: Peer,
+}
 struct App {
     client: Client,
     sessions: Registry,
-    capabilities: OnceLock<acp::ClientCapabilities>,
+    initialized: OnceLock<Initialized>,
     stop: CancellationToken,
     tasks: TaskTracker,
-    requests: Arc<Semaphore>,
 }
 impl App {
-    fn peer(&self, connection: V2ConnectionTo<AcpClient>) -> Peer {
-        Peer {
-            connection,
-            stop: self.stop.clone(),
-        }
+    fn initialize(
+        &self,
+        capabilities: Capabilities,
+        peer: Peer,
+    ) -> agent_client_protocol::Result<()> {
+        self.initialized
+            .set(Initialized { capabilities, peer })
+            .map_err(|_| {
+                agent_client_protocol::Error::invalid_request().data("ACP is already initialized")
+            })
     }
-    fn initialized(&self) -> Result<acp::ClientCapabilities, Error> {
-        self.capabilities
+    fn initialized(&self) -> Result<&Initialized, Error> {
+        self.initialized
             .get()
-            .cloned()
             .ok_or_else(|| "Initialize ACP before using sessions".into())
     }
-    fn dispatch<T, F>(
+    fn dispatch<T, P, F>(
         self: &Arc<Self>,
-        responder: Responder<T>,
+        responder: Responder<T, P>,
         work: F,
     ) -> agent_client_protocol::Result<()>
     where
         T: JsonRpcResponse + Send + 'static,
+        P: Protocol,
         F: Future<Output = Result<T, Error>> + Send + 'static,
     {
-        if self.stop.is_cancelled() || self.capabilities.get().is_none() {
+        if self.stop.is_cancelled() || self.initialized.get().is_none() {
             return responder.respond_with_error(
                 agent_client_protocol::Error::invalid_request()
                     .data("ACP connection is not initialized or has closed"),
             );
         }
-        let Ok(permit) = self.requests.clone().try_acquire_owned() else {
-            return responder.respond_with_error(
-                agent_client_protocol::Error::internal_error()
-                    .data("ACP concurrent request limit reached"),
-            );
-        };
         self.tasks.spawn(async move {
-            let _permit = permit;
             let result = match work.await {
                 Ok(value) => responder.respond(value),
                 Err(error) => responder.respond_with_error(
@@ -99,7 +97,7 @@ impl App {
     }
 }
 
-/// Serve ACP over caller-owned streams, using only the ordinary Host client.
+/// Serve ACP v1 and v2 over caller-owned streams, using only the ordinary Host client.
 pub async fn serve<R, W>(
     client: HostClient,
     input: R,
@@ -113,140 +111,14 @@ where
     let app = Arc::new(App {
         client: Client::new(client, stop.clone()),
         sessions: Registry::default(),
-        capabilities: OnceLock::new(),
+        initialized: OnceLock::new(),
         stop,
         tasks: TaskTracker::new(),
-        requests: Arc::new(Semaphore::new(32)),
     });
-    let init = app.clone();
-    let create = app.clone();
-    let list = app.clone();
-    let resume = app.clone();
-    let close = app.clone();
-    let config = app.clone();
-    let prompt = app.clone();
-    let cancel = app.clone();
-    let closed = app.clone();
     let server = Agent
-        .v2()
-        .name("maka")
-        .on_receive_dispatch(
-            async |message: agent_client_protocol::Dispatch, _cx: V2ConnectionTo<AcpClient>| {
-                input::validate(message)
-            },
-            agent_client_protocol::on_receive_dispatch!(),
-        )
-        .on_receive_request(
-            async move |request: acp::InitializeRequest,
-                        responder: Responder<acp::InitializeResponse>,
-                        _cx: V2ConnectionTo<AcpClient>| {
-                if request.protocol_version != ProtocolVersion::V2 {
-                    return responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_params()
-                            .data("Maka ACP requires protocol version 2"),
-                    );
-                }
-                if init.capabilities.set(request.capabilities).is_err() {
-                    return responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_request()
-                            .data("ACP is already initialized"),
-                    );
-                }
-                responder.respond(
-                    acp::InitializeResponse::new(
-                        ProtocolVersion::V2,
-                        acp::Implementation::new("maka", env!("CARGO_PKG_VERSION")),
-                    )
-                    .capabilities(
-                        acp::AgentCapabilities::new().session(
-                            acp::SessionCapabilities::new().prompt(content::capabilities()),
-                        ),
-                    ),
-                )
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::NewSessionRequest,
-                        responder: Responder<acp::NewSessionResponse>,
-                        cx: V2ConnectionTo<AcpClient>| {
-                let app = create.clone();
-                create.dispatch(responder, async move {
-                    app.sessions
-                        .create(&app.client, &app.peer(cx), request)
-                        .await
-                })
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::ListSessionsRequest,
-                        responder: Responder<acp::ListSessionsResponse>,
-                        _cx: V2ConnectionTo<AcpClient>| {
-                let app = list.clone();
-                list.dispatch(responder, async move {
-                    app.sessions.list(&app.client, request).await
-                })
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::ResumeSessionRequest,
-                        responder: Responder<acp::ResumeSessionResponse>,
-                        cx: V2ConnectionTo<AcpClient>| {
-                let app = resume.clone();
-                resume.dispatch(responder, async move {
-                    app.sessions
-                        .resume(&app.client, &app.peer(cx), request)
-                        .await
-                })
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::CloseSessionRequest,
-                        responder: Responder<acp::CloseSessionResponse>,
-                        _cx: V2ConnectionTo<AcpClient>| {
-                let app = close.clone();
-                close.dispatch(responder, async move { app.sessions.close(request).await })
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::SetSessionConfigOptionRequest,
-                        responder: Responder<acp::SetSessionConfigOptionResponse>,
-                        cx: V2ConnectionTo<AcpClient>| {
-                let app = config.clone();
-                config.dispatch(responder, async move {
-                    app.sessions
-                        .set_config(&app.client, &app.peer(cx), request)
-                        .await
-                })
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: acp::PromptRequest,
-                        responder: Responder<acp::PromptResponse>,
-                        cx: V2ConnectionTo<AcpClient>| {
-                prompt::dispatch(prompt.clone(), request, responder, cx)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_notification(
-            async move |request: acp::CancelSessionNotification, _cx: V2ConnectionTo<AcpClient>| {
-                if let Ok(session) = cancel.sessions.get(&request.session_id.to_string()) {
-                    session.cancel();
-                }
-                Ok(())
-            },
-            agent_client_protocol::on_receive_notification!(),
-        )
-        .on_close(async move |_cx| {
-            closed.stop.cancel();
-            closed.sessions.cancel_all();
-            Ok(())
-        });
+        .protocol_router()
+        .with_v1(v1::agent(app.clone()))
+        .with_v2(v2::agent(app.clone()));
     let connection = server.connect_to(transport::lines(input, output));
     tokio::pin!(connection);
     let result = tokio::select! {
@@ -258,11 +130,11 @@ where
     app.tasks.close();
     let settled = tokio::time::timeout(Duration::from_secs(45), async {
         app.tasks.wait().await;
-        app.sessions.drained().await;
+        app.sessions.drained().await
     })
     .await;
     let closed = app.client.close().await;
-    settled.map_err(|_| "ACP shutdown did not settle its original Agent work")?;
+    settled.map_err(|_| "ACP shutdown did not settle its original Agent work")??;
     closed?;
     result
 }

@@ -131,6 +131,7 @@ impl SessionStore {
                 false,
                 permission_time,
                 Some(root_app_control),
+                None,
                 move |current| {
                     *current = candidate;
                     Ok(())

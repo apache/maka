@@ -42,7 +42,7 @@ pub use execution::{
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
-mod checkpoints;
+pub(crate) mod checkpoints;
 mod computer_apps;
 mod control;
 pub use checkpoints::{Checkout, HistoryCheckpoints};
@@ -84,6 +84,7 @@ pub struct RootStore {
     partitions: Vec<Arc<EventLog>>,
     closed: Arc<AtomicBool>,
     gates: Arc<gates::Gates>,
+    inspections: Arc<checkpoints::load::Inspections>,
     lifecycle: Option<lifecycle::Lifecycle>,
     project_mutations: Arc<tokio::sync::Mutex<()>>,
 }
@@ -188,6 +189,7 @@ impl RootStore {
             partitions: Vec::with_capacity(PARTITION_COUNT),
             closed: Arc::new(AtomicBool::new(false)),
             gates: gates::Gates::new(),
+            inspections: checkpoints::load::Inspections::new(),
             lifecycle: None,
             project_mutations: Arc::new(tokio::sync::Mutex::new(())),
         };
@@ -218,11 +220,15 @@ impl RootStore {
             let logs = std::iter::once(store.control.clone())
                 .chain(store.partitions.iter().cloned())
                 .collect();
-            store.lifecycle = Some(lifecycle::Lifecycle::start(logs, store.gates.clone()).await?);
+            store.lifecycle = Some(
+                lifecycle::Lifecycle::start(logs, store.gates.clone(), store.inspections.clone())
+                    .await?,
+            );
             // Recovery also owns real workers. Install their independent close
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
             store.recover_checkpoints().await?;
+            store.recover_checkpoint_loads().await?;
             // No admission or retirement can observe work abandoned by the
             // previous owner as live after a process restart.
             store.recover_host_effects().await?;
@@ -281,6 +287,7 @@ impl RootStore {
         self.closed.store(true, Ordering::Release);
         self.gates.close();
         if self.lifecycle.is_none() {
+            self.inspections.request_shutdown();
             self.control.request_shutdown();
             for partition in &self.partitions {
                 partition.request_shutdown();
@@ -296,9 +303,11 @@ impl RootStore {
         // Bootstrap failures have not installed a lifecycle owner yet.
         // Observe every real close even if an earlier owner fails. Each failed
         // owner retains its original authority, so it cannot be replaced.
+        let cached = self.inspections.take_all();
         let results = futures_util::future::join_all(
             std::iter::once(&self.control)
                 .chain(&self.partitions)
+                .chain(&cached)
                 .map(|log| log.shutdown()),
         )
         .await;
@@ -428,6 +437,16 @@ async fn pin_partition(
 }
 
 impl RootStore {
+    pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut sessions = Vec::new();
+        for partition in &self.partitions {
+            sessions.extend(partition.activation_checkpoint_sessions().await?);
+        }
+        sessions.sort();
+        sessions.dedup();
+        Ok(sessions)
+    }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
         let mut sessions = Vec::new();

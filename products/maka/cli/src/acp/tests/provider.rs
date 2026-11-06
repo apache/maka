@@ -108,7 +108,11 @@ impl Provider {
     }
 }
 
-pub async fn configure(owner: RootOwner, base_url: &str) {
+pub async fn configure(owner: RootOwner, base_url: &str, mut model: ModelOverride) {
+    model.context_window.get_or_insert(200000);
+    model
+        .thinking_levels
+        .get_or_insert_with(|| vec![maka_agent_facts::execution::ThinkingLevel::Off]);
     let provider_name = "openai-compatible";
     let owner = Arc::new(owner);
     let config = Arc::new(ConfigurationStore::for_root(owner).await.unwrap());
@@ -140,7 +144,7 @@ pub async fn configure(owner: RootOwner, base_url: &str) {
     let created = config.update_connection(serde_json::from_value(json!({
         "expected":{"connectionId":row.connection_id,"revision":row.revision},
         "changes":{"name":row.name,"configuration":row.configuration,"enabled":true,"enabledModelIds":["fixture-model"],
-            "modelOverrides":{"fixture-model":{"contextWindow":200000,"thinkingLevels":["off"]}}}
+            "modelOverrides":{"fixture-model":model}}
     })).unwrap()).await.unwrap();
     let CatalogMutationResult::Committed {
         connection: Some(connection),

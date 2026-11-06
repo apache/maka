@@ -42,8 +42,71 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
     let plain = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
     log.append(&plain(Fact::InvocationOpened {
         configuration: None,
-        input: InvocationInput::Code {
-            source: "fixture".into(),
+        input: InvocationInput::Message {
+            content: "read the large tool result".into(),
+            source_messages: vec![],
+            request_fingerprint: None,
+        },
+    }))
+    .await
+    .unwrap();
+    use maka_agent_facts::model::{
+        ModelFinishReason, ModelPart, ModelToolCall, ModelUsage,
+        recorded::{CompletionPart, ModelCompletion, ModelPartRecord},
+    };
+    let context = log
+        .read_model_view("source", Some(&invocation.invocation_id))
+        .await
+        .unwrap();
+    log.append(&plain(Fact::ModelRequested {
+        source_capture: maka_agent_facts::event::SourceCapture {
+            publication_watermark: context.selection.captured_through,
+            prior_unknown: context.selection.prior_unknown,
+        },
+        context_breakdown: None,
+        item_acceptance: false,
+        purpose: maka_agent_facts::context::ModelPurpose::Main,
+        context: None,
+        checkpoint_event_id: None,
+        step_id: "step".into(),
+        model_id: "model".into(),
+        source_scope: context.source_evidence.scope,
+        source_high_water: context.source_evidence.high_water,
+        source_digest: context.source_evidence.digest,
+        effective_source_digest: Some(context.effective_source_digest),
+        input_digest: "fixture".into(),
+        route_identity: "route".into(),
+    }))
+    .await
+    .unwrap();
+    log.append(&plain(Fact::ModelCompleted {
+        step_id: "step".into(),
+        output: ModelCompletion {
+            compaction: None,
+            parts: vec![CompletionPart::Own(ModelPartRecord {
+                ordinal: 0,
+                message_id: maka_agent_facts::tool_call::tool_use_id(
+                    &invocation.invocation_id,
+                    "step:call",
+                ),
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: Arc::new(ModelPart::ToolCall {
+                    call: ModelToolCall {
+                        id: "call".into(),
+                        name: "Read".into(),
+                        input: json!({}).into(),
+                        provider_options: None,
+                        provider_executed: false,
+                    },
+                }),
+            })],
+            finish_reason: ModelFinishReason::ToolCalls,
+            usage: ModelUsage::default(),
+            provider_options: None,
+            response_id: None,
+            model: None,
+            timestamp: None,
         },
     }))
     .await
@@ -51,8 +114,8 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
     log.append(&plain(Fact::ToolDispatched {
         presentation: None,
         title: None,
-        operation_id: "read".into(),
-        call: ToolCallIdentity::standalone("call".into()),
+        operation_id: "step:call".into(),
+        call: ToolCallIdentity::provider("step".into(), "call".into()),
         name: "Read".into(),
         input: json!({}),
     }))
@@ -63,7 +126,7 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
         "result".into(),
         std::time::UNIX_EPOCH,
         invocation.clone(),
-        "read".into(),
+        "step:call".into(),
         ToolSuccess::projected(
             ToolOutput::Text(text.clone()),
             DurableToolProjection::Text { text: text.clone() },
@@ -130,6 +193,36 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
     let store = RootStore::open(owner(directory.path())).await.unwrap();
     let handle = store.history_checkpoints("source", scope()).await.unwrap();
     assert_eq!(handle.receipt(request).await.unwrap(), Some(value));
+    // The public inspection path must page tool bodies after canonical source GC.
+    let load = crate::checkpoints::LoadOperation {
+        operation: Uuid::new_v4(),
+        fingerprint: "c".repeat(64),
+        revision: head.revision,
+    };
+    handle.load_exact(load.clone()).await.unwrap();
+    use maka_agent_ports::session::history::{Page, Position, Role};
+    let mut position = Position::Start;
+    let mut restored_tool = String::new();
+    let mut pages = 0;
+    loop {
+        let Page::Ready { chunks, after, .. } = handle
+            .loaded_history(load.operation, "source".into(), position, false)
+            .await
+            .unwrap();
+        pages += 1;
+        for chunk in chunks {
+            if chunk.role == Role::ToolResult {
+                restored_tool.push_str(&chunk.text);
+            }
+        }
+        let Some(cursor) = after else {
+            break;
+        };
+        position = Position::After { cursor };
+        assert!(pages < 100, "paging must advance");
+    }
+    assert!(pages > 1);
+    assert_eq!(restored_tool, text);
     let checkout = handle.checkout_exact(head.revision).await.unwrap();
     let mut staged = StagedBundle::read(tokio::fs::File::from_std(checkout.bundle))
         .await

@@ -21,14 +21,16 @@
 
 [简体中文](README.zh-CN.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
+[`CheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
 namespace and original `RecoveryRef` to Root-owned history capture and recovery.
 The [service adapter](src/owner/checkpoints.rs) exposes explicit management methods
 with Host admission, original receipt authorization and bounded subscription reads.
 Publication receipts resolve checkpoint success without fabricating generic Host
 cleanup confirmation. See the [API workflow](../api/README.md#history-checkpoint-management)
-and [manual baseline](src/owner/tests/checkpoints/benchmark.rs). Workspace capture,
-restore/activation and model tools are outside this API.
+and [manual baseline](src/owner/tests/checkpoints/benchmark.rs). Model tools and
+cross-Root activation remain outside this API.
+
+The [inspection adapter](src/owner/checkpoints/load.rs) adds exact checkpoint loading and bounded history/artifact queries through the same Host management boundary. Loaded history stays in isolated storage with its original IDs; it is never registered with this Owner's execution or message recovery. Query `historyCheckpointLoadReceipt` using the original operation and input after an uncertain reply. Workspace publication and explicit same-Root directory restoration are handled by the [Session adapter](src/owner/checkpoints/session.rs) and [restore adapter](src/owner/checkpoints/restore.rs). They retain conditional consistency warnings, require explicit target permissions/model selection, and never auto-send a message. See the [supported scope](../api/README.md#workspace-publication-and-local-continuation).
 
 `agent.fork` captures a source revision and an explicit `position`: `end`, `through_turn`, or `before_turn` with a logical Turn ID, or `start` for empty history. `before_turn` excludes the complete target Turn and accepts the first Turn to create an empty conversation. The Host resolves the boundary from canonical history in the copy transaction; clients do not need a preceding Turn or the sampled history landmarks. The returned branch retains that position, and the source conversation is unchanged.
 

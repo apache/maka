@@ -58,7 +58,17 @@ impl Owner {
         &self,
         input: SetCompactionPrompt,
     ) -> Result<MetadataResult, String> {
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::Closed,
@@ -104,7 +114,7 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<CompactResult, String> {
         let mut runs = self.runs.lock().await;
-        let session = self.session(&input.session_id).await?;
+        let session = self.mutable_session(&input.session_id).await?;
         let identity = self.operation_id(operation);
         let invocation = Invocation {
             session_id: input.session_id.clone(),
@@ -224,6 +234,7 @@ impl Owner {
         };
         let basis = MessageBasis {
             mcp_revision: None,
+            client_mcp: None,
             mcp_catalog: None,
             language,
             compaction_prompt: Some(prompt),
@@ -282,6 +293,9 @@ impl Owner {
         runs.controls.insert(
             input.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),

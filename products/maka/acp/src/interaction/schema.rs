@@ -17,120 +17,118 @@
  * under the License.
  */
 
-use agent_client_protocol::schema::v2 as acp;
-use maka_agent_facts::capability::FormField;
-use maka_agent_facts::capability::FormFieldSpec;
-use maka_agent_facts::capability::FormFormat;
+use maka_agent_facts::capability::{FormField, FormFieldSpec, FormFormat};
 use maka_agent_facts::interaction::InteractionQuestion;
+use serde_json::{Map, Value, json};
 
-pub(super) fn questions(questions: &[InteractionQuestion]) -> acp::ElicitationSchema {
-    questions.iter().enumerate().fold(
-        acp::ElicitationSchema::new(),
-        |schema, (index, question)| {
-            // The Host allows free-form answers as well as the displayed options.
-            let choices = question
-                .options
-                .iter()
-                .map(|option| match &option.description {
-                    Some(description) => format!("{}: {description}", option.label),
-                    None => option.label.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            schema.property(
-                format!("question_{index}"),
-                acp::StringPropertySchema::new()
-                    .title(question.question.clone())
-                    .description(format!("{choices}\nYou may also enter your own answer."))
-                    .min_length(1)
-                    .max_length(2048),
-                false,
-            )
-        },
-    )
+pub(super) fn questions(questions: &[InteractionQuestion]) -> Value {
+    let properties: Map<_,_> = questions.iter().enumerate().map(|(index, question)| {
+        let choices = question.options.iter().map(|option| match &option.description {
+            Some(description) => format!("{}: {description}", option.label), None => option.label.clone(),
+        }).collect::<Vec<_>>().join("\n");
+        (format!("question_{index}"), json!({"type":"string", "title":question.question,"description":format!("{choices}\nYou may also enter your own answer."), "minLength":1,"maxLength":2048}))
+    }).collect();
+    json!({"type":"object","properties":properties,"required":[]})
 }
 
-pub(super) fn form(fields: &[FormField]) -> Result<acp::ElicitationSchema, crate::Error> {
-    let mut schema = acp::ElicitationSchema::new();
+pub(super) fn form(fields: &[FormField]) -> Result<Value, crate::Error> {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
     for field in fields {
-        let property: acp::ElicitationPropertySchema = match &field.spec {
+        let mut property = match &field.spec {
             FormFieldSpec::String {
                 default,
                 min_length,
                 max_length,
                 format,
-            } => acp::StringPropertySchema::new()
-                .title(field.label.clone())
-                .description(field.description.clone())
-                .default_value(default.clone())
-                .min_length(min_length.map(u32::try_from).transpose()?)
-                .max_length(max_length.map(u32::try_from).transpose()?)
-                .format(format.map(|format| match format {
-                    FormFormat::Email => acp::StringFormat::Email,
-                    FormFormat::Uri => acp::StringFormat::Uri,
-                    FormFormat::Date => acp::StringFormat::Date,
-                    FormFormat::DateTime => acp::StringFormat::DateTime,
-                }))
-                .into(),
+            } => {
+                let mut p = json!({"type":"string"});
+                optional(&mut p, "default", default)?;
+                optional(
+                    &mut p,
+                    "minLength",
+                    &min_length.map(u32::try_from).transpose()?,
+                )?;
+                optional(
+                    &mut p,
+                    "maxLength",
+                    &max_length.map(u32::try_from).transpose()?,
+                )?;
+                optional(
+                    &mut p,
+                    "format",
+                    &format.map(|f| match f {
+                        FormFormat::Email => "email",
+                        FormFormat::Uri => "uri",
+                        FormFormat::Date => "date",
+                        FormFormat::DateTime => "date-time",
+                    }),
+                )?;
+                p
+            }
             FormFieldSpec::Number {
                 default,
                 minimum,
                 maximum,
-            } => acp::NumberPropertySchema::new()
-                .title(field.label.clone())
-                .description(field.description.clone())
-                .default_value(*default)
-                .minimum(*minimum)
-                .maximum(*maximum)
-                .into(),
+            } => {
+                let mut p = json!({"type":"number"});
+                optional(&mut p, "default", default)?;
+                optional(&mut p, "minimum", minimum)?;
+                optional(&mut p, "maximum", maximum)?;
+                p
+            }
             FormFieldSpec::Integer {
                 default,
                 minimum,
                 maximum,
-            } => acp::IntegerPropertySchema::new()
-                .title(field.label.clone())
-                .description(field.description.clone())
-                .default_value(integer(*default)?)
-                .minimum(integer(*minimum)?)
-                .maximum(integer(*maximum)?)
-                .into(),
-            FormFieldSpec::Boolean { default } => acp::BooleanPropertySchema::new()
-                .title(field.label.clone())
-                .description(field.description.clone())
-                .default_value(*default)
-                .into(),
-            FormFieldSpec::SingleSelect { options, default } => acp::StringPropertySchema::new()
-                .title(field.label.clone())
-                .description(field.description.clone())
-                .default_value(default.clone())
-                .one_of(
-                    options
-                        .iter()
-                        .map(|option| acp::EnumOption::new(&option.value, &option.label))
-                        .collect::<Vec<_>>(),
-                )
-                .into(),
+            } => {
+                let mut p = json!({"type":"integer"});
+                optional(&mut p, "default", &integer(*default)?)?;
+                optional(&mut p, "minimum", &integer(*minimum)?)?;
+                optional(&mut p, "maximum", &integer(*maximum)?)?;
+                p
+            }
+            FormFieldSpec::Boolean { default } => {
+                let mut p = json!({"type":"boolean"});
+                optional(&mut p, "default", default)?;
+                p
+            }
+            FormFieldSpec::SingleSelect { options, default } => {
+                let mut p = json!({"type":"string","oneOf":options.iter().map(|o|json!({"const":o.value,"title":o.label})).collect::<Vec<_>>()});
+                optional(&mut p, "default", default)?;
+                p
+            }
             FormFieldSpec::MultiSelect {
                 options,
                 default,
                 min_items,
                 max_items,
-            } => acp::MultiSelectPropertySchema::titled(
-                options
-                    .iter()
-                    .map(|option| acp::EnumOption::new(&option.value, &option.label))
-                    .collect(),
-            )
-            .title(field.label.clone())
-            .description(field.description.clone())
-            .default_value(default.clone())
-            .min_items(min_items.map(u64::try_from).transpose()?)
-            .max_items(max_items.map(u64::try_from).transpose()?)
-            .into(),
+            } => {
+                let mut p = json!({"type":"array","items":{"anyOf":options.iter().map(|o|json!({"const":o.value,"title":o.label})).collect::<Vec<_>>()}});
+                optional(&mut p, "default", default)?;
+                optional(&mut p, "minItems", min_items)?;
+                optional(&mut p, "maxItems", max_items)?;
+                p
+            }
         };
-        schema = schema.property(field.name.clone(), property, field.required);
+        property["title"] = json!(field.label);
+        optional(&mut property, "description", &field.description)?;
+        properties.insert(field.name.clone(), property);
+        if field.required {
+            required.push(field.name.clone());
+        }
     }
-    Ok(schema)
+    Ok(json!({"type":"object","properties":properties,"required":required}))
+}
+fn optional<T: serde::Serialize>(
+    object: &mut Value,
+    key: &str,
+    value: &Option<T>,
+) -> Result<(), crate::Error> {
+    if let Some(value) = value {
+        object[key] = serde_json::to_value(value)?;
+    }
+    Ok(())
 }
 
 fn integer(value: Option<f64>) -> Result<Option<i64>, crate::Error> {

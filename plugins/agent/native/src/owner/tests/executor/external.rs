@@ -601,6 +601,7 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
     tokio::time::timeout(Duration::from_secs(90), async {
         let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
             let home = settings.workspace_roots[0].path.clone();
+            std::fs::create_dir(home.join(".maka")).unwrap();
             settings.assistant = Some(crate::contract::AssistantConfiguration {
                 home: Some(home.to_str().unwrap().into()),
             });
@@ -619,7 +620,7 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
         })
         .await;
         for runtime in ["codex", "antigravity", "claude"] {
-            std::fs::write(f.workspace.join("AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
+            std::fs::write(f.workspace.join(".maka/AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
             let session = f
                 .create("Native instruction acknowledgement cancellation")
                 .await;
@@ -636,7 +637,11 @@ async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_di
             packet(&mut control, "opened").await;
             complete_instruction_turn(&f, &session, &first, &mut control).await;
             let before = super::external_support::record_runtime(&f, &session, runtime).await;
-            std::fs::write(f.workspace.join("AGENTS.md"), "CANCEL_UNCONFIRMED_GUIDANCE").unwrap();
+            std::fs::write(
+                f.workspace.join(".maka/AGENTS.md"),
+                "CANCEL_UNCONFIRMED_GUIDANCE",
+            )
+            .unwrap();
             let cancelled = f
                 .mutation(
                     2,

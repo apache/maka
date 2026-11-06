@@ -31,6 +31,7 @@ use std::sync::{
 use tokio::sync::Notify;
 
 pub(super) struct Goals {
+    pub(super) admissions: Arc<runs::Registry>,
     storage: Arc<maka_host_runtime::storage::Storage>,
     pub(super) repository: Repository<MessageBasis>,
     pub(super) gate: Mutex<()>,
@@ -50,6 +51,7 @@ impl Goals {
                 .expect("goal namespace"),
         ));
         Self {
+            admissions: Arc::new(runs::Registry::default()),
             repository: Repository::new(storage.clone()),
             storage,
             gate: Mutex::new(()),
@@ -275,6 +277,15 @@ impl Owner {
         if runs.busy(session) {
             return Ok(false);
         }
+        if self.runs.has_checkpoints() {
+            let current = self.session(session).await?;
+            if !self.runs.workspace_available(
+                session,
+                std::path::Path::new(&current.configuration.workspace.path),
+            ) {
+                return Ok(false);
+            }
+        }
         if !self
             .store
             .session(session)
@@ -312,13 +323,15 @@ impl Owner {
                 session_id
             }
         };
-        self.session(session).await?;
+        let admission = self.goals.admissions.ordered(session).await;
+        self.mutable_session(session).await?;
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
         let owner = self.clone();
         let job = self.workers.spawn(async move {
+            let _admission = admission;
             let _gate = owner.goals.gate.lock().await;
             if let Some(result) = owner.goals.receipt(&operation).await? {
                 return Ok(result);

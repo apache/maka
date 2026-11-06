@@ -27,13 +27,17 @@ use crate::checkpoints::{
 };
 use std::future::Future;
 mod journal;
+pub(in crate::root_store) mod load;
 mod objects;
+pub(crate) mod restore;
+mod workspace;
 use objects::Objects;
 
 #[derive(Clone)]
 pub struct HistoryCheckpoints {
     session: SessionStore,
     scope: Scope,
+    inspections: Arc<load::Inspections>,
 }
 
 #[derive(Debug)]
@@ -59,6 +63,7 @@ impl RootStore {
         Ok(HistoryCheckpoints {
             session: self.session(session).await?,
             scope,
+            inspections: self.inspections.clone(),
         })
     }
 
@@ -100,6 +105,13 @@ impl RootStore {
 }
 
 impl HistoryCheckpoints {
+    /// Resolve trusted source binding before consulting a possibly changed live Session.
+    pub async fn original_request(
+        &self,
+        publication: PublicationRequest,
+    ) -> Result<Option<PublicationRequest>, StoreError> {
+        journal::original(&self.session.scoped().await?, self.request(publication)?).await
+    }
     fn request(&self, publication: PublicationRequest) -> Result<Request, StoreError> {
         let request = Request {
             scope: self.scope.clone(),
@@ -185,37 +197,47 @@ impl HistoryCheckpoints {
             log,
             self.session.gates.clone(),
             move |log, objects| async move {
-                let head = journal::read_head(&log, scope.clone(), session.clone())
-                    .await?
-                    .filter(|head| head.revision == revision)
-                    .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
-                let manifest = objects.manifest(&head.manifest)?;
-                let Manifest::NativeHistory {
-                    root_id,
-                    scope: origin,
-                    inventory,
-                    ..
-                } = &manifest;
-                if root_id != objects.root_id()
-                    || origin != &scope
-                    || inventory.root_session_id != session
-                {
-                    return Err(invalid("history checkpoint origin differs"));
-                }
-                let bundle = objects.read(manifest.bundle())?;
-                // Confirm the retained revision again after expensive verification.
-                if journal::read_head(&log, scope, session).await?.as_ref() != Some(&head) {
-                    return Err(invalid("history checkpoint revision unavailable"));
-                }
-                Ok(Checkout {
-                    head,
-                    manifest,
-                    bundle,
-                })
+                checkout(&log, &objects, scope, session, revision).await
             },
         )
         .await
     }
+}
+
+async fn checkout(
+    log: &EventLog,
+    objects: &Objects,
+    scope: Scope,
+    session: String,
+    revision: Revision,
+) -> Result<Checkout, StoreError> {
+    let head = journal::read_head(log, scope.clone(), session.clone())
+        .await?
+        .filter(|head| head.revision == revision)
+        .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
+    let manifest = objects.manifest(&head.manifest)?;
+    let Manifest {
+        root_id,
+        scope: origin,
+        inventory,
+        ..
+    } = &manifest;
+    if root_id != objects.root_id() || origin != &scope || inventory.root_session_id != session {
+        return Err(invalid("history checkpoint origin differs"));
+    }
+    let bundle = objects.read(manifest.bundle())?;
+    if let Some(snapshot) = manifest.workspace() {
+        workspace::verify(objects, snapshot)?;
+    }
+    // Confirm the retained revision again after expensive verification.
+    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+        return Err(invalid("history checkpoint revision unavailable"));
+    }
+    Ok(Checkout {
+        head,
+        manifest,
+        bundle,
+    })
 }
 
 fn bundle_error(error: BundleError) -> StoreError {
@@ -243,19 +265,45 @@ async fn capture(
     drop(file);
     let bundle = objects.publish(&objects.staging(request, "bundle")?)?;
     boundary("payload");
-    let manifest = Manifest::NativeHistory {
+    let mut staged = StagedBundle::read(tokio::fs::File::from_std(objects.read(&bundle)?))
+        .await
+        .map_err(bundle_error)?;
+    let validated = async {
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.summary().inventory != summary.inventory
+            || staged.summary().digest != summary.digest
+        {
+            return Err(invalid("checkpoint captured bundle differs"));
+        }
+        staged.history_cut(&request.session_id).await
+    }
+    .await;
+    let closed = staged.close().await.map_err(bundle_error);
+    let history_cut = validated?;
+    closed?;
+    let workspace = request
+        .publication
+        .workspace
+        .as_ref()
+        .map(|source| workspace::capture(objects, request, source))
+        .transpose()?;
+    let manifest = Manifest {
         root_id: objects.root_id().into(),
         scope: request.scope.clone(),
         inventory: summary.inventory,
         bundle,
         transfer_digest: summary.digest,
+        history_cut,
+        workspace,
     };
-    validate_bundle(objects, &manifest).await?;
     objects.publish_manifest(request, &manifest)
 }
 
 async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), StoreError> {
-    let Manifest::NativeHistory {
+    if let Some(workspace) = manifest.workspace() {
+        workspace::verify(objects, workspace)?;
+    }
+    let Manifest {
         inventory,
         bundle,
         transfer_digest,
@@ -270,7 +318,11 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
         {
             return Err(invalid("checkpoint manifest and bundle differ"));
         }
-        staged.validate_history().await.map_err(bundle_error)
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.history_cut(&inventory.root_session_id).await? != manifest.history_cut {
+            return Err(invalid("checkpoint history cut differs from bundle"));
+        }
+        Ok(())
     }
     .await;
     let closed = staged.close().await.map_err(bundle_error);
@@ -283,7 +335,7 @@ async fn verify(
     reference: &ObjectRef,
 ) -> Result<(), StoreError> {
     let manifest = objects.manifest(reference)?;
-    let Manifest::NativeHistory {
+    let Manifest {
         root_id,
         scope,
         inventory,
@@ -370,6 +422,33 @@ where
     F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
+    physical_worker(log, gates, Objects::open, action).await
+}
+
+async fn read_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
+    physical_worker(log, gates, Objects::existing, action).await
+}
+
+async fn physical_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    open: fn(Arc<root::RootOwner>) -> Result<Objects, StoreError>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
     let root = log.owned_root()?;
     gates.start_work()?;
     let mut work = PhysicalWork {
@@ -386,7 +465,7 @@ where
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let objects = Objects::open(root)?;
+                let objects = open(root)?;
                 runtime.block_on(action(log, objects))
             })();
             work.complete = true;
