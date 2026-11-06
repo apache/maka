@@ -87,8 +87,12 @@ struct Owner {
 pub struct RuntimeCatalog {
     owner: Arc<Owner>,
     cancellation: CancellationToken,
-    task: Option<JoinHandle<Result<(), String>>>,
-    requests: Option<mpsc::UnboundedReceiver<oneshot::Sender<Result<(), String>>>>,
+    task: RefreshTask,
+}
+enum RefreshTask {
+    Prepared(mpsc::UnboundedReceiver<oneshot::Sender<Result<(), String>>>),
+    Running(JoinHandle<Result<(), String>>),
+    Joined(Result<(), String>),
 }
 impl RuntimeCatalog {
     pub async fn open(configuration: ConfigurationStore) -> Result<Self, String> {
@@ -135,8 +139,7 @@ impl RuntimeCatalog {
                 transport,
             }),
             cancellation: CancellationToken::new(),
-            task: None,
-            requests: Some(requests),
+            task: RefreshTask::Prepared(requests),
         })
     }
 
@@ -147,13 +150,17 @@ impl RuntimeCatalog {
     /// Start only after Host admission. Its existing drain signal also cancels
     /// public I/O; generic Host transport has no model-catalog responsibilities.
     pub fn start(&mut self, draining: impl Future<Output = ()> + Send + 'static) {
-        let requests = self
-            .requests
-            .take()
-            .expect("public catalog runtime already started");
+        let requests = match std::mem::replace(&mut self.task, RefreshTask::Joined(Ok(()))) {
+            RefreshTask::Prepared(requests) => requests,
+            task => {
+                self.task = task;
+                panic!("public catalog runtime already started");
+            }
+        };
         let owner = self.owner.clone();
         let cancellation = self.cancellation.clone();
-        self.task = Some(tokio::spawn(drive(owner, requests, cancellation, draining)));
+        self.task =
+            RefreshTask::Running(tokio::spawn(drive(owner, requests, cancellation, draining)));
     }
 
     /// A real explicit refresh on this same owner; there is no second plugin,
@@ -168,21 +175,27 @@ impl RuntimeCatalog {
 
     pub async fn shutdown(&mut self) -> Result<(), String> {
         self.cancellation.cancel();
-        self.requests.take();
-        let joined = match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|_| "public catalog task failed".to_owned())
-                .and_then(|result| result),
-            None => Ok(()),
-        };
+        match &mut self.task {
+            RefreshTask::Prepared(_) => self.task = RefreshTask::Joined(Ok(())),
+            RefreshTask::Running(task) => {
+                let joined = task
+                    .await
+                    .map_err(|_| "public catalog task failed".to_owned())
+                    .and_then(|result| result);
+                self.task = RefreshTask::Joined(joined);
+            }
+            RefreshTask::Joined(_) => {}
+        }
         let closed = self
             .owner
             .configuration
             .shutdown()
             .await
             .map_err(|_| "public catalog cache cleanup failed".to_owned());
-        joined.and(closed)
+        let RefreshTask::Joined(joined) = &self.task else {
+            unreachable!("public catalog task was joined before closing its cache")
+        };
+        joined.clone().and(closed)
     }
 }
 impl Drop for RuntimeCatalog {
@@ -190,7 +203,7 @@ impl Drop for RuntimeCatalog {
         self.cancellation.cancel();
         // Normal and fallible product paths explicitly join. Panic unwinding
         // must not detach a task retaining the original Root.
-        if let Some(task) = &self.task {
+        if let RefreshTask::Running(task) = &self.task {
             task.abort();
         }
     }
