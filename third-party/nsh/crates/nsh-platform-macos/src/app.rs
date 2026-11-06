@@ -518,6 +518,7 @@ struct Running {
 /// Process lifetime state for the opt-in resident runner, without a UI engine.
 struct Resident {
     options: AppOptions,
+    status_menu: crate::StatusMenuOptions,
     configure: RefCell<Box<dyn FnMut() -> EngineConfig>>,
     on_active: Rc<dyn Fn(bool)>,
     on_close: Box<dyn Fn()>,
@@ -813,6 +814,7 @@ pub fn run_app_with_config(
 }
 
 /// Runs a resident application with a native menu-bar entry (Open / Quit).
+/// `status_menu` supplies the application-owned button and command labels.
 /// Closing the window stops and drops its engine and native views, but keeps
 /// the application event loop alive. Open and Dock reopen call `configure` on
 /// the main thread to create a fresh engine; an existing window is just raised.
@@ -824,6 +826,7 @@ pub fn run_app_with_config(
 /// their existing close behavior. Must be called on the main thread.
 pub fn run_resident_app_with_config(
     options: AppOptions,
+    status_menu: crate::StatusMenuOptions,
     configure: impl FnMut() -> EngineConfig + 'static,
     on_active: impl Fn(bool) + 'static,
     on_close: impl Fn() + 'static,
@@ -833,6 +836,7 @@ pub fn run_resident_app_with_config(
     options.keep_alive_on_close = false;
     let resident = Rc::new(Resident {
         options: options.clone(),
+        status_menu,
         configure: RefCell::new(Box::new(configure)),
         on_active: Rc::new(on_active),
         on_close: Box::new(on_close),
@@ -890,9 +894,13 @@ fn run_window(
     handle_quit_events(Some(&delegate));
     app.setMainMenu(Some(&main_menu(mtm, &options.title)));
 
-    let status = resident.as_ref().map(|_| {
+    let status = resident.as_ref().map(|resident| {
         let delegate = delegate.clone();
-        crate::StatusMenu::new(&options.title, move || reopen_window(&delegate), quit_app)
+        crate::StatusMenu::new(
+            resident.status_menu.clone(),
+            move || reopen_window(&delegate),
+            quit_app,
+        )
     });
     RESIDENT.with(|state| *state.borrow_mut() = resident);
     create_window(&options, &delegate, load, on_active);

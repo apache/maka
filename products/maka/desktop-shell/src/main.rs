@@ -24,8 +24,9 @@
 //! Windows and GPUI on Linux.
 //! `maka desktop` starts it for the Host it admitted, named by
 //! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
-//! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
-//! the work it accepted. If that Host stops while the window is open, the
+//! `MAKA_HOST_EPOCH`. Closing the window releases its UI while the application
+//! and its admitted client remain available through the tray/menu-bar entry.
+//! Explicit Quit detaches this client; the Host keeps the work it accepted. If that Host stops while the window is open, the
 //! GPUI window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.

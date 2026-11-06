@@ -21,6 +21,7 @@
 
 mod close;
 
+pub(crate) use close::CloseReady;
 use close::WindowClose;
 use nsh_engine::{EngineConfig, HostCall, HostChannel, JsonValue};
 use std::sync::{Arc, Mutex};
@@ -35,7 +36,7 @@ pub(crate) const SIZE: (i32, i32) = (1280, 820);
 
 /// What the workbench asks of its window, for the window to carry out.
 pub(crate) struct Requests {
-    pub(crate) close_ready: tokio::sync::mpsc::UnboundedReceiver<()>,
+    pub(crate) close_ready: tokio::sync::mpsc::UnboundedReceiver<CloseReady>,
     pub(crate) exits: tokio::sync::mpsc::UnboundedReceiver<()>,
     pub(crate) folders: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
     pub(crate) text_sizes: tokio::sync::mpsc::UnboundedReceiver<f32>,
@@ -46,7 +47,7 @@ pub(crate) struct Requests {
 #[derive(Clone)]
 pub(crate) struct Shell {
     close: Arc<Mutex<Option<Arc<WindowClose>>>>,
-    close_ready: tokio::sync::mpsc::UnboundedSender<()>,
+    close_ready: tokio::sync::mpsc::UnboundedSender<CloseReady>,
     /// Whether the window is active.
     foreground: watch::Receiver<bool>,
     /// Requests explicit application exit.

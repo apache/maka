@@ -78,6 +78,6 @@ pub use crate::{
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
-    status_menu::StatusMenu,
+    status_menu::{StatusMenu, StatusMenuOptions},
     text::CoreTextEngine,
 };

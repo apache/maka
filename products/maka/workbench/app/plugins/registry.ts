@@ -103,6 +103,7 @@ export function createPlugins() {
   let desired: Catalog | null = null;
   let processing = false;
   let acceptedReload = false;
+  let closeAttempt: string | undefined;
   let panelHandler: ((contribution: UiContributionRef, input?: unknown) => void) | undefined;
   const contributions = computed<Contribution[]>(() =>
     entries().flatMap((entry) =>
@@ -242,30 +243,45 @@ export function createPlugins() {
     }
     return { instances };
   };
-  cleanup(host.on('desktop.prepareClose', (request: unknown) => {
-    const id = (request as { id: string }).id;
-    if (processing || acceptedReload) {
-      host.post('desktop.closeReady', { id, error: 'UI reload is in progress. Try closing again when it finishes.' });
-      return;
-    }
-    reloading.set(true);
-    void snapshot().then(
-      (state) => { if (alive) host.post('desktop.closeReady', { id, state }); },
-      (reason) => {
-        if (!alive) return;
-        reloading.set(false);
-        updateError.set(reason);
-        host.post('desktop.closeReady', { id, error: String(reason) });
-      },
-    );
-  }));
-  cleanup(host.on('desktop.closeFailed', (reason: unknown) => {
-    if (!alive) return;
-    reloading.set(false);
-    updateError.set(new UiError(String(reason)));
-  }));
+  cleanup(
+    host.on('desktop.prepareClose', (request: unknown) => {
+      const id = (request as { id: string }).id;
+      if (processing || acceptedReload) {
+        host.post('desktop.closeReady', {
+          id,
+          error: 'UI reload is in progress. Try closing again when it finishes.',
+        });
+        return;
+      }
+      closeAttempt = id;
+      reloading.set(true);
+      void snapshot().then(
+        (state) => {
+          if (alive && closeAttempt === id) host.post('desktop.closeReady', { id, state });
+        },
+        (reason) => {
+          if (!alive || closeAttempt !== id) return;
+          closeAttempt = undefined;
+          reloading.set(false);
+          updateError.set(reason);
+          host.post('desktop.closeReady', { id, error: String(reason) });
+          void reconcile();
+        },
+      );
+    }),
+  );
+  cleanup(
+    host.on('desktop.closeFailed', (failure: unknown) => {
+      const { id, error } = failure as { id: string; error: string };
+      if (!alive || closeAttempt !== id) return;
+      closeAttempt = undefined;
+      reloading.set(false);
+      updateError.set(new UiError(error));
+      void reconcile();
+    }),
+  );
   const reconcile = async () => {
-    if (processing || acceptedReload || !alive || !desired) return;
+    if (processing || acceptedReload || closeAttempt !== undefined || !alive || !desired) return;
     processing = true;
     let paused = false;
     try {

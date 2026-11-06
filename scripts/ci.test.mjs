@@ -76,7 +76,15 @@ function fixture() {
       [
         'maka-desktop-shell',
         'products/maka/desktop-shell',
-        ['third-party/nsh/crates/nsh-platform-windows'],
+        [
+          'third-party/nsh/crates/nsh-platform-windows',
+          'third-party/nsh/crates/nsh-platform-macos',
+        ],
+      ],
+      [
+        'nsh-platform-macos',
+        'third-party/nsh/crates/nsh-platform-macos',
+        ['third-party/nsh/crates/nsh-core'],
       ],
       [
         'nsh-platform-windows',
@@ -156,7 +164,10 @@ test('Windows backend changes select the native tests and default desktop consum
     plan.workers
       .filter((worker) => worker.id.startsWith('native-'))
       .map(({ id, suites }) => ({ id, suites })),
-    [{ id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] }],
+    [
+      { id: 'native-macos', suites: ['macos-desktop'] },
+      { id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] },
+    ],
   );
   const consumer = fixture()(['third-party/nsh/crates/nsh-windows-app/src/lib.rs']);
   assert.ok(consumer.suites['windows-nsh']);
@@ -321,6 +332,18 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('desktop native backends and embedded tray artwork reach their platform consumers', () => {
+  const select = fixture();
+  const appkit = select(['third-party/nsh/crates/nsh-platform-macos/src/status_menu.rs']);
+  assert.equal(appkit.full, false);
+  assert.ok(
+    appkit.workers.find((worker) => worker.id === 'native-macos')?.suites.includes('macos-desktop'),
+  );
+  const artwork = select(['products/maka/workbench/app/assets/maka.png']);
+  for (const id of ['root', 'desktop', 'native-build', 'windows-desktop', 'macos-desktop'])
+    assert.ok(artwork.suites[id], id);
 });
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {

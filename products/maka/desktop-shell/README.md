@@ -46,7 +46,9 @@ Start it with the launcher:
 
 Opened directly, from Finder, the Dock or a file manager, the shell has none of these variables. It then runs `maka desktop` from the directory it was staged in, beside `Maka.app` on macOS or beside the shell elsewhere, and exits; that launcher opens the window for the default Root.
 
-Closing the window, the quit menu item and the quit key all close the window; the shell then detaches from the Host and exits. The launcher detaches as well, so the Host finishes the work it accepted and stops once no client is left. Cancelling the launcher stops only its shell.
+Closing the window captures the active UI modules’ reload state and releases the window, UI engine and window-owned subscriptions. The Desktop application and its admitted Host connection stay alive. Use **Open Maka** in the Windows/Linux tray or macOS menu-bar entry to recreate the workbench; an open window is focused rather than duplicated. macOS also supports reopening from the Dock. Capture failures keep the window open and report the reason. If Linux has no tray host, or Windows cannot register its tray icon, closing falls back to application exit rather than leaving an unreachable process.
+
+**Quit**, the native application quit shortcut, and the workbench exit command explicitly exit Desktop: the shell performs its bounded client detach, then the launcher detaches as well. Host idle retirement and accepted work remain unchanged; Desktop does not force-stop a shared Host. Cancelling the launcher stops only its shell.
 
 The GPUI window opens on the display, at the position and size, and in the full-screen or maximized state it had when it last closed, as recorded in `clients/desktop-window.json` in the Root. If that display is gone it opens centered on the main display; if too little of its top edge would be on the display to grab, it opens centered there.
 
@@ -66,7 +68,7 @@ cargo build -p maka-cli -p maka-desktop-shell
 
 Use the Windows Rust/MSVC prerequisites in [native build tooling](../../../scripts/rust/README.md) and [NSH's Windows guide](../../../third-party/nsh/docs/dev/windows.md). Install the lockfile's JavaScript dependencies before building: missing npm packages can otherwise survive as unresolved runtime imports in generated plugin bundles. Rebuild the CLI's embedded UI packages after correcting an incomplete dependency installation.
 
-Windows has one desktop backend: Direct2D. There is no backend feature switch or GPUI fallback. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of its window and does not reconnect after that Host stops. It rejects UI reload requests and system notifications explicitly. Window activation follows Win32 activation messages, text-size changes apply immediately, and the workbench's exit command closes the native window.
+Windows has one desktop backend: Direct2D. There is no backend feature switch or GPUI fallback. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of the Desktop application and does not reconnect after that Host stops. It rejects UI reload requests and system notifications explicitly. Window activation follows Win32 activation messages, text-size changes apply immediately, and the workbench's exit command exits the Desktop application.
 
 ## Verification
 

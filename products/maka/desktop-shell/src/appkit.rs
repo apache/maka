@@ -28,7 +28,9 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-use nsh_platform_macos::{AppOptions, quit_app, run_resident_app_with_config, with_running_view};
+use nsh_platform_macos::{
+    AppOptions, StatusMenuOptions, quit_app, run_resident_app_with_config, with_running_view,
+};
 use tokio::{runtime::Runtime, sync::watch};
 
 pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
@@ -66,8 +68,13 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let ui_runtime = runtime.handle().clone();
     let ui_shell = shell.clone();
     let closing_shell = shell.clone();
+    let mut status_menu = StatusMenuOptions::default();
+    status_menu.title = TITLE.into();
+    status_menu.open_label = "Open Maka".into();
+    status_menu.quit_label = "Quit".into();
     run_resident_app_with_config(
         options,
+        status_menu,
         move || {
             let mut config =
                 maka_workbench::configuration(ui_bindings.registry(None), ui_runtime.clone());
@@ -102,8 +109,11 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         }
     });
     runtime.spawn(async move {
-        while close_ready.recv().await.is_some() {
-            with_running_view(|view| {
+        while let Some(request) = close_ready.recv().await {
+            with_running_view(move |view| {
+                if !request.is_current() {
+                    return;
+                }
                 if let Some(window) = view.view().window() {
                     window.performClose(None);
                 }

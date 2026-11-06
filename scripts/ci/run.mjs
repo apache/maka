@@ -109,6 +109,7 @@ export function executor(
         'desktop',
         'gpui',
         'windows-desktop',
+        'macos-desktop',
         'windows-nsh',
         'macos-host',
         'windows-shell',
@@ -185,7 +186,9 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (['desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
+    } else if (
+      ['desktop', 'gpui', 'windows-desktop', 'macos-desktop', 'windows-nsh'].includes(id)
+    ) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);

@@ -21,7 +21,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const licenseName = (name) =>
-  (/^(?:licen[cs]e|copying|copyright|notice|credits)(?:$|[-_.])/i.test(name) ||
+  (/^(?:licen[cs]e|unlicense|copying|copyright|notice|credits)(?:$|[-_.])/i.test(name) ||
     /[-_]licen[cs]e(?:$|\.)/i.test(name)) &&
   !/\.(?:rs|py|h|cc|c|json|toml|sh|js)$/i.test(name);
 

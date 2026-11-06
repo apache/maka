@@ -57,7 +57,9 @@ const distributionInputs = [
   'scripts/rust/notices-sources.json',
   'scripts/rust/licenses',
 ];
+const desktopInputs = ['products/maka/workbench/app/assets/maka.png'];
 const embeddedInputs = [
+  ...desktopInputs,
   'products/maka/terminal-shell/tests/support/external-agent-cli.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
@@ -187,6 +189,12 @@ export const suites = {
     filter:
       'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
   },
+  'macos-desktop': {
+    workspace: 'root',
+    packages: ['maka-desktop-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    extraInputs: embeddedInputs,
+  },
   'windows-desktop': {
     workspace: 'root',
     packages: ['maka-desktop-shell'],
@@ -305,7 +313,7 @@ export const workers = [
       os === 'windows'
         ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
         : os === 'macos'
-          ? ['native', 'macos-host']
+          ? ['native', 'macos-host', 'macos-desktop']
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',

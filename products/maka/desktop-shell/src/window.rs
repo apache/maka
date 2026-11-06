@@ -47,7 +47,7 @@ use tokio::{runtime::Handle, sync::watch};
 #[cfg(target_os = "linux")]
 use crate::tray_linux::{Event as TrayEvent, Tray};
 #[cfg(target_os = "macos")]
-use nsh_platform_macos::StatusMenu;
+use nsh_platform_macos::{StatusMenu, StatusMenuOptions};
 
 #[cfg(target_os = "macos")]
 enum TrayEvent {
@@ -134,8 +134,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         #[cfg(target_os = "macos")]
         let tray = {
             let open = tray_events.clone();
+            let mut options = StatusMenuOptions::default();
+            options.title = TITLE.into();
+            options.open_label = "Open Maka".into();
+            options.quit_label = "Quit".into();
             StatusMenu::new(
-                TITLE,
+                options,
                 move || {
                     let _ = open.send(TrayEvent::Open);
                 },
@@ -185,10 +189,14 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         .detach();
         let closing = desktop.clone();
         cx.spawn(async move |cx| {
-            while close_ready.recv().await.is_some() {
+            while let Some(request) = close_ready.recv().await {
                 let window = closing.borrow().window;
                 if let Some(window) = window {
-                    let _ = window.update(cx, |_, window, cx| Desktop::close(&closing, window, cx));
+                    let _ = window.update(cx, |_, window, cx| {
+                        if request.is_current() {
+                            Desktop::close(&closing, window, cx);
+                        }
+                    });
                 }
             }
         })

@@ -112,7 +112,8 @@ pub fn run_resident_app(
                     quitting: false,
                 });
             });
-            if let Err(error) = open() {
+            let opened = open();
+            if let Err(error) = &opened {
                 log::error!("cannot open the application: {error}");
                 quit();
             }
@@ -135,7 +136,7 @@ pub fn run_resident_app(
             }
             // SAFETY: all windows, engines and OLE users on this thread are gone.
             unsafe { windows::Win32::System::Ole::OleUninitialize() };
-            if code == 0 {
+            if code == 0 && opened.is_ok() {
                 std::process::ExitCode::SUCCESS
             } else {
                 std::process::ExitCode::FAILURE
@@ -217,9 +218,7 @@ pub(crate) fn should_close(hwnd: HWND) -> bool {
         state
             .as_ref()
             .filter(|state| {
-                !state.quitting
-                    && state.tray.available.get()
-                    && state.view.as_ref().is_some_and(|view| view.hwnd() == hwnd)
+                !state.quitting && state.view.as_ref().is_some_and(|view| view.hwnd() == hwnd)
             })
             .map(|state| state.should_close.clone())
     });
@@ -321,6 +320,8 @@ impl Tray {
         // SAFETY: this thread owns the class, native window, menu and icon.
         unsafe {
             let instance = HINSTANCE(GetModuleHandleW(None)?.0);
+            let hicon = LoadIconW(Some(instance), PCWSTR(1 as _))
+                .or_else(|_| LoadIconW(None, IDI_APPLICATION))?;
             let class = WNDCLASSW {
                 lpfnWndProc: Some(tray_proc),
                 hInstance: instance,
@@ -370,8 +371,7 @@ impl Tray {
                 uID: 1,
                 uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
                 uCallbackMessage: TRAY_MESSAGE,
-                hIcon: LoadIconW(Some(instance), PCWSTR(1 as _))
-                    .or_else(|_| LoadIconW(None, IDI_APPLICATION))?,
+                hIcon: hicon,
                 ..Default::default()
             };
             // Leave space for NUL and do not truncate inside a UTF-16 surrogate pair.

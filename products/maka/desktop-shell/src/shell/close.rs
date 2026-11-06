@@ -22,7 +22,7 @@
 
 use maka_workbench::reload::UiReload;
 use nsh_engine::{HostCall, HostChannel, JsonValue};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::{
     runtime::Handle,
     sync::{mpsc, oneshot},
@@ -33,6 +33,24 @@ pub(super) struct WindowClose {
     reload: UiReload,
     runtime: Handle,
 }
+pub(crate) struct CloseReady {
+    window: Weak<WindowClose>,
+    current: Arc<Mutex<Option<Arc<WindowClose>>>>,
+}
+
+impl CloseReady {
+    pub(crate) fn is_current(&self) -> bool {
+        let Some(window) = self.window.upgrade() else {
+            return false;
+        };
+        self.current
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &window))
+    }
+}
+
 enum Phase {
     Open,
     Preparing {
@@ -84,7 +102,7 @@ impl WindowClose {
     pub(super) fn prepare(
         self: &Arc<Self>,
         host: HostChannel,
-        ready: mpsc::UnboundedSender<()>,
+        ready: mpsc::UnboundedSender<CloseReady>,
         current: Arc<Mutex<Option<Arc<Self>>>>,
     ) -> bool {
         let id = uuid::Uuid::new_v4().to_string();
@@ -117,8 +135,8 @@ impl WindowClose {
                 }
             };
             // A late result must never close a replacement window.
-            let current = current.lock().unwrap();
-            if !current
+            let active = current.lock().unwrap();
+            if !active
                 .as_ref()
                 .is_some_and(|active| Arc::ptr_eq(active, &window))
             {
@@ -128,12 +146,18 @@ impl WindowClose {
                 Ok(state) => {
                     window.reload.remember(state);
                     *window.phase.lock().unwrap() = Phase::Ready;
-                    let _ = ready.send(());
+                    let _ = ready.send(CloseReady {
+                        window: Arc::downgrade(&window),
+                        current: current.clone(),
+                    });
                 }
                 Err(error) => {
                     *window.phase.lock().unwrap() = Phase::Open;
                     eprintln!("maka-desktop-shell: cannot save the window: {error}");
-                    let _ = host.send("desktop.closeFailed", JsonValue::String(error));
+                    let _ = host.send(
+                        "desktop.closeFailed",
+                        serde_json::json!({"id": id, "error": error}),
+                    );
                 }
             }
         });

@@ -58,10 +58,11 @@ fn resident_close_releases_ui_reopens_without_duplicates_and_quits_while_hidden(
         let factory_released = released.clone();
         let closed_count = closed.clone();
         let observed = observations.clone();
-        let mut tray = TrayOptions::default();
-        tray.title = "Resident lifecycle test".into();
-        tray.open_label = "Open".into();
-        tray.quit_label = "Quit".into();
+        let tray = TrayOptions {
+            title: "Resident lifecycle test".into(),
+            open_label: "Open".into(),
+            quit_label: "Quit".into(),
+        };
         let code = run_resident_app(
             move || {
                 factory_created.fetch_add(1, Ordering::SeqCst);
@@ -124,18 +125,12 @@ fn resident_close_releases_ui_reopens_without_duplicates_and_quits_while_hidden(
                         } else {
                             QUIT_COMMAND
                         };
-                        // SAFETY: route actions through the tray owner's real message procedure.
+                        // Wait for native queue quiescence: immediate Open messages
+                        // could otherwise keep an erroneous WM_QUIT from being read.
+                        // SAFETY: the resident runner owns this window and timer.
                         unsafe {
                             let _ =
-                                PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(command), LPARAM(0));
-                            if count < 3 {
-                                let _ = PostMessageW(
-                                    Some(hwnd),
-                                    WM_COMMAND,
-                                    WPARAM(OPEN_COMMAND),
-                                    LPARAM(0),
-                                );
-                            }
+                                SetTimer(Some(hwnd), command, USER_TIMER_MINIMUM, Some(after_idle));
                         }
                     }
                 }
@@ -168,5 +163,16 @@ fn resident_close_releases_ui_reopens_without_duplicates_and_quits_while_hidden(
                 .all(|released| *released),
             "a closed native view or surface remained owned"
         );
+    }
+}
+
+unsafe extern "system" fn after_idle(hwnd: HWND, _: u32, command: usize, _: u32) {
+    // SAFETY: the one-shot timer belongs to the live tray owner on this thread.
+    unsafe {
+        let _ = KillTimer(Some(hwnd), command);
+        let _ = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(command), LPARAM(0));
+        if command == OPEN_COMMAND {
+            let _ = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(command), LPARAM(0));
+        }
     }
 }

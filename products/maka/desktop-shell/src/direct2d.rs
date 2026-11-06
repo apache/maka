@@ -123,8 +123,12 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         mut notices,
     } = requests;
     runtime.spawn(async move {
-        while close_ready.recv().await.is_some() {
-            with_running_view(|view| view.request_close());
+        while let Some(request) = close_ready.recv().await {
+            with_running_view(move |view| {
+                if request.is_current() {
+                    view.request_close();
+                }
+            });
         }
     });
     runtime.spawn(async move {
@@ -171,9 +175,11 @@ fn refuse_reloads(mut requests: tokio::sync::mpsc::UnboundedReceiver<Request>, r
 #[cfg(test)]
 mod tests {
     use super::*;
+    static NATIVE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn terminal_exit_closes_the_native_window() {
+        let _serial = NATIVE_TEST.lock().unwrap();
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -240,5 +246,89 @@ mod tests {
             result,
             Err("the Direct2D window cannot reload its UI".into())
         );
+    }
+    #[test]
+    fn native_close_captures_presentation_before_releasing_the_ui() {
+        let _serial = NATIVE_TEST.lock().unwrap();
+        let runtime = Runtime::new().unwrap();
+        let reload = UiReload::default();
+        let mut reload_requests = reload.take_requests();
+        let (_active, foreground) = watch::channel(false);
+        let (shell, requests) = Shell::new(foreground);
+        carry_out(requests, &runtime);
+        let configure = shell.clone();
+        let closing = shell.clone();
+        let closed = shell.clone();
+        let saved = reload.clone();
+        let handle = runtime.handle().clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        let watchdog = std::thread::spawn(move || {
+            if finished
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .is_err()
+            {
+                quit_app();
+                true
+            } else {
+                false
+            }
+        });
+        let mut tray = TrayOptions::default();
+        tray.title = "Window snapshot test".into();
+        tray.open_label = "Open".into();
+        tray.quit_label = "Quit".into();
+        let result = run_resident_app(
+            move || {
+                let mut policy = nsh_engine::Policy::default();
+                policy
+                    .declared
+                    .get_or_insert_default()
+                    .host
+                    .push("*".into());
+                let bundle = nsh_engine::Bundle::source(
+                    "import { host } from 'nsh';
+                     host.on('desktop.prepareClose', ({ id }) => host.post('desktop.closeReady', { id, state: { session: 'original-session', panel: 'settings' } }));
+                     host.post('test.ready');".into()
+                ).with_policy(policy);
+                let mut config = nsh_engine::EngineConfig::new(bundle);
+                config.runtime = Some(handle.clone());
+                config.context = config.context.with(saved.clone());
+                config.host.handle("test.ready", |_| {
+                    with_running_view(|view| view.request_close())
+                });
+                configure.attach(config)
+            },
+            AppOptions {
+                title: "Window snapshot test".into(),
+                size: (320, 240),
+                ..Default::default()
+            },
+            tray,
+            |_| {},
+            move || {
+                closed.release();
+                quit_app();
+            },
+            move || closing.prepare_close(),
+        );
+        done.send(()).unwrap();
+        assert!(
+            !watchdog.join().unwrap(),
+            "native close never completed its UI snapshot"
+        );
+        assert_eq!(result, std::process::ExitCode::SUCCESS);
+        assert_eq!(
+            reload.restored(),
+            serde_json::json!({"session":"original-session", "panel":"settings"})
+        );
+        assert!(
+            reload_requests.try_recv().is_err(),
+            "window close must not request a UI reload"
+        );
+        assert!(
+            shell.events.lock().unwrap().is_none(),
+            "closed UI channel remained owned"
+        );
+        runtime.shutdown_background();
     }
 }

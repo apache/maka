@@ -544,6 +544,7 @@ keyring-core@1.0.1		X										X
 keyring@4.2.0		X										X						
 khronos_api@3.1.0		X																
 khronos-egl@6.0.0		X										X						
+ksni@0.3.7																	X	
 kurbo@0.13.1		X										X						
 lazy_static@1.5.1		X										X						
 lazy-regex-proc_macros@3.6.2												X						

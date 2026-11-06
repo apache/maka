@@ -58,6 +58,18 @@ define_class!(
     }
 );
 
+/// Application-owned labels for a resident application's menu-bar entry.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct StatusMenuOptions {
+    /// The menu-bar button's title.
+    pub title: String,
+    /// The menu command that opens or focuses the window.
+    pub open_label: String,
+    /// The menu command that exits the application.
+    pub quit_label: String,
+}
+
 /// A native menu-bar entry with Open and Quit actions. Own it on the main
 /// thread for the application's lifetime; dropping it removes the entry.
 /// Callbacks run on the main thread and need not retain any window or engine.
@@ -69,9 +81,13 @@ pub struct StatusMenu {
 }
 
 impl StatusMenu {
-    /// Installs a button named `title` with Open {title} and Quit actions.
+    /// Installs a button and Open / Quit actions with application-owned labels.
     /// Must be called on AppKit's main thread, after creating NSApplication.
-    pub fn new(title: &str, open: impl Fn() + 'static, quit: impl Fn() + 'static) -> Self {
+    pub fn new(
+        options: StatusMenuOptions,
+        open: impl Fn() + 'static,
+        quit: impl Fn() + 'static,
+    ) -> Self {
         let mtm = MainThreadMarker::new().expect("StatusMenu must be created on the main thread");
         let target = Target::alloc(mtm).set_ivars(Actions {
             open: Rc::new(open),
@@ -81,19 +97,19 @@ impl StatusMenu {
         let target: Retained<Target> = unsafe { msg_send![super(target), init] };
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = item.button(mtm) {
-            button.setTitle(&NSString::from_str(title));
+            button.setTitle(&NSString::from_str(&options.title));
         }
         let menu = NSMenu::new(mtm);
         for (title, action) in [
-            (format!("Open {title}"), sel!(open:)),
-            ("Quit".into(), sel!(quit:)),
+            (options.open_label.as_str(), sel!(open:)),
+            (options.quit_label.as_str(), sel!(quit:)),
         ] {
             // SAFETY: both selectors are defined on Target; the target is kept
             // alive until after the status item and its menu are removed.
             let entry = unsafe {
                 let entry = NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    &NSString::from_str(&title),
+                    &NSString::from_str(title),
                     Some(action),
                     &NSString::from_str(""),
                 );

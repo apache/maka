@@ -44,7 +44,9 @@ just build
 
 从访达、程序坞或文件管理器直接打开时，shell 拿不到这些变量。它会运行所在目录里的 `maka desktop`（macOS 上是 `Maka.app` 旁边，其他平台是 shell 旁边），然后退出；由这个启动器为默认 Root 打开窗口。
 
-关闭窗口、应用菜单的退出项和退出快捷键都会关闭窗口；shell 随后与 Host 断开并退出。启动器同样只断开连接，因此 Host 会完成已接受的工作，在没有客户端后停止。取消启动器只会停止它启动的 shell。
+关闭窗口时先保存活跃 UI 模块的重载状态，再释放窗口、UI 引擎和窗口拥有的订阅；Desktop 应用及其已接入的 Host 连接继续保留。通过 Windows/Linux 托盘或 macOS 菜单栏入口中的 **打开 Maka** 重建工作台；窗口仍打开时只聚焦，不重复创建。macOS 也支持从 Dock 重新打开。状态保存失败时保留窗口并显示原因。Linux 没有托盘宿主或 Windows 无法注册托盘图标时，关闭窗口回退为退出应用，不留下无法操作的后台进程。
+
+**退出**、原生应用退出快捷键和工作台退出命令才会显式退出 Desktop：shell 在限定时间内断开客户端连接，随后启动器也断开连接。不改变 Host 的空闲退出规则或已接受的工作，也不强制停止共享 Host。取消启动器只会停止它启动的 shell。
 
 GPUI 窗口会在上次关闭时所在的显示器上打开，位置、大小以及全屏或最大化状态都与当时相同；这些记录在 Root 的 `clients/desktop-window.json` 里。那个显示器已断开时，窗口在主显示器上居中打开；窗口顶边留在显示器上的部分不够拖动时，窗口在那个显示器上居中打开。
 
@@ -64,7 +66,7 @@ cargo build -p maka-cli -p maka-desktop-shell
 
 Windows Rust/MSVC 环境要求见[原生构建工具](../../../scripts/rust/README.zh-CN.md)和 [NSH Windows 指南](../../../third-party/nsh/docs/dev/windows.md)。构建前须安装 lockfile 中的 JavaScript 依赖：否则缺失的 npm 包可能成为生成插件包中的未解析运行时导入。补齐不完整的依赖安装后，需要重新构建 CLI 内嵌的 UI 包。
 
-Windows 桌面只使用 Direct2D，不提供后端 feature 开关或 GPUI 回退。原生目录选择器运行在独立的 COM apartment 线程上。窗口在整个生命周期内连接已获准的 Host；Host 停止后不自动重连。UI 重载和系统通知请求会被明确拒绝。窗口前台状态由 Win32 激活消息驱动，字号改动立即生效，工作台退出命令会关闭原生窗口。
+Windows 桌面只使用 Direct2D，不提供后端 feature 开关或 GPUI 回退。原生目录选择器运行在独立的 COM apartment 线程上。Desktop 应用在整个生命周期内连接已获准的 Host；Host 停止后不自动重连。UI 重载和系统通知请求会被明确拒绝。窗口前台状态由 Win32 激活消息驱动，字号改动立即生效，工作台退出命令会退出 Desktop 应用。
 
 ## 验证
 
