@@ -342,29 +342,33 @@ function App(
         </View>
       </If>
 
-      {runtime.renderView(configuration.preview, conversationPreviewView, {
-        shell,
-        surface: 'overlays' as const,
-        docked: false,
-        attach(handle) {
-          if (preview() !== handle) preview.set(handle);
-        },
-      })}
-      {runtime.renderView(configuration.settings, settingsViewContract, {
-        opened: settingsOpened,
-        close: () => {
-          if (!alive || blocked()) return;
-          navigationGeneration++;
-          settingsOpened.set(false);
-        },
-        changed: () => notice.set(null),
-        get model() {
-          return settingsModel();
-        },
-        get page() {
-          return settingsPage();
-        },
-      })}
+      {/* These views show only dialogs, which are window layers. Their loading
+          placeholder must not take height from the workbench. */}
+      <View style={{ height: 0, overflow: 'hidden' }}>
+        {runtime.renderView(configuration.preview, conversationPreviewView, {
+          shell,
+          surface: 'overlays' as const,
+          docked: false,
+          attach(handle) {
+            if (preview() !== handle) preview.set(handle);
+          },
+        })}
+        {runtime.renderView(configuration.settings, settingsViewContract, {
+          opened: settingsOpened,
+          close: () => {
+            if (!alive || blocked()) return;
+            navigationGeneration++;
+            settingsOpened.set(false);
+          },
+          changed: () => notice.set(null),
+          get model() {
+            return settingsModel();
+          },
+          get page() {
+            return settingsPage();
+          },
+        })}
+      </View>
     </View>
   );
 }
