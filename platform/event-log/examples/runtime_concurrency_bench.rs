@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
                 .await?,
         );
     }
-    let workload_resources_before = resource_summaries(&root.sqlite_resource_stats().await?);
+    let workload_resources_before = resource_summaries(&[root.sqlite_resource_stats().await?]);
     let done = Arc::new(AtomicBool::new(false));
     let reading = root.clone();
     let selected = sessions[0].clone();
@@ -295,7 +295,7 @@ async fn main() -> Result<()> {
     let workload_process_usage = usage_delta(usage_before, process_usage());
     done.store(true, Ordering::Release);
     let (catalog, history, read_errors) = reader.await?;
-    let workload_resources_after = resource_summaries(&root.sqlite_resource_stats().await?);
+    let workload_resources_after = resource_summaries(&[root.sqlite_resource_stats().await?]);
     let payload = vec![17; 8 * 1024 * 1024];
     let start = Instant::now();
     sessions[0]
@@ -352,7 +352,7 @@ async fn main() -> Result<()> {
             .await?;
     }
     let load_ms = sample(start);
-    let resources = root.sqlite_resource_stats().await?;
+    let resources = [root.sqlite_resource_stats().await?];
     let sql_resources = resource_summaries(&resources);
     let sqlite_connections: usize = resources
         .iter()

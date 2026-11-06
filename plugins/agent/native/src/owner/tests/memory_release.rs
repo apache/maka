@@ -70,29 +70,20 @@ async fn sample(
     phase: &str,
     settled: usize,
     active: usize,
-    writer_ids: &[usize],
+    writer_id: usize,
     peer_closures: Option<&BTreeMap<&str, usize>>,
 ) {
     let started_unix_micros = unix_micros();
     let rss_before = rss_bytes().await;
     let stats = fixture.store.sqlite_resource_stats().await.unwrap();
-    let current_ids: Vec<_> = stats
-        .iter()
-        .map(|stats| stats.writer.connection_id)
-        .collect();
     assert_eq!(
-        current_ids, writer_ids,
-        "observe the original SQLite owners"
+        stats.writer.connection_id, writer_id,
+        "observe the original SQLite owner"
     );
-    let stats: Vec<_> = stats
-        .into_iter()
-        .map(|stats| {
-            json!({
-                "writer": connection_metrics(stats.writer),
-                "readers": stats.readers.into_iter().map(|reader| reader.map(connection_metrics)).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
+    let stats = json!({
+        "writer": connection_metrics(stats.writer),
+        "readers": stats.readers.into_iter().map(|reader| reader.map(connection_metrics)).collect::<Vec<_>>(),
+    });
     let rss_after = rss_bytes().await;
     let finished_unix_micros = unix_micros();
     eprintln!(
@@ -151,17 +142,16 @@ async fn native_memory_release_after_joined_workers() {
         assert!(!fixture.owner.settings.recaps);
         assert!(!fixture.owner.settings.recall);
         assert!(Arc::ptr_eq(&fixture.store, &fixture.owner.store));
-        let writer_ids: Vec<_> = fixture
+        let writer_id = fixture
             .store
             .sqlite_resource_stats()
             .await
             .unwrap()
-            .into_iter()
-            .map(|stats| stats.writer.connection_id)
-            .collect();
+            .writer
+            .connection_id;
         assert_drained(&fixture).await;
-        sample(&fixture, "warmup", 0, 0, &writer_ids, None).await;
-        sample(&fixture, "baseline", 0, 0, &writer_ids, None).await;
+        sample(&fixture, "warmup", 0, 0, writer_id, None).await;
+        sample(&fixture, "baseline", 0, 0, writer_id, None).await;
         for wave in 0..WAVES {
             let mut accepted = Vec::with_capacity(ACTIVE);
             let mut sockets = Vec::with_capacity(ACTIVE);
@@ -210,7 +200,7 @@ async fn native_memory_release_after_joined_workers() {
                     assert_eq!(runs.controls[session].invocation.invocation_id, *invocation);
                 }
             }
-            sample(&fixture, "held", wave * ACTIVE, ACTIVE, &writer_ids, None).await;
+            sample(&fixture, "held", wave * ACTIVE, ACTIVE, writer_id, None).await;
             for (session, invocation) in &accepted {
                 let stopped = fixture
                     .mutation(
@@ -259,25 +249,17 @@ async fn native_memory_release_after_joined_workers() {
                 "joined",
                 (wave + 1) * ACTIVE,
                 0,
-                &writer_ids,
+                writer_id,
                 Some(&peer_closures),
             )
             .await;
         }
         assert_drained(&fixture).await;
-        sample(
-            &fixture,
-            "idle_before",
-            WAVES * ACTIVE,
-            0,
-            &writer_ids,
-            None,
-        )
-        .await;
+        sample(&fixture, "idle_before", WAVES * ACTIVE, 0, writer_id, None).await;
         // This is an idle observation window; both boundaries independently prove cleanup.
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_drained(&fixture).await;
-        sample(&fixture, "idle_after", WAVES * ACTIVE, 0, &writer_ids, None).await;
+        sample(&fixture, "idle_after", WAVES * ACTIVE, 0, writer_id, None).await;
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     };

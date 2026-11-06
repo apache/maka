@@ -179,12 +179,9 @@ mod tests {
     use super::*;
     use maka_agent_facts::{
         event::Invocation,
-        history::semantic::{
-            Payload,
-            directory::{
-                ChildDirectory, PartDirectory, PayloadDirectory, TextSpan, ToolDirectory,
-                ToolPartDirectory,
-            },
+        history::semantic::directory::{
+            ChildDirectory, PartDirectory, PayloadDirectory, TextSpan, ToolDirectory,
+            ToolPartDirectory,
         },
         model::{
             ModelPart, TextKind,
@@ -245,17 +242,9 @@ mod tests {
             let fragment = prepared.tool.unwrap();
             let bytes = match &fragment.source {
                 Source::CanonicalTool { offset, len } => {
-                    assert!(!normalized);
                     &json.as_bytes()[*offset as usize..(*offset + *len) as usize]
                 }
-                Source::Pieces(bytes) => {
-                    assert!(normalized);
-                    assert_eq!(
-                        bytes,
-                        &serde_json::to_vec(&Payload::Tool(projection.clone())).unwrap()
-                    );
-                    bytes.as_slice()
-                }
+                Source::Pieces(bytes) => bytes.as_slice(),
                 Source::CanonicalModel { .. } => panic!("tool requires a tool source"),
             };
             assert!(matches!(

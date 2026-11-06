@@ -755,7 +755,7 @@ async fn main() -> Result<()> {
         }
     }
     manifest["descriptor_digest"] = hex::encode(descriptors.finalize()).into();
-    let resources: Vec<_>=root.sqlite_resource_stats().await?.iter().map(|owner|json!({"writer":resource_summary(&owner.writer),"readers":owner.readers.iter().map(|reader|reader.as_ref().map(resource_summary)).collect::<Vec<_>>()})).collect();
+    let resources: Vec<_>=[root.sqlite_resource_stats().await?].iter().map(|owner|json!({"writer":resource_summary(&owner.writer),"readers":owner.readers.iter().map(|reader|reader.as_ref().map(resource_summary)).collect::<Vec<_>>()})).collect();
     let after_io = io_stats();
     drop(captured);
     drop(running);

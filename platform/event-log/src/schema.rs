@@ -40,14 +40,14 @@ pub(crate) fn initialize_connection(connection: &SqliteConnection) -> Result<(),
         |row| row.get(0),
     )?;
     if !((application_id == 0 && version == 0 && tables == 0)
-        || (application_id == 0x4d414b52 && matches!(version, 0 | 2)))
+        || (application_id == 0x4d414b52 && matches!(version, 0..=1)))
     {
         return Err(StoreError::UnsupportedDatabase);
     }
     let ledger: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations')", rusqlite::params![], |row| row.get(0))?;
     // Version zero is only a genuinely empty or interrupted initial setup.
     // Existing data is never adopted by creating a new migration ledger.
-    if (version == 0 && tables != i64::from(ledger)) || (version == 2 && !ledger) {
+    if (version == 0 && tables != i64::from(ledger)) || (version == 1 && !ledger) {
         return Err(StoreError::UnsupportedDatabase);
     }
     if ledger {

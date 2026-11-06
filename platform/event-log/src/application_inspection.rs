@@ -57,7 +57,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), StoreError> {
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if application_id != 0x4d414b52 || version != 2 {
+    if application_id != 0x4d414b52 || version != 1 {
         return Err(StoreError::UnsupportedDatabase);
     }
     Ok(())

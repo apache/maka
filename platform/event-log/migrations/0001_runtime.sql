@@ -1475,7 +1475,7 @@ CREATE TRIGGER composition_prompt_released AFTER DELETE ON request_compositions 
     DELETE FROM contents WHERE id=OLD.system_content_id AND NOT EXISTS(SELECT 1 FROM content_references r WHERE r.content_id=contents.id);
 END;
 PRAGMA application_id = 1296124754;
-PRAGMA user_version = 2;
+PRAGMA user_version = 1;
 
 CREATE TRIGGER tool_part_released AFTER DELETE ON tool_result_parts BEGIN
     DELETE FROM contents WHERE id=OLD.content_id AND NOT EXISTS(SELECT 1 FROM content_references r WHERE r.content_id=contents.id);

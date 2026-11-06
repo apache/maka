@@ -145,11 +145,11 @@ impl SessionStore {
 }
 
 impl RootStore {
-    /// Observe canonical owners once: control first, then partition order.
+    /// Observe the runtime database writer and its independent readers.
     pub async fn sqlite_resource_stats(
         &self,
-    ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
-        Ok(vec![self.log.sqlite_resource_stats().await?])
+    ) -> Result<crate::connection::ConnectionResourceStats, StoreError> {
+        self.log.sqlite_resource_stats().await
     }
 
     pub async fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {

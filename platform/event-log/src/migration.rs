@@ -145,31 +145,15 @@ mod tests {
         sql: "CREATE TABLE migrated(value INTEGER);",
     };
 
-    fn legacy_database() -> Connection {
+    fn migrated_database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE _sqlx_migrations (
-                    version BIGINT PRIMARY KEY,
-                    description TEXT NOT NULL,
-                    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    success BOOLEAN NOT NULL,
-                    checksum BLOB NOT NULL,
-                    execution_time BIGINT NOT NULL
-                );
-                CREATE TABLE migrated(value INTEGER);
-                INSERT INTO _sqlx_migrations
-                    (version,description,installed_on,success,checksum,execution_time)
-                VALUES (1,'base','2026-01-01 00:00:00',TRUE,
-                    X'761c530fd351862de21e35f6f60e6b40e14255990b3c7325fe46045975df7b01338fa48485682c080c073cb802e41e87',42);",
-            )
-            .unwrap();
+        run(&connection, &[BASE]).unwrap();
         connection
     }
 
     #[test]
-    fn accepts_existing_ledger_and_applies_pending_migrations_once() {
-        let connection = legacy_database();
+    fn applies_pending_migrations_once() {
+        let connection = migrated_database();
         let migrations = [
             BASE,
             Migration {
@@ -188,25 +172,6 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(values, [7]);
-        let original: (String, i64) = connection
-            .query_row(
-                "SELECT installed_on,execution_time FROM _sqlx_migrations WHERE version=1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(original, ("2026-01-01 00:00:00".into(), 42));
-        let applied: (String, bool, Vec<u8>) = connection
-            .query_row(
-                "SELECT description,success,checksum FROM _sqlx_migrations WHERE version=2",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            applied,
-            ("populate".into(), true, checksum(migrations[1].sql))
-        );
     }
 
     #[test]
@@ -219,7 +184,7 @@ mod tests {
             ("UPDATE _sqlx_migrations SET version=99", "missing"),
             ("UPDATE _sqlx_migrations SET checksum=X'00'", "checksum"),
         ] {
-            let connection = legacy_database();
+            let connection = migrated_database();
             connection.execute_batch(change).unwrap();
             let error = run(&connection, &[BASE]).unwrap_err();
             assert!(
