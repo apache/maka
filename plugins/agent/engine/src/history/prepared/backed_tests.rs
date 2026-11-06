@@ -24,45 +24,45 @@ use maka_agent_facts::event::{
 
 #[tokio::test]
 async fn numeric_history_preserves_resident_commitments_counts_and_direct_metadata_seek() {
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        let (_directory, root) = crate::test_support::root().await;
-        let session = crate::test_support::session(&root, "session").await;
-        let execution = session.execution_scope(None).await.unwrap().accept();
-        let log = Arc::new(execution.store());
-        let mut through = 0;
-        for index in 0..64 {
-            let invocation = Invocation {
-                session_id: "session".into(),
-                turn_id: format!("turn-{index}"),
-                run_id: format!("run-{index}"),
-                invocation_id: format!("invocation-{index}"),
-            };
-            let event = EventWrite::plain(RuntimeEvent::new(
-                invocation.clone(),
-                Fact::InvocationOpened {
-                    input: InvocationInput::Message {
-                        content: format!("selected message {index} 世界\n").into(),
-                        request_fingerprint: None,
-                        source_messages: Vec::new(),
-                    },
-                    configuration: None,
+    let (_directory, root) = crate::test_support::root().await;
+    let session = crate::test_support::session(&root, "session").await;
+    let execution = session.execution_scope(None).await.unwrap().accept();
+    let log = Arc::new(execution.store());
+    let mut through = 0;
+    for index in 0..64 {
+        let invocation = Invocation {
+            session_id: "session".into(),
+            turn_id: format!("turn-{index}"),
+            run_id: format!("run-{index}"),
+            invocation_id: format!("invocation-{index}"),
+        };
+        let event = EventWrite::plain(RuntimeEvent::new(
+            invocation.clone(),
+            Fact::InvocationOpened {
+                input: InvocationInput::Message {
+                    content: format!("selected message {index} 世界\n").into(),
+                    request_fingerprint: None,
+                    source_messages: Vec::new(),
                 },
-            ))
+                configuration: None,
+            },
+        ))
+        .unwrap();
+        log.append(&event).await.unwrap();
+        through = log
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation,
+                    Fact::InvocationEnded {
+                        outcome: InvocationOutcome::Completed,
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
             .unwrap();
-            log.append(&event).await.unwrap();
-            through = log
-                .append(
-                    &EventWrite::plain(RuntimeEvent::new(
-                        invocation,
-                        Fact::InvocationEnded {
-                            outcome: InvocationOutcome::Completed,
-                        },
-                    ))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-        }
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let selection = SemanticSelection {
             session: "session".into(),
             lineage: None,
@@ -133,9 +133,9 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
         drop(resident);
         drop(backed);
         drop(log);
-        execution.finish();
-        root.shutdown().await.unwrap();
     })
     .await
-    .unwrap();
+    .expect("resident and backed history must preserve metadata within the capture budget");
+    execution.finish();
+    root.shutdown().await.unwrap();
 }

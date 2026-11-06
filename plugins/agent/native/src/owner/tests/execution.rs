@@ -308,26 +308,23 @@ async fn application_reactivation_resumes_sealed_source_through_original_engine(
 
 #[tokio::test]
 async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fixture = Fixture::with_services(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        None,
+        None,
+        Some(service_tools::Setup::files("write")),
+    )
+    .await;
+    let session = fixture.create("Resume permission boundary").await;
+    let source = cancelled(&fixture, &listener, &session).await;
+    let input = resume_input(&fixture, &source).await;
+    // Preparing the sealed source does not spend the permission-recheck budget.
     tokio::time::timeout(Duration::from_secs(45), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::with_services(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-            None,
-            Some(service_tools::Setup::files("write")),
-        )
-        .await;
-        let session = fixture.create("Resume permission boundary").await;
-        let source = cancelled(&fixture, &listener, &session).await;
         let changed = files::change(&fixture, &session, "read_only", false, true).await;
         assert_eq!(changed["session"]["boundaryRevision"], 1);
         let resumed = fixture
-            .mutation(
-                2,
-                "resume",
-                resume_input(&fixture, &source).await,
-                Uuid::new_v4(),
-            )
+            .mutation(2, "resume", input, Uuid::new_v4())
             .await
             .unwrap();
         assert_eq!(resumed["kind"], "started", "{resumed}");
@@ -356,11 +353,11 @@ async fn resume_uses_live_workspace_permissions_instead_of_original_grants() {
                 .unwrap()
                 .is_empty()
         );
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
     })
     .await
-    .unwrap();
+    .expect("resume must recheck the live permissions and settle its refused write");
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
 }
 
 #[tokio::test]

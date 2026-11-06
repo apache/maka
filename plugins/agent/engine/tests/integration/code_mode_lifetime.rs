@@ -44,9 +44,7 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn yielded_cell_can_receive_an_answer_and_be_observed_by_the_next_model_step() {
     for continuation in [false, true] {
-        tokio::time::timeout(Duration::from_secs(60), verify_yielded(continuation))
-            .await
-            .expect("yielded cells must continue without cancelling the pending answer");
+        verify_yielded(continuation).await;
     }
 }
 
@@ -87,30 +85,43 @@ async fn verify_yielded(continuation: bool) {
         assert_eq!(running["state"], "running");
         provider_effect.entered.notified().await;
         provider_effect.release.notify_one();
-        fixture::tool(
-            &mut socket,
-            "wait",
-            json!({"cell_id":running["cell_id"],"yield_time_ms":1000}),
-        )
-        .await;
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let request = http::read_request(&mut socket).await;
-        let mut output = request["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|message| message["role"] == "tool")
-            .unwrap()["content"]
-            .as_str()
-            .unwrap()
-            .lines();
-        let completed: serde_json::Value = serde_json::from_str(output.next().unwrap()).unwrap();
-        assert_eq!(completed["state"], "completed");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(output.next().unwrap()).unwrap(),
-            json!({"value":42})
-        );
+        let mut observed = Vec::new();
+        for attempt in 0.. {
+            crate::dynamic_tools::respond_tools(
+                &mut socket,
+                vec![crate::dynamic_tools::call(
+                    &format!("wait-{attempt}"),
+                    "wait",
+                    json!({"cell_id":running["cell_id"]}),
+                )],
+                10,
+            )
+            .await;
+            let (next_socket, _) = listener.accept().await.unwrap();
+            socket = next_socket;
+            let request = http::read_request(&mut socket).await;
+            let mut output = request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|message| message["role"] == "tool")
+                .unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .lines();
+            let observation: serde_json::Value =
+                serde_json::from_str(output.next().unwrap()).unwrap();
+            observed.extend(
+                output.map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()),
+            );
+            if observation["state"] == "completed" {
+                break;
+            }
+            assert_eq!(observation["state"], "running");
+            assert_eq!(observation["cell_id"], running["cell_id"]);
+        }
+        assert_eq!(observed, vec![json!({"value":42})]);
         respond(&mut socket, false).await;
     });
     let engine = Engine::new(
@@ -196,12 +207,16 @@ async fn verify_yielded(continuation: bool) {
             tools,
         };
     }
-    engine
-        .run(log.store(), request, CancellationToken::new())
-        .await
-        .unwrap();
-    server.await.unwrap();
-    engine.drain().await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        engine
+            .run(log.store(), request, CancellationToken::new())
+            .await
+            .unwrap();
+        server.await.unwrap();
+        engine.drain().await;
+    })
+    .await
+    .expect("yielded cells must continue without cancelling the pending answer");
     assert_eq!(effect.count.load(Ordering::SeqCst), 1);
     let projection = log
         .prefix(100, 128 * 1024)
@@ -210,4 +225,6 @@ async fn verify_yielded(continuation: bool) {
         .project_invocation("invocation-yielded");
     assert_eq!(projection.terminal, Some(TerminalStatus::Completed));
     assert!(projection.uncertain_operations.is_empty());
+    drop(engine);
+    Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
 }

@@ -78,25 +78,35 @@ async fn idle(f: &Fixture, session: &str) {
 
 #[tokio::test]
 async fn bot_mode_is_off_by_default() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let f = Fixture::new(
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+        None,
+    )
+    .await;
+    let workspace = f.create_input("Bot").await["workspace"].clone();
+    // Host activation and durable fixture setup do not spend the protocol budget.
     tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f = Fixture::new(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-        )
-        .await;
-        assert_eq!(
-            open(&f).await,
-            json!({"kind":"rejected","reason":"disabled"})
-        );
-        let empty = outbox(&f).await;
-        assert_eq!(empty["enabled"], false);
-        assert_eq!(empty["messages"], json!([]));
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
+        let check = async {
+            assert_eq!(
+                f.mutation(2, "openBot", json!({"workspace":workspace}), Uuid::new_v4())
+                    .await
+                    .unwrap(),
+                json!({"kind":"rejected","reason":"disabled"})
+            );
+            let empty = outbox(&f).await;
+            assert_eq!(empty["enabled"], false);
+            assert_eq!(empty["messages"], json!([]));
+        };
+        tokio::select! {
+            () = check => {},
+            accepted = listener.accept() => panic!("a disabled Bot must not dispatch a model request: {accepted:?}"),
+        }
     })
     .await
-    .unwrap();
+    .expect("disabled Bot queries must finish after the Host fixture is ready");
+    f.app.shutdown().await.unwrap();
+    f.config.shutdown().await.unwrap();
 }
 
 async fn sees_send_user(f: &Fixture, listener: &TcpListener, session: &str) -> bool {
