@@ -134,6 +134,47 @@ describe('McpClientManager OAuth E2E', () => {
     assert.equal(cleared.state, 'needs-auth');
   });
 
+  test('a failed credential read aborts begin instead of answering a fallback issuer', async () => {
+    const fixture = await createOAuthFixture();
+    // #6350: begin reads back the discovery this round persisted so the
+    // consent surface can show the SERVER'S issuer. A credential-storage
+    // read failure there must not collapse into "no discovery" — that made
+    // the returned issuer silently fall back to the RESOURCE's origin, an
+    // untrusted value on the trust-decision surface. A failed read is
+    // unknown, never absent (#6318): the failure propagates and kills the
+    // round before any browser opens.
+    const storage = createMemoryMcpOAuthStorage();
+    const readFailure = new Error('simulated credential storage read failure');
+    let failOnceVerifierPersisted = false;
+    const failingStorage: McpOAuthStorage = {
+      async get(serverId) {
+        const record = await storage.get(serverId);
+        // The interactive round persists its PKCE verifier inside auth();
+        // the next read is exactly begin's discoveryState() read-back, so
+        // this trigger lands the injected failure there and nowhere earlier
+        // (background rounds never persist a verifier).
+        if (failOnceVerifierPersisted && record?.codeVerifier !== undefined) throw readFailure;
+        return record;
+      },
+      set: (serverId, record) => storage.set(serverId, record),
+      delete: (serverId) => storage.delete(serverId),
+    };
+    const manager = new McpClientManager({ oauthStorage: failingStorage });
+    managers.push(manager);
+
+    await manager.sync(config(fixture.mcpUrl));
+    assert.equal(manager.status('remote')?.state, 'needs-auth');
+
+    failOnceVerifierPersisted = true;
+    // The storage failure itself — verbatim, not a scrubbed or derived error.
+    await assert.rejects(
+      manager.startAuthorization('remote', 'http://127.0.0.1:39985/callback', {
+        state: 'read-fail',
+      }),
+      (error: unknown) => error === readFailure,
+    );
+  });
+
   test('reconnects silently once tokens are stored', async () => {
     const fixture = await createOAuthFixture();
     const storage = createMemoryMcpOAuthStorage();
