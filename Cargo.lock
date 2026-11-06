@@ -6986,6 +6986,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ksni"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf"
+dependencies = [
+ "arc-swap",
+ "crossbeam-queue",
+ "futures-util",
+ "pastey 0.2.3",
+ "serde",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7857,6 +7872,8 @@ version = "0.2.0"
 dependencies = [
  "embed-resource",
  "gpui-fast-platform",
+ "image",
+ "ksni",
  "maka-event-log",
  "maka-host-runtime",
  "maka-workbench",
@@ -7868,6 +7885,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

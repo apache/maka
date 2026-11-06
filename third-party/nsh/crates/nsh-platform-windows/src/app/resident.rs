@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 //! A standalone application whose tray outlives its window and engine.
 
 use super::*;
@@ -288,12 +307,12 @@ const TRAY_MESSAGE: u32 = WM_APP + 110;
 const OPEN_COMMAND: usize = 1;
 const QUIT_COMMAND: usize = 2;
 const CLASS: PCWSTR = w!("NshResidentTray");
+static TASKBAR_CREATED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
 struct Tray {
     hwnd: HWND,
     icon: NOTIFYICONDATAW,
     menu: HMENU,
-    taskbar_created: u32,
     available: Cell<bool>,
 }
 
@@ -368,6 +387,7 @@ impl Tray {
                 title.pop();
             }
             icon.szTip[..title.len()].copy_from_slice(&title);
+            TASKBAR_CREATED.get_or_init(|| RegisterWindowMessageW(w!("TaskbarCreated")));
             let available = Shell_NotifyIconW(NIM_ADD, &icon).as_bool();
             if !available {
                 log::error!("cannot register the tray icon; closing the window will exit");
@@ -377,7 +397,6 @@ impl Tray {
                 icon,
                 menu,
                 available: Cell::new(available),
-                taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
             })
         }
     }
@@ -457,23 +476,24 @@ unsafe extern "system" fn tray_proc(
         }
         return LRESULT(0);
     }
-    let restore = STATE.with(|slot| {
-        let state = slot.borrow();
-        let Some(state) = state.as_ref() else {
-            return false;
-        };
-        if message != 0 && message == state.tray.taskbar_created {
-            // SAFETY: Explorer restarted; re-register the same live tray owner.
-            let available = unsafe { Shell_NotifyIconW(NIM_ADD, &state.tray.icon) }.as_bool();
-            state.tray.available.set(available);
-            if !available {
-                log::error!("cannot restore the tray icon after Explorer restarted");
+    let restore = TASKBAR_CREATED
+        .get()
+        .is_some_and(|registered| message != 0 && message == *registered)
+        && STATE.with(|slot| {
+            let state = slot.borrow();
+            let Some(state) = state.as_ref() else {
+                return false;
+            };
+            {
+                // SAFETY: Explorer restarted; re-register the same live tray owner.
+                let available = unsafe { Shell_NotifyIconW(NIM_ADD, &state.tray.icon) }.as_bool();
+                state.tray.available.set(available);
+                if !available {
+                    log::error!("cannot restore the tray icon after Explorer restarted");
+                }
+                !available
             }
-            !available
-        } else {
-            false
-        }
-    });
+        });
     if restore && let Err(error) = open() {
         log::error!("cannot restore a visible window: {error}");
     }
