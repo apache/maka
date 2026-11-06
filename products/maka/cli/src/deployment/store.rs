@@ -138,15 +138,14 @@ async fn open(
             .filename(&path)
             .create_if_missing(false),
         ConnectionAuthority::Writer { lease, root },
-        if migrate_on_open {
-            |connection| {
-                Box::pin(async move {
-                    initialize(connection).await?;
-                    migrate(connection).await
-                })
-            }
-        } else {
-            |connection| Box::pin(initialize(connection))
+        move |connection| {
+            Box::pin(async move {
+                initialize(connection).await?;
+                if migrate_on_open {
+                    migrate(connection).await?;
+                }
+                Ok(())
+            })
         },
     )
     .await?)
