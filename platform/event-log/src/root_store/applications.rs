@@ -29,6 +29,7 @@ use maka_plugin_core::{
     composition::{Input, InstanceId},
     deployment::{DeploymentRef, RemoteObservation, management::ManagedDeployment},
     operation::RecoveryRef,
+    package::PackageRef,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -71,6 +72,16 @@ impl RootStore {
     ) -> Result<Option<LoadedDeployment>, StoreError> {
         self.require_open()?;
         self.control.load_application_at(reference).await
+    }
+    pub async fn load_application_package_at(
+        &self,
+        source: &DeploymentRef,
+        package: &PackageRef,
+    ) -> Result<Option<Package>, StoreError> {
+        self.require_open()?;
+        self.control
+            .load_application_package_at(source, package)
+            .await
     }
     pub async fn read_application_metadata(
         &self,

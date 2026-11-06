@@ -164,6 +164,23 @@ impl Manager {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "managed source not found".into())
     }
+    pub(super) async fn package_at(
+        &self,
+        source: &DeploymentRef,
+        package: &PackageRef,
+        unavailable: &'static str,
+    ) -> Result<Package> {
+        if source.state_domain != self.source.state_domain
+            || source.deployment != self.source.deployment
+        {
+            return Err("foreign managed deployment source".into());
+        }
+        self.store
+            .load_application_package_at(source, package)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| unavailable.into())
+    }
     pub(super) async fn binding_candidates(&self, input: Value) -> Result<Value> {
         let request: BindingCandidatesRead =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
@@ -340,9 +357,19 @@ impl Manager {
         let request: PackageSettingsRead =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
         settings::check_path(&request.path, true)?;
-        let _read = self.writes.lock().await;
-        let loaded = self.source_at(Some(request.source.clone())).await?;
-        let declaration = declaration(loaded.packages(), &request.package)?;
+        let package = self
+            .package_at(
+                &request.source,
+                &request.package,
+                "application package unavailable",
+            )
+            .await?;
+        let declaration = package
+            .manifest()
+            .application
+            .as_ref()
+            .map(|declaration| declaration.declaration())
+            .ok_or("application package unavailable")?;
         let root_schema = package_schema(declaration, request.use_package)?;
         let mut configuration = defaults(&root_schema);
         if !request.changes.is_empty() {
