@@ -25,6 +25,18 @@
 use crate::protocol::{Command, Handle, NativeComputerCall, NativeComputerMethod};
 use maka_agent_facts::interaction::SystemPermissionGrant;
 
+#[cfg(target_os = "macos")]
+pub(crate) mod application_identity;
+#[cfg(all(feature = "native-desktop", target_os = "macos"))]
+pub(crate) mod process;
+
+/// Register the installed Host bundle and verify macOS resolves its identity
+/// back to that installation. This does not request any privacy permission.
+#[cfg(target_os = "macos")]
+pub fn register_application(bundle: &std::path::Path) -> Result<(), String> {
+    application_identity::register(bundle)
+}
+
 /// macOS grants used by this command. Inventory, documentation and browser
 /// work remain usable before the user grants native control or capture.
 pub fn required(command: &Command) -> &'static [SystemPermissionGrant] {
@@ -75,34 +87,56 @@ pub fn required(command: &Command) -> &'static [SystemPermissionGrant] {
     }
 }
 
+/// Whether this Host can observe and request macOS privacy grants.
+pub const fn supported() -> bool {
+    cfg!(all(feature = "native-desktop", target_os = "macos"))
+}
+
 /// The grants native desktop work needs that are not in effect now, checked
 /// using non-prompting preflight checks. It can block on the OS, but must
 /// never request authorization or enumerate screen content.
-pub fn missing(required: &[SystemPermissionGrant]) -> Vec<SystemPermissionGrant> {
+pub fn missing(required: &[SystemPermissionGrant]) -> Result<Vec<SystemPermissionGrant>, String> {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
     {
-        required
-            .iter()
-            .copied()
-            .filter(|grant| !crate::macos::tcc::present((*grant).into()))
-            .collect()
+        let started = std::time::Instant::now();
+        let pid = std::process::id();
+        tracing::debug!(pid, ?required, "Native system permission preflight started");
+        let result = process::missing(required);
+        tracing::debug!(
+            pid,
+            ?required,
+            missing = ?result.as_ref().ok(),
+            ok = result.is_ok(),
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Native system permission preflight finished"
+        );
+        result
     }
     #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
     {
         let _ = required;
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
 /// Asks the operating system to show its own request for each grant, at
 /// most once per grant for this Host.
-pub fn request(grants: &[SystemPermissionGrant]) {
+pub fn request(
+    grants: &[SystemPermissionGrant],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<(), String> {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
-    for grant in grants {
-        crate::macos::tcc::ask((*grant).into());
+    {
+        for grant in grants {
+            crate::macos::tcc::ask((*grant).into(), cancelled)?;
+        }
+        Ok(())
     }
     #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
-    let _ = grants;
+    {
+        let _ = (grants, cancelled);
+        Err("Native macOS system permission requests are unavailable in this Host".into())
+    }
 }
 
 /// The name System Settings lists for the application the grants belong to.

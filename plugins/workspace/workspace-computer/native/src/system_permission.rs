@@ -35,12 +35,36 @@ use sha2::{Digest, Sha256};
 /// How often the grants are checked again while the card is open.
 const RECHECK: std::time::Duration = std::time::Duration::from_millis(1500);
 
+trait PermissionReader: Clone + Send + Sync + 'static {
+    fn missing(
+        &self,
+        required: &[SystemPermissionGrant],
+    ) -> Result<Vec<SystemPermissionGrant>, String>;
+    fn application(&self) -> (String, Option<std::path::PathBuf>);
+}
+
+#[derive(Clone, Copy)]
+struct Native;
+impl PermissionReader for Native {
+    fn missing(
+        &self,
+        required: &[SystemPermissionGrant],
+    ) -> Result<Vec<SystemPermissionGrant>, String> {
+        system_permission::missing(required)
+    }
+    fn application(&self) -> (String, Option<std::path::PathBuf>) {
+        system_permission::application()
+    }
+}
+
 async fn missing(
+    reader: &impl PermissionReader,
     required: &'static [SystemPermissionGrant],
 ) -> Result<Vec<SystemPermissionGrant>, String> {
-    tokio::task::spawn_blocking(move || system_permission::missing(required))
+    let reader = reader.clone();
+    tokio::task::spawn_blocking(move || reader.missing(required))
         .await
-        .map_err(|error| format!("System permission check stopped: {error}"))
+        .map_err(|error| format!("System permission check stopped: {error}"))?
 }
 
 pub(super) async fn ensure(
@@ -52,8 +76,31 @@ pub(super) async fn ensure(
     cancellation: &CancellationToken,
     cell: &maka_code_runtime::CellContext,
 ) -> Result<(), ToolError> {
-    let grants = missing(required).await.map_err(failed)?;
-    if grants.is_empty() {
+    ensure_with_reader(
+        owner,
+        call,
+        basis,
+        required,
+        native_operation_id,
+        cancellation,
+        cell,
+        Native,
+    )
+    .await
+}
+
+async fn ensure_with_reader(
+    owner: &Computer,
+    call: &Scope,
+    basis: PermissionBasis,
+    required: &'static [SystemPermissionGrant],
+    native_operation_id: &str,
+    cancellation: &CancellationToken,
+    cell: &maka_code_runtime::CellContext,
+    reader: impl PermissionReader,
+) -> Result<(), ToolError> {
+    let initial_missing = missing(&reader, required).await.map_err(failed)?;
+    if initial_missing.is_empty() {
         return Ok(());
     }
     let (configuration, _) = access::current(owner, call, "cua_repl").await?;
@@ -61,21 +108,14 @@ pub(super) async fn ensure(
         return Err(failed("Computer Use permission boundary changed"));
     }
     let request_permissions = configuration.permissions.request_permissions;
-    let (application, bundle) = tokio::task::spawn_blocking({
-        let grants = grants.clone();
-        move || {
-            if request_permissions {
-                system_permission::request(&grants);
-            }
-            system_permission::application()
-        }
-    })
-    .await
-    .map_err(|_| failed("System permission check stopped"))?;
+    let identity_reader = reader.clone();
+    let (application, bundle) = tokio::task::spawn_blocking(move || identity_reader.application())
+        .await
+        .map_err(|_| failed("System permission check stopped"))?;
     let still_missing =
         |grants: &[SystemPermissionGrant]| failed(system_permission::failure(grants, &application));
     if !request_permissions {
-        return Err(still_missing(&grants));
+        return Err(still_missing(&initial_missing));
     }
     let context = ToolCallContext {
         execution: call.execution().cloned(),
@@ -94,7 +134,7 @@ pub(super) async fn ensure(
                 &context.invocation,
                 &context.operation_id,
                 native_operation_id,
-                &grants
+                required
             ))
             .expect("trusted grant list")
         ))
@@ -108,7 +148,9 @@ pub(super) async fn ensure(
         outcome: None,
         request: InteractionRequest::SystemPermission {
             tool_use_id: context.tool_use_id(),
-            grants: grants.clone(),
+            // Keep the UI's observation/request set equal to the producer's:
+            // an initially effective grant can disappear during this wait.
+            grants: required.to_vec(),
             application: application.clone(),
             application_location: bundle
                 .map(|path| -> Result<_, ToolError> {
@@ -140,7 +182,7 @@ pub(super) async fn ensure(
         let granted = async {
             loop {
                 tokio::time::sleep(RECHECK).await;
-                if missing(required).await?.is_empty() {
+                if missing(&reader, required).await?.is_empty() {
                     // The first outcome stands: a cancel committed meanwhile wins.
                     store
                         .commit_interaction_outcome(
@@ -168,7 +210,14 @@ pub(super) async fn ensure(
         Ok(outcome) => outcome,
         Err(error) => match maka_agent_authority::interaction_wait::withdraw(&store, &record).await
         {
-            Ok(Some(outcome)) => outcome,
+            Ok(Some(outcome)) => {
+                if !cancellation.is_cancelled()
+                    && !matches!(outcome, InteractionOutcome::SystemPermissionGranted { .. })
+                {
+                    return Err(failed(error));
+                }
+                outcome
+            }
             Ok(None) => return Err(failed(error)),
             Err(error) => return Err(ToolError::CleanupUnconfirmed(error.into())),
         },
@@ -180,10 +229,13 @@ pub(super) async fn ensure(
         return Ok(());
     }
     // A cancel stands even if the grants arrived as the card closed.
-    let missing = missing(required).await.map_err(failed)?;
+    let missing = missing(&reader, required).await.map_err(failed)?;
     if missing.is_empty() {
         Err(failed("System permission request cancelled"))
     } else {
         Err(still_missing(&missing))
     }
 }
+
+#[cfg(test)]
+mod tests;

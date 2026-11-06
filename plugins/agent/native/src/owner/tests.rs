@@ -60,6 +60,7 @@ mod protocol_processes;
 mod terminal;
 
 mod interactions;
+mod system_permission;
 
 mod catalog;
 

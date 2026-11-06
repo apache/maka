@@ -95,3 +95,31 @@ pub enum InteractionRejection {
     InvalidAnswer,
     Unsupported,
 }
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSystemPermissionState")]
+pub struct SystemPermissionState {
+    pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
+    pub effective: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSystemPermissionStatus")]
+pub struct SystemPermissionStatus {
+    pub record: InteractionRecord,
+    pub grants: Vec<SystemPermissionState>,
+    pub requestable: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentRequestSystemPermission")]
+pub struct RequestSystemPermission {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(length(min = 1))]
+    pub request_id: String,
+    pub grant: maka_agent_facts::interaction::SystemPermissionGrant,
+}

@@ -40,7 +40,7 @@ pub(crate) enum Grant {
 }
 
 impl Grant {
-    fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Accessibility => "accessibility",
             Self::ScreenRecording => "screen_recording",
@@ -99,9 +99,9 @@ impl From<maka_agent_facts::interaction::SystemPermissionGrant> for Grant {
     }
 }
 
-/// Non-prompting status only. This is also called while a permission card
-/// is open; it must not enumerate screen content or ask for authorization.
-pub(crate) fn present(grant: Grant) -> bool {
+/// A denial is observed only in a finite worker. The Host calls this only
+/// after a fresh positive result for the same responsible subject.
+pub(crate) fn raw_present(grant: Grant) -> bool {
     use platform_macos::permissions::status;
     match grant {
         Grant::Accessibility => status::accessibility_granted(),
@@ -109,15 +109,54 @@ pub(crate) fn present(grant: Grant) -> bool {
     }
 }
 
-/// Asks macOS to show its request for the grant, once per Host.
-pub(crate) fn ask(grant: Grant) {
-    if !grant.asked().swap(true, Ordering::Relaxed) {
-        grant.request();
+/// Requests one grant in a finite process; the budget belongs to this Host.
+pub(crate) fn ask(grant: Grant, cancelled: &(dyn Fn() -> bool + Sync)) -> Result<(), String> {
+    let subject = crate::system_permission::process::Subject::current()?;
+    request_once(
+        grant.asked(),
+        || crate::system_permission::application_identity::validate(&subject.bundle_path),
+        || crate::system_permission::process::request(&subject, grant.into(), cancelled),
+    )
+}
+
+fn request_once(
+    asked: &AtomicBool,
+    validate: impl FnOnce() -> Result<(), String>,
+    request: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    validate()?;
+    if !asked.swap(true, Ordering::Relaxed) {
+        request()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn finite_status() -> Result<serde_json::Value, String> {
+    crate::system_permission::process::finite_status()
+}
+
+pub(crate) fn finite_request(
+    grant: maka_agent_facts::interaction::SystemPermissionGrant,
+) -> Result<serde_json::Value, String> {
+    crate::system_permission::process::finite_request(grant)
+}
+
+pub(crate) fn request_raw(grant: Grant) {
+    grant.request();
+}
+
+impl From<Grant> for maka_agent_facts::interaction::SystemPermissionGrant {
+    fn from(grant: Grant) -> Self {
+        match grant {
+            Grant::Accessibility => Self::Accessibility,
+            Grant::ScreenRecording => Self::ScreenRecording,
+        }
     }
 }
 
 pub(crate) fn require(grant: Grant) -> Result<(), ToolError> {
-    if present(grant) {
+    let missing = crate::system_permission::missing(&[grant.into()]).map_err(ToolError::Failed)?;
+    if missing.is_empty() {
         return Ok(());
     }
     Err(ToolError::Failed(still_missing(
@@ -159,10 +198,7 @@ fn suspect(error: &ToolError) -> Option<Grant> {
 pub(crate) fn still_missing(grant: Grant, application: &str) -> String {
     format!(
         "permission_required: {code}; Turn on \"{application}\" in System Settings > \
-         Privacy & Security > {pane}, then retry. If it is not listed, reopen System Settings, \
-         or add it with the + button. If access is still denied after an update, remove the old \
-         application entry and add the current app again. macOS may also require restarting \
-         the Host, not just reopening the conversation window.",
+         Privacy & Security > {pane} before using native Computer Use.",
         code = grant.code(),
         pane = grant.pane(),
     )
@@ -180,23 +216,33 @@ pub(crate) fn responsible_application() -> (String, Option<std::path::PathBuf>) 
 }
 
 fn responsible_path() -> Option<std::path::PathBuf> {
+    responsible_process(unsafe { libc::getpid() })
+        .ok()
+        .map(|(_, path)| path)
+}
+
+pub(crate) fn responsible_process(
+    process: libc::pid_t,
+) -> Result<(libc::pid_t, std::path::PathBuf), String> {
     type Responsible = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;
-    // SAFETY: a private libSystem function with this C signature; it is
-    // looked up by name and its absence is handled.
+    // SAFETY: the private libSystem symbol has this C signature and only observes responsibility.
     let pid = unsafe {
         let symbol = libc::dlsym(
             libc::RTLD_DEFAULT,
             c"responsibility_get_pid_responsible_for_pid".as_ptr(),
         );
         if symbol.is_null() {
-            return None;
+            return Err("macOS responsible-process lookup is unavailable".into());
         }
-        std::mem::transmute::<*mut libc::c_void, Responsible>(symbol)(libc::getpid())
+        std::mem::transmute::<*mut libc::c_void, Responsible>(symbol)(process)
     };
     if pid <= 0 {
-        return None;
+        return Err(format!(
+            "macOS has no responsible process for PID {process}"
+        ));
     }
-    path_of(pid).map(Into::into)
+    let path = path_of(pid).ok_or_else(|| format!("Cannot read responsible process PID {pid}"))?;
+    Ok((pid, path.into()))
 }
 
 /// The name of the `.app` bundle the executable belongs to (the innermost,
@@ -210,7 +256,7 @@ fn application_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "the application that started Maka".into())
 }
 
-fn application_bundle(path: &std::path::Path) -> Option<&std::path::Path> {
+pub(crate) fn application_bundle(path: &std::path::Path) -> Option<&std::path::Path> {
     path.ancestors().find(|ancestor| {
         ancestor
             .extension()
@@ -222,6 +268,65 @@ fn application_bundle(path: &std::path::Path) -> Option<&std::path::Path> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn invalid_application_identity_does_not_consume_the_request_or_emit_an_os_effect() {
+        let asked = AtomicBool::new(false);
+        let effects = std::cell::Cell::new(0);
+        let rejected = request_once(
+            &asked,
+            || Err("LaunchServices cannot resolve application test.identity".into()),
+            || {
+                effects.set(effects.get() + 1);
+                Ok(())
+            },
+        );
+        assert_eq!(
+            rejected.unwrap_err(),
+            "LaunchServices cannot resolve application test.identity"
+        );
+        assert!(!asked.load(Ordering::Relaxed));
+        assert_eq!(effects.get(), 0);
+        request_once(
+            &asked,
+            || Ok(()),
+            || {
+                effects.set(effects.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        request_once(
+            &asked,
+            || Ok(()),
+            || {
+                effects.set(effects.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(asked.load(Ordering::Relaxed));
+        assert_eq!(effects.get(), 1);
+    }
+
+    #[test]
+    fn failed_finite_request_preserves_the_parent_budget_without_retrying() {
+        let asked = AtomicBool::new(false);
+        let error = request_once(
+            &asked,
+            || Ok(()),
+            || Err("finite request reply lost".into()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "finite request reply lost");
+        assert!(asked.load(Ordering::Relaxed));
+        request_once(
+            &asked,
+            || Ok(()),
+            || panic!("a failed request must not be dispatched twice"),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn names_the_innermost_application_bundle() {
@@ -238,62 +343,6 @@ mod tests {
             "Maka Host"
         );
         assert_eq!(application_name(Path::new("/usr/local/bin/maka")), "maka");
-    }
-
-    #[test]
-    fn polling_permissions_does_not_enumerate_screen_content() {
-        const CHILD: &str = "MAKA_TEST_PERMISSION_POLL_CHILD";
-        const TEST: &str =
-            "macos::tcc::tests::polling_permissions_does_not_enumerate_screen_content";
-        if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", TEST, "--nocapture"])
-                .env(CHILD, "1")
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        use objc2::{
-            runtime::{AnyClass, AnyObject, Bool, Imp, Sel},
-            sel,
-        };
-        unsafe extern "C-unwind" fn content_requested(
-            _: *mut AnyObject,
-            _: Sel,
-            _: Bool,
-            _: Bool,
-            _: *mut AnyObject,
-        ) {
-            eprintln!("permission polling attempted screen-content enumeration, which can prompt");
-            std::process::exit(1);
-        }
-        // SAFETY: load Apple's framework for this child process's lifetime.
-        let framework = unsafe {
-            libc::dlopen(
-                c"/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit".as_ptr(),
-                libc::RTLD_NOW,
-            )
-        };
-        assert!(!framework.is_null());
-        let method = AnyClass::get(c"SCShareableContent").unwrap()
-            .class_method(sel!(getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:)).unwrap();
-        type Request = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Bool, Bool, *mut AnyObject);
-        // SAFETY: the replacement has this selector's exact C ABI and exits
-        // before any prompt. Only this isolated child runs with it installed.
-        unsafe {
-            method.set_implementation(std::mem::transmute::<Request, Imp>(content_requested));
-        }
-        use maka_agent_facts::interaction::SystemPermissionGrant::{
-            Accessibility, ScreenRecording,
-        };
-        let _ = crate::system_permission::missing(&[Accessibility, ScreenRecording]);
-        let _ = crate::system_permission::missing(&[Accessibility, ScreenRecording]);
     }
 
     #[test]

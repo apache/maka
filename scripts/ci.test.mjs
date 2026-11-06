@@ -417,6 +417,8 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
     'patches/pele+1.13.0.patch',
     'products/maka/workbench/tests/fixtures/composer-completion.tsx',
     'products/maka/workbench/tests/fixtures/mermaid-view.tsx',
+    'products/maka/workbench/app/ComputerPermissionSetupEntry.tsx',
+    'products/maka/workbench/tests/fixtures/computer-permission-setup.tsx',
   ]) {
     const selected = plan([input]);
     assert(selected.suites.root, input);

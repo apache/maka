@@ -309,6 +309,293 @@ export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentRequestSystemPermissionOutput_InteractionRequest =
+  | {
+      kind: 'session_approval';
+      toolUseId: string;
+      basis: AgentRequestSystemPermissionOutput_PermissionBasis;
+      sessionId: string;
+      requestId: string;
+      answer: AgentRequestSystemPermissionOutput_SessionApprovalAnswer;
+    }
+  | {
+      kind: 'service_approval';
+      toolUseId: string;
+      toolName: string;
+      service: string;
+      method: string;
+      binding: string;
+      through: number;
+    }
+  | {
+      kind: 'permissions';
+      toolUseId: string | null;
+      basis: AgentRequestSystemPermissionOutput_PermissionBasis;
+      request: AgentRequestSystemPermissionOutput_PermissionRequest;
+    }
+  | {
+      kind: 'question';
+      toolUseId: string;
+      questions: AgentRequestSystemPermissionOutput_InteractionQuestion[];
+    }
+  | {
+      kind: 'form';
+      toolUseId: string;
+      message: string;
+      requester: AgentRequestSystemPermissionOutput_FormRequester;
+      fields: AgentRequestSystemPermissionOutput_FormField[];
+    }
+  | {
+      kind: 'client_capability';
+      toolUseId: string;
+      target: AgentRequestSystemPermissionOutput_GrantTarget;
+      /**
+       * Agent-owned approvals expire with this original permission boundary.
+       * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
+       */
+      basis?: AgentRequestSystemPermissionOutput_PermissionBasis | null;
+    }
+  | {
+      kind: 'computer_app';
+      toolUseId: string;
+      nativeOperationId: string;
+      target: AgentRequestSystemPermissionOutput_GrantTarget;
+      basis: AgentRequestSystemPermissionOutput_PermissionBasis;
+      display: AgentRequestSystemPermissionOutput_ComputerAppDisplay;
+      allowAlways: boolean;
+      authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [
+        AgentRequestSystemPermissionOutput_SystemPermissionGrant,
+        ...AgentRequestSystemPermissionOutput_SystemPermissionGrant[],
+      ];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
+      applicationLocation?: AgentRequestSystemPermissionOutput_SystemPermissionApplicationLocation | null;
+    };
+/**
+ * Only access-expanding child decisions can require a parent's human confirmation.
+ */
+export type AgentRequestSystemPermissionOutput_SessionApprovalAnswer =
+  | {
+      kind: 'service_approval';
+      decision: AgentRequestSystemPermissionOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'permissions';
+      decision: AgentRequestSystemPermissionOutput_PermissionApproval;
+    }
+  | {
+      kind: 'client_capability';
+      decision: AgentRequestSystemPermissionOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'computer_app';
+      decision: AgentRequestSystemPermissionOutput_ComputerAppApproval;
+    };
+export type AgentRequestSystemPermissionOutput_ApprovalAllow = 'allow';
+export type AgentRequestSystemPermissionOutput_PermissionApproval = {
+  decision: 'allow';
+  permissions: AgentRequestSystemPermissionOutput_Permissions;
+  scope: AgentRequestSystemPermissionOutput_Scope2;
+};
+export type AgentRequestSystemPermissionOutput_Scope = 'subtree' | 'exact';
+/**
+ * Equal-path conflict priority is different from authority breadth: deny wins.
+ */
+export type AgentRequestSystemPermissionOutput_Access = 'read' | 'write' | 'deny';
+export type AgentRequestSystemPermissionOutput_Network =
+  | ('denied' | 'allowed')
+  | {
+      restricted: {
+        destinations: AgentRequestSystemPermissionOutput_Destination[];
+      };
+    };
+export type AgentRequestSystemPermissionOutput_Scope2 = 'once' | 'turn' | 'session';
+export type AgentRequestSystemPermissionOutput_ComputerAppApproval = 'once' | 'session' | 'always';
+export type AgentRequestSystemPermissionOutput_FormField = {
+  name: string;
+  label: string;
+  required: boolean;
+  description?: string | null;
+  [k: string]: unknown | undefined;
+} & AgentRequestSystemPermissionOutput_FormField1;
+export type AgentRequestSystemPermissionOutput_FormField1 =
+  | {
+      kind: 'string';
+      default?: string | null;
+      minLength?: number | null;
+      maxLength?: number | null;
+      format?: AgentRequestSystemPermissionOutput_FormFormat | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'number';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'integer';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'boolean';
+      default?: boolean | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'single_select';
+      options: AgentRequestSystemPermissionOutput_FormOption[];
+      default?: string | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'multi_select';
+      options: AgentRequestSystemPermissionOutput_FormOption[];
+      default?: string[] | null;
+      minItems?: number | null;
+      maxItems?: number | null;
+      [k: string]: unknown | undefined;
+    };
+export type AgentRequestSystemPermissionOutput_FormFormat = 'email' | 'uri' | 'date' | 'date-time';
+export type AgentRequestSystemPermissionOutput_GrantCapability =
+  | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
+  | 'browser_download'
+  | 'browser_history'
+  | 'browser_upload';
+export type AgentRequestSystemPermissionOutput_GrantScope =
+  | {
+      kind: 'browser_origin';
+      origin: string;
+    }
+  | {
+      kind: 'browser_profile';
+      browserId: string;
+      generation: string;
+    }
+  | {
+      kind: 'capability';
+    }
+  | {
+      kind: 'mcp_tool';
+      serverId: string;
+      toolName: string;
+    }
+  | {
+      kind: 'computer_app';
+      platform: AgentRequestSystemPermissionOutput_ComputerAppPlatform;
+      applicationId: string;
+    };
+export type AgentRequestSystemPermissionOutput_ComputerAppPlatform = 'macos' | 'windows';
+export type AgentRequestSystemPermissionOutput_ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentRequestSystemPermissionOutput_SystemPermissionGrant =
+  | 'accessibility'
+  | 'screen_recording';
+export type AgentRequestSystemPermissionOutput_InteractionOutcome =
+  | {
+      kind: 'session_approval_decision';
+      decision: AgentRequestSystemPermissionOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'service_approval_decision';
+      decision: AgentRequestSystemPermissionOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'permissions_decision';
+      decision: AgentRequestSystemPermissionOutput_Decision2;
+      committedAt: number;
+    }
+  | {
+      kind: 'question_answer';
+      answers: (string | null)[];
+      committedAt: number;
+    }
+  | ((
+      | {
+          action: 'accept';
+          values: {
+            [k: string]: AgentRequestSystemPermissionOutput_FormValue | undefined;
+          };
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'decline';
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'cancel';
+          [k: string]: unknown | undefined;
+        }
+    ) & {
+      kind: 'form_answer';
+      committedAt: number;
+      [k: string]: unknown | undefined;
+    })
+  | {
+      kind: 'client_capability_decision';
+      decision: AgentRequestSystemPermissionOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'computer_app_decision';
+      decision: AgentRequestSystemPermissionOutput_ComputerAppDecision;
+      committedAt: number;
+    }
+  | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
+      kind: 'closure';
+      reason: AgentRequestSystemPermissionOutput_ClosureReason;
+      committedAt: number;
+    };
+export type AgentRequestSystemPermissionOutput_Decision = 'allow' | 'deny';
+export type AgentRequestSystemPermissionOutput_Decision2 =
+  | {
+      decision: 'deny';
+    }
+  | {
+      decision: 'allow';
+      permissions: AgentRequestSystemPermissionOutput_Permissions;
+      scope: AgentRequestSystemPermissionOutput_Scope2;
+    };
+export type AgentRequestSystemPermissionOutput_FormValue = string | number | boolean | string[];
+export type AgentRequestSystemPermissionOutput_ComputerAppDecision =
+  | 'once'
+  | 'session'
+  | 'always'
+  | 'deny';
+export type AgentRequestSystemPermissionOutput_ClosureReason =
+  | 'steered'
+  | 'turn_stopped'
+  | 'turn_terminal'
+  | 'producer_cancelled'
+  | 'timed_out'
+  | 'host_restarted'
+  | 'provider_disconnected';
 /**
  * Session sandbox policy. Full access disables isolation and permits Computer Use
  * without additional application, browser or audio consent.
@@ -429,6 +716,293 @@ export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceC
   | 'unverified';
 export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentSystemPermissionStatusOutput_InteractionRequest =
+  | {
+      kind: 'session_approval';
+      toolUseId: string;
+      basis: AgentSystemPermissionStatusOutput_PermissionBasis;
+      sessionId: string;
+      requestId: string;
+      answer: AgentSystemPermissionStatusOutput_SessionApprovalAnswer;
+    }
+  | {
+      kind: 'service_approval';
+      toolUseId: string;
+      toolName: string;
+      service: string;
+      method: string;
+      binding: string;
+      through: number;
+    }
+  | {
+      kind: 'permissions';
+      toolUseId: string | null;
+      basis: AgentSystemPermissionStatusOutput_PermissionBasis;
+      request: AgentSystemPermissionStatusOutput_PermissionRequest;
+    }
+  | {
+      kind: 'question';
+      toolUseId: string;
+      questions: AgentSystemPermissionStatusOutput_InteractionQuestion[];
+    }
+  | {
+      kind: 'form';
+      toolUseId: string;
+      message: string;
+      requester: AgentSystemPermissionStatusOutput_FormRequester;
+      fields: AgentSystemPermissionStatusOutput_FormField[];
+    }
+  | {
+      kind: 'client_capability';
+      toolUseId: string;
+      target: AgentSystemPermissionStatusOutput_GrantTarget;
+      /**
+       * Agent-owned approvals expire with this original permission boundary.
+       * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
+       */
+      basis?: AgentSystemPermissionStatusOutput_PermissionBasis | null;
+    }
+  | {
+      kind: 'computer_app';
+      toolUseId: string;
+      nativeOperationId: string;
+      target: AgentSystemPermissionStatusOutput_GrantTarget;
+      basis: AgentSystemPermissionStatusOutput_PermissionBasis;
+      display: AgentSystemPermissionStatusOutput_ComputerAppDisplay;
+      allowAlways: boolean;
+      authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [
+        AgentSystemPermissionStatusOutput_SystemPermissionGrant,
+        ...AgentSystemPermissionStatusOutput_SystemPermissionGrant[],
+      ];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
+      applicationLocation?: AgentSystemPermissionStatusOutput_SystemPermissionApplicationLocation | null;
+    };
+/**
+ * Only access-expanding child decisions can require a parent's human confirmation.
+ */
+export type AgentSystemPermissionStatusOutput_SessionApprovalAnswer =
+  | {
+      kind: 'service_approval';
+      decision: AgentSystemPermissionStatusOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'permissions';
+      decision: AgentSystemPermissionStatusOutput_PermissionApproval;
+    }
+  | {
+      kind: 'client_capability';
+      decision: AgentSystemPermissionStatusOutput_ApprovalAllow;
+    }
+  | {
+      kind: 'computer_app';
+      decision: AgentSystemPermissionStatusOutput_ComputerAppApproval;
+    };
+export type AgentSystemPermissionStatusOutput_ApprovalAllow = 'allow';
+export type AgentSystemPermissionStatusOutput_PermissionApproval = {
+  decision: 'allow';
+  permissions: AgentSystemPermissionStatusOutput_Permissions;
+  scope: AgentSystemPermissionStatusOutput_Scope2;
+};
+export type AgentSystemPermissionStatusOutput_Scope = 'subtree' | 'exact';
+/**
+ * Equal-path conflict priority is different from authority breadth: deny wins.
+ */
+export type AgentSystemPermissionStatusOutput_Access = 'read' | 'write' | 'deny';
+export type AgentSystemPermissionStatusOutput_Network =
+  | ('denied' | 'allowed')
+  | {
+      restricted: {
+        destinations: AgentSystemPermissionStatusOutput_Destination[];
+      };
+    };
+export type AgentSystemPermissionStatusOutput_Scope2 = 'once' | 'turn' | 'session';
+export type AgentSystemPermissionStatusOutput_ComputerAppApproval = 'once' | 'session' | 'always';
+export type AgentSystemPermissionStatusOutput_FormField = {
+  name: string;
+  label: string;
+  required: boolean;
+  description?: string | null;
+  [k: string]: unknown | undefined;
+} & AgentSystemPermissionStatusOutput_FormField1;
+export type AgentSystemPermissionStatusOutput_FormField1 =
+  | {
+      kind: 'string';
+      default?: string | null;
+      minLength?: number | null;
+      maxLength?: number | null;
+      format?: AgentSystemPermissionStatusOutput_FormFormat | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'number';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'integer';
+      default?: number | null;
+      minimum?: number | null;
+      maximum?: number | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'boolean';
+      default?: boolean | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'single_select';
+      options: AgentSystemPermissionStatusOutput_FormOption[];
+      default?: string | null;
+      [k: string]: unknown | undefined;
+    }
+  | {
+      kind: 'multi_select';
+      options: AgentSystemPermissionStatusOutput_FormOption[];
+      default?: string[] | null;
+      minItems?: number | null;
+      maxItems?: number | null;
+      [k: string]: unknown | undefined;
+    };
+export type AgentSystemPermissionStatusOutput_FormFormat = 'email' | 'uri' | 'date' | 'date-time';
+export type AgentSystemPermissionStatusOutput_GrantCapability =
+  | ('browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp')
+  | 'browser_download'
+  | 'browser_history'
+  | 'browser_upload';
+export type AgentSystemPermissionStatusOutput_GrantScope =
+  | {
+      kind: 'browser_origin';
+      origin: string;
+    }
+  | {
+      kind: 'browser_profile';
+      browserId: string;
+      generation: string;
+    }
+  | {
+      kind: 'capability';
+    }
+  | {
+      kind: 'mcp_tool';
+      serverId: string;
+      toolName: string;
+    }
+  | {
+      kind: 'computer_app';
+      platform: AgentSystemPermissionStatusOutput_ComputerAppPlatform;
+      applicationId: string;
+    };
+export type AgentSystemPermissionStatusOutput_ComputerAppPlatform = 'macos' | 'windows';
+export type AgentSystemPermissionStatusOutput_ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentSystemPermissionStatusOutput_SystemPermissionGrant =
+  | 'accessibility'
+  | 'screen_recording';
+export type AgentSystemPermissionStatusOutput_InteractionOutcome =
+  | {
+      kind: 'session_approval_decision';
+      decision: AgentSystemPermissionStatusOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'service_approval_decision';
+      decision: AgentSystemPermissionStatusOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'permissions_decision';
+      decision: AgentSystemPermissionStatusOutput_Decision2;
+      committedAt: number;
+    }
+  | {
+      kind: 'question_answer';
+      answers: (string | null)[];
+      committedAt: number;
+    }
+  | ((
+      | {
+          action: 'accept';
+          values: {
+            [k: string]: AgentSystemPermissionStatusOutput_FormValue | undefined;
+          };
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'decline';
+          [k: string]: unknown | undefined;
+        }
+      | {
+          action: 'cancel';
+          [k: string]: unknown | undefined;
+        }
+    ) & {
+      kind: 'form_answer';
+      committedAt: number;
+      [k: string]: unknown | undefined;
+    })
+  | {
+      kind: 'client_capability_decision';
+      decision: AgentSystemPermissionStatusOutput_Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'computer_app_decision';
+      decision: AgentSystemPermissionStatusOutput_ComputerAppDecision;
+      committedAt: number;
+    }
+  | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
+      kind: 'closure';
+      reason: AgentSystemPermissionStatusOutput_ClosureReason;
+      committedAt: number;
+    };
+export type AgentSystemPermissionStatusOutput_Decision = 'allow' | 'deny';
+export type AgentSystemPermissionStatusOutput_Decision2 =
+  | {
+      decision: 'deny';
+    }
+  | {
+      decision: 'allow';
+      permissions: AgentSystemPermissionStatusOutput_Permissions;
+      scope: AgentSystemPermissionStatusOutput_Scope2;
+    };
+export type AgentSystemPermissionStatusOutput_FormValue = string | number | boolean | string[];
+export type AgentSystemPermissionStatusOutput_ComputerAppDecision =
+  | 'once'
+  | 'session'
+  | 'always'
+  | 'deny';
+export type AgentSystemPermissionStatusOutput_ClosureReason =
+  | 'steered'
+  | 'turn_stopped'
+  | 'turn_terminal'
+  | 'producer_cancelled'
+  | 'timed_out'
+  | 'host_restarted'
+  | 'provider_disconnected';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -1154,6 +1728,19 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapRead;
       output: Runtime.AgentRecapReceipt | null;
     };
+    requestSystemPermission: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        requestId: string;
+        grant: Runtime.SystemPermissionGrant;
+      };
+      output: {
+        record: AgentRequestSystemPermissionOutput_InteractionRecord;
+        grants: AgentRequestSystemPermissionOutput_AgentSystemPermissionState[];
+        requestable: boolean;
+      };
+    };
     respond: {
       mode: 'mutation';
       input: Runtime.AgentInteractionRespond;
@@ -1307,6 +1894,15 @@ export interface ServiceMethods {
         operationId: string;
       };
       output: Runtime.AgentStopped;
+    };
+    systemPermissionStatus: {
+      mode: 'query';
+      input: Runtime.AgentInteractionRead;
+      output: {
+        record: AgentSystemPermissionStatusOutput_InteractionRecord;
+        grants: AgentSystemPermissionStatusOutput_AgentSystemPermissionState[];
+        requestable: boolean;
+      };
     };
     toolImage: {
       mode: 'query';
@@ -2449,6 +3045,112 @@ export interface AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapsh
   warning: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
 }
+export interface AgentRequestSystemPermissionOutput_InteractionRecord {
+  sessionId: string;
+  turnId: string;
+  runId: string;
+  requestId: string;
+  createdAt: number;
+  request: AgentRequestSystemPermissionOutput_InteractionRequest;
+  outcome: AgentRequestSystemPermissionOutput_InteractionOutcome | null;
+}
+/**
+ * Captured authority, never silently upgraded by resolving a current binding.
+ */
+export interface AgentRequestSystemPermissionOutput_PermissionBasis {
+  boundaryRevision: number;
+  binding: AgentRequestSystemPermissionOutput_BindingStamp;
+}
+export interface AgentRequestSystemPermissionOutput_BindingStamp {
+  id: string;
+  permissionEpoch: number;
+}
+export interface AgentRequestSystemPermissionOutput_Permissions {
+  filesystem: AgentRequestSystemPermissionOutput_Rule[];
+  network: AgentRequestSystemPermissionOutput_Network;
+}
+/**
+ * Paths have executor-native meaning. Validate and materialize them on the
+ * execution host, never on a remote Desktop. This document alone grants nothing.
+ */
+export interface AgentRequestSystemPermissionOutput_Rule {
+  path: string;
+  scope: AgentRequestSystemPermissionOutput_Scope;
+  access: AgentRequestSystemPermissionOutput_Access;
+}
+/**
+ * Destination authority, independent of the upstream proxy used to reach it.
+ * A domain grant does not authorize its subdomains or other ports.
+ */
+export interface AgentRequestSystemPermissionOutput_Destination {
+  host: string;
+  port: number;
+}
+/**
+ * The Host supplies the real operation description; it is display information,
+ * not authority inferred from a command string or a plugin-supplied Session ID.
+ */
+export interface AgentRequestSystemPermissionOutput_PermissionRequest {
+  reason: string;
+  command?: AgentRequestSystemPermissionOutput_PermissionCommand | null;
+  permissions: AgentRequestSystemPermissionOutput_Permissions;
+}
+export interface AgentRequestSystemPermissionOutput_PermissionCommand {
+  command: string;
+  cwd: string;
+}
+export interface AgentRequestSystemPermissionOutput_InteractionQuestion {
+  question: string;
+  /**
+   * @minItems 2
+   * @maxItems 3
+   */
+  options:
+    | [
+        AgentRequestSystemPermissionOutput_QuestionOption,
+        AgentRequestSystemPermissionOutput_QuestionOption,
+      ]
+    | [
+        AgentRequestSystemPermissionOutput_QuestionOption,
+        AgentRequestSystemPermissionOutput_QuestionOption,
+        AgentRequestSystemPermissionOutput_QuestionOption,
+      ];
+}
+export interface AgentRequestSystemPermissionOutput_QuestionOption {
+  label: string;
+  description?: string;
+}
+export interface AgentRequestSystemPermissionOutput_FormRequester {
+  name: string;
+  source?: string | null;
+}
+export interface AgentRequestSystemPermissionOutput_FormOption {
+  value: string;
+  label: string;
+}
+export interface AgentRequestSystemPermissionOutput_GrantTarget {
+  providerId: string;
+  contractId: string;
+  serverId: string;
+  toolName: string;
+  capability: AgentRequestSystemPermissionOutput_GrantCapability;
+  scope: AgentRequestSystemPermissionOutput_GrantScope;
+  [k: string]: unknown | undefined;
+}
+export interface AgentRequestSystemPermissionOutput_ComputerAppDisplay {
+  name: string;
+  appPath: string;
+  risk?: AgentRequestSystemPermissionOutput_ComputerAppRisk | null;
+  warning?: string | null;
+}
+export interface AgentRequestSystemPermissionOutput_SystemPermissionApplicationLocation {
+  fileUrl: string;
+  stateDomain: string;
+}
+export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
+  grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;
+  effective: boolean;
+}
 export interface AgentRestoreSessionCheckpointInput_AgentHistoryCheckpointRead {
   sessionId: string;
   /**
@@ -2606,6 +3308,112 @@ export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   description: string;
   invocation: string;
   [k: string]: unknown | undefined;
+}
+export interface AgentSystemPermissionStatusOutput_InteractionRecord {
+  sessionId: string;
+  turnId: string;
+  runId: string;
+  requestId: string;
+  createdAt: number;
+  request: AgentSystemPermissionStatusOutput_InteractionRequest;
+  outcome: AgentSystemPermissionStatusOutput_InteractionOutcome | null;
+}
+/**
+ * Captured authority, never silently upgraded by resolving a current binding.
+ */
+export interface AgentSystemPermissionStatusOutput_PermissionBasis {
+  boundaryRevision: number;
+  binding: AgentSystemPermissionStatusOutput_BindingStamp;
+}
+export interface AgentSystemPermissionStatusOutput_BindingStamp {
+  id: string;
+  permissionEpoch: number;
+}
+export interface AgentSystemPermissionStatusOutput_Permissions {
+  filesystem: AgentSystemPermissionStatusOutput_Rule[];
+  network: AgentSystemPermissionStatusOutput_Network;
+}
+/**
+ * Paths have executor-native meaning. Validate and materialize them on the
+ * execution host, never on a remote Desktop. This document alone grants nothing.
+ */
+export interface AgentSystemPermissionStatusOutput_Rule {
+  path: string;
+  scope: AgentSystemPermissionStatusOutput_Scope;
+  access: AgentSystemPermissionStatusOutput_Access;
+}
+/**
+ * Destination authority, independent of the upstream proxy used to reach it.
+ * A domain grant does not authorize its subdomains or other ports.
+ */
+export interface AgentSystemPermissionStatusOutput_Destination {
+  host: string;
+  port: number;
+}
+/**
+ * The Host supplies the real operation description; it is display information,
+ * not authority inferred from a command string or a plugin-supplied Session ID.
+ */
+export interface AgentSystemPermissionStatusOutput_PermissionRequest {
+  reason: string;
+  command?: AgentSystemPermissionStatusOutput_PermissionCommand | null;
+  permissions: AgentSystemPermissionStatusOutput_Permissions;
+}
+export interface AgentSystemPermissionStatusOutput_PermissionCommand {
+  command: string;
+  cwd: string;
+}
+export interface AgentSystemPermissionStatusOutput_InteractionQuestion {
+  question: string;
+  /**
+   * @minItems 2
+   * @maxItems 3
+   */
+  options:
+    | [
+        AgentSystemPermissionStatusOutput_QuestionOption,
+        AgentSystemPermissionStatusOutput_QuestionOption,
+      ]
+    | [
+        AgentSystemPermissionStatusOutput_QuestionOption,
+        AgentSystemPermissionStatusOutput_QuestionOption,
+        AgentSystemPermissionStatusOutput_QuestionOption,
+      ];
+}
+export interface AgentSystemPermissionStatusOutput_QuestionOption {
+  label: string;
+  description?: string;
+}
+export interface AgentSystemPermissionStatusOutput_FormRequester {
+  name: string;
+  source?: string | null;
+}
+export interface AgentSystemPermissionStatusOutput_FormOption {
+  value: string;
+  label: string;
+}
+export interface AgentSystemPermissionStatusOutput_GrantTarget {
+  providerId: string;
+  contractId: string;
+  serverId: string;
+  toolName: string;
+  capability: AgentSystemPermissionStatusOutput_GrantCapability;
+  scope: AgentSystemPermissionStatusOutput_GrantScope;
+  [k: string]: unknown | undefined;
+}
+export interface AgentSystemPermissionStatusOutput_ComputerAppDisplay {
+  name: string;
+  appPath: string;
+  risk?: AgentSystemPermissionStatusOutput_ComputerAppRisk | null;
+  warning?: string | null;
+}
+export interface AgentSystemPermissionStatusOutput_SystemPermissionApplicationLocation {
+  fileUrl: string;
+  stateDomain: string;
+}
+export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
+  grant: AgentSystemPermissionStatusOutput_SystemPermissionGrant;
+  effective: boolean;
 }
 /**
  * One message the Bot deliberately sent to its user.

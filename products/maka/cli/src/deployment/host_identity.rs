@@ -72,7 +72,12 @@ pub(super) fn shell(executable: &Path) -> Result<Option<PathBuf>, String> {
         .ok_or("Host executable has no parent")?
         .join("Maka.app/Contents/Helpers")
         .join(BUNDLE);
-    prepare(&packaged, &installed).map_err(|error| format!("prepare macOS Host identity: {error}"))
+    let shell = prepare(&packaged, &installed)
+        .map_err(|error| format!("prepare macOS Host identity: {error}"))?;
+    if shell.is_some() {
+        maka_computer_use::system_permission::register_application(&installed)?;
+    }
+    Ok(shell)
 }
 
 fn prepare(packaged: &Path, installed: &Path) -> std::io::Result<Option<PathBuf>> {

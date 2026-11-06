@@ -24,6 +24,8 @@ mod attachment_paths;
 pub mod bindings;
 mod clipboard;
 pub mod host;
+#[cfg(test)]
+mod permission_setup_tests;
 pub mod reload;
 
 use nsh_engine::{Bundle, Capabilities, EngineConfig, Limits, Policy};
@@ -52,6 +54,20 @@ pub fn bootstrap_bundle() -> Bundle {
             ..Policy::development()
         },
     )
+}
+
+/// The dedicated, trusted system-permission surface; it observes original interactions.
+fn system_permission_bundle() -> Bundle {
+    let mut capabilities = Capabilities::all();
+    capabilities.host = vec![
+        "computerPermissions.close".into(),
+        "appearance.textSize".into(),
+    ];
+    Bundle::source(include_str!(concat!(env!("OUT_DIR"), "/computer-permission-setup.js")).into())
+        .with_policy(Policy {
+            declared: Some(capabilities),
+            ..Policy::development()
+        })
 }
 
 /// Runs the UI bootstrap with the admitted Host bindings on `runtime`.

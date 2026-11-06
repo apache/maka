@@ -21,9 +21,7 @@
 //!
 //! No application input or AppKit operations run in this component.
 
-use super::target::{
-    actual_pid, ax_window_id, element_attribute, ensure_actual_pid_available, string_attribute,
-};
+use super::target::{actual_pid, ax_window_id, element_attribute, ensure_actual_pid_available};
 use crate::desktop::NativeEpochId;
 use core_foundation::{
     array::{CFArray, CFArrayRef},
@@ -362,15 +360,19 @@ impl Windows {
         let Some(primary) = self.primary_window()? else {
             return Ok(());
         };
-        self.insert(WindowVariant::Window(LocalElement::new(primary.clone())));
-        let mut pending = VecDeque::from(element_list(&primary, "AXChildren")?);
-        while let Some(element) = pending.pop_front() {
-            if string_attribute(&element, "AXRole")?.as_deref() == Some("AXSheet") {
-                self.insert(WindowVariant::Sheet(LocalElement::new(element.clone())));
-            }
-            pending.extend(element_list(&element, "AXChildren")?);
-        }
-        Ok(())
+        collect_initial_windows(
+            primary,
+            initial_sheet,
+            |element| element_list(element, "AXChildren"),
+            |element, sheet| {
+                let element = LocalElement::new(element);
+                self.insert(if sheet {
+                    WindowVariant::Sheet(element)
+                } else {
+                    WindowVariant::Window(element)
+                });
+            },
+        )
     }
 
     fn insert(&mut self, window: WindowVariant) {
@@ -545,41 +547,105 @@ fn dictionary_number(dictionary: CFDictionaryRef, key: &str) -> Option<i64> {
     unsafe { CFNumber::wrap_under_get_rule(value as _) }.to_i64()
 }
 
-fn element_list(element: &RetainedElement, name: &str) -> Result<Vec<RetainedElement>, ToolError> {
-    let name = CFString::new(name);
+#[derive(Debug)]
+enum AttributeReadError {
+    Native { name: &'static str, status: AXError },
+    InvalidType(&'static str),
+}
+
+impl From<AttributeReadError> for ToolError {
+    fn from(error: AttributeReadError) -> Self {
+        match error {
+            AttributeReadError::Native { name, status } => ax_failure(name, status),
+            AttributeReadError::InvalidType(name) => failed(format!(
+                "native window table {name} returned an unexpected type"
+            )),
+        }
+    }
+}
+
+fn collect_initial_windows<Element>(
+    primary: Element,
+    mut sheet: impl FnMut(&Element) -> Result<bool, AttributeReadError>,
+    mut children: impl FnMut(&Element) -> Result<Vec<Element>, AttributeReadError>,
+    mut insert: impl FnMut(Element, bool),
+) -> Result<(), ToolError> {
+    // The primary window must remain readable. Only its disappearing descendants
+    // are optional during this initial sheet discovery, not during input targeting.
+    let mut pending = VecDeque::from(children(&primary)?);
+    insert(primary, false);
+    while let Some(element) = pending.pop_front() {
+        let observed =
+            sheet(&element).and_then(|sheet| children(&element).map(|children| (sheet, children)));
+        match observed {
+            Ok((sheet, children)) => {
+                if sheet {
+                    insert(element, true);
+                }
+                pending.extend(children);
+            }
+            Err(AttributeReadError::Native {
+                status: bindings::kAXErrorInvalidUIElement,
+                ..
+            }) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn initial_sheet(element: &RetainedElement) -> Result<bool, AttributeReadError> {
+    let Some(value) = copied_attribute(element, "AXRole")? else {
+        return Ok(false);
+    };
+    // SAFETY: the copied non-null value remains owned throughout the type check.
+    if unsafe { CFGetTypeID(value.0) } != CFString::type_id() {
+        return Err(AttributeReadError::InvalidType("AXRole"));
+    }
+    // SAFETY: the checked copied value owns this string throughout comparison.
+    Ok(unsafe { CFString::wrap_under_get_rule(value.0 as _) }.to_string() == "AXSheet")
+}
+
+fn copied_attribute(
+    element: &RetainedElement,
+    name: &'static str,
+) -> Result<Option<NativeValue>, AttributeReadError> {
+    let key = CFString::new(name);
     let mut value = std::ptr::null();
     // SAFETY: the input is retained; the output is a copied nullable CF value.
     let status = unsafe {
-        AXUIElementCopyAttributeValue(
-            element.as_ptr() as _,
-            name.as_concrete_TypeRef(),
-            &mut value,
-        )
+        AXUIElementCopyAttributeValue(element.as_ptr() as _, key.as_concrete_TypeRef(), &mut value)
     };
     let value = (!value.is_null()).then(|| NativeValue(value));
     if matches!(
         status,
         bindings::kAXErrorAttributeUnsupported | bindings::kAXErrorNoValue
     ) {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     if status != kAXErrorSuccess {
-        return Err(ax_failure("read element list", status));
+        return Err(AttributeReadError::Native { name, status });
     }
-    let Some(value) = value else {
+    Ok(value)
+}
+
+fn element_list(
+    element: &RetainedElement,
+    name: &'static str,
+) -> Result<Vec<RetainedElement>, AttributeReadError> {
+    let Some(value) = copied_attribute(element, name)? else {
         return Ok(Vec::new());
     };
     if unsafe { CFGetTypeID(value.0) } != CFArray::<CFTypeRef>::type_id() {
-        return Err(failed(
-            "native window element list returned an unexpected type",
-        ));
+        return Err(AttributeReadError::InvalidType(name));
     }
+    // SAFETY: the copied value owns this checked array until its children are retained.
     let array = unsafe { CFArray::<CFTypeRef>::wrap_under_get_rule(value.0.cast()) };
     array
         .iter()
         .map(|value| {
             if unsafe { CFGetTypeID(*value) } != unsafe { AXUIElementGetTypeID() } {
-                return Err(failed("native window child returned an unexpected type"));
+                return Err(AttributeReadError::InvalidType("AXChildren item"));
             }
             // SAFETY: the checked array owns this AX element until it is retained.
             Ok(unsafe { RetainedElement::retain(*value as usize) })
@@ -645,6 +711,86 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_discovery_keeps_primary_and_other_sheets_when_ax_children_disappear() {
+        let mut bound = Vec::new();
+        collect_initial_windows(
+            1,
+            |element| match element {
+                2 => Err(AttributeReadError::Native {
+                    name: "AXRole",
+                    status: bindings::kAXErrorInvalidUIElement,
+                }),
+                3 | 4 | 5 => Ok(true),
+                _ => Ok(false),
+            },
+            |element| match element {
+                1 => Ok(vec![2, 3, 4]),
+                2 => panic!("a destroyed child's subtree must not be read"),
+                3 => Ok(vec![5]),
+                4 => Err(AttributeReadError::Native {
+                    name: "AXChildren",
+                    status: bindings::kAXErrorInvalidUIElement,
+                }),
+                _ => Ok(Vec::new()),
+            },
+            |element, sheet| bound.push((element, sheet)),
+        )
+        .unwrap();
+        bound.sort_unstable();
+        assert_eq!(bound, vec![(1, false), (3, true), (5, true)]);
+    }
+
+    #[test]
+    fn initial_discovery_does_not_ignore_an_invalid_primary_window() {
+        let result = collect_initial_windows(
+            1,
+            |_| Ok(false),
+            |_| {
+                Err(AttributeReadError::Native {
+                    name: "AXChildren",
+                    status: bindings::kAXErrorInvalidUIElement,
+                })
+            },
+            |_, _| panic!("an invalid primary window cannot be bound"),
+        );
+        assert!(matches!(result, Err(ToolError::Failed(reason))
+            if reason == "native window table AXChildren failed with AX error -25202"));
+    }
+
+    #[test]
+    fn initial_discovery_preserves_permission_transport_and_type_errors() {
+        for (error, expected) in [
+            (
+                AttributeReadError::Native {
+                    name: "AXRole",
+                    status: bindings::kAXErrorAPIDisabled,
+                },
+                "native window table AXRole failed with AX error -25211",
+            ),
+            (
+                AttributeReadError::Native {
+                    name: "AXRole",
+                    status: -25204,
+                },
+                "native window table AXRole failed with AX error -25204",
+            ),
+            (
+                AttributeReadError::InvalidType("AXRole"),
+                "native window table AXRole returned an unexpected type",
+            ),
+        ] {
+            let mut error = Some(error);
+            let result = collect_initial_windows(
+                1,
+                |_| Err(error.take().unwrap()),
+                |element| Ok(if *element == 1 { vec![2] } else { Vec::new() }),
+                |_, _| {},
+            );
+            assert!(matches!(result, Err(ToolError::Failed(reason)) if reason == expected));
+        }
+    }
 
     #[test]
     fn menu_window_selection_keeps_source_order_and_requires_owner_and_menu_layer() {

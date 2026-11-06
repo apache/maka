@@ -460,10 +460,6 @@ impl Session {
             )),
             Command::GetState { .. } => {
                 let (browsers, mut errors) = self.browsers.state().await;
-                #[cfg(target_os = "macos")]
-                if let Err(error) = crate::macos::require_desktop().await {
-                    errors.push(error.to_string());
-                }
                 let apps = match self.apps(session, cancellation, language).await {
                     Ok(apps) => apps,
                     Err(error) => {

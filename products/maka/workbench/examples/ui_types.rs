@@ -33,6 +33,8 @@ const USAGE: &str = "usage: cargo run -p maka-workbench --example ui_types -- OU
 OUTPUT_DIR must not exist; choose a task-private directory outside the checkout";
 const SOURCES: &[&str] = &[
     "products/maka/workbench/app/Bootstrap.tsx",
+    "products/maka/workbench/app/ComputerPermissionSetupEntry.tsx",
+    "products/maka/workbench/tests/fixtures/computer-permission-setup.tsx",
     "products/maka/workbench/app/App.tsx",
     "products/maka/workbench/app/ComputerAppControls.tsx",
     "products/maka/workbench/app/ComputerAppRequest.tsx",
