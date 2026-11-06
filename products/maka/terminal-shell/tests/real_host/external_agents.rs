@@ -134,7 +134,7 @@ async fn see(view: &mut AppView, text: &str) {
 }
 
 async fn button(view: &mut AppView, label: &str) -> AccessibleNode {
-    if label != "Close settings"
+    if !["Close settings", CONFIRM, "Cancel enabling external agents"].contains(&label)
         && view
             .accessibility_snapshot()
             .iter()
@@ -196,7 +196,12 @@ fn externals(document: &Value) -> [Value; 2] {
 async fn open_settings(view: &mut AppView) {
     click(view, "Choose model and effort").await;
     click(view, "Manage external agents").await;
-    button(view, "Refresh external agents").await;
+    button(view, "Settings section External agents").await;
+}
+
+async fn reopen_section(view: &mut AppView) {
+    click(view, "Settings section General").await;
+    click(view, "Settings section External agents").await;
 }
 
 async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &str, enabled: bool) {
@@ -359,7 +364,7 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
     update_worker_state(fixture.directory.path(), |state| {
         state["modelsFail"] = json!(true)
     });
-    click(&mut view, "Refresh external agents").await;
+    reopen_section(&mut view).await;
     button(&mut view, "Disable Codex").await;
     click(&mut view, "Close settings").await;
     model_choices(&mut view).await;
@@ -382,7 +387,7 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
     open_settings(&mut view).await;
     toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
     let settled = requests(fixture.directory.path());
-    click(&mut view, "Refresh external agents").await;
+    reopen_section(&mut view).await;
     button(&mut view, "Enable Codex").await;
     click(&mut view, "Close settings").await;
     model_choices(&mut view).await;

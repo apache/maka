@@ -115,16 +115,16 @@ async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_his
         assert!(f.recall(json!({"terms":[],"since":2000,"until":1000})).await.is_err());
         let long = format!("needle cafe\u{301} {}\n😀终点", "字".repeat(6000));
         let mut long_session = String::new();
-        for index in 0..12 {
-            let answer = if index == 11 { long.as_str() } else { "needle short answer" };
+        for index in 0..17 {
+            let answer = if index == 16 { long.as_str() } else { "needle short answer" };
             let id = imported(&f, &format!("needle title {index}"), &f.owner.prefix, answer).await;
-            if index == 11 { long_session = id; }
+            if index == 16 { long_session = id; }
         }
         let found = f.recall(json!({"terms":["needle"]})).await.unwrap();
         assert_eq!(found["complete"], true, "{found}");
-        assert_eq!(found["titles"].as_array().unwrap().len(), 24, "both seed and imported titles remain searchable");
+        assert_eq!(found["titles"].as_array().unwrap().len(), 34, "both seed and imported titles remain searchable across catalog pages");
         let passages = found["passages"].as_array().unwrap();
-        assert_eq!(passages.len(), 12, "title matches must not consume an implicit passage budget");
+        assert_eq!(passages.len(), 17, "title matches must not consume an implicit passage budget");
         let hit = passages.iter().find(|hit| hit["session"]["id"] == long_session).unwrap();
         let preview = hit["excerpt"].as_str().unwrap();
         assert!(preview.contains("needle"));

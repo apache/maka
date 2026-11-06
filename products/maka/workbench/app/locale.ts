@@ -18,6 +18,7 @@
  */
 
 import { signal } from 'nsh';
+import { computerPermissionMessages } from './locale-computer-permissions';
 import { goalMessages } from './locale-goal';
 import { composerMessages } from './locale-composer';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
@@ -37,6 +38,7 @@ export const currentLocale = signal(resolveLocale('auto', nativeLocale));
 let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
+  ...computerPermissionMessages,
   ...goalMessages,
   ...conversationMessages,
   ...composerMessages,

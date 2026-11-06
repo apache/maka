@@ -97,14 +97,14 @@ function Consent() {
     },
   };
   const host = {
-    query: async (_endpoint, method) =>
+    query: async (_endpoint: string, method: string) =>
       method === 'interaction'
         ? record
         : {
             entries: [{ requestId: record.requestId }],
           },
     pendingControls: async () => [],
-  } as Host;
+  } as unknown as Host;
   return (
     <HostProvider value={host}>
       <View style={{ flex: 1 }}>
@@ -336,6 +336,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
 function WorkspacePages(props: { busy: boolean }) {
   const session = (workspace: string, index: number): BrowserSession => ({
     id: `${workspace}-${index}`,
+    parentSessionId: null,
     title: `${workspace} conversation ${index}`,
     revision: 1,
     labels: [],

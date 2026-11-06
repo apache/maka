@@ -63,6 +63,7 @@ pub(crate) async fn require_desktop() -> Result<(), ToolError> {
 }
 
 pub(crate) fn require_desktop_blocking() -> Result<(), ToolError> {
+    tcc::require(tcc::Grant::Accessibility)?;
     use core_foundation::{
         boolean::{CFBooleanGetTypeID, kCFBooleanTrue},
         dictionary::CFDictionaryGetValue,
@@ -86,7 +87,7 @@ pub(crate) fn require_desktop_blocking() -> Result<(), ToolError> {
             ));
         }
     }
-    tcc::require(tcc::Grant::Accessibility)
+    Ok(())
 }
 
 pub(crate) struct Target {

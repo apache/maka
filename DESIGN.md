@@ -72,6 +72,19 @@ Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points p
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 
+## Settings
+
+Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx); a page adds no layout of its own.
+
+- The rail names the page; the panel's title row repeats that name at the root, adds back when nested, and holds the page's one action. Nothing else repeats the title.
+- Rows put the label on the left and the control on the right. Rows sit in groups on `surface` over the panel's `background`, one inset line between rows; a group may carry a section name. The title, section names, row text and notes start on one left edge, the group's text inset; only group backgrounds reach past it. Descriptions only where the label alone would mislead.
+- Choose the control by purpose: a switch for on/off, a select for one of several (side-by-side buttons when there are two or three short ones), a chevron row for a page below, a button for a command. Destructive commands are a danger row at the end of the last group; lists open an item's page rather than carry per-row commands.
+- Switches and selections apply on change; typed values (names, keys, URLs, prompts) wait for Save in the page footer, which stays in view while the page scrolls and appears on a saved item only once something changed. A switch flipped while typed changes are unsaved joins them and waits for the same Save. A page whose values only make sense together (a server, a model, a proxy) is a form: there every control for those values waits for Save, while a switch that sets something outside the form, such as the default model, still applies on change.
+- There is no Refresh control. A page reads its data when it opens and again when the window returns to the foreground, unless a draft or confirmation is open. A failed read shows Retry where the data would have been; the reason shows under the title.
+- A row shows state only when it needs action, in `warning`. A healthy state is silent.
+- Search appears once a list is too long to scan, about eight items.
+- Multi-line text is sized in whole lines and fades at the bottom while more text is hidden.
+
 ## Verification
 
 A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as `desktop_composer_keeps_one_inset` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.

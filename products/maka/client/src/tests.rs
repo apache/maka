@@ -51,6 +51,7 @@ mod drafts;
 mod progress;
 mod request_custody;
 mod settings;
+mod system_permission;
 mod ui;
 mod workspaces;
 
@@ -115,6 +116,7 @@ impl Handler for CounterHandler {
                 "send"
                 | "selectBackend"
                 | "editQueue"
+                | "requestSystemPermission"
                 | "create"
                 | "openBot"
                 | "discoverModels"
@@ -233,6 +235,7 @@ impl Fixture {
                 "stop":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stopComputerApp":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "respond":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "requestSystemPermission":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "editQueue":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "metadata":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "changeSession":{"mode":"mutation","input":{},"output":{},"resources":{}},
@@ -392,6 +395,7 @@ impl Fixture {
                                     "stop".into(),
                                     "stopComputerApp".into(),
                                     "respond".into(),
+                                    "requestSystemPermission".into(),
                                     "editQueue".into(),
                                     "watch".into(),
                                 ]

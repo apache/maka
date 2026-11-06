@@ -46,6 +46,7 @@ import {
   inputTextStyle,
   textTooltip,
 } from './ui';
+import { settingsGutter, settingsInset } from './SettingsPage';
 import { sameValue } from '../../../../plugins/shared/value';
 
 type Row =
@@ -143,7 +144,15 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
     if (rows().length) list?.scrollToIndex({ index: 0, animated: false });
   };
   return (
-    <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        gap: 8,
+        paddingHorizontal: settingsGutter,
+        paddingTop: platform.isTerminal ? 0 : 4,
+      }}
+    >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         <Input
           accessibilityLabel={tr('Search providers')}
@@ -159,8 +168,8 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
             ...inputTextStyle,
             flex: 1,
             minWidth: 0,
-            height: 32,
-            paddingHorizontal: 12,
+            height: platform.isTerminal ? 16 : 32,
+            paddingHorizontal: settingsInset,
             color: C.text,
             placeholderColor: C.muted,
             backgroundColor: C.background,
@@ -248,10 +257,10 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
                     style={{
                       ...captionTextStyle,
                       color: C.secondary,
-                      fontWeight: '500',
+                      fontWeight: '600',
                       height: 32,
                       paddingTop: 12,
-                      paddingHorizontal: 8,
+                      paddingHorizontal: settingsInset,
                     }}
                   >
                     {item().label}
@@ -323,7 +332,7 @@ function ProviderOption(props: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        paddingHorizontal: 8,
+        paddingHorizontal: settingsInset,
       }}
       selectedStyle={{ backgroundColor: C.raised }}
       hoverStyle={controlHoverStyle()}
@@ -333,7 +342,13 @@ function ProviderOption(props: {
     >
       <Text
         style={[
-          { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
+          {
+            fontSize: 14,
+            lineHeight: platform.isTerminal ? 16 : 20,
+            color: C.text,
+            flex: 1,
+            minWidth: 0,
+          },
           { numberOfLines: 1, textOverflow: 'ellipsis' },
         ]}
       >

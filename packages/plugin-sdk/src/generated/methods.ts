@@ -309,6 +309,32 @@ export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceConsistency
   | 'unverified';
 export type AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome =
+  | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
+      kind: 'closure';
+      reason: AgentRequestSystemPermissionOutput_ClosureReason;
+      committedAt: number;
+    };
+export type AgentRequestSystemPermissionOutput_ClosureReason =
+  | 'steered'
+  | 'turn_stopped'
+  | 'turn_terminal'
+  | 'producer_cancelled'
+  | 'timed_out'
+  | 'host_restarted'
+  | 'provider_disconnected';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentRequestSystemPermissionOutput_SystemPermissionGrant =
+  | 'accessibility'
+  | 'screen_recording';
 /**
  * Session sandbox policy. Full access disables isolation and permits Computer Use
  * without additional application, browser or audio consent.
@@ -429,6 +455,32 @@ export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceC
   | 'unverified';
 export type AgentSessionCheckpointRestoreReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentSystemPermissionStatusOutput_AgentSystemPermissionOutcome =
+  | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
+      kind: 'closure';
+      reason: AgentSystemPermissionStatusOutput_ClosureReason;
+      committedAt: number;
+    };
+export type AgentSystemPermissionStatusOutput_ClosureReason =
+  | 'steered'
+  | 'turn_stopped'
+  | 'turn_terminal'
+  | 'producer_cancelled'
+  | 'timed_out'
+  | 'host_restarted'
+  | 'provider_disconnected';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type AgentSystemPermissionStatusOutput_SystemPermissionGrant =
+  | 'accessibility'
+  | 'screen_recording';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -1154,6 +1206,19 @@ export interface ServiceMethods {
       input: Runtime.AgentRecapRead;
       output: Runtime.AgentRecapReceipt | null;
     };
+    requestSystemPermission: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        requestId: string;
+        grant: Runtime.SystemPermissionGrant;
+      };
+      output: {
+        outcome: AgentRequestSystemPermissionOutput_AgentSystemPermissionOutcome | null;
+        grants: AgentRequestSystemPermissionOutput_AgentSystemPermissionState[];
+        requestable: boolean;
+      };
+    };
     respond: {
       mode: 'mutation';
       input: Runtime.AgentInteractionRespond;
@@ -1307,6 +1372,15 @@ export interface ServiceMethods {
         operationId: string;
       };
       output: Runtime.AgentStopped;
+    };
+    systemPermissionStatus: {
+      mode: 'query';
+      input: Runtime.AgentInteractionRead;
+      output: {
+        outcome: AgentSystemPermissionStatusOutput_AgentSystemPermissionOutcome | null;
+        grants: AgentSystemPermissionStatusOutput_AgentSystemPermissionState[];
+        requestable: boolean;
+      };
     };
     toolImage: {
       mode: 'query';
@@ -2449,6 +2523,10 @@ export interface AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapsh
   warning: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
 }
+export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
+  grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;
+  effective: boolean;
+}
 export interface AgentRestoreSessionCheckpointInput_AgentHistoryCheckpointRead {
   sessionId: string;
   /**
@@ -2606,6 +2684,10 @@ export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   description: string;
   invocation: string;
   [k: string]: unknown | undefined;
+}
+export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
+  grant: AgentSystemPermissionStatusOutput_SystemPermissionGrant;
+  effective: boolean;
 }
 /**
  * One message the Bot deliberately sent to its user.

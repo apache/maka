@@ -43,6 +43,7 @@ mod models;
 mod notifications;
 mod preferences;
 mod projects;
+mod system_permission;
 pub(crate) use notifications::ReturnRoute;
 mod bot;
 mod git;

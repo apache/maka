@@ -56,7 +56,6 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
     shortcut(&mut view, 'p');
     select_command(&mut view, "Connections & models").await;
     activate(&mut view, "Edit connection NSH fixture").await;
-    activate(&mut view, "Manage models").await;
     activate(&mut view, "Edit model fixture-model").await;
     fill(&mut view, "Context window (tokens)", "").await;
     for entry in [&first, &second] {
@@ -82,7 +81,7 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
         .await;
         activate(&mut view, "Save model").await;
         wait_view(&mut view, |screen| {
-            screen.contains("Model saved.") && screen.contains("Connection models")
+            screen.contains("Model saved.") && screen.contains("Models · ")
         })
         .await;
         let saved = detail(&client).await;
@@ -108,7 +107,6 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
         activate(&mut view, "Edit model fixture-model").await;
         wait_view(&mut view, |screen| screen.contains(&label)).await;
     }
-    activate(&mut view, "Back from connection settings").await;
     activate(&mut view, "Back from connection settings").await;
     activate(&mut view, "Fetch models").await;
     wait_view(&mut view, |screen| {
@@ -140,12 +138,11 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
     request.delta("Association checked.").await;
     request.finish().await;
     fixture.idle(&client, &fixture.session).await;
-    activate(&mut view, "Manage models").await;
     activate(&mut view, "Edit model fixture-model").await;
     activate(&mut view, "Clear catalog association").await;
     activate(&mut view, "Save model").await;
     wait_view(&mut view, |screen| {
-        screen.contains("Model saved.") && screen.contains("Connection models")
+        screen.contains("Model saved.") && screen.contains("Models · ")
     })
     .await;
     let cleared = detail(&client).await;
