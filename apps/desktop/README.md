@@ -99,12 +99,33 @@ the resulting URL belongs to the Desktop machine, not the Host's localhost.
 launch success also does not prove page load; browser observation is required
 before reporting that the page loaded or its interaction worked (#5235).
 
+`browser_navigate`, `browser_snapshot` and `browser_click` return structured
+evidence through the existing Client Capability result. `status` distinguishes
+completed actions, failures, timeouts, unsupported surfaces, unknown observations
+and invalidated evidence. `opened`/`loaded` describe the observed browser document;
+they require a completed load event for the current document, not just a stopped
+spinner or readable DOM. A truncated response fails verification; stopping a
+pending load invalidates its evidence. Partial pages remain usable in the UI.
+These results do not verify the intended content. Check the snapshot title and requested
+marker before reporting a preview verified. A click reports matches with
+`interaction: not_verified`: compare the requested change in a subsequent
+snapshot with the same `documentId`. Navigation or view replacement invalidates
+that comparison. Observed URLs omit credentials, query and fragment, and managed
+preview bearer paths are redacted. No observed URL is synthesized from a request.
+
 Focused regression checks (build workspace dependencies first):
 
 ```sh
 npm run build:main --workspace apps/desktop
 node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
+npm --workspace @maka/desktop run smoke:preview:run
 ```
+
+The preview smoke uses a temporary Electron profile, actual managed previews,
+production browser tools and real Chromium JavaScript/clicks. It covers the
+title/marker/counter workflow, revoked/expired URLs, an unreachable endpoint,
+HTTP errors, truncated responses, stopped loads and an unfinished load. Artifact storage reads are fixture data;
+this focused smoke does not replace a model-driven `dev:worktree` check.
 
 ## Worktree development profiles
 

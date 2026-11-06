@@ -31,12 +31,22 @@
  * error normalization is needed (the controller throws CdpBridgeError directly).
  */
 
+import type { BrowserDocumentLoadSnapshot } from './document-load.js';
 import type { BrowserActionKind } from './logic.js';
 
 export interface BrowserOriginLeaseSnapshot {
   readonly epoch: number;
   readonly url: string;
   readonly violatedUrl?: string;
+  /** Existing controller load facts, scoped to this view (never a second load probe). */
+  readonly document?: {
+    readonly viewId: string;
+    readonly alive: boolean;
+    readonly loading: boolean;
+    readonly load: BrowserDocumentLoadSnapshot;
+    readonly loadError: { readonly code: number } | null;
+    readonly httpStatus: number | null;
+  };
 }
 
 export interface BrowserOriginLease {
