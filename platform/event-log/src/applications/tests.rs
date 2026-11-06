@@ -262,7 +262,8 @@ async fn stored_package_paths_types_and_immutable_digests_are_checked() {
         let (_dir, store) = store().await;
         let id = Uuid::new_v4();
         let package = package("export default {};");
-        store
+        let reference = package.application_ref();
+        let source = store
             .commit_application(id, 0, selected(&package), vec![], vec![package])
             .await
             .unwrap();
@@ -276,16 +277,111 @@ async fn stored_package_paths_types_and_immutable_digests_are_checked() {
             })
             .await
             .unwrap();
-        let error = store.load_application(id).await.err().unwrap().to_string();
-        if corruption.contains("char(0)") {
-            assert!(error.contains("payload must be a BLOB"), "{error}");
-        } else if corruption.contains("zeroblob") {
-            assert!(error.contains("digest mismatch"), "{error}");
-        } else {
-            assert!(error.contains("invalid package path"), "{error}");
+        for error in [
+            store.load_application(id).await.err().unwrap().to_string(),
+            store
+                .load_application_package_at(&source, &reference)
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
+        ] {
+            if corruption.contains("char(0)") {
+                assert!(error.contains("payload must be a BLOB"), "{error}");
+            } else if corruption.contains("zeroblob") {
+                assert!(error.contains("digest mismatch"), "{error}");
+            } else {
+                assert!(error.contains("invalid package path"), "{error}");
+            }
         }
         store.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn single_package_load_does_not_read_or_validate_sibling_packages() {
+    let (_dir, store) = store().await;
+    let id = Uuid::new_v4();
+    let intact = package("export const intact = true;");
+    let sibling = Package::new(BTreeMap::from([
+        (
+            maka_packages::MANIFEST_FILE.into(),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "id": "sibling",
+                "application": intact.manifest().application,
+            }))
+            .unwrap(),
+        ),
+        ("host.mjs".into(), b"export const sibling = true;".to_vec()),
+    ]))
+    .unwrap();
+    let sibling_ref = sibling.application_ref();
+    let input: Input = serde_json::from_value(serde_json::json!({
+        "instances": {
+            "intact": {
+                "key": Uuid::from_u128(10),
+                "package": { "source": "pinned", "package": intact.application_ref() },
+                "usePackage": "host"
+            },
+            "sibling": {
+                "key": Uuid::from_u128(11),
+                "package": { "source": "pinned", "package": sibling_ref },
+                "usePackage": "host"
+            }
+        }
+    }))
+    .unwrap();
+    let source = store
+        .commit_application(id, 0, input, vec![], vec![intact.clone(), sibling])
+        .await
+        .unwrap();
+    let corrupted_id = sibling_ref.id.clone();
+    let corrupted_revision = sibling_ref.revision.clone();
+    store
+        .connection
+        .run(move |conn| {
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE application_package_files SET payload = X'00' WHERE id = ? AND revision = ? AND path = 'host.mjs'",
+                )
+                .bind(corrupted_id)
+                .bind(corrupted_revision)
+                .execute(conn)
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(
+        store
+            .load_application_at(&source)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert!(
+        store
+            .load_application_package_at(&source, &sibling_ref)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert_eq!(
+        store
+            .load_application_package_at(&source, &intact.application_ref())
+            .await
+            .unwrap()
+            .unwrap()
+            .files(),
+        intact.files()
+    );
+    store.close().await.unwrap();
 }
 
 #[tokio::test]

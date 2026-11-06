@@ -343,8 +343,9 @@ impl EventLog {
             .map_err(|error| invalid(error.to_string()))?;
         let deployment = source.deployment.to_string();
         let revision = source.revision as i64;
-        let package = package.clone();
-        self.connection
+        let requested = package.clone();
+        let files = self
+            .connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
@@ -354,20 +355,31 @@ impl EventLog {
                     )
                     .bind(&deployment)
                     .bind(revision)
-                    .bind(&package.id)
-                    .bind(&package.revision)
+                    .bind(&requested.id)
+                    .bind(&requested.revision)
                     .fetch_one(&mut *tx)
                     .await?;
-                    let package = if installed {
-                        Some(read_package(&mut tx, &package).await?)
+                    let files = if installed {
+                        Some(read_package_files(&mut tx, &requested).await?)
                     } else {
                         None
                     };
                     tx.commit().await?;
-                    Ok(package)
+                    Ok(files)
                 })
             })
+            .await?;
+        let Some(files) = files else {
+            return Ok(None);
+        };
+        let package = package.clone();
+        tokio::task::spawn_blocking(move || build_checked_package(files, &package).map(Some))
             .await
+            .map_err(|error| {
+                invalid(format!(
+                    "application package validation worker failed: {error}"
+                ))
+            })?
     }
 
     async fn read_metadata(
@@ -401,7 +413,8 @@ impl EventLog {
             return Err(invalid("invalid deployment"));
         }
         let owner = std::sync::Arc::downgrade(self.root_owner.as_ref().expect("owned source Root"));
-        self.connection
+        let raw = self
+            .connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
@@ -410,28 +423,43 @@ impl EventLog {
                     else {
                         return Ok(None);
                     };
-                    let mut packages = Vec::new();
-                    for reference in metadata.packages {
-                        let package = read_package(&mut tx, &reference).await?;
-                        packages.push(package);
+                    let mut raw_packages = Vec::with_capacity(metadata.packages.len());
+                    for reference in &metadata.packages {
+                        let files = read_package_files(&mut tx, reference).await?;
+                        raw_packages.push((reference.clone(), files));
                     }
-                    let plan = validate(
-                        &metadata.source.input,
-                        &metadata.source.remote_exports,
-                        &packages,
-                    )?;
                     tx.commit().await?;
-                    let snapshot =
-                        SourceSnapshot::new(owner, metadata.source.reference.clone(), &plan);
-                    Ok(Some(LoadedDeployment {
-                        snapshot,
-                        source: metadata.source,
-                        packages,
-                        plan,
-                    }))
+                    Ok(Some((metadata, raw_packages)))
                 })
             })
-            .await
+            .await?;
+        let Some((metadata, raw_packages)) = raw else {
+            return Ok(None);
+        };
+        tokio::task::spawn_blocking(move || {
+            let mut packages = Vec::with_capacity(raw_packages.len());
+            for (reference, files) in raw_packages {
+                packages.push(build_checked_package(files, &reference)?);
+            }
+            let plan = validate(
+                &metadata.source.input,
+                &metadata.source.remote_exports,
+                &packages,
+            )?;
+            let snapshot = SourceSnapshot::new(owner, metadata.source.reference.clone(), &plan);
+            Ok(Some(LoadedDeployment {
+                snapshot,
+                source: metadata.source,
+                packages,
+                plan,
+            }))
+        })
+        .await
+        .map_err(|error| {
+            invalid(format!(
+                "application source validation worker failed: {error}"
+            ))
+        })?
     }
 }
 
@@ -505,37 +533,51 @@ async fn read_metadata(
     }))
 }
 
-async fn read_package(
+async fn read_package_files(
     connection: &mut SqliteConnection,
     reference: &PackageRef,
-) -> Result<Package, StoreError> {
-    let rows = sqlx::query("SELECT path,
-        CASE WHEN typeof(payload) = 'blob' THEN length(payload) END AS bytes FROM application_package_files WHERE id = ? AND revision = ? ORDER BY path")
-        .bind(&reference.id).bind(&reference.revision).fetch_all(&mut *connection).await?;
+) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT path,
+            CASE WHEN typeof(payload) = 'blob' THEN payload END AS payload
+            FROM application_package_files WHERE id = ? AND revision = ? ORDER BY path",
+    )
+    .bind(&reference.id)
+    .bind(&reference.revision)
+    .fetch_all(&mut *connection)
+    .await?;
     if rows.is_empty() {
         return Err(invalid("invalid stored application package file count"));
-    }
-    for row in &rows {
-        usize::try_from(
-            row.try_get::<Option<i64>, _>("bytes")?
-                .ok_or_else(|| invalid("stored package payload must be a BLOB"))?,
-        )
-        .map_err(|_| invalid("invalid package payload length"))?;
-        let path: &str = row.try_get("path")?;
-        maka_packages::validate_path(path).map_err(|e| invalid(e.to_string()))?;
     }
     let mut files = BTreeMap::new();
     for row in rows {
         let path: String = row.try_get("path")?;
-        let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM application_package_files WHERE id = ? AND revision = ? AND path = ?")
-            .bind(&reference.id).bind(&reference.revision).bind(&path).fetch_one(&mut *connection).await?;
+        maka_packages::validate_path(&path).map_err(|e| invalid(e.to_string()))?;
+        let bytes: Vec<u8> = row
+            .try_get::<Option<Vec<u8>>, _>("payload")?
+            .ok_or_else(|| invalid("stored package payload must be a BLOB"))?;
         files.insert(path, bytes);
     }
+    Ok(files)
+}
+
+fn build_checked_package(
+    files: BTreeMap<String, Vec<u8>>,
+    reference: &PackageRef,
+) -> Result<Package, StoreError> {
     let package = Package::new(files).map_err(|e| invalid(e.to_string()))?;
     if &package.application_ref() != reference {
         return Err(invalid("application package digest mismatch"));
     }
     Ok(package)
+}
+
+async fn read_package(
+    connection: &mut SqliteConnection,
+    reference: &PackageRef,
+) -> Result<Package, StoreError> {
+    let files = read_package_files(connection, reference).await?;
+    build_checked_package(files, reference)
 }
 
 #[cfg(test)]
