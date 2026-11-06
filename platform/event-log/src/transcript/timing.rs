@@ -21,36 +21,35 @@ use crate::StoreError;
 use maka_agent_ports::session::history::TurnFinished;
 use maka_agent_ports::session::history::TurnOutcome;
 use maka_agent_ports::session::history::TurnTiming;
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::OptionalExtension;
 
 // Two scalar index seeks, regardless of the size of a Turn's transcript. Start
 // follows original sequence order, not the wall clock (which can move backward).
 const SQL: &str = "WITH first AS (
     SELECT timestamp AS at FROM transcript_directory
-    WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
+    WHERE owner_key = ?1 AND turn_id = ?2 AND source_sequence <= ?3
       AND role = 'turn_state'
       AND state_status = 'running'
     ORDER BY source_sequence, item_index LIMIT 1
 ), last AS (
     SELECT timestamp AS at,
         state_status AS status FROM transcript_directory
-    WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
+    WHERE owner_key = ?1 AND turn_id = ?2 AND source_sequence <= ?3
       AND role = 'turn_state'
     ORDER BY source_sequence DESC, item_index DESC LIMIT 1
 ) SELECT first.at, last.at, last.status FROM first, last";
 
-pub(super) async fn read_on_worker(
-    tx: &mut SqliteWorkerConnection<'_>,
+pub(super) fn read_on_worker(
+    tx: &rusqlite::Connection,
     session: &str,
     turn: &str,
     through: i64,
 ) -> Result<Option<TurnTiming>, StoreError> {
-    let row: Option<(Option<i64>, Option<i64>, String)> = sqlx::query_as(SQL)
-        .bind(session)
-        .bind(turn)
-        .bind(through)
-        .fetch_optional(tx)
-        .await?;
+    let row: Option<(Option<i64>, Option<i64>, String)> = tx
+        .query_row(SQL, rusqlite::params![session, turn, through], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?;
     let Some((Some(start), Some(last), status)) = row else {
         return Ok(None);
     };

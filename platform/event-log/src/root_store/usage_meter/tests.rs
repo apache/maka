@@ -78,7 +78,7 @@ use maka_agent_facts::{
     model::{ModelFinishReason, recorded::ModelCompletion},
 };
 use serde_json::json;
-use sqlx::Row;
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -202,7 +202,7 @@ async fn settlements_count_reported_missing_and_terminal_usage_once_across_rollb
         root.session_usage_totals("source").await.unwrap(),
         totals(100, 1, 20, 1)
     );
-    log.connection.run(|db|Box::pin(async move {sqlx::raw_sql("CREATE TRIGGER reject_meter BEFORE UPDATE ON session_usage_totals BEGIN SELECT RAISE(ABORT,'meter write rejected'); END").execute(db).await?;Ok(())})).await.unwrap();
+    log.connection.run(|db|{db.execute_batch("CREATE TRIGGER reject_meter BEFORE UPDATE ON session_usage_totals BEGIN SELECT RAISE(ABORT,'meter write rejected'); END")?;Ok(())}).await.unwrap();
     let completion = completed("c", Some(0), None);
     assert!(session.append(&completion).await.is_err());
     assert_eq!(
@@ -211,10 +211,8 @@ async fn settlements_count_reported_missing_and_terminal_usage_once_across_rollb
     );
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("DROP TRIGGER reject_meter").execute(db).await?;
-                Ok(())
-            })
+            db.execute("DROP TRIGGER reject_meter", rusqlite::params![])?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -245,13 +243,13 @@ async fn settlements_count_reported_missing_and_terminal_usage_once_across_rollb
     let pending: i64 = log
         .connection
         .read(|db| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar("SELECT count(*) FROM session_usage_pending")
-                        .fetch_one(db)
-                        .await?,
-                )
-            })
+            {
+                Ok(db.query_row(
+                    "SELECT count(*) FROM session_usage_pending",
+                    rusqlite::params![],
+                    |row| row.get(0),
+                )?)
+            }
         })
         .await
         .unwrap();
@@ -285,21 +283,21 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
         .await
         .unwrap();
     let log = session.owner().unwrap();
-    log.connection.run(|db|Box::pin(async move {
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_header,canonical_bytes) SELECT 'large-history-'||x,'unrelated','{}',2 FROM n").execute(db).await?;Ok(())
-    })).await.unwrap();
-    log.connection.read(|db|Box::pin(async move {
-        let plans=sqlx::query("EXPLAIN QUERY PLAN SELECT input_known,input_missing,output_known,output_missing FROM session_usage_totals WHERE session_id='source'").fetch_all(&mut *db).await?;
-        assert!(plans.iter().any(|row|row.get::<String,_>("detail").contains("SEARCH session_usage_totals USING INDEX")));
-        let pending=sqlx::query("EXPLAIN QUERY PLAN SELECT operation_id FROM session_usage_pending WHERE invocation_id='invocation' ORDER BY request_id LIMIT 1").fetch_all(&mut *db).await?;
-        assert!(pending.iter().any(|row|row.get::<String,_>("detail").contains("session_usage_pending_invocation")));
+    log.connection.run(|db|{
+        db.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_header,canonical_bytes) SELECT 'large-history-'||x,'unrelated','{}',2 FROM n", rusqlite::params![])?;Ok(())
+    }).await.unwrap();
+    log.connection.read(|db|{
+        let plans=db.prepare_cached("EXPLAIN QUERY PLAN SELECT input_known,input_missing,output_known,output_missing FROM session_usage_totals WHERE session_id='source'")?.query_map([], |row| row.get::<_, String>(3))?.collect::<Result<Vec<_>, _>>()?;
+        assert!(plans.iter().any(|row|row.contains("SEARCH session_usage_totals USING INDEX")));
+        let pending=db.prepare_cached("EXPLAIN QUERY PLAN SELECT operation_id FROM session_usage_pending WHERE invocation_id='invocation' ORDER BY request_id LIMIT 1")?.query_map([], |row| row.get::<_, String>(3))?.collect::<Result<Vec<_>, _>>()?;
+        assert!(pending.iter().any(|row|row.contains("session_usage_pending_invocation")));
         let steps=Arc::new(AtomicUsize::new(0));let counter=steps.clone();
-        db.lock_handle().await?.set_progress_handler(1,move||{counter.fetch_add(1,Ordering::SeqCst);true});
-        assert_eq!(read(db,"source").await?,[11,0,13,0]);
-        db.lock_handle().await?.remove_progress_handler();
+        db.progress_handler(1,Some(move||{counter.fetch_add(1,Ordering::SeqCst);false})).unwrap();
+        assert_eq!(read(db,"source")?,[11,0,13,0]);
+        db.progress_handler(0, None::<fn() -> bool>).unwrap();
         assert!(steps.load(Ordering::SeqCst)<100,"meter read scanned history: {} VM steps",steps.load(Ordering::SeqCst));
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     assert_eq!(
         root.session_usage_totals("source").await.unwrap(),
         totals(11, 0, 13, 0)

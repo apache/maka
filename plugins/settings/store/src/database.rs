@@ -18,17 +18,29 @@
  */
 
 use crate::{ConfigError, Result};
+use maka_event_log::migration::{self, Migration};
 use maka_event_log::{
     StoreError,
-    connection::{ConnectionAuthority, OwnedConnection},
+    connection::{ConnectionAuthority, OpenOptions as ConnectionOptions, OwnedConnection},
     root::RootOwner,
 };
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use rusqlite::Connection;
 #[cfg(not(windows))]
 use std::fs::OpenOptions;
 use std::sync::Arc;
 
-static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "configuration",
+        sql: include_str!("../migrations/0001_configuration.sql"),
+    },
+    Migration {
+        version: 2,
+        description: "message predictions",
+        sql: include_str!("../migrations/0002_message_predictions.sql"),
+    },
+];
 
 pub(crate) fn unsigned(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| ConfigError::Invalid("negative database revision".into()))
@@ -83,75 +95,62 @@ pub(super) async fn open(owner: Arc<RootOwner>) -> Result<OwnedConnection> {
     }
     owner.validate_current()?;
     let connection = OwnedConnection::open(
-        SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(false)
-            .query_planner_stability(true),
+        ConnectionOptions::file(path),
         ConnectionAuthority::Root(owner),
-        |connection| Box::pin(initialize(connection)),
+        |connection| initialize(connection),
     )
     .await?;
     drop(file);
     Ok(connection)
 }
 
-async fn initialize(connection: &mut SqliteConnection) -> std::result::Result<(), StoreError> {
+fn initialize(connection: &Connection) -> std::result::Result<(), StoreError> {
     // Native plugin owners may open this Root concurrently. Hold the actual
-    // database writer transaction across schema inspection and migration;
-    // SQLx uses savepoints for its nested migration transactions.
-    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    initialize_schema(&mut tx).await?;
-    tx.commit().await?;
+    // database writer transaction across schema inspection and migration.
+    let tx =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+    initialize_schema(&tx)?;
+    tx.commit()?;
     // Bounded configuration transactions do not need to change the persistent
     // journal mode. Switching to WAL here would race another opening writer.
-    sqlx::raw_sql("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;")
-        .execute(&mut *connection)
-        .await?;
-    crate::pricing::initialize(connection).await?;
+    connection.execute_batch("PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;")?;
+    crate::pricing::initialize(connection)?;
     Ok(())
 }
 
-async fn initialize_schema(
-    connection: &mut SqliteConnection,
-) -> std::result::Result<(), StoreError> {
-    let application_id: i64 = sqlx::query_scalar("PRAGMA application_id")
-        .fetch_one(&mut *connection)
-        .await?;
-    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(&mut *connection)
-        .await?;
-    let tables: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+fn initialize_schema(connection: &Connection) -> std::result::Result<(), StoreError> {
+    let application_id: i64 = connection
+        .prepare_cached("PRAGMA application_id")?
+        .query_row(rusqlite::params![], |row| row.get(0))?;
+    let version: i64 = connection
+        .prepare_cached("PRAGMA user_version")?
+        .query_row(rusqlite::params![], |row| row.get(0))?;
+    let tables: i64 = connection
+        .prepare_cached(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )?
+        .query_row(rusqlite::params![], |row| row.get(0))?;
     if !((application_id == 0 && version == 0 && tables == 0)
         || (application_id == 0x4d414b43 && matches!(version, 0..=1)))
     {
         return Err(StoreError::UnsupportedDatabase);
     }
-    let ledger: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations')",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+    let ledger: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations')")?.query_row(rusqlite::params![], |row| row.get(0))?;
     if (version == 0 && tables != i64::from(ledger)) || (version == 1 && !ledger) {
         return Err(StoreError::UnsupportedDatabase);
     }
     if ledger {
-        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-            .fetch_one(&mut *connection)
-            .await?;
+        let applied: i64 = connection
+            .prepare_cached("SELECT COUNT(*) FROM _sqlx_migrations")?
+            .query_row(rusqlite::params![], |row| row.get(0))?;
         if (version == 0) != (applied == 0) {
             return Err(StoreError::UnsupportedDatabase);
         }
     }
-    // Stamp identity before SQLx creates its ledger so interrupted setup can retry.
+    // Stamp identity before creating the ledger so interrupted setup can retry.
     if application_id == 0 {
-        sqlx::query("PRAGMA application_id = 1296124739")
-            .execute(&mut *connection)
-            .await?;
+        connection.execute("PRAGMA application_id = 1296124739", rusqlite::params![])?;
     }
-    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
+    migration::run(connection, MIGRATIONS)?;
     Ok(())
 }

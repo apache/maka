@@ -20,7 +20,7 @@
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::tool_call::{HostSdkParent, ToolOrigin};
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 
 use crate::StoreError;
 
@@ -44,17 +44,16 @@ impl crate::EventLog {
         name: &str,
         input: &serde_json::Value,
     ) -> Result<maka_agent_facts::native_approval::DispatchReceipt, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&context.invocation.session_id)?;
         let context = context.clone();
         let name = name.to_owned();
         let input = input.clone();
-        self.connection.read(move |db|Box::pin(async move {
-            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&context.invocation.invocation_id).bind(&context.operation_id).fetch_optional(db).await?.ok_or_else(||invalid("service confirmation requires durable dispatch"))?;
+        self.connection.read(move |db|{
+            let (sequence,json):(i64,String)=db.prepare_cached("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_dispatched'")?.query_row(rusqlite::params![&context.invocation.invocation_id,&context.operation_id], |row| Ok((row.get(0)?,row.get(1)?,))).optional()?.ok_or_else(||invalid("service confirmation requires durable dispatch"))?;
             let event:RuntimeEvent=serde_json::from_str(&json)?;
             if event.invocation!=context.invocation || !matches!(&event.fact,Fact::ToolDispatched{name:original,input:original_input,..} if *original==name && *original_input==input) {return Err(invalid("service confirmation differs from durable dispatch"))}
             Ok(maka_agent_facts::native_approval::DispatchReceipt{event_id:event.id,sequence:crate::sequence_number(sequence)?})
-        })).await
+        }).await
     }
     pub async fn tool_dispatch_fence(
         &self,
@@ -62,34 +61,33 @@ impl crate::EventLog {
         name: &str,
         input: &serde_json::Value,
     ) -> Result<u64, StoreError> {
-        self.validate_root()?;
         let context = context.clone();
         let name = name.to_owned();
         let input = input.clone();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let (sequence, encoded): (i64, String) = sqlx::query_as(
+            .read(move |connection| {
+                let (sequence, encoded): (i64, String) = connection
+                    .prepare_cached(
                         "SELECT sequence, event_header FROM runtime_events
                  WHERE invocation_id = ? AND operation_id = ? AND kind = 'tool_dispatched'",
+                    )?
+                    .query_row(
+                        rusqlite::params![&context.invocation.invocation_id, &context.operation_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
-                    .bind(&context.invocation.invocation_id)
-                    .bind(&context.operation_id)
-                    .fetch_optional(&mut *connection)
-                    .await?
+                    .optional()?
                     .ok_or_else(|| invalid("service confirmation requires durable dispatch"))?;
-                    let event: RuntimeEvent = serde_json::from_str(&encoded)?;
-                    if event.invocation != context.invocation
-                        || !matches!(event.fact,
+                let event: RuntimeEvent = serde_json::from_str(&encoded)?;
+                if event.invocation != context.invocation
+                    || !matches!(event.fact,
                 Fact::ToolDispatched { name: original_name, input: original_input, .. }
                 if original_name == name && original_input == input)
-                    {
-                        return Err(invalid(
-                            "service confirmation differs from durable dispatch",
-                        ));
-                    }
-                    crate::sequence_number(sequence)
-                })
+                {
+                    return Err(invalid(
+                        "service confirmation differs from durable dispatch",
+                    ));
+                }
+                crate::sequence_number(sequence)
             })
             .await
     }
@@ -97,26 +95,21 @@ impl crate::EventLog {
 
 /// Runs after exact replay detection, inside the append transaction. SQL reads
 /// the committed facts and earlier facts in this batch, never a mutable cache.
-pub(crate) async fn validate(
-    tx: &mut SqliteConnection,
-    event: &RuntimeEvent,
-) -> Result<(), StoreError> {
+pub(crate) fn validate(tx: &rusqlite::Connection, event: &RuntimeEvent) -> Result<(), StoreError> {
     let invocation = &event.invocation.invocation_id;
     match &event.fact {
         Fact::ToolYielded { operation_id } => {
-            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched' AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider' AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id AND s.operation_id=d.operation_id AND s.kind IN ('tool_settled','tool_yielded')))")
-                .bind(&event.invocation.invocation_id).bind(operation_id).fetch_one(&mut *tx).await?;
+            let pending: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched' AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider' AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id AND s.operation_id=d.operation_id AND s.kind IN ('tool_settled','tool_yielded')))")?.query_row(rusqlite::params![&event.invocation.invocation_id,operation_id], |row| row.get(0))?;
             if !pending {
                 return Err(invalid("only a pending provider operation can yield"));
             }
         }
         Fact::ToolOperationObserved { operation_id, .. } => {
             identity(operation_id)?;
-            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d
+            let live: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events d
                 WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched'
                   AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id
-                    AND s.operation_id=d.operation_id AND s.kind='tool_settled'))")
-                .bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
+                    AND s.operation_id=d.operation_id AND s.kind='tool_settled'))")?.query_row(rusqlite::params![invocation,operation_id], |row| row.get(0))?;
             if !live {
                 return Err(invalid(
                     "service observation requires a dispatched unsettled tool",
@@ -132,12 +125,11 @@ pub(crate) async fn validate(
             if text.trim().is_empty() || model_text.trim().is_empty() {
                 return Err(invalid("invalid Code Mode notification"));
             }
-            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d
+            let live: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events d
                 WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched'
                   AND json_extract(d.event_header,'$.fact.call.origin.kind')='code_cell'
                   AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id
-                    AND s.operation_id=d.operation_id AND s.kind='tool_settled'))")
-                .bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
+                    AND s.operation_id=d.operation_id AND s.kind='tool_settled'))")?.query_row(rusqlite::params![invocation,operation_id], |row| row.get(0))?;
             if !live {
                 return Err(invalid("notification requires a live Code Mode cell"));
             }
@@ -166,7 +158,7 @@ pub(crate) async fn validate(
                 | ToolOrigin::Standalone => None,
             };
             let duplicate: bool = if let Some(step) = provider_step {
-                sqlx::query_scalar(
+                tx.prepare_cached(
                     "SELECT EXISTS(SELECT 1 FROM runtime_events
                        WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
                      OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
@@ -179,26 +171,23 @@ pub(crate) async fn validate(
                        AND json_extract(event_header,'$.fact.call.tool_call_id')=?3
                        AND CASE WHEN json_extract(event_header,'$.fact.call.origin.kind')='provider'
                          THEN json_extract(event_header,'$.fact.call.origin.step_id') END=?4)",
-                )
-                .bind(operation_id)
-                .bind(invocation)
-                .bind(&call.tool_call_id)
-                .bind(step)
-                .fetch_one(&mut *tx)
-                .await?
+                )?
+                .query_row(
+                    rusqlite::params![operation_id, invocation, &call.tool_call_id, step],
+                    |row| row.get(0),
+                )?
             } else {
-                sqlx::query_scalar(
+                tx.prepare_cached(
                     "SELECT EXISTS(SELECT 1 FROM runtime_events
                        WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
                      OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
                        AND kind IN ('tool_dispatched','tool_rejected')
                        AND json_extract(event_header,'$.fact.call.tool_call_id')=?3)",
-                )
-                .bind(operation_id)
-                .bind(invocation)
-                .bind(&call.tool_call_id)
-                .fetch_one(&mut *tx)
-                .await?
+                )?
+                .query_row(
+                    rusqlite::params![operation_id, invocation, &call.tool_call_id],
+                    |row| row.get(0),
+                )?
             };
             if duplicate {
                 return Err(invalid(
@@ -223,16 +212,14 @@ pub(crate) async fn validate(
                         }
                     }
                     let active: bool = if let Some(parent) = parent {
-                        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
+                        tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
                             WHERE parent.invocation_id = ? AND parent.operation_id = ? AND parent.kind = 'tool_dispatched'
                             AND NOT EXISTS(SELECT 1 FROM runtime_events AS settled WHERE settled.invocation_id = parent.invocation_id
                                 AND settled.operation_id = parent.operation_id
-                                AND settled.kind = 'tool_settled'))")
-                            .bind(invocation).bind(parent.operation_id()).fetch_one(&mut *tx).await?
+                                AND settled.kind = 'tool_settled'))")?.query_row(rusqlite::params![invocation,parent.operation_id()], |row| row.get(0))?
                     } else {
-                        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_started')
-                            AND NOT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed')")
-                            .bind(invocation).fetch_one(&mut *tx).await?
+                        tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_started')
+                            AND NOT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed')")?.query_row(rusqlite::params![invocation], |row| row.get(0))?
                     };
                     if !active {
                         return Err(invalid(
@@ -250,8 +237,9 @@ pub(crate) async fn validate(
                 } => {
                     identity(parent_operation_id)?;
                     identity(parent_tool_call_id)?;
-                    let parent: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
+                    let parent: bool = tx
+                        .prepare_cached(
+                            "SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
                          WHERE parent.invocation_id = ? AND parent.operation_id = ?
                          AND parent.kind = 'tool_dispatched'
                          AND json_extract(parent.event_header, '$.fact.call.tool_call_id') = ?
@@ -259,12 +247,11 @@ pub(crate) async fn validate(
                              WHERE settled.invocation_id = parent.invocation_id
                              AND settled.operation_id = parent.operation_id
                              AND settled.kind = 'tool_settled'))",
-                    )
-                    .bind(invocation)
-                    .bind(parent_operation_id)
-                    .bind(parent_tool_call_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                        )?
+                        .query_row(
+                            rusqlite::params![invocation, parent_operation_id, parent_tool_call_id],
+                            |row| row.get(0),
+                        )?;
                     if !parent {
                         return Err(invalid(
                             "nested tool requires matching unsettled parent in invocation",
@@ -283,8 +270,7 @@ pub(crate) async fn validate(
                         invocation,
                         step_id,
                         &call.tool_call_id,
-                    )
-                    .await?
+                    )?
                     .ok_or_else(|| {
                         invalid("provider tool requires an accepted local model call")
                     })?;
@@ -303,16 +289,14 @@ pub(crate) async fn validate(
             }
         }
         Fact::ToolSettled { operation_id, .. } => {
-            let pending: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM context_obligations live
+            let pending: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM context_obligations live
                  CROSS JOIN runtime_events child ON child.sequence=live.opened_at
                  WHERE live.invocation_id = ?1 AND live.kind='tool'
                  AND ((json_extract(child.event_header, '$.fact.call.origin.kind') = 'code_mode'
                    AND json_extract(child.event_header, '$.fact.call.origin.parent_operation_id') = ?2)
                    OR (json_extract(child.event_header, '$.fact.call.origin.kind') = 'host_sdk'
                      AND json_extract(child.event_header, '$.fact.call.origin.parent_relationship.kind') IS NOT 'evaluation_observer'
-                     AND json_extract(child.event_header, '$.fact.call.origin.parent_operation_id') = ?2)))",
-            ).bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
+                     AND json_extract(child.event_header, '$.fact.call.origin.parent_operation_id') = ?2)))")?.query_row(rusqlite::params![invocation,operation_id], |row| row.get(0))?;
             if pending {
                 return Err(invalid("parent tool cannot settle before its children"));
             }

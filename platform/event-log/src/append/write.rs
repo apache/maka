@@ -18,16 +18,16 @@
  */
 
 //! Canonical appends eligible for the shared writer receipt boundary.
-use super::AppendResult;
+use super::{AppendResult, PreparedAppend};
 use crate::{
     EventLog, StoreError,
     writeback::{Notification, Prepared, Statement},
 };
 use maka_agent_facts::event::{EventWrite, Fact};
-use sqlx::SqliteConnection;
 
 pub(crate) struct WriteAppend {
     events: Vec<EventWrite>,
+    prepared: Option<Vec<PreparedAppend>>,
 }
 impl WriteAppend {
     pub(crate) fn from_events(events: &[EventWrite]) -> Option<Self> {
@@ -47,19 +47,34 @@ impl WriteAppend {
             }))
         .then(|| Self {
             events: events.to_vec(),
+            prepared: None,
         })
     }
 }
 impl Statement for WriteAppend {
+    const PREPARE_OFF_THREAD: bool = true;
+    fn prepare(mut self) -> Result<Self, StoreError> {
+        self.prepared = Some(
+            self.events
+                .iter()
+                .map(PreparedAppend::new)
+                .collect::<Result<_, _>>()?,
+        );
+        Ok(self)
+    }
     type Value = Vec<u64>;
     type Output = Vec<u64>;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<Prepared<Self::Value>, StoreError>> {
-        Box::pin(async move {
-            let (sequences, inserted, activation_changed) =
-                prepare_request(connection, &self.events).await?;
+        connection: &rusqlite::Connection,
+    ) -> Result<Prepared<Self::Value>, StoreError> {
+        {
+            let (sequences, inserted, activation_changed) = prepare_request(
+                connection,
+                &self.events,
+                self.prepared
+                    .expect("writer prepares append material before transaction"),
+            )?;
             Ok(Prepared {
                 value: sequences,
                 changed: inserted.is_some(),
@@ -71,18 +86,10 @@ impl Statement for WriteAppend {
                     }
                 }),
             })
-        })
+        }
     }
     fn committed(value: Self::Value) -> Self::Output {
         value
-    }
-    fn reusable_after_rollback(&self) -> bool {
-        // These requests previously used Run. Preserve recovery after a failed
-        // opening/main/tool request; pure observation storage faults retire the owner.
-        !self
-            .events
-            .iter()
-            .all(|write| matches!(write.event().fact, Fact::ModelObserved { .. }))
     }
     fn isolated_rejection(error: &StoreError) -> bool {
         matches!(
@@ -106,16 +113,17 @@ impl Statement for WriteAppend {
     }
 }
 
-async fn prepare_request(
-    connection: &mut SqliteConnection,
+fn prepare_request(
+    connection: &rusqlite::Connection,
     events: &[EventWrite],
+    prepared: Vec<PreparedAppend>,
 ) -> Result<(Vec<u64>, Option<u64>, bool), StoreError> {
     let mut sequences = Vec::with_capacity(events.len());
     let mut inserted = None;
     let mut activation_changed = false;
-    for event in events {
+    for (event, material) in events.iter().zip(prepared) {
         sequences.push(
-            match EventLog::append_in_transaction(connection, event).await? {
+            match EventLog::append_prepared_in_transaction(connection, event, material)? {
                 AppendResult::Existing(sequence) => sequence,
                 AppendResult::ActivationChanged(sequence) => {
                     activation_changed = true;
@@ -129,7 +137,7 @@ async fn prepare_request(
             },
         );
     }
-    crate::context::validate_batch(connection, events).await?;
+    crate::context::validate_batch(connection, events)?;
     Ok((sequences, inserted, activation_changed))
 }
 

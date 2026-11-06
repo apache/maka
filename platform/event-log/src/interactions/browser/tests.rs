@@ -367,15 +367,11 @@ async fn browser_decisions_validate_the_winning_canonical_record() {
     winner.created_at = 11;
     log.connection
         .run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE interaction_requests SET record_json=? WHERE request_id='winner'",
-                )
-                .bind(serde_json::to_string(&winner).unwrap())
-                .execute(connection)
-                .await?;
-                Ok(())
-            })
+            connection.execute(
+                "UPDATE interaction_requests SET record_json=? WHERE request_id='winner'",
+                rusqlite::params![serde_json::to_string(&winner).unwrap()],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();

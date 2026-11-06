@@ -48577,19 +48577,14 @@ export const contracts = {
                   stateDomain: {
                     type: 'string',
                   },
-                  partitions: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                    minItems: 8,
-                    maxItems: 8,
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'partitions'],
+                required: ['stateDomain', 'sequence'],
               },
               UsageSelection: {
                 description:
@@ -48638,17 +48633,12 @@ export const contracts = {
                     type: 'number',
                     format: 'double',
                   },
-                  partition: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                  },
                   requestId: {
                     type: 'string',
                   },
                 },
                 additionalProperties: false,
-                required: ['completedAt', 'partition', 'requestId'],
+                required: ['completedAt', 'requestId'],
               },
             },
           },
@@ -48692,19 +48682,14 @@ export const contracts = {
                   stateDomain: {
                     type: 'string',
                   },
-                  partitions: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                    minItems: 8,
-                    maxItems: 8,
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'partitions'],
+                required: ['stateDomain', 'sequence'],
               },
               UsageActivity: {
                 description:
@@ -49319,17 +49304,12 @@ export const contracts = {
                     type: 'number',
                     format: 'double',
                   },
-                  partition: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                  },
                   requestId: {
                     type: 'string',
                   },
                 },
                 additionalProperties: false,
-                required: ['completedAt', 'partition', 'requestId'],
+                required: ['completedAt', 'requestId'],
               },
             },
           },
@@ -49400,19 +49380,14 @@ export const contracts = {
                   stateDomain: {
                     type: 'string',
                   },
-                  partitions: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                    minItems: 8,
-                    maxItems: 8,
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'partitions'],
+                required: ['stateDomain', 'sequence'],
               },
               UsageGroup: {
                 description: 'Breakdown selected for a bounded summary page.',
@@ -49427,7 +49402,7 @@ export const contracts = {
                   },
                   key: {
                     description:
-                      'None is the unknown-provider group, not the beginning of pagination.',
+                      'None identifies the unknown-provider group, not the start of pagination.',
                     type: ['string', 'null'],
                   },
                 },
@@ -49467,19 +49442,14 @@ export const contracts = {
                   stateDomain: {
                     type: 'string',
                   },
-                  partitions: {
-                    type: 'array',
-                    items: {
-                      type: 'integer',
-                      format: 'uint64',
-                      minimum: 0,
-                    },
-                    minItems: 8,
-                    maxItems: 8,
+                  sequence: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['stateDomain', 'partitions'],
+                required: ['stateDomain', 'sequence'],
               },
               SettingsUsageTotals: {
                 type: 'object',
@@ -49748,7 +49718,7 @@ export const contracts = {
                   },
                   key: {
                     description:
-                      'None is the unknown-provider group, not the beginning of pagination.',
+                      'None identifies the unknown-provider group, not the start of pagination.',
                     type: ['string', 'null'],
                   },
                 },

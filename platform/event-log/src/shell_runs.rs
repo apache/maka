@@ -24,7 +24,7 @@ use maka_agent_facts::shell_run::ShellPatch;
 use maka_agent_facts::shell_run::ShellRun;
 use maka_agent_facts::shell_run::ShellState;
 pub use query::ShellResourcePage;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{OptionalExtension, params};
 
 /// A committed resource invalidation, not a substitute for its durable snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,11 +45,10 @@ impl From<&ShellRun> for ShellChange {
 impl EventLog {
     /// A terminal orphan is still an unknown effect, not proof of native cleanup.
     pub async fn has_unsettled_shells(&self, session: &str) -> Result<bool, StoreError> {
-        self.validate_root()?;
         maka_agent_facts::interaction::entity_id(session).map_err(invalid)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| Box::pin(async move { unsettled(connection, &session).await }))
+            .read(move |connection| unsettled(connection, &session))
             .await
     }
 
@@ -61,7 +60,6 @@ impl EventLog {
 
     /// Durable startup admission; the caller must not spawn until this succeeds.
     pub async fn create_shell_run(&self, record: ShellRun) -> Result<ShellRun, StoreError> {
-        self.validate_root()?;
         record.validate().map_err(invalid)?;
         if record.state != ShellState::Starting || record.revision != 1 {
             return Err(invalid("shell creation requires starting at revision one"));
@@ -71,44 +69,45 @@ impl EventLog {
         let commits = self.commits.session(&record.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let exists: bool = sqlx::query_scalar(
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
+                    let exists: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-                    )
-                    .bind(&record.session_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                        params![&record.session_id],
+                        |row| row.get(0),
+                    )?;
                     if !exists {
                         return Err(StoreError::SessionNotFound);
                     }
-                    if crate::workspace_bindings::permission_basis(&mut tx, &record.session_id)
-                        .await?
+                    if crate::workspace_bindings::permission_basis(&tx, &record.session_id)?
                         != Some(record.permissions.basis)
                     {
                         return Err(invalid("shell launch permission boundary changed"));
                     }
-                    let inserted = sqlx::query(
+                    let inserted = tx.execute(
                         "INSERT OR IGNORE INTO shell_runs
                 (session_id, id, started_at, active, record_json) VALUES (?, ?, ?, 1, ?)",
-                    )
-                    .bind(&record.session_id)
-                    .bind(&record.id)
-                    .bind(record.started_at as i64)
-                    .bind(raw)
-                    .execute(&mut *tx)
-                    .await?;
-                    if inserted.rows_affected() != 1 {
+                        params![
+                            &record.session_id,
+                            &record.id,
+                            record.started_at as i64,
+                            raw
+                        ],
+                    )?;
+                    if inserted != 1 {
                         return Err(StoreError::ShellConflict);
                     }
-                    crate::sessions::retain(&mut tx, &record.session_id).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    crate::sessions::retain(&tx, &record.session_id)?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     // Publish on the independent SQL owner even if the caller
                     // abandoned its response after admission.
                     let _ = changes.send(ShellChange::from(&record));
                     commits.metadata();
                     Ok(record)
-                })
+                }
             })
             .await
     }
@@ -119,28 +118,26 @@ impl EventLog {
         id: &str,
         patch: ShellPatch,
     ) -> Result<ShellRun, StoreError> {
-        self.validate_root()?;
         ids(session_id, id)?;
         let (session_id, id) = (session_id.to_owned(), id.to_owned());
         let changes = self.shell_changes.clone();
         let commits = self.commits.session(&session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let current = read(&mut tx, &session_id, &id)
-                        .await?
-                        .ok_or(StoreError::ShellNotFound)?;
-                    let next = current.patched(patch).map_err(invalid)?;
-                    if next == current {
-                        return Ok(current);
-                    }
-                    write(&mut tx, &next).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    let _ = changes.send(ShellChange::from(&next));
-                    commits.metadata();
-                    Ok(next)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let current = read(&tx, &session_id, &id)?.ok_or(StoreError::ShellNotFound)?;
+                let next = current.patched(patch).map_err(invalid)?;
+                if next == current {
+                    return Ok(current);
+                }
+                write(&tx, &next)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                let _ = changes.send(ShellChange::from(&next));
+                commits.metadata();
+                Ok(next)
             })
             .await
     }
@@ -150,34 +147,28 @@ impl EventLog {
         session_id: &str,
         id: &str,
     ) -> Result<Option<ShellRun>, StoreError> {
-        self.validate_root()?;
         ids(session_id, id)?;
         let (session_id, id) = (session_id.to_owned(), id.to_owned());
         self.connection
-            .run(move |connection| {
-                Box::pin(async move { read(connection, &session_id, &id).await })
-            })
+            .read(move |connection| read(connection, &session_id, &id))
             .await
     }
 
     /// Only at Host startup, before any resource admission. No PID attachment or
     /// process replay is attempted. An uncertain commit prevents Host readiness.
     pub async fn recover_shell_runs(&self, now: u64) -> Result<u64, StoreError> {
-        self.validate_root()?;
         if now > 9_007_199_254_740_991 {
             return Err(invalid("invalid recovery time"));
         }
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
                     let mut count = 0;
                     loop {
                         // One record at a time bounds recovery memory independently of
                         // the number of historical resources. All updates share one commit.
-                        let row: Option<(String, String, String)> = sqlx::query_as(
-                    "SELECT session_id, id, record_json FROM shell_runs WHERE active = 1 LIMIT 1")
-                    .fetch_optional(&mut *tx).await?;
+                        let row: Option<(String, String, String)> = tx.query_row("SELECT session_id, id, record_json FROM shell_runs WHERE active = 1 LIMIT 1", params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?;
                         let Some((session, id, raw)) = row else { break };
                         let current = decode(&raw, &session, &id)?;
                         if !current.state.active() {
@@ -198,42 +189,43 @@ impl EventLog {
                                 ..Default::default()
                             })
                             .map_err(invalid)?;
-                        write(&mut tx, &next).await?;
+                        write(&tx, &next)?;
                         count += 1;
                     }
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     Ok(count)
-                })
+                }
             })
             .await
     }
 }
 
-async fn read(
-    connection: &mut SqliteConnection,
+fn read(
+    connection: &rusqlite::Connection,
     session: &str,
     id: &str,
 ) -> Result<Option<ShellRun>, StoreError> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT record_json FROM shell_runs WHERE session_id = ? AND id = ?")
-            .bind(session)
-            .bind(id)
-            .fetch_optional(connection)
-            .await?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record_json FROM shell_runs WHERE session_id = ? AND id = ?",
+            params![session, id],
+            |row| row.get(0),
+        )
+        .optional()?;
     raw.map(|raw| decode(&raw, session, id)).transpose()
 }
 
-async fn write(connection: &mut SqliteConnection, record: &ShellRun) -> Result<(), StoreError> {
-    let changed = sqlx::query(
+fn write(connection: &rusqlite::Connection, record: &ShellRun) -> Result<(), StoreError> {
+    let changed = connection.execute(
         "UPDATE shell_runs SET active = ?, record_json = ? WHERE session_id = ? AND id = ?",
-    )
-    .bind(record.state.active())
-    .bind(encode(record)?)
-    .bind(&record.session_id)
-    .bind(&record.id)
-    .execute(connection)
-    .await?;
-    if changed.rows_affected() != 1 {
+        params![
+            record.state.active(),
+            encode(record)?,
+            &record.session_id,
+            &record.id
+        ],
+    )?;
+    if changed != 1 {
         return Err(StoreError::ShellNotFound);
     }
     Ok(())
@@ -254,28 +246,26 @@ fn decode(raw: &str, session: &str, id: &str) -> Result<ShellRun, StoreError> {
     Ok(record)
 }
 
-pub(crate) async fn unsettled(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn unsettled(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<bool, StoreError> {
-    unsettled_outside(connection, session, None).await
+    unsettled_outside(connection, session, None)
 }
 
-pub(crate) async fn unsettled_outside(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn unsettled_outside(
+    connection: &rusqlite::Connection,
     session: &str,
     current_run: Option<&str>,
 ) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar(
+    Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM shell_runs WHERE session_id = ?
          AND (json_extract(record_json, '$.state.outcome.kind') = 'orphaned'
            OR (active = 1 AND (?2 IS NULL OR
              json_extract(record_json, '$.sourceRunId') IS NOT ?2))))",
-    )
-    .bind(session)
-    .bind(current_run)
-    .fetch_one(connection)
-    .await?)
+        params![session, current_run],
+        |row| row.get(0),
+    )?)
 }
 
 fn ids(session: &str, id: &str) -> Result<(), StoreError> {

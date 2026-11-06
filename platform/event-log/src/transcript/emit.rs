@@ -22,8 +22,8 @@ use super::{evidence, read};
 use crate::StoreError;
 use maka_agent_facts::event::{Fact, ToolOutcome};
 use maka_presentation::{InvocationView, Row};
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::OptionalExtension;
+use rusqlite::{Connection as RawConnection, params};
 
 pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR NOT EXISTS (SELECT 1 FROM runtime_events opening
                        WHERE opening.invocation_id = e.invocation_id
@@ -54,21 +54,19 @@ pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR 
                                  AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message','continuation','handoff')))
                        OR (e.kind = 'executor_observed' AND json_extract(e.event_header, '$.fact.output.type') IN ('message_end','tool_start','tool_result')))"#;
 
-pub(super) async fn source_on_worker(
-    connection: &mut SqliteWorkerConnection<'_>,
-    session: &str,
+pub(super) fn source_for_owner_on_worker(
+    connection: &rusqlite::Connection,
+    owner: &super::HistoryOwner,
     source: u64,
 ) -> Result<Vec<Row>, StoreError> {
+    let session = owner.key();
     let sequence = read::sql_number(source)?;
-    // Reuse the original SQLx statement cache across bounded page callbacks.
-    // Projection still borrows the same connection and transaction below.
     let sql = candidate_sql();
-    let candidate: Option<(String, Option<String>, String)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(sequence)
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let candidate: Option<(String, Option<String>, String)> = connection
+        .query_row(sql.as_str(), rusqlite::params![sequence, session], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?;
     let Some(candidate) = candidate else {
         return Ok(Vec::new());
     };
@@ -81,20 +79,20 @@ pub(super) async fn source_on_worker(
     ) {
         Projection::Tool
     } else {
-        Projection::Evidence(
-            evidence::selected_on_worker(connection, &invocation, step.as_deref(), sequence, true)
-                .await?,
-        )
+        Projection::Evidence(evidence::selected_on_worker(
+            connection,
+            &invocation,
+            step.as_deref(),
+            sequence,
+            true,
+        )?)
     };
-    // SAFETY: exclusive worker-local borrow; no handle-backed values escape.
-    let db = unsafe { RawConnection::from_handle(connection.as_raw_handle().as_ptr()) }?;
-    db.set_prepared_statement_cache_capacity(100);
-    project_source(&db, session, sequence, projection)
+    project_source(connection, owner, sequence, projection)
 }
 
 fn candidate_sql() -> String {
     format!(
-        "SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed' THEN json_extract(e.event_header, '$.fact.step_id') ELSE e.operation_id END, e.kind FROM runtime_events e WHERE e.sequence = ?1 AND (e.event_session = ?2 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id = ?2 AND h.sequence = e.sequence)) AND {ELIGIBLE}"
+        "SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed' THEN json_extract(e.event_header, '$.fact.step_id') ELSE e.operation_id END, e.kind FROM runtime_events e WHERE e.sequence = ?1 AND (e.event_session=?2 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?2 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?2 AND m.sequence=e.sequence)) AND {ELIGIBLE}"
     )
 }
 
@@ -103,6 +101,19 @@ pub(crate) fn source_on_handle(
     session: &str,
     source: i64,
 ) -> Result<Vec<Row>, StoreError> {
+    source_for_owner_on_handle(
+        db,
+        &super::HistoryOwner::Session(session.to_owned()),
+        source,
+    )
+}
+
+pub(crate) fn source_for_owner_on_handle(
+    db: &RawConnection,
+    owner: &super::HistoryOwner,
+    source: i64,
+) -> Result<Vec<Row>, StoreError> {
+    let session = owner.key();
     let sql = candidate_sql();
     let candidate: Option<(String, Option<String>, String)> = db
         .prepare_cached(&sql)?
@@ -129,7 +140,7 @@ pub(crate) fn source_on_handle(
             true,
         )?)
     };
-    project_source(db, session, source, projection)
+    project_source(db, owner, source, projection)
 }
 
 enum Projection {
@@ -140,18 +151,21 @@ enum Projection {
 
 fn project_source(
     db: &RawConnection,
-    session: &str,
+    owner: &super::HistoryOwner,
     source: i64,
     projection: Projection,
 ) -> Result<Vec<Row>, StoreError> {
+    let session = owner.session();
     let ids = match projection {
         Projection::Compaction => return Ok(vec![super::compaction::project(db, source)?]),
         Projection::Tool => {
             let stored = evidence::fact_on_handle(db, source)?;
             let mut rows = super::tools::project(db, &stored)?;
-            if stored.event.invocation.session_id != session {
+            if stored.event.invocation.session_id != session
+                || matches!(owner, super::HistoryOwner::Snapshot { .. })
+            {
                 for row in &mut rows {
-                    owned_references(db, session, &mut row.message)?;
+                    owned_references(db, owner, &mut row.message)?;
                 }
             }
             return Ok(rows);
@@ -175,8 +189,10 @@ fn project_source(
             None
         };
         for mut row in view.push_with_tool_output(&fact, resolved.as_ref())? {
-            if fact.event.invocation.session_id != session {
-                owned_references(db, session, &mut row.message)?;
+            if fact.event.invocation.session_id != session
+                || matches!(owner, super::HistoryOwner::Snapshot { .. })
+            {
+                owned_references(db, owner, &mut row.message)?;
             }
             if row.position.source_sequence == source as u64 {
                 own.push(row);
@@ -188,11 +204,24 @@ fn project_source(
 
 fn owned_references(
     db: &RawConnection,
-    session: &str,
+    owner: &super::HistoryOwner,
     message: &mut maka_presentation::Message,
 ) -> Result<(), StoreError> {
+    let session = owner.session();
     use maka_agent_facts::attachment::StorageRef;
     use maka_presentation::{Content, ToolContent};
+    let resolve = |source_session: &str,
+                   source_artifact: &str|
+     -> Result<Option<String>, StoreError> {
+        Ok(match owner {
+            super::HistoryOwner::Session(_) => db.prepare_cached(crate::artifacts::history::RESOLVE_SQL)?
+                .query_row(params![session, source_session, source_artifact], |row| row.get(0)).optional()?,
+            super::HistoryOwner::Snapshot { capture, .. } => db.prepare_cached(
+                "SELECT id FROM history_snapshot_artifacts WHERE capture_key=?1 AND session_id=?2 AND session_id=?3 AND id=?4
+                 UNION ALL SELECT artifact_id FROM history_snapshot_aliases WHERE capture_key=?1 AND session_id=?2 AND source_session_id=?3 AND source_artifact_id=?4 LIMIT 1")?
+                .query_row(params![capture,session,source_session,source_artifact], |row| row.get(0)).optional()?,
+        })
+    };
     // Projection images only add display; one this Session cannot own is dropped, not a conflict.
     if let Content::ToolResult { images, .. } = &mut message.content {
         let mut owned = Vec::with_capacity(images.len());
@@ -202,12 +231,7 @@ fn owned_references(
                 relative_path,
             } = &image.reference
             {
-                let id: Option<String> = db
-                    .prepare_cached(crate::artifacts::history::RESOLVE_SQL)?
-                    .query_row(params![session, &**session_id, &**relative_path], |row| {
-                        row.get(0)
-                    })
-                    .optional()?;
+                let id = resolve(session_id, relative_path)?;
                 let Some(relative_path) = id else { continue };
                 image.reference = StorageRef::SessionFile {
                     session_id: session.into(),
@@ -236,12 +260,7 @@ fn owned_references(
             relative_path,
         } = reference
         {
-            let id: Option<String> = db
-                .prepare_cached(crate::artifacts::history::RESOLVE_SQL)?
-                .query_row(params![session, &*session_id, &*relative_path], |row| {
-                    row.get(0)
-                })
-                .optional()?;
+            let id = resolve(session_id, relative_path)?;
             *reference = id
                 .map(|relative_path| StorageRef::SessionFile {
                     session_id: session.into(),

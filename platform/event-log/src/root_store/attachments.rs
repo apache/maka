@@ -17,11 +17,12 @@
  * under the License.
  */
 
-//! Cross-partition immutable attachment copy with bounded streaming custody.
+//! Immutable attachment copy with bounded streaming custody.
 use super::*;
 use maka_agent_facts::attachment::{AttachmentRef, StorageRef};
 use maka_agent_ports::execution::CopyAttachment;
 use maka_capabilities::storage::Namespace;
+use rusqlite::OptionalExtension;
 
 impl RootStore {
     pub async fn copy_plugin_attachment(
@@ -52,7 +53,7 @@ impl RootStore {
         artifact: &str,
     ) -> Result<crate::artifacts::ArtifactEntry, StoreError> {
         self.require_open()?;
-        let (source, _, _) = self
+        let (source, _) = self
             .pin_session_pair(source_session, target.id(), Some(target))
             .await?;
         source.get_artifact(source_session, artifact).await
@@ -73,16 +74,10 @@ impl RootStore {
                 "Attachment source is not a Session Artifact".into(),
             ));
         };
-        let (source, target, same_partition) = self
+        let (_, target) = self
             .pin_session_pair(session_id, &request.target_session_id, execution)
             .await?;
-        if same_partition {
-            target.copy_plugin_attachment(namespace, request).await
-        } else {
-            target
-                .copy_attachment_from_partition(source, namespace, request)
-                .await
-        }
+        target.copy_plugin_attachment(namespace, request).await
     }
 
     pub(super) async fn pin_session_pair(
@@ -90,7 +85,7 @@ impl RootStore {
         session_id: &str,
         target_session: &str,
         execution: Option<&SessionStore>,
-    ) -> Result<(EventLog, EventLog, bool), StoreError> {
+    ) -> Result<(EventLog, EventLog), StoreError> {
         let execution_custody = if let Some(target) = execution {
             if !Arc::ptr_eq(&self.gates, &target.gates) {
                 return Err(StoreError::InvalidTransition(
@@ -132,17 +127,16 @@ impl RootStore {
                 .scoped(Arc::new((sessions.clone(), execution_custody.clone())))
                 .connection
                 .read(move |connection| {
-                    Box::pin(async move {
-                        let configuration: Option<String> = sqlx::query_scalar(
+                    let configuration: Option<String> = connection
+                        .query_row(
                             "SELECT configuration FROM session_control WHERE id=?",
+                            rusqlite::params![session],
+                            |row| row.get(0),
                         )
-                        .bind(session)
-                        .fetch_optional(connection)
-                        .await?;
-                        crate::workspace_bindings::attached(&serde_json::from_str(
-                            &configuration.ok_or(StoreError::SessionNotFound)?,
-                        )?)
-                    })
+                        .optional()?;
+                    crate::workspace_bindings::attached(&serde_json::from_str(
+                        &configuration.ok_or(StoreError::SessionNotFound)?,
+                    )?)
                 })
                 .await?;
             if is_target {
@@ -164,12 +158,7 @@ impl RootStore {
         let custody: crate::connection::custody::Custody =
             Arc::new((sessions, bindings, execution_custody));
         self.require_open()?;
-        let same_partition = Arc::ptr_eq(&source, &target);
-        Ok((
-            source.scoped(custody.clone()),
-            target.scoped(custody),
-            same_partition,
-        ))
+        Ok((source.scoped(custody.clone()), target.scoped(custody)))
     }
 }
 

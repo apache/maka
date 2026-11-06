@@ -29,7 +29,7 @@ use maka_agent_facts::pricing::Query;
 use maka_agent_facts::pricing::ResetEffect;
 use maka_agent_facts::pricing::Update;
 use maka_agent_facts::pricing::Updated;
-use sqlx::{Row, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 
 const MAX_REVISION: u64 = 9_007_199_254_740_991;
 const PAGE_ITEMS: usize = 128;
@@ -45,32 +45,28 @@ impl ConfigurationStore {
     ) -> Result<maka_agent_facts::pricing::Quote> {
         let key = format!("{provider_id}:{model}");
         self.transaction(TransactionMode::Deferred, move |connection| {
-            Box::pin(async move {
-                let revision = revision(connection).await?;
-                let record: Option<String> = sqlx::query_scalar(
-                    "SELECT record_json FROM effective_pricing WHERE model_key = ?",
-                )
-                .bind(key)
-                .fetch_optional(&mut *connection)
-                .await?;
-                let quote = maka_agent_facts::pricing::Quote {
-                    provider_id,
-                    revision,
-                    pricing: record
-                        .map(|record| serde_json::from_str(&record))
-                        .transpose()?,
-                };
-                quote.validate(&model).map_err(invalid)?;
-                Ok(quote)
-            })
+            let revision = revision(connection)?;
+            let record: Option<String> = connection
+                .prepare_cached("SELECT record_json FROM effective_pricing WHERE model_key = ?")?
+                .query_row(rusqlite::params![key], |row| row.get(0))
+                .optional()?;
+            let quote = maka_agent_facts::pricing::Quote {
+                provider_id,
+                revision,
+                pricing: record
+                    .map(|record| serde_json::from_str(&record))
+                    .transpose()?,
+            };
+            quote.validate(&model).map_err(invalid)?;
+            Ok(quote)
         })
         .await
     }
 
     /// Continuations are valid only while both bundled and custom rates are unchanged.
     pub async fn query_pricing(&self, query: Query) -> Result<Page> {
-        self.transaction(TransactionMode::Deferred, move |connection| Box::pin(async move {
-            let revision = revision(connection).await?;
+        self.transaction(TransactionMode::Deferred, move |connection| {
+            let revision = revision(connection)?;
             let offset = match query {
                 Query::Start => 0,
                 Query::Continue { revision: expected, offset } => {
@@ -80,25 +76,21 @@ impl ConfigurationStore {
                     if expected != revision {
                         return Ok(Page::RevisionChanged { expected_revision: expected, actual_revision: revision });
                     }
-                    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM effective_pricing")
-                        .fetch_one(&mut *connection).await?;
+                    let count: i64 = connection.prepare_cached("SELECT COUNT(*) FROM effective_pricing")?.query_row(rusqlite::params![], |row| row.get(0))?;
                     if offset >= unsigned(count)? {
                         return Err(invalid("pricing offset is outside the catalog"));
                     }
                     offset
                 }
             };
-            let rows = sqlx::query(
-                "SELECT record_json, custom, builtin FROM effective_pricing ORDER BY sort_key LIMIT ? OFFSET ?"
-            ).bind((PAGE_ITEMS + 1) as i64).bind(offset as i64)
-                .fetch_all(&mut *connection).await?;
+            let rows: Vec<(String, bool, bool)> = connection.prepare_cached("SELECT record_json, custom, builtin FROM effective_pricing ORDER BY sort_key LIMIT ? OFFSET ?")?.query_map(rusqlite::params![(PAGE_ITEMS + 1) as i64, offset as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,)))?.collect::<std::result::Result<Vec<_>, _>>()?;
             let mut entries = Vec::new();
             let mut bytes = 0;
             let mut more = false;
-            for row in rows {
-                let pricing = serde_json::from_str(row.try_get("record_json")?)?;
-                let entry = if row.try_get::<bool, _>("custom")? {
-                    Entry::Custom { pricing, reset_effect: if row.try_get::<bool, _>("builtin")? {
+            for (record_json, custom, builtin) in rows {
+                let pricing = serde_json::from_str(&record_json)?;
+                let entry = if custom {
+                    Entry::Custom { pricing, reset_effect: if builtin {
                         ResetEffect::RestoreBuiltin
                     } else { ResetEffect::BecomeUnpriced } }
                 } else { Entry::Builtin { pricing } };
@@ -112,7 +104,7 @@ impl ConfigurationStore {
             }
             let next_offset = more.then_some(offset + entries.len() as u64);
             Ok(Page::Page { revision, offset, entries, next_offset })
-        })).await
+        }).await
     }
 
     pub async fn update_pricing(&self, update: Update) -> Result<Updated> {
@@ -125,8 +117,8 @@ impl ConfigurationStore {
                 maka_agent_facts::pricing::validate_key(model_key).map_err(invalid)?
             }
         }
-        self.transaction(TransactionMode::Immediate, move |connection| Box::pin(async move {
-            let current = revision(connection).await?;
+        self.transaction(TransactionMode::Immediate, move |connection| {
+            let current = revision(connection)?;
             if current != update.expected_revision {
                 return Ok(Updated::RevisionConflict {
                     expected_revision: update.expected_revision, actual_revision: current,
@@ -134,40 +126,32 @@ impl ConfigurationStore {
             }
             let changed = match update.mutation {
                 Mutation::Upsert { pricing } => {
-                    let old: Option<String> = sqlx::query_scalar(
-                        "SELECT record_json FROM pricing_overrides WHERE model_key = ?"
-                    ).bind(&pricing.model_key).fetch_optional(&mut *connection).await?;
+                    let old: Option<String> = connection.prepare_cached("SELECT record_json FROM pricing_overrides WHERE model_key = ?")?.query_row(rusqlite::params![&pricing.model_key], |row| row.get(0)).optional()?;
                     if old.as_deref().map(serde_json::from_str::<Pricing>).transpose()?.as_ref() == Some(&pricing) {
                         false
                     } else {
                         let record = serde_json::to_string(&pricing)?;
-                        sqlx::query(
-                            "INSERT INTO pricing_overrides(model_key, sort_key, record_json) VALUES(?, ?, ?)
-                             ON CONFLICT(model_key) DO UPDATE SET record_json = excluded.record_json"
-                        ).bind(&pricing.model_key).bind(sort_key(&pricing.model_key)).bind(record)
-                            .execute(&mut *connection).await?;
+                        connection.execute("INSERT INTO pricing_overrides(model_key, sort_key, record_json) VALUES(?, ?, ?)
+                             ON CONFLICT(model_key) DO UPDATE SET record_json = excluded.record_json", rusqlite::params![&pricing.model_key, sort_key(&pricing.model_key), record])?;
                         true
                     }
                 }
-                Mutation::Delete { model_key } => sqlx::query(
-                    "DELETE FROM pricing_overrides WHERE model_key = ?"
-                ).bind(model_key).execute(&mut *connection).await?.rows_affected() != 0,
+                Mutation::Delete { model_key } => connection.execute("DELETE FROM pricing_overrides WHERE model_key = ?", rusqlite::params![model_key])? != 0,
             };
             if !changed { return Ok(Updated::Unchanged { revision: current }); }
             let revision = current.checked_add(1).filter(|revision| *revision <= MAX_REVISION)
                 .ok_or_else(|| invalid("pricing revision exhausted"))?;
-            sqlx::query("UPDATE pricing_authority SET revision = ? WHERE singleton = 1")
-                .bind(revision as i64).execute(&mut *connection).await?;
+            connection.execute("UPDATE pricing_authority SET revision = ? WHERE singleton = 1", rusqlite::params![revision as i64])?;
             Ok(Updated::Committed { revision })
-        })).await
+        }).await
     }
 }
 
-async fn revision(connection: &mut SqliteConnection) -> Result<u64> {
+fn revision(connection: &Connection) -> Result<u64> {
     unsigned(
-        sqlx::query_scalar("SELECT revision FROM pricing_authority WHERE singleton = 1")
-            .fetch_one(connection)
-            .await?,
+        connection
+            .prepare_cached("SELECT revision FROM pricing_authority WHERE singleton = 1")?
+            .query_row(rusqlite::params![], |row| row.get(0))?,
     )
 }
 

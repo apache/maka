@@ -30,19 +30,17 @@ pub(crate) fn config_cause(error: &ConfigError) -> &'static str {
         ConfigError::UnsupportedDatabase => "config_unsupported_database",
         ConfigError::CommitUnknown => "config_commit_unknown",
         ConfigError::Io(_) => "config_io",
-        ConfigError::Sqlx(_) => "config_sqlx",
-        ConfigError::Migration(_) => "config_migration",
+        ConfigError::Sqlite(_) => "config_sqlite",
         ConfigError::Store(_) => "config_store",
         ConfigError::Json(_) => "config_json",
     }
 }
 
 pub(crate) fn store_cause(error: &StoreError) -> &'static str {
-    match error {
+    match error.underlying() {
         StoreError::ConnectionClosed => "store_connection_closed",
         StoreError::OperationUnknown => "store_operation_unknown",
         StoreError::CommitUnknown(_) => "store_commit_unknown",
-        StoreError::Sqlx(_) => "store_sqlx",
         StoreError::Sqlite(_) => "store_sqlite",
         StoreError::Io(_) => "store_io",
         StoreError::Json(_) => "store_json",
@@ -62,12 +60,10 @@ pub(crate) fn store_cause(error: &StoreError) -> &'static str {
 }
 
 pub(crate) fn store_sql_code(error: &StoreError) -> Option<i32> {
-    match error {
-        StoreError::Sqlx(error) | StoreError::CommitUnknown(error) => error
-            .as_database_error()
-            .and_then(|error| error.code())
-            .and_then(|code| code.parse().ok()),
-        StoreError::Sqlite(error) => error.sqlite_error().map(|error| error.extended_code),
+    match error.underlying() {
+        StoreError::Sqlite(error) | StoreError::CommitUnknown(error) => {
+            error.sqlite_error().map(|error| error.extended_code)
+        }
         _ => None,
     }
 }

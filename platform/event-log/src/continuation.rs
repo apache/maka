@@ -25,7 +25,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 
 impl EventLog {
@@ -34,21 +34,18 @@ impl EventLog {
         &self,
         session: &str,
     ) -> Result<Option<String>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
-        self.connection.run(move |connection| Box::pin(async move {
-            Ok(sqlx::query_scalar(
-                "SELECT json_extract(opening.event_header, '$.invocation.run_id')
+        self.connection.read(move |connection| {
+            Ok(connection.prepare_cached("SELECT json_extract(opening.event_header, '$.invocation.run_id')
                  FROM runtime_events opening JOIN runtime_events terminal
                    ON terminal.invocation_id = opening.invocation_id AND terminal.kind = 'invocation_ended'
                  WHERE opening.kind = 'invocation_opened'
                    AND json_extract(opening.event_header, '$.invocation.session_id') = ?
                    AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
                    AND json_extract(terminal.event_header, '$.fact.outcome.kind') IN ('failed', 'cancelled')
-                 ORDER BY opening.sequence DESC LIMIT 1"
-            ).bind(session).fetch_optional(connection).await?)
-        })).await
+                 ORDER BY opening.sequence DESC LIMIT 1")?.query_row(rusqlite::params![session], |row| row.get(0)).optional()?)
+        }).await
     }
 
     /// The exact committed target for a source boundary, if one acquired it.
@@ -57,24 +54,20 @@ impl EventLog {
         &self,
         source: &RunBoundary,
     ) -> Result<Option<StoredEvent>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(&source.invocation.session_id)?;
         crate::sessions::validate_id(&source.invocation.run_id)?;
         if source.high_water == 0 || source.high_water > 9_007_199_254_740_991 {
             return Err(invalid("invalid source Run high-water"));
         }
         let source = source.clone();
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin().await?;
-            let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-                "SELECT sequence, CASE WHEN length(CAST(event_header AS BLOB)) <= 1048576 THEN event_header END
+        self.connection.read(move |connection| {
+            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+            let rows: Vec<(i64, Option<String>)> = tx.prepare_cached("SELECT sequence, CASE WHEN length(CAST(event_header AS BLOB)) <= 1048576 THEN event_header END
                  FROM runtime_events WHERE kind='invocation_opened'
                  AND json_extract(event_header,'$.fact.input.kind') IN ('continuation','handoff')
                  AND json_extract(event_header,'$.invocation.session_id')=?
                  AND json_extract(event_header,'$.fact.input.claim.source.invocation.run_id')=?
-                 AND json_extract(event_header,'$.fact.input.claim.source.high_water')=? LIMIT 2"
-            ).bind(&source.invocation.session_id).bind(&source.invocation.run_id)
-                .bind(source.high_water as i64).fetch_all(&mut *tx).await?;
+                 AND json_extract(event_header,'$.fact.input.claim.source.high_water')=? LIMIT 2")?.query_map(rusqlite::params![&source.invocation.session_id,&source.invocation.run_id,source.high_water as i64], |row| Ok((row.get(0)?,row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
             if rows.len() > 1 { return Err(invalid("ambiguous continuation claim")); }
             let result = rows.into_iter().next().map(|(sequence, json)| {
                 let event: RuntimeEvent = serde_json::from_str(&json.ok_or_else(|| invalid("claim opening exceeds capacity"))?)?;
@@ -86,14 +79,14 @@ impl EventLog {
                 if claim.source != source { return Err(invalid("claimed source evidence changed")); }
                 Ok(StoredEvent { sequence: sequence_number(sequence)?, event })
             }).transpose()?;
-            tx.commit().await?;
+            tx.commit()?;
             Ok(result)
-        })).await
+        }).await
     }
 }
 
-pub(crate) async fn validate(
-    connection: &mut SqliteConnection,
+pub(crate) fn validate(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     let Fact::InvocationOpened {
@@ -113,25 +106,22 @@ pub(crate) async fn validate(
         .as_ref()
         .and_then(|c| c.workspace_identity.as_ref())
         .ok_or_else(|| invalid("continuation has no observed workspace identity"))?;
-    let reused: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE kind='invocation_opened'
+    let reused: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE kind='invocation_opened'
          AND json_extract(event_header,'$.invocation.session_id')=?1
-         AND ((?4 AND json_extract(event_header,'$.invocation.turn_id')=?2) OR json_extract(event_header,'$.invocation.run_id')=?3))"
-    ).bind(&event.invocation.session_id).bind(&event.invocation.turn_id).bind(&event.invocation.run_id)
-        .bind(matches!(input, InvocationInput::Continuation { .. })).fetch_one(&mut *connection).await?;
+         AND ((?4 AND json_extract(event_header,'$.invocation.turn_id')=?2) OR json_extract(event_header,'$.invocation.run_id')=?3))")?.query_row(rusqlite::params![&event.invocation.session_id,&event.invocation.turn_id,&event.invocation.run_id,matches!(input, InvocationInput::Continuation { .. })], |row| row.get(0))?;
     if reused {
         return Err(invalid(
             "continuation reused a reserved Turn or physical Run",
         ));
     }
-    crate::context::safety::require_safe(connection, &event.invocation.session_id, None).await?;
-    ancestors(connection, &claim.source, &claim.base, workspace).await?;
+    crate::context::safety::require_safe(connection, &event.invocation.session_id, None)?;
+    ancestors(connection, &claim.source, &claim.base, workspace)?;
     Ok(())
 }
 
 /// Validate every inherited edge against canonical bytes, returning physical Run identities.
-pub(crate) async fn ancestors(
-    connection: &mut SqliteConnection,
+pub(crate) fn ancestors(
+    connection: &rusqlite::Connection,
     boundary: &RunBoundary,
     base: &maka_agent_facts::continuation::SessionBase,
     workspace: &maka_agent_facts::execution::WorkspaceIdentity,
@@ -147,25 +137,21 @@ pub(crate) async fn ancestors(
             connection,
             &source.invocation.session_id,
             &source.invocation.run_id,
-        )
-        .await?
+        )?
         .ok_or_else(|| invalid("continuation source Run is missing"))?;
         if id != source.invocation.invocation_id {
             return Err(invalid("continuation source identity changed"));
         }
-        let through: i64 =
-            sqlx::query_scalar("SELECT MAX(sequence) FROM runtime_events WHERE invocation_id=?")
-                .bind(&id)
-                .fetch_one(&mut *connection)
-                .await?;
+        let through: i64 = connection
+            .prepare_cached("SELECT MAX(sequence) FROM runtime_events WHERE invocation_id=?")?
+            .query_row(rusqlite::params![&id], |row| row.get(0))?;
         let evidence = crate::run_source::read(
             connection,
             &source.invocation.session_id,
             &source.invocation.run_id,
             &id,
             through,
-        )
-        .await?;
+        )?;
         if evidence.boundary != source
             || !matches!(evidence.last.event.fact, Fact::InvocationEnded { .. })
         {
@@ -198,8 +184,7 @@ pub(crate) async fn ancestors(
                     &evidence.boundary.invocation,
                     opening.sequence,
                     base,
-                )
-                .await?;
+                )?;
                 return Ok(result);
             }
             InvocationInput::Continuation { claim: parent, .. }

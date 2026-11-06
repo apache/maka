@@ -361,12 +361,12 @@ https://github.com/smol-rs/async-io at revision
 finite file provenance and the timer wake modification are recorded in
 third-party/async-io/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
-SQLx SQLite owned-startup source (adapted, Apache License 2.0 OR MIT)
+SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
 
 third-party/sqlx-sqlite contains sqlx-sqlite 0.9.0 from
 https://github.com/launchbadge/sqlx at revision
 003b698e99e024f3621b8043a2426fde5b741171. Original license texts,
-finite source hashes and the establish/configure ownership seam are in
+finite source hashes and the SQLite dependency/plan configuration changes are in
 third-party/sqlx-sqlite/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
 Termina terminal input source (adapted, MIT OR MPL-2.0)

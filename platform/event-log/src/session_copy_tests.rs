@@ -445,7 +445,7 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             for table in ["temp.transcript_text", "temp.transcript_rows"] {
                 inspect
                     .execute(
-                        &format!("DELETE FROM {table} WHERE session_id = ?"),
+                        &format!("DELETE FROM {table} WHERE owner_key = ?"),
                         [&cache_session],
                     )
                     .unwrap();
@@ -919,12 +919,12 @@ async fn copied_semantic_projection_failure_rolls_back_membership_and_receipt_af
         .copy_session(request.clone(), &json!({}), 20)
         .await
         .unwrap_err();
-    let StoreError::Sqlx(error) = failure else {
-        panic!("copy projection failure must retain SQLx database category")
+    let StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, message)) = failure.underlying()
+    else {
+        panic!("copy projection failure must retain SQLite database category")
     };
-    let database = error.as_database_error().unwrap();
-    assert_eq!(database.message(), "copy semantic projection fault");
-    assert!(database.code().is_some());
+    assert_eq!(message.as_deref(), Some("copy semantic projection fault"));
+    assert_eq!(error.extended_code, 1811);
     log.close().await.unwrap();
 
     let log = EventLog::open(&path).await.unwrap();

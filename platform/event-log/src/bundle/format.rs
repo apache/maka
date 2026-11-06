@@ -34,9 +34,9 @@ mod decode;
 pub(super) const MAGIC: &[u8] = b"MAKA-SESSION\0\x02";
 pub(super) const CHUNK: usize = 64 * 1024;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Record {
+pub(crate) enum Record {
     Header {
         inventory: Inventory,
         source_high_water: u64,
@@ -82,9 +82,9 @@ pub(super) enum Record {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Copy {
+pub(crate) struct Copy {
     pub request: CopyRequest,
     pub through: u64,
     pub observed_through: u64,
@@ -92,9 +92,9 @@ pub(super) struct Copy {
     pub state: CopyState,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Valuation {
+pub(crate) struct Valuation {
     pub usage: ModelUsage,
     pub usd: Option<f64>,
 }
@@ -102,7 +102,7 @@ pub(super) struct Valuation {
 /// Exactly the declared raw bytes follow this frame; binary data is not JSON/base64.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "resource", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Blob {
+pub(crate) enum Blob {
     ToolResult {
         event_id: String,
         bytes: u64,
@@ -137,7 +137,7 @@ impl Blob {
     }
 }
 
-pub(super) struct Writer<W> {
+pub(crate) struct Writer<W> {
     output: W,
     digest: Sha256,
     bytes: u64,
@@ -158,11 +158,15 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
 
     pub async fn record(&mut self, record: &Record) -> Result<(), StoreError> {
         let bytes = serde_json::to_vec(record)?;
+        self.record_bytes(&bytes).await
+    }
+
+    async fn record_bytes(&mut self, bytes: &[u8]) -> Result<(), StoreError> {
         let length = u32::try_from(bytes.len()).map_err(|_| {
             StoreError::InvalidTransition("bundle frame length is not representable".into())
         })?;
         self.bytes(&length.to_be_bytes()).await?;
-        self.bytes(&bytes).await?;
+        self.bytes(bytes).await?;
         self.frames = self
             .frames
             .checked_add(1)
@@ -217,4 +221,57 @@ pub(super) async fn write_progress<W: AsyncWrite + Unpin>(
         bytes = &bytes[written..];
     }
     Ok(())
+}
+
+pub(crate) enum Frame {
+    Record(Vec<u8>),
+    Bytes(Vec<u8>),
+    Complete,
+}
+
+/// A bounded handoff from the SQLite owner thread to the asynchronous writer.
+pub(crate) struct FrameSender(tokio::sync::mpsc::Sender<Frame>);
+
+impl FrameSender {
+    pub(crate) fn channel() -> (Self, tokio::sync::mpsc::Receiver<Frame>) {
+        let (send, receive) = tokio::sync::mpsc::channel(2);
+        (Self(send), receive)
+    }
+
+    pub(crate) fn record(&mut self, record: &Record) -> Result<(), StoreError> {
+        self.send(Frame::Record(serde_json::to_vec(record)?))
+    }
+
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) -> Result<(), StoreError> {
+        self.send(Frame::Bytes(bytes.to_vec()))
+    }
+
+    pub(crate) fn complete(self) -> Result<(), StoreError> {
+        self.send(Frame::Complete)
+    }
+
+    fn send(&self, frame: Frame) -> Result<(), StoreError> {
+        self.0.blocking_send(frame).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "bundle destination closed").into()
+        })
+    }
+}
+
+pub(crate) async fn write_frames<W: AsyncWrite + Unpin>(
+    output: W,
+    mut frames: tokio::sync::mpsc::Receiver<Frame>,
+) -> Result<(W, u64, String), StoreError> {
+    let mut writer = Writer::new(output).await?;
+    while let Some(frame) = frames.recv().await {
+        match frame {
+            Frame::Record(bytes) => writer.record_bytes(&bytes).await?,
+            Frame::Bytes(bytes) => writer.bytes(&bytes).await?,
+            Frame::Complete => return writer.finish().await,
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "bundle producer ended before completing its snapshot",
+    )
+    .into())
 }

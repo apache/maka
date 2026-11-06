@@ -335,17 +335,17 @@ async fn shared_tool_projection_survives_collection_of_one_canonical_owner() {
     }
     let inspect = rusqlite::Connection::open(&path).unwrap();
     let counts = || {
-        inspect.query_row("SELECT (SELECT COUNT(*) FROM event_bodies),(SELECT COUNT(*) FROM event_log WHERE body_id IS NOT NULL)", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap()
+        inspect.query_row("SELECT (SELECT COUNT(DISTINCT body_id) FROM event_log),(SELECT COUNT(*) FROM event_log WHERE body_id IS NOT NULL)", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap()
     };
     assert_eq!(counts(), (1, 2));
     let stored_bytes: i64 = inspect
-        .query_row("SELECT SUM(length(payload)) FROM event_bodies", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT SUM(length(payload)) FROM contents WHERE id IN (SELECT body_id FROM event_log)",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    let projection_bytes = serde_json::to_vec(&DurableToolProjection::Text { text: text.clone() })
-        .unwrap()
-        .len();
+    let projection_bytes = serde_json::to_vec(&text).unwrap().len();
     assert_eq!(
         stored_bytes as usize, projection_bytes,
         "two canonical owners store one exact raw projection token"

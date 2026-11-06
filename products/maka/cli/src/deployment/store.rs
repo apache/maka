@@ -20,16 +20,22 @@
 use super::Deployment;
 use maka_event_log::{
     StoreError,
-    connection::{ConnectionAuthority, OwnedConnection},
+    connection::{ConnectionAuthority, OpenOptions, OwnedConnection},
+    migration::Migration,
     root::{FileLease, RootOwner},
 };
 use maka_host_runtime::HostError;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs::File, path::Path, sync::Arc};
 
 const DATABASE: &str = "deployment.sqlite";
 const APPLICATION_ID: i64 = 0x4d414b44;
-static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/deployment");
+
+static MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    description: "deployment",
+    sql: include_str!("../../migrations/deployment/0001_deployment.sql"),
+}];
 
 pub(super) enum Installation {
     Missing,
@@ -49,33 +55,40 @@ pub(super) async fn read(directory: &Path) -> Result<Installation, HostError> {
         Ok(metadata) if !metadata.is_file() => return Err("invalid deployment database".into()),
         Ok(_) => {}
     }
-    let mut connection =
-        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path).read_only(true))
-            .await?;
-    let result = async {
-        validate_schema(&mut connection).await?;
-        let application: i64 = sqlx::query_scalar("PRAGMA application_id").fetch_one(&mut connection).await?;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut connection).await?;
+    read_database(path, |connection| {
+        validate_schema(connection)?;
+        let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version == 0 && application == APPLICATION_ID {
             return Ok(Installation::Incomplete);
         }
         if version == 0 && application == 0 {
-            let tables: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-                .fetch_one(&mut connection).await?;
+            let tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0))?;
             if tables == 0 { return Ok(Installation::Incomplete) }
         }
         if application != APPLICATION_ID || version != 1 {
             return Err("unsupported or incomplete deployment database".into());
         }
-        let value: Option<String> = sqlx::query_scalar("SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1")
-            .fetch_optional(&mut connection).await?;
+        let value: Option<String> = connection.query_row("SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END FROM deployment WHERE singleton = 1", [], |row| row.get(0)).optional()?;
         let Some(value) = value else { return Ok(Installation::Incomplete) };
-        Ok::<_, HostError>(Installation::Installed(serde_json::from_str(&value)?))
-    }.await;
-    let closed = connection.close().await;
-    let deployment = result?;
-    closed?;
-    Ok(deployment)
+        Ok(Installation::Installed(serde_json::from_str(&value)?))
+    }).await
+}
+
+pub(super) async fn read_database<T: Send + 'static>(
+    path: std::path::PathBuf,
+    read: impl FnOnce(&mut Connection) -> Result<T, HostError> + Send + 'static,
+) -> Result<T, HostError> {
+    tokio::task::spawn_blocking(move || {
+        let mut connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let result = read(&mut connection);
+        let closed = connection.close().map_err(|(_, error)| error);
+        let value = result?;
+        closed?;
+        Ok(value)
+    })
+    .await?
 }
 
 pub(super) async fn install(
@@ -87,18 +100,16 @@ pub(super) async fn install(
     let connection = open_writer(directory, lease, None).await?;
     let result = connection
         .run(move |connection| {
-            Box::pin(async move {
-                // The accepted database job owns Root until its actual commit, even if
-                // the install caller disappears while awaiting the acknowledgement.
-                owner.validate_current()?;
-                let body = serde_json::to_string(&deployment)?;
-                sqlx::query("INSERT INTO deployment(singleton, configuration) VALUES (1, ?)")
-                    .bind(body)
-                    .execute(connection)
-                    .await?;
-                drop(owner);
-                Ok(deployment)
-            })
+            // The accepted database job owns Root until its actual commit, even if
+            // the install caller disappears while awaiting the acknowledgement.
+            owner.validate_current()?;
+            let body = serde_json::to_string(&deployment)?;
+            connection.execute(
+                "INSERT INTO deployment(singleton, configuration) VALUES (1, ?)",
+                params![body],
+            )?;
+            drop(owner);
+            Ok(deployment)
         })
         .await;
     let closed = connection.close().await;
@@ -134,19 +145,14 @@ async fn open(
     #[cfg(unix)]
     File::open(directory)?.sync_all()?;
     Ok(OwnedConnection::open(
-        SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(false),
+        OpenOptions::file(path),
         ConnectionAuthority::Writer { lease, root },
-        if migrate_on_open {
-            |connection| {
-                Box::pin(async move {
-                    initialize(connection).await?;
-                    migrate(connection).await
-                })
+        move |connection| {
+            initialize(connection)?;
+            if migrate_on_open {
+                migrate(connection)?;
             }
-        } else {
-            |connection| Box::pin(initialize(connection))
+            Ok(())
         },
     )
     .await?)
@@ -197,27 +203,19 @@ pub(super) async fn change(
     let connection = open_writer(directory, lease, Some(owner)).await?;
     let result = connection
         .run(move |connection| {
-            Box::pin(async move {
-                let mut transaction = connection.begin().await?;
-                let (active, _) = super::updates::load(&mut transaction).await?;
-                if active != expected {
-                    return Err(StoreError::InvalidTransition("deployment changed".into()));
-                }
-                sqlx::query("UPDATE deployment SET configuration = ? WHERE singleton = 1")
-                    .bind(serde_json::to_string(&target)?)
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM deployment_update WHERE singleton = 1")
-                    .execute(&mut *transaction)
-                    .await?;
-                // A revoked or replaced deployment cannot inherit an automatic
-                // update grant. Retain the row so cleanup retries know a
-                // scheduler may still exist.
-                sqlx::query("UPDATE deployment_update_policy SET configuration = json_set(configuration, '$.policy', 'manual', '$.nextCheckMs', 0, '$.lastError', NULL) WHERE singleton = 1")
-                    .execute(&mut *transaction).await?;
-                transaction.commit().await?;
-                Ok(target)
-            })
+            let transaction = connection.transaction()?;
+            let (active, _) = super::updates::load(&transaction)?;
+            if active != expected {
+                return Err(StoreError::InvalidTransition("deployment changed".into()));
+            }
+            transaction.execute("UPDATE deployment SET configuration = ? WHERE singleton = 1", params![serde_json::to_string(&target)?])?;
+            transaction.execute("DELETE FROM deployment_update WHERE singleton = 1", [])?;
+            // A revoked or replaced deployment cannot inherit an automatic
+            // update grant. Retain the row so cleanup retries know a
+            // scheduler may still exist.
+            transaction.execute("UPDATE deployment_update_policy SET configuration = json_set(configuration, '$.policy', 'manual', '$.nextCheckMs', 0, '$.lastError', NULL) WHERE singleton = 1", [])?;
+            transaction.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(target)
         })
         .await;
     let closed = connection.close().await;
@@ -273,30 +271,23 @@ fn private_file(path: &Path) -> Result<File, HostError> {
     Ok(file)
 }
 
-async fn initialize(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    validate_schema(connection).await?;
-    sqlx::raw_sql(
+fn initialize(connection: &mut Connection) -> Result<(), StoreError> {
+    validate_schema(connection)?;
+    connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA application_id=1296124740;",
-    )
-    .execute(&mut *connection)
-    .await?;
+    )?;
     Ok(())
 }
 
-/// Reject unsupported stores before either a reader serves them or a writer
-/// changes journaling or creates SQLx metadata. Version zero is initial setup only.
-async fn validate_schema(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    let application: i64 = sqlx::query_scalar("PRAGMA application_id")
-        .fetch_one(&mut *connection)
-        .await?;
-    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(&mut *connection)
-        .await?;
-    let tables: i64 = sqlx::query_scalar(
+/// Reject unsupported stores before a writer changes journaling or creates metadata.
+fn validate_schema(connection: &Connection) -> Result<(), StoreError> {
+    let application: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let tables: i64 = connection.query_row(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+        [],
+        |row| row.get(0),
+    )?;
     if !((application == 0 && version == 0 && tables == 0)
         || (application == APPLICATION_ID && (0..=1).contains(&version)))
     {
@@ -304,15 +295,16 @@ async fn validate_schema(connection: &mut SqliteConnection) -> Result<(), StoreE
             "unsupported deployment database".into(),
         ));
     }
-    let ledger: bool = sqlx::query_scalar(
+    let ledger: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='_sqlx_migrations')",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+        [],
+        |row| row.get(0),
+    )?;
     let applied: Vec<(i64, bool, Vec<u8>)> = if ledger {
-        sqlx::query_as("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
-            .fetch_all(&mut *connection)
-            .await?
+        connection
+            .prepare("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?
     } else {
         Vec::new()
     };
@@ -324,7 +316,8 @@ async fn validate_schema(connection: &mut SqliteConnection) -> Result<(), StoreE
                 |((version, success, checksum), expected)| {
                     *version == expected.version
                         && *success
-                        && checksum.as_slice() == expected.checksum.as_ref()
+                        && checksum.as_slice()
+                            == maka_event_log::migration::checksum(expected.sql).as_slice()
                 },
             )
     };
@@ -336,7 +329,7 @@ async fn validate_schema(connection: &mut SqliteConnection) -> Result<(), StoreE
     Ok(())
 }
 
-pub(super) async fn migrate(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    MIGRATIONS.run_direct(None, connection, false).await?;
+pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
+    maka_event_log::migration::run(connection, MIGRATIONS)?;
     Ok(())
 }

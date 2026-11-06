@@ -683,27 +683,26 @@ async fn historical_binary_bundle_export_round_trips_and_cancels_with_cleanup() 
         drop(manager);
         store.shutdown().await.unwrap();
         drop(store);
-        {
-            use sqlx::Connection as _;
-            let db_path = directory
-                .path()
-                .join("root")
-                .join(maka_event_log::root::ROOT_DATABASE);
-            let mut conn = sqlx::SqliteConnection::connect_with(
-                &sqlx::sqlite::SqliteConnectOptions::new().filename(&db_path),
-            )
-            .await
-            .unwrap();
-            sqlx::query(
-                "UPDATE application_package_files SET payload = X'00' WHERE id = ? AND revision = ? AND path = 'sibling.txt'",
-            )
-            .bind(&sibling_ref.id)
-            .bind(&sibling_ref.revision)
-            .execute(&mut conn)
-            .await
-            .unwrap();
-            conn.close().await.unwrap();
-        }
+        let db_path = directory
+            .path()
+            .join("root")
+            .join(maka_event_log::root::ROOT_DATABASE);
+        tokio::task::spawn_blocking(move || {
+            let mut connection = rusqlite::Connection::open(db_path).unwrap();
+            let transaction = connection.transaction().unwrap();
+            let digest = "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d";
+            transaction.execute(
+                "INSERT OR IGNORE INTO contents(content_sha256, payload) VALUES (?, ?)",
+                rusqlite::params![digest, &[0_u8][..]],
+            ).unwrap();
+            let changed = transaction.execute(
+                "UPDATE application_package_files SET content_id = (SELECT id FROM contents WHERE content_sha256 = ?) WHERE id = ? AND revision = ? AND path = 'sibling.txt'",
+                rusqlite::params![digest, &sibling_ref.id, &sibling_ref.revision],
+            ).unwrap();
+            assert_eq!(changed, 1, "only the sibling fixture file is corrupted");
+            transaction.commit().unwrap();
+            connection.close().unwrap();
+        }).await.unwrap();
         let owner = Arc::new(
             RootOwner::open(
                 &directory.path().join("root"),

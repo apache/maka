@@ -26,8 +26,8 @@ use maka_capabilities::authorization::Grant;
 use maka_capabilities::authorization::Id;
 use maka_capabilities::authorization::Request;
 use maka_capabilities::storage::Namespace;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, sqlite::SqliteRow};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -78,11 +78,9 @@ impl ConfigurationStore {
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         self.transaction(TransactionMode::Immediate, move |connection| {
-            Box::pin(async move {
+            {
             let scope = String::from(namespace.scope().clone());
-            let previous = sqlx::query("SELECT id, document, revoked FROM plugin_authorizations WHERE package_id = ? AND scope_id = ? AND operation_id = ?")
-                .bind(namespace.package()).bind(&scope).bind(request.operation_id.to_string())
-                .fetch_optional(&mut *connection).await?;
+            let previous = connection.prepare_cached("SELECT id, document, revoked FROM plugin_authorizations WHERE package_id = ? AND scope_id = ? AND operation_id = ?")?.query_row(rusqlite::params![namespace.package(), &scope, request.operation_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?;
             if let Some(row) = previous {
                 let record = decode(row)?;
                 return Ok(if record.grant.request == request && record.principal == principal {
@@ -100,9 +98,7 @@ impl ConfigurationStore {
                 boundary,
             };
             let bytes = serde_json::to_string(&document)?;
-            sqlx::query("INSERT INTO plugin_authorizations (id, package_id, scope_id, operation_id, document) VALUES (?, ?, ?, ?, ?)")
-                .bind(id.0.to_string()).bind(namespace.package()).bind(scope).bind(document.request.operation_id.to_string()).bind(bytes)
-                .execute(&mut *connection).await?;
+            connection.execute("INSERT INTO plugin_authorizations (id, package_id, scope_id, operation_id, document) VALUES (?, ?, ?, ?, ?)", rusqlite::params![id.0.to_string(), namespace.package(), scope, document.request.operation_id.to_string(), bytes])?;
             Ok(Approval::Granted(Box::new(Record {
                 grant: Grant {
                     id,
@@ -112,7 +108,7 @@ impl ConfigurationStore {
                 principal: document.principal,
                 boundary: document.boundary,
             })))
-            })
+            }
         }).await
     }
 
@@ -124,11 +120,9 @@ impl ConfigurationStore {
         id: Id,
     ) -> Result<Option<Record>> {
         self.transaction(TransactionMode::Deferred, move |connection| {
-            Box::pin(async move {
-            sqlx::query("SELECT id, document, revoked FROM plugin_authorizations WHERE id = ? AND package_id = ? AND scope_id = ?")
-                .bind(id.0.to_string()).bind(namespace.package()).bind(String::from(namespace.scope().clone()))
-                .fetch_optional(&mut *connection).await?.map(decode).transpose()
-            })
+            {
+            connection.prepare_cached("SELECT id, document, revoked FROM plugin_authorizations WHERE id = ? AND package_id = ? AND scope_id = ?")?.query_row(rusqlite::params![id.0.to_string(), namespace.package(), String::from(namespace.scope().clone())], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?.map(decode).transpose()
+            }
         }).await
     }
 
@@ -140,30 +134,25 @@ impl ConfigurationStore {
         operation_id: Uuid,
     ) -> Result<Option<Record>> {
         self.transaction(TransactionMode::Deferred, move |connection| {
-            Box::pin(async move {
-                sqlx::query("SELECT id, document, revoked FROM plugin_authorizations WHERE package_id = ? AND scope_id = ? AND operation_id = ?")
-                    .bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(operation_id.to_string())
-                    .fetch_optional(&mut *connection).await?.map(decode).transpose()
-            })
+            {
+                connection.prepare_cached("SELECT id, document, revoked FROM plugin_authorizations WHERE package_id = ? AND scope_id = ? AND operation_id = ?")?.query_row(rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), operation_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?.map(decode).transpose()
+            }
         }).await
     }
 
     /// Idempotent and monotonic; never delete the idempotency tombstone.
     pub async fn revoke_plugin_authorization(&self, namespace: Namespace, id: Id) -> Result<()> {
         self.transaction(TransactionMode::Immediate, move |connection| {
-            Box::pin(async move {
-            sqlx::query("UPDATE plugin_authorizations SET revoked = 1 WHERE id = ? AND package_id = ? AND scope_id = ?")
-                .bind(id.0.to_string()).bind(namespace.package()).bind(String::from(namespace.scope().clone()))
-                .execute(&mut *connection).await?;
+            {
+            connection.execute("UPDATE plugin_authorizations SET revoked = 1 WHERE id = ? AND package_id = ? AND scope_id = ?", rusqlite::params![id.0.to_string(), namespace.package(), String::from(namespace.scope().clone())])?;
             Ok(())
-            })
+            }
         }).await
     }
 }
 
-fn decode(row: SqliteRow) -> Result<Record> {
-    let id: String = row.try_get("id")?;
-    let document: Document = serde_json::from_str(row.try_get("document")?)?;
+fn decode((id, json, revoked): (String, String, i64)) -> Result<Record> {
+    let document: Document = serde_json::from_str(&json)?;
     document
         .request
         .validate()
@@ -176,7 +165,7 @@ fn decode(row: SqliteRow) -> Result<Record> {
         grant: Grant {
             id: Id(Uuid::parse_str(&id).map_err(|error| ConfigError::Invalid(error.to_string()))?),
             request: document.request,
-            revoked: row.try_get::<i64, _>("revoked")? != 0,
+            revoked: revoked != 0,
         },
         principal: document.principal,
         boundary: document.boundary,

@@ -51,74 +51,69 @@ impl ConfigurationStore {
             .map_err(ConfigError::Invalid)?;
         let store = Arc::clone(self);
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                use OnboardingPreparation as P;
-                use OnboardingRejection as R;
-                let catalog = catalog::read(tx).await?;
-                let (row, original_revision) = match target {
-                    Target::Existing {
-                        expected,
-                        configuration,
-                    } => {
-                        let Some(mut row) = catalog
-                            .connections
-                            .iter()
-                            .find(|r| r.connection_id == expected.connection_id)
-                            .cloned()
-                        else {
-                            return Ok(P::Rejected(R::ConnectionNotFound));
-                        };
-                        let locator = CredentialLocator::Connection {
-                            connection_id: row.connection_id.clone(),
-                            kind: ConnectionCredentialKind::Provider,
-                        };
-                        if vault::connection_conflict(tx, &locator, Some(&expected))
-                            .await?
-                            .is_some()
-                        {
-                            return Ok(P::Rejected(R::Superseded));
-                        }
-                        let revision = row.revision;
-                        row.configuration = configuration;
-                        (row, Some(revision))
+            use OnboardingPreparation as P;
+            use OnboardingRejection as R;
+            let catalog = catalog::read(tx)?;
+            let (row, original_revision) = match target {
+                Target::Existing {
+                    expected,
+                    configuration,
+                } => {
+                    let Some(mut row) = catalog
+                        .connections
+                        .iter()
+                        .find(|r| r.connection_id == expected.connection_id)
+                        .cloned()
+                    else {
+                        return Ok(P::Rejected(R::ConnectionNotFound));
+                    };
+                    let locator = CredentialLocator::Connection {
+                        connection_id: row.connection_id.clone(),
+                        kind: ConnectionCredentialKind::Provider,
+                    };
+                    if vault::connection_conflict(tx, &locator, Some(&expected))?.is_some() {
+                        return Ok(P::Rejected(R::Superseded));
                     }
-                    Target::Create {
-                        provider,
-                        configuration,
-                        slug,
-                        name,
-                    } => {
-                        if catalog.connections.iter().any(|r| r.slug == slug) {
-                            return Ok(P::Rejected(R::SlugTaken));
-                        }
-                        (
-                            ConnectionCatalogEntry {
-                                connection_id: Uuid::new_v4().to_string(),
-                                revision: 1,
-                                slug,
-                                name,
-                                provider,
-                                configuration,
-                                enabled: true,
-                                enabled_model_ids: vec![],
-                                model_overrides: None,
-                                request_body_overlay: None,
-                                models: vec![],
-                                model_source: None,
-                                models_fetched_at: None,
-                                last_test: None,
-                            },
-                            None,
-                        )
+                    let revision = row.revision;
+                    row.configuration = configuration;
+                    (row, Some(revision))
+                }
+                Target::Create {
+                    provider,
+                    configuration,
+                    slug,
+                    name,
+                } => {
+                    if catalog.connections.iter().any(|r| r.slug == slug) {
+                        return Ok(P::Rejected(R::SlugTaken));
                     }
-                };
-                let material = EffectSnapshot::read(tx, row).await?;
-                Ok(P::Ready(Box::new(PreparedOnboarding {
-                    store,
-                    material,
-                    original_revision,
-                })))
-            })
+                    (
+                        ConnectionCatalogEntry {
+                            connection_id: Uuid::new_v4().to_string(),
+                            revision: 1,
+                            slug,
+                            name,
+                            provider,
+                            configuration,
+                            enabled: true,
+                            enabled_model_ids: vec![],
+                            model_overrides: None,
+                            request_body_overlay: None,
+                            models: vec![],
+                            model_source: None,
+                            models_fetched_at: None,
+                            last_test: None,
+                        },
+                        None,
+                    )
+                }
+            };
+            let material = EffectSnapshot::read(tx, row)?;
+            Ok(P::Ready(Box::new(PreparedOnboarding {
+                store,
+                material,
+                original_revision,
+            })))
         })
         .await
     }

@@ -22,8 +22,8 @@ use crate::{EventLog, StoreError, sequence_number, sessions};
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::SourceField;
 use regex::{Regex, RegexBuilder};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
-use sqlx::{Row, SqliteConnection};
 
 pub struct TranscriptSearch {
     pub through: u64,
@@ -54,7 +54,6 @@ impl EventLog {
         session: &str,
         input: TranscriptSearch,
     ) -> Result<TranscriptSearchBatch, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         let through = sql_number(input.through)?;
         let after = input.after.map(sql_position).transpose()?;
@@ -81,16 +80,12 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, input.through).await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, input.through)?;
                     let after_order: Option<(i64, i64)> = if let Some((source, item)) = after {
                         Some(
-                            sqlx::query_as(super::read::ORDER)
-                                .bind(&session)
-                                .bind(source)
-                                .bind(item)
-                                .fetch_optional(&mut *tx)
-                                .await?
+                            tx.query_row(super::read::ORDER, rusqlite::params![&session, source, item], |row| Ok((row.get(0)?, row.get(1)?,))).optional()
+                                ?
                                 .ok_or_else(|| {
                                     StoreError::InvalidTransition("invalid transcript search".into())
                                 })?,
@@ -99,13 +94,17 @@ impl EventLog {
                         None
                     };
                     let query = if after_order.is_some() {
-                        "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4) ORDER BY order_sequence,order_item LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4) ORDER BY order_sequence,order_item LIMIT 65"
                     } else {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
                     };
-                    let mut query=sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through);
-                    if let Some((order_sequence,order_item))=after_order { query=query.bind(order_sequence).bind(order_item); }
-                    let headers=query.fetch_all(&mut *tx).await?;
+                    let mut statement = tx.prepare_cached(query)?;
+                    let decode = |row: &rusqlite::Row<'_>| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?));
+                    let headers = if let Some((source,item)) = after_order {
+                        statement.query_map(rusqlite::params![&session,through,source,item], decode)?.collect::<Result<Vec<_>,_>>()?
+                    } else {
+                        statement.query_map(rusqlite::params![&session,through], decode)?.collect::<Result<Vec<_>,_>>()?
+                    };
                     let mut result = TranscriptSearchBatch {
                         matches: vec![],
                         next_after: None,
@@ -117,10 +116,9 @@ impl EventLog {
                             result.next_after = position;
                             break;
                         }
-                        let locator = row_position(header.try_get(0)?,header.try_get(1)?)?;
-                        super::bodycache::ensure(tx,&session,locator).await?;
-                        let size: i64 = sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
-                            .bind(&session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+                        let locator = row_position(header.0,header.1)?;
+                        super::bodycache::ensure(tx,&session,locator)?;
+                        let size: i64 = tx.query_row("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, sql_position(locator)?.0, sql_position(locator)?.1], |row| row.get(0))?;
                         let size = sequence_number(size)?;
                         if index > 0 && bytes + size > 16 * 1024 * 1024 {
                             result.next_after = position;
@@ -128,12 +126,10 @@ impl EventLog {
                         }
                         bytes += size;
                         position = Some(locator);
-                        let payload: Vec<u8> = sqlx::query_scalar(
-                    "SELECT payload FROM temp.transcript_rows WHERE session_id = ? AND source_sequence = ? AND item_index = ?"
-                ).bind(&session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+                        let payload: Vec<u8> = tx.query_row("SELECT payload FROM temp.transcript_rows WHERE owner_key = ? AND source_sequence = ? AND item_index = ?", rusqlite::params![&session, sql_position(locator)?.0, sql_position(locator)?.1], |row| row.get(0))?;
                         let row: Value = serde_json::from_slice(&payload)?;
                         if !input.include_internal
-                            && internal(tx, &session, through, locator, &row).await?
+                            && internal(tx, &session, through, locator, &row)?
                         {
                             continue;
                         }
@@ -147,14 +143,14 @@ impl EventLog {
                     }
 
                     Ok(result)
-                }))
+                })
             })
             .await
     }
 }
 
-async fn internal(
-    tx: &mut SqliteConnection,
+fn internal(
+    tx: &Connection,
     session: &str,
     through: i64,
     position: RowPosition,
@@ -166,7 +162,7 @@ async fn internal(
     }
     let owned;
     let call = if row["type"] == "tool_result" {
-        owned = super::tool_metadata::read(tx, session, position, through).await?;
+        owned = super::tool_metadata::read(tx, session, position, through)?;
         let Some(call) = owned.call.as_ref() else {
             return Ok(false);
         };

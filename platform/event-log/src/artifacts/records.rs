@@ -21,7 +21,7 @@ use crate::StoreError;
 use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::artifact::content_digest;
 use maka_agent_facts::interaction::entity_id;
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 
 pub(super) fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.to_owned())
@@ -35,15 +35,13 @@ pub(super) fn ids(session: &str, artifact: Option<&str>) -> Result<(), StoreErro
     Ok(())
 }
 
-pub(super) async fn require_session(
-    connection: &mut SqliteConnection,
+pub(super) fn require_session(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<(), StoreError> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)")
-            .bind(id)
-            .fetch_one(connection)
-            .await?;
+    let exists: bool = connection
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)")?
+        .query_row(rusqlite::params![id], |row| row.get(0))?;
     if !exists {
         return Err(StoreError::SessionNotFound);
     }
@@ -63,20 +61,21 @@ pub(super) fn decode(
     Ok(artifact)
 }
 
-pub(super) async fn read_record(
-    connection: &mut SqliteConnection,
+pub(super) fn read_record(
+    connection: &rusqlite::Connection,
     session_id: &str,
     artifact_id: &str,
 ) -> Result<Option<(Artifact, String)>, StoreError> {
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT record_json,
+    let row: Option<(Option<String>, Option<String>)> = connection
+        .prepare_cached(
+            "SELECT record_json,
          CASE WHEN length(CAST(content_sha256 AS BLOB)) = 71 THEN content_sha256 END
          FROM artifacts WHERE session_id = ? AND id = ?",
-    )
-    .bind(session_id)
-    .bind(artifact_id)
-    .fetch_optional(connection)
-    .await?;
+        )?
+        .query_row(rusqlite::params![session_id, artifact_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
     row.map(|(raw, digest)| {
         let raw = raw.ok_or_else(|| invalid("Stored artifact metadata is missing"))?;
         let digest = digest.ok_or_else(|| invalid("Stored artifact digest exceeds limit"))?;
@@ -85,28 +84,25 @@ pub(super) async fn read_record(
     .transpose()
 }
 
-pub(super) async fn revision(
-    connection: &mut SqliteConnection,
+pub(super) fn revision(
+    connection: &rusqlite::Connection,
     session_id: &str,
 ) -> Result<String, StoreError> {
-    let counter: Option<i64> =
-        sqlx::query_scalar("SELECT revision FROM artifact_catalog WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_optional(connection)
-            .await?;
+    let counter: Option<i64> = connection
+        .prepare_cached("SELECT revision FROM artifact_catalog WHERE session_id = ?")?
+        .query_row(rusqlite::params![session_id], |row| row.get(0))
+        .optional()?;
     Ok(content_digest(
         format!("artifact-catalog:{session_id}:{}", counter.unwrap_or(0)).as_bytes(),
     ))
 }
 
-pub(super) async fn advance(
-    connection: &mut SqliteConnection,
+pub(super) fn advance(
+    connection: &rusqlite::Connection,
     session_id: &str,
 ) -> Result<(), StoreError> {
-    let changed = sqlx::query(
-        "INSERT INTO artifact_catalog (session_id, revision) VALUES (?, 1)
-        ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1 WHERE revision < 9007199254740991"
-    ).bind(session_id).execute(connection).await?.rows_affected();
+    let changed = connection.prepare_cached("INSERT INTO artifact_catalog (session_id, revision) VALUES (?, 1)
+        ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1 WHERE revision < 9007199254740991")?.execute(rusqlite::params![session_id])?;
     if changed != 1 {
         return Err(invalid("Artifact revision exhausted"));
     }

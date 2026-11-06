@@ -19,7 +19,7 @@
 
 use crate::StoreError;
 use rusqlite::{Connection, functions::FunctionFlags};
-use sqlx::SqliteConnection;
+use rusqlite::{OptionalExtension, params};
 
 /// Incremental normalization preserves whitespace across delta boundaries while
 /// retaining at most 96 Unicode characters, including a truncation ellipsis.
@@ -81,8 +81,8 @@ pub(super) fn register_function(connection: &Connection) -> Result<(), StoreErro
 
 /// Only the sealed current step contributes partial messages. Nothing is added
 /// to model_completed, so accepted model history retains its existing authority.
-pub(super) async fn project(
-    connection: &mut SqliteConnection,
+pub(super) fn project(
+    connection: &rusqlite::Connection,
     boundary: i64,
     session: &str,
     invocation: &str,
@@ -93,8 +93,7 @@ pub(super) async fn project(
     } else {
         // Failed/cancelled terminal fallback: exclude steps already sealed before
         // this boundary, including during a rebuild with later events present.
-        sqlx::query_scalar::<_, String>(
-            "WITH request AS (SELECT operation_id FROM event_log INDEXED BY catalog_model_boundaries
+        connection.query_row("WITH request AS (SELECT operation_id FROM event_log INDEXED BY catalog_model_boundaries
              WHERE invocation_id = ?1 AND sequence < ?2
              AND kind IN ('model_requested', 'model_completed', 'model_interrupted')
              AND kind = 'model_requested' ORDER BY sequence DESC LIMIT 1)
@@ -105,30 +104,23 @@ pub(super) async fn project(
                 AND result.kind IN ('model_completed', 'model_interrupted'))
              AND EXISTS (SELECT 1 FROM runtime_events WHERE sequence = ?2
                 AND json_extract(event_header, '$.fact.outcome.kind') IN ('failed', 'cancelled'))
-             LIMIT 1",
-        ).bind(invocation).bind(boundary).fetch_optional(&mut *connection).await?
+             LIMIT 1", params![invocation, boundary], |row| row.get(0)).optional()?
     };
     let Some(step) = step else {
         return Ok(());
     };
-    let visible: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM runtime_events request
+    let visible: bool = connection.query_row("SELECT EXISTS (SELECT 1 FROM runtime_events request
              JOIN runtime_events opening ON opening.invocation_id = request.invocation_id
              AND opening.kind = 'invocation_opened'
              WHERE request.kind = 'model_requested' AND request.invocation_id = ?1
              AND request.operation_id = ?2
              AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_header, '$.fact.purpose') = 'main')",
-    )
-    .bind(invocation)
-    .bind(&step)
-    .fetch_one(&mut *connection)
-    .await?;
+             AND json_extract(request.event_header, '$.fact.purpose') = 'main')", params![invocation, &step], |row| row.get(0))
+    ?;
     if !visible {
         return Ok(());
     }
-    sqlx::query(
-        "WITH bodies AS (
+    connection.execute("WITH bodies AS (
            SELECT b.ordinal,b.record,b.part,b.message_id FROM model_selected_parts s JOIN model_part_bodies b
              ON b.event_id=s.body_event_id AND b.ordinal=s.ordinal WHERE s.sequence=?1 AND s.invocation_id=?3 AND s.step_id=?4
            UNION ALL
@@ -138,7 +130,6 @@ pub(super) async fn project(
          INSERT OR IGNORE INTO catalog_messages
          SELECT ?1,ordinal+1,?2,catalog_time(json_extract(record,'$.started_at')),
            CASE WHEN json_extract(part,'$.text_kind')='text' THEN catalog_preview(json_extract(part,'$.text')) END,
-           message_id FROM bodies WHERE json_extract(part,'$.kind')='text' ORDER BY ordinal",
-    ).bind(boundary).bind(session).bind(invocation).bind(&step).execute(connection).await?;
+           message_id FROM bodies WHERE json_extract(part,'$.kind')='text' ORDER BY ordinal", params![boundary, session, invocation, &step])?;
     Ok(())
 }

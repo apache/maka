@@ -22,7 +22,7 @@ use maka_agent_facts::configuration::CredentialLocator;
 use maka_agent_facts::configuration::CredentialStatus;
 use maka_agent_facts::configuration::PasswordKind;
 use maka_agent_facts::configuration::policy::NetworkProxy;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 mod update;
 pub(crate) use update::invalidate_tests;
 
@@ -38,27 +38,29 @@ pub(crate) struct NetworkSnapshot {
     credential: CredentialStatus,
 }
 impl NetworkSnapshot {
-    pub async fn read(tx: &mut SqliteConnection) -> Result<Self> {
-        let proxy = policy::read(tx).await?.policy.network_proxy;
+    pub fn read(tx: &Connection) -> Result<Self> {
+        let proxy = policy::read(tx)?.policy.network_proxy;
         let locator = CredentialLocator::NetworkProxy {
             kind: PasswordKind::Password,
         };
-        let credential = vault::status(tx, &locator).await?;
-        let password = sqlx::query_scalar("SELECT secret FROM credentials WHERE locator = ?")
-            .bind(serde_json::to_string(&locator)?)
-            .fetch_optional(tx)
-            .await?;
+        let credential = vault::status(tx, &locator)?;
+        let password = tx
+            .prepare_cached("SELECT secret FROM credentials WHERE locator = ?")?
+            .query_row(rusqlite::params![serde_json::to_string(&locator)?], |row| {
+                row.get(0)
+            })
+            .optional()?;
         Ok(Self {
             configuration: NetworkConfiguration { proxy, password },
             credential,
         })
     }
-    pub async fn changed(&self, tx: &mut SqliteConnection) -> Result<bool> {
-        if policy::read(tx).await?.policy.network_proxy != self.configuration.proxy {
+    pub fn changed(&self, tx: &Connection) -> Result<bool> {
+        if policy::read(tx)?.policy.network_proxy != self.configuration.proxy {
             return Ok(true);
         }
         if self.configuration.proxy.enabled && self.configuration.proxy.auth_enabled {
-            let current = vault::status(tx, &self.credential.locator).await?;
+            let current = vault::status(tx, &self.credential.locator)?;
             return Ok(vault::status_basis(&current) != vault::status_basis(&self.credential));
         }
         Ok(false)
@@ -67,7 +69,7 @@ impl NetworkSnapshot {
 impl ConfigurationStore {
     pub async fn network_configuration(&self) -> Result<NetworkConfiguration> {
         self.transaction(TransactionMode::Deferred, |tx| {
-            Box::pin(async { Ok(NetworkSnapshot::read(tx).await?.configuration) })
+            Ok(NetworkSnapshot::read(tx)?.configuration)
         })
         .await
     }

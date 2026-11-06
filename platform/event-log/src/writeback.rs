@@ -19,9 +19,9 @@
 
 //! One writer FIFO shares FULL commits across independent, typed durable statements.
 //! Domain SQL stays with its owner; no effect token or notification escapes before commit.
-use crate::{StoreError, connection::BoxFuture};
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteTransactionManager};
-use sqlx_core::transaction::TransactionManager;
+use crate::StoreError;
+use rusqlite::Connection;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -31,18 +31,14 @@ use tokio::sync::oneshot;
 pub(crate) trait Statement: Send + Sized + 'static {
     type Value: Send + 'static;
     type Output: Send + 'static;
-    fn execute(
-        self,
-        connection: &mut SqliteConnection,
-    ) -> BoxFuture<'_, Result<Prepared<Self::Value>, StoreError>>;
+    const PREPARE_OFF_THREAD: bool = false;
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(self)
+    }
+    fn execute(self, connection: &Connection) -> Result<Prepared<Self::Value>, StoreError>;
     // Pure domain conversion; sealed effect tokens are constructed only here.
     fn committed(value: Self::Value) -> Self::Output;
     fn isolated_rejection(error: &StoreError) -> bool;
-    // The original Run domains remain usable after a confirmed full rollback.
-    // Pure observation requests retain their stricter owner-retirement policy.
-    fn reusable_after_rollback(&self) -> bool {
-        true
-    }
 }
 
 pub(crate) enum Notification {
@@ -59,13 +55,11 @@ pub(crate) struct Prepared<T> {
 
 enum State<S: Statement> {
     Waiting(S),
-    Entering(S),
     Writing,
     Prepared(Prepared<S::Value>),
     Rejected { error: StoreError, isolated: bool },
 }
 pub(crate) struct Pending<S: Statement> {
-    reusable_after_rollback: bool,
     state: State<S>,
     commits: crate::commits::CommitNotice,
     reply: oneshot::Sender<Result<S::Output, StoreError>>,
@@ -79,28 +73,17 @@ impl<S: Statement> Pending<S> {
         failures: Arc<AtomicU64>,
     ) -> Self {
         Self {
-            reusable_after_rollback: statement.reusable_after_rollback(),
             state: State::Waiting(statement),
             commits,
             reply,
             failures,
         }
     }
-    fn enter(&mut self) {
+    fn prepare(&mut self, connection: &Connection) -> Result<bool, StoreError> {
         let State::Waiting(statement) = std::mem::replace(&mut self.state, State::Writing) else {
-            unreachable!("durable statement enters once")
-        };
-        self.state = State::Entering(statement);
-    }
-    async fn prepare(&mut self, connection: &mut SqliteConnection) -> Result<bool, PrepareFailure> {
-        let State::Entering(statement) = std::mem::replace(&mut self.state, State::Writing) else {
             unreachable!("durable statement is prepared once")
         };
-        let reusable = self.reusable_after_rollback;
-        let prepared = statement
-            .execute(connection)
-            .await
-            .map_err(|cause| PrepareFailure { cause, reusable })?;
+        let prepared = statement.execute(connection)?;
         let changed = prepared.changed;
         self.state = State::Prepared(prepared);
         Ok(changed)
@@ -131,10 +114,10 @@ impl<S: Statement> Pending<S> {
                 }
                 Ok(S::committed(prepared.value))
             }
-            state => Err(transaction
+            _ => Err(transaction
                 .as_ref()
                 .expect_err("unprepared durable receipt")
-                .error(!matches!(state, State::Waiting(_)))),
+                .error()),
         };
         if result.is_err() {
             self.failures.fetch_add(1, Ordering::AcqRel);
@@ -158,49 +141,19 @@ pub(crate) enum Request {
     Settlement(Box<Pending<crate::applications::operations::WriteSettlement>>),
 }
 impl Request {
-    fn reusable_after_rollback(&self) -> bool {
+    fn prepare(&mut self, connection: &Connection) -> Result<bool, StoreError> {
         match self {
-            Self::ProjectRegistration(value) => value.reusable_after_rollback,
-            Self::WorkspaceAttachment(value) => value.reusable_after_rollback,
-            Self::Creation(value) => value.reusable_after_rollback,
-            Self::Reservation(value) => value.reusable_after_rollback,
-            Self::Publication(value) => value.reusable_after_rollback,
+            Self::ProjectRegistration(value) => value.prepare(connection),
+            Self::WorkspaceAttachment(value) => value.prepare(connection),
+            Self::Creation(value) => value.prepare(connection),
+            Self::Reservation(value) => value.prepare(connection),
+            Self::Publication(value) => value.prepare(connection),
 
-            Self::Intent(value) => value.reusable_after_rollback,
-            Self::Dispatch(value) => value.reusable_after_rollback,
-            Self::Admission(value) => value.reusable_after_rollback,
-            Self::Append(value) => value.reusable_after_rollback,
-            Self::Settlement(value) => value.reusable_after_rollback,
-        }
-    }
-    fn enter(&mut self) {
-        match self {
-            Self::ProjectRegistration(value) => value.enter(),
-            Self::WorkspaceAttachment(value) => value.enter(),
-            Self::Creation(value) => value.enter(),
-            Self::Reservation(value) => value.enter(),
-            Self::Publication(value) => value.enter(),
-
-            Self::Intent(value) => value.enter(),
-            Self::Dispatch(value) => value.enter(),
-            Self::Admission(value) => value.enter(),
-            Self::Append(value) => value.enter(),
-            Self::Settlement(value) => value.enter(),
-        }
-    }
-    async fn prepare(&mut self, connection: &mut SqliteConnection) -> Result<bool, PrepareFailure> {
-        match self {
-            Self::ProjectRegistration(value) => value.prepare(connection).await,
-            Self::WorkspaceAttachment(value) => value.prepare(connection).await,
-            Self::Creation(value) => value.prepare(connection).await,
-            Self::Reservation(value) => value.prepare(connection).await,
-            Self::Publication(value) => value.prepare(connection).await,
-
-            Self::Intent(value) => value.prepare(connection).await,
-            Self::Dispatch(value) => value.prepare(connection).await,
-            Self::Admission(value) => value.prepare(connection).await,
-            Self::Append(value) => value.prepare(connection).await,
-            Self::Settlement(value) => value.prepare(connection).await,
+            Self::Intent(value) => value.prepare(connection),
+            Self::Dispatch(value) => value.prepare(connection),
+            Self::Admission(value) => value.prepare(connection),
+            Self::Append(value) => value.prepare(connection),
+            Self::Settlement(value) => value.prepare(connection),
         }
     }
     fn isolated_rejection(&self, error: &StoreError) -> bool {
@@ -316,138 +269,29 @@ impl From<Pending<crate::applications::operations::WriteSettlement>> for Request
     }
 }
 
-#[derive(Debug)]
-struct Failure {
-    cause: StoreError,
-    cleanup: Option<sqlx::Error>,
-}
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.cause.fmt(formatter)?;
-        if let Some(cleanup) = &self.cleanup {
-            write!(formatter, "; rollback unconfirmed: {cleanup}")?;
-        }
-        Ok(())
-    }
-}
-impl std::error::Error for Failure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.cause {
-            StoreError::Sqlx(error) | StoreError::CommitUnknown(error) => Some(error),
-            error => Some(error),
-        }
-    }
-}
 struct Aborted {
-    failure: Arc<Failure>,
+    cause: Arc<StoreError>,
     unknown: bool,
     reusable: bool,
 }
-// Only statement-body errors may retain the original Run reuse policy. Boundary,
-// authority and cleanup failures always retire the connection.
-struct PrepareFailure {
-    cause: StoreError,
-    reusable: bool,
-}
-impl From<StoreError> for PrepareFailure {
-    fn from(cause: StoreError) -> Self {
-        Self {
-            cause,
-            reusable: false,
-        }
-    }
-}
-impl From<sqlx::Error> for PrepareFailure {
-    fn from(cause: sqlx::Error) -> Self {
-        StoreError::from(cause).into()
-    }
-}
-
-/// Keep SQLite's error category and extended code when several receipts share
-/// the same original failure. Callers still inspect `as_database_error()`.
-#[derive(Debug)]
-struct SharedDatabaseError(Arc<Failure>);
-
-impl SharedDatabaseError {
-    fn database(&self) -> &dyn sqlx::error::DatabaseError {
-        let (StoreError::Sqlx(error) | StoreError::CommitUnknown(error)) = &self.0.cause else {
-            unreachable!("shared database failure")
-        };
-        error.as_database_error().expect("original database error")
-    }
-}
-impl std::fmt::Display for SharedDatabaseError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.database(), formatter)?;
-        if let Some(cleanup) = &self.0.cleanup {
-            write!(formatter, "; rollback unconfirmed: {cleanup}")?;
-        }
-        Ok(())
-    }
-}
-impl std::error::Error for SharedDatabaseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.database().as_error())
-    }
-}
-impl sqlx::error::DatabaseError for SharedDatabaseError {
-    fn message(&self) -> &str {
-        self.database().message()
-    }
-    fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
-        self.database().code()
-    }
-    fn kind(&self) -> sqlx::error::ErrorKind {
-        self.database().kind()
-    }
-    fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self
-    }
-    fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
-        self
-    }
-    fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
-        self
-    }
-}
-
 impl Aborted {
-    fn rejected(error: StoreError) -> Self {
+    fn rejected(cause: StoreError) -> Self {
         Self {
-            failure: Arc::new(Failure {
-                cause: error,
-                cleanup: None,
-            }),
+            cause: Arc::new(cause),
             unknown: false,
             reusable: false,
         }
     }
-    fn error(&self, started: bool) -> StoreError {
-        // Preserve the original causal chain while sharing one transaction failure.
-        let error = match &self.failure.cause {
-            StoreError::Sqlx(error) | StoreError::CommitUnknown(error)
-                if error.as_database_error().is_some() =>
-            {
-                sqlx::Error::Database(Box::new(SharedDatabaseError(self.failure.clone())))
-            }
-            _ => sqlx::Error::Io(std::io::Error::other(self.failure.clone())),
-        };
-        if self.unknown && started {
-            StoreError::CommitUnknown(error)
-        } else if let StoreError::Io(original) = &self.failure.cause {
-            StoreError::Io(std::io::Error::new(original.kind(), self.failure.clone()))
-        } else {
-            StoreError::Sqlx(error)
-        }
+    fn error(&self) -> StoreError {
+        StoreError::Shared(self.cause.clone())
     }
 }
-
-pub(crate) async fn commit(
-    connection: &mut SqliteConnection,
+pub(crate) fn commit(
+    connection: &mut Connection,
     mut requests: Vec<Request>,
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
 ) -> bool {
-    let result = transaction(connection, &mut requests, validate).await;
+    let result = transaction(connection, &mut requests, validate);
     let reusable = result
         .as_ref()
         .map_or_else(|failure| failure.reusable, |()| true);
@@ -457,108 +301,106 @@ pub(crate) async fn commit(
     reusable
 }
 
-async fn transaction(
-    connection: &mut SqliteConnection,
+fn transaction(
+    connection: &Connection,
     requests: &mut [Request],
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
 ) -> Result<(), Aborted> {
     validate().map_err(Aborted::rejected)?;
-    let recover_commit = requests.iter().all(Request::reusable_after_rollback);
-    let mut tx = connection
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|error| Aborted::rejected(error.into()))?;
-    match prepare(&mut tx, requests, validate).await {
-        Ok(true) => match tx.commit().await {
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| Aborted {
+            cause: Arc::new(error.into()),
+            unknown: false,
+            reusable: connection.is_autocommit() && validate().is_ok(),
+        })?;
+    let prepared =
+        panic::catch_unwind(AssertUnwindSafe(|| prepare(connection, requests, validate)));
+    match prepared {
+        Ok(Ok(true)) => match connection.execute_batch("COMMIT") {
             Ok(()) => Ok(()),
-            Err(error) => {
-                // A failed COMMIT still produces no token. For the original Run
-                // domains, explicitly await SQLx's rollback acknowledgment after
-                // the consumed transaction's queued cleanup; Drop is no receipt.
-                let (cleanup, reusable) = if recover_commit {
-                    match SqliteTransactionManager::rollback(connection).await {
-                        Ok(()) => (None, !connection.is_in_transaction() && validate().is_ok()),
-                        Err(cleanup) => (Some(cleanup), false),
-                    }
-                } else {
-                    (None, false)
-                };
-                Err(Aborted {
-                    failure: Arc::new(Failure {
-                        cause: StoreError::CommitUnknown(error),
-                        cleanup,
-                    }),
-                    unknown: true,
-                    reusable,
-                })
-            }
+            Err(error) => Err(abort(
+                connection,
+                StoreError::CommitUnknown(error),
+                true,
+                validate,
+            )),
         },
-        Ok(false) => tx.rollback().await.map_err(|error| Aborted {
-            failure: Arc::new(Failure {
-                cause: error.into(),
-                cleanup: None,
-            }),
-            unknown: true,
-            reusable: false,
-        }),
-        Err(error) => {
-            let rollback = tx.rollback().await;
-            Err(match rollback {
-                Ok(()) => {
-                    let reusable = error.reusable && validate().is_ok();
-                    let mut failure = Aborted::rejected(error.cause);
-                    failure.reusable = reusable;
-                    failure
-                }
-                Err(cleanup) => Aborted {
-                    failure: Arc::new(Failure {
-                        cause: error.cause,
-                        cleanup: Some(cleanup),
-                    }),
-                    unknown: true,
-                    reusable: false,
-                },
+        Ok(Ok(false)) => {
+            // Replay receipts refer to already durable results. A rejected single
+            // statement may still have speculative SQL, so never commit this path.
+            rollback(connection).map_err(|error| Aborted {
+                cause: Arc::new(error.into()),
+                unknown: true,
+                reusable: false,
             })
         }
+        Ok(Err(error)) => Err(abort(connection, error, false, validate)),
+        Err(_) => Err(abort(
+            connection,
+            StoreError::OperationUnknown,
+            true,
+            validate,
+        )),
     }
 }
 
-async fn prepare(
-    connection: &mut SqliteConnection,
+fn rollback(connection: &Connection) -> Result<(), rusqlite::Error> {
+    if !connection.is_autocommit() {
+        connection.execute_batch("ROLLBACK")?;
+    }
+    Ok(())
+}
+
+fn abort(
+    connection: &Connection,
+    cause: StoreError,
+    unknown: bool,
+    validate: &(impl Fn() -> Result<(), StoreError> + Sync),
+) -> Aborted {
+    match rollback(connection) {
+        Ok(()) => Aborted {
+            cause: Arc::new(cause),
+            unknown,
+            reusable: connection.is_autocommit() && validate().is_ok(),
+        },
+        Err(cleanup) => Aborted {
+            cause: Arc::new(StoreError::RollbackFailed {
+                cause: Arc::new(cause),
+                cleanup,
+            }),
+            unknown: true,
+            reusable: false,
+        },
+    }
+}
+
+fn prepare(
+    connection: &Connection,
     requests: &mut [Request],
     validate: &(impl Fn() -> Result<(), StoreError> + Sync),
-) -> Result<bool, PrepareFailure> {
+) -> Result<bool, StoreError> {
     let mut changed = false;
     let isolate = requests.len() > 1;
     for request in requests {
-        validate()?;
-        request.enter();
         if isolate {
-            sqlx::query("SAVEPOINT durable_request")
-                .execute(&mut *connection)
-                .await?;
+            connection.execute_batch("SAVEPOINT durable_request")?;
         }
-        match request.prepare(connection).await {
+        match request.prepare(connection) {
             Ok(written) => {
                 if isolate {
-                    sqlx::query("RELEASE durable_request")
-                        .execute(&mut *connection)
-                        .await?;
+                    connection.execute_batch("RELEASE durable_request")?;
                 }
                 changed |= written;
             }
-            Err(error) if request.isolated_rejection(&error.cause) => {
+            Err(error) if request.isolated_rejection(&error) => {
                 if isolate {
-                    sqlx::query("ROLLBACK TO durable_request")
-                        .execute(&mut *connection)
-                        .await?;
-                    sqlx::query("RELEASE durable_request")
-                        .execute(&mut *connection)
-                        .await?;
+                    connection
+                        .execute_batch("ROLLBACK TO durable_request; RELEASE durable_request")?;
                 }
-                request.reject(error.cause, isolate);
+                request.reject(error, isolate);
             }
-            Err(error) => return Err(error),
+            Err(cause) => return Err(cause),
         }
     }
     validate()?;

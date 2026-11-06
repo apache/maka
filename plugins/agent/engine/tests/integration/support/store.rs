@@ -122,10 +122,7 @@ impl SessionFixture {
     }
     pub fn storage_bytes(&self) -> (u64, u64) {
         let mut sizes = (0, 0);
-        for directory in [
-            self.directory.clone(),
-            self.directory.join("runtime-partitions"),
-        ] {
+        for directory in [self.directory.clone()] {
             for file in std::fs::read_dir(directory).unwrap() {
                 let file = file.unwrap();
                 let name = file.file_name();

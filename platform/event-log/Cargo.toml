@@ -28,6 +28,7 @@ ignore = "0.4.33"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 hex.workspace = true
+base64 = "0.23.1"
 postcard.workspace = true
 maka-agent-facts.workspace = true
 maka-packages.workspace = true
@@ -40,17 +41,16 @@ serde.workspace = true
 schemars.workspace = true
 uuid.workspace = true
 maka-presentation.workspace = true
-rusqlite = { workspace = true, features = ["functions", "blob"] }
-sqlx = { workspace = true, features = ["sqlite-preupdate-hook"] }
-# Explicit acknowledged rollback after a failed COMMIT; SQLx does not reexport the trait.
-sqlx-core = { version = "0.9.0", default-features = false }
+rusqlite = { workspace = true, features = ["functions", "blob", "hooks"] }
+async-channel = "2.5.0"
+url = "2"
 futures-util.workspace = true
 serde_json.workspace = true
 regex = "1.13.1"
 unicode-normalization = "0.1.25"
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 tokio-util.workspace = true
 tempfile.workspace = true
 

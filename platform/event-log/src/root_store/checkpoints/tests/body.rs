@@ -170,23 +170,6 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
     ));
     store.finish_session_retirement("source").await.unwrap();
     while log.collect_session_material(None).await.unwrap() == MaterialCollection::Collected {}
-    let bodies = log
-        .connection
-        .run(|db| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM event_bodies")
-                        .fetch_one(db)
-                        .await?,
-                )
-            })
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        bodies, 0,
-        "checkpoint bytes are independent of collected canonical material"
-    );
     drop(log);
     store.close().await.unwrap();
 

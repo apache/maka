@@ -185,39 +185,6 @@ impl Objects {
         File::open(self.directory.join("staging"))?.sync_all()?;
         Ok(())
     }
-    pub(super) fn inspection(&self, key: &str, create: bool) -> Result<PathBuf, StoreError> {
-        self.validate()?;
-        if !crate::checkpoints::valid_digest(key) {
-            return Err(invalid("invalid inspection key"));
-        }
-        let directory = self.directory.join("inspections");
-        if create {
-            root::private_directory(&directory)?;
-        }
-        if !fs::symlink_metadata(&directory)?.file_type().is_dir() {
-            return Err(invalid("inspection directory is not a directory"));
-        }
-        let path = directory.join(format!("{key}.sqlite"));
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => {}
-            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
-                let mut options = OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-                }
-                let file = options.open(&path)?;
-                file.sync_all()?;
-                File::open(&directory)?.sync_all()?;
-                File::open(&self.directory)?.sync_all()?;
-            }
-            Err(error) => return Err(error.into()),
-            _ => return Err(invalid("inspection database is not a regular file")),
-        }
-        Ok(path)
-    }
     pub(super) fn root_id(&self) -> &str {
         self.owner.root_id()
     }
@@ -236,7 +203,7 @@ fn open_regular(path: &Path) -> Result<File, StoreError> {
     }
     Ok(file)
 }
-fn measure(file: &mut File) -> Result<ObjectRef, StoreError> {
+pub(super) fn measure(file: &mut File) -> Result<ObjectRef, StoreError> {
     let mut hash = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 65536];

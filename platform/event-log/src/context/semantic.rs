@@ -21,25 +21,26 @@
 mod captured;
 mod directory;
 pub(crate) mod gc;
-pub(crate) mod migration;
 pub use captured::{
     ArtifactCapture, ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult,
     CapturedDirectoryRow, CapturedLocalResource, CapturedRow, CapturedSource, ChildPage,
     DirectoryPage, PayloadEncoding, PayloadSource, SourceChunk, SourceDomain, SourcePage,
     SourcePosition, close_request_file, create_request_file,
 };
+mod prepared;
+pub(crate) use prepared::Prepared;
 mod source;
 mod write;
-pub(crate) use write::{copy_member, record};
+pub(crate) use write::{copy_member, record_prepared};
 
 use crate::{EventLog, StoreError};
 use maka_agent_facts::history::{
     RowPosition,
     semantic::{PartPayload, Payload, PayloadKey, ResolvedRow, SemanticKind, SemanticRow},
 };
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use source::SemanticPayloadSource;
-use sqlx::{Connection, Row, SqliteConnection};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticSelection {
@@ -123,20 +124,16 @@ fn replay_predicate(alias: &str, parameter: &str) -> String {
     )
 }
 
-pub(crate) async fn available(
-    connection: &mut SqliteConnection,
-    session: &str,
-) -> Result<(), StoreError> {
-    available_at(connection, session, i64::MAX as u64).await
+pub(crate) fn available(connection: &Connection, session: &str) -> Result<(), StoreError> {
+    available_at(connection, session, i64::MAX as u64)
 }
 
-pub(crate) async fn available_at(
-    connection: &mut SqliteConnection,
+pub(crate) fn available_at(
+    connection: &Connection,
     session: &str,
     captured: u64,
 ) -> Result<(), StoreError> {
-    let reason:Option<String> = sqlx::query_scalar("SELECT unavailable_reason FROM context_semantic_heads WHERE session_id=? AND unavailable_at<=?")
-        .bind(session).bind(captured as i64).fetch_optional(connection).await?;
+    let reason:Option<String> = connection.prepare_cached("SELECT unavailable_reason FROM context_semantic_heads WHERE session_id=? AND unavailable_at<=?")?.query_row(rusqlite::params![session, captured as i64], |row| row.get(0)).optional()?;
     if let Some(reason) = reason {
         return Err(invalid(format!(
             "semantic projection unavailable: {reason}"
@@ -145,14 +142,14 @@ pub(crate) async fn available_at(
     Ok(())
 }
 
-pub(crate) async fn rows(
-    connection: &mut SqliteConnection,
+pub(crate) fn rows(
+    connection: &Connection,
     selection: &SemanticSelection,
     cursor: Option<SemanticCursor>,
     limit: usize,
     group: Option<u64>,
 ) -> Result<SemanticPage, StoreError> {
-    available_at(connection, &selection.session, selection.captured_through).await?;
+    available_at(connection, &selection.session, selection.captured_through)?;
     let limit = page_limit(limit)?;
     let zero = RowPosition {
         source_sequence: 0,
@@ -163,29 +160,32 @@ pub(crate) async fn rows(
         id: zero,
     });
     let query = rows_query(group.is_some());
-    let records: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(query))
-        .bind(&selection.session)
-        .bind(selection.after as i64)
-        .bind(selection.through as i64)
-        .bind(selection.captured_through as i64)
-        .bind(selection.before.min(i64::MAX as u64) as i64)
-        .bind(&selection.lineage)
-        .bind(point.order.source_sequence as i64)
-        .bind(point.order.item_index as i64)
-        .bind(point.id.source_sequence as i64)
-        .bind(point.id.item_index as i64)
-        .bind(group.map(|value| value as i64))
-        .bind(limit + 1)
-        .bind(
-            selection
-                .replay
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?,
-        )
-        .bind(selection.prior_unknown)
-        .fetch_all(connection)
-        .await?;
+    let records: Vec<String> = connection
+        .prepare_cached(&query)?
+        .query_map(
+            rusqlite::params![
+                &selection.session,
+                selection.after as i64,
+                selection.through as i64,
+                selection.captured_through as i64,
+                selection.before.min(i64::MAX as u64) as i64,
+                &selection.lineage,
+                point.order.source_sequence as i64,
+                point.order.item_index as i64,
+                point.id.source_sequence as i64,
+                point.id.item_index as i64,
+                group.map(|value| value as i64),
+                limit + 1,
+                selection
+                    .replay
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                selection.prior_unknown
+            ],
+            |row| row.get(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
     let more = records.len() > limit as usize;
     let rows: Vec<SemanticRow> = records
         .into_iter()
@@ -244,8 +244,8 @@ fn rows_query(group: bool) -> String {
     )
 }
 
-pub(crate) async fn meaningful_history(
-    connection: &mut SqliteConnection,
+pub(crate) fn meaningful_history(
+    connection: &Connection,
     selection: &SemanticSelection,
 ) -> Result<bool, StoreError> {
     let query=format!("SELECT EXISTS(SELECT 1 FROM context_semantic_rows r WHERE r.owner_session_id=?1
@@ -254,91 +254,79 @@ pub(crate) async fn meaningful_history(
         AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
             AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision AND {}))",
         eligible("r"),replay_predicate("r","?7"),eligible("n"));
-    sqlx::query_scalar(sqlx::AssertSqlSafe(query))
-        .bind(&selection.session)
-        .bind(selection.after as i64)
-        .bind(selection.through as i64)
-        .bind(selection.captured_through as i64)
-        .bind(selection.before.min(i64::MAX as u64) as i64)
-        .bind(&selection.lineage)
-        .bind(
-            selection
-                .replay
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?,
+    connection
+        .prepare_cached(&query)?
+        .query_row(
+            rusqlite::params![
+                &selection.session,
+                selection.after as i64,
+                selection.through as i64,
+                selection.captured_through as i64,
+                selection.before.min(i64::MAX as u64) as i64,
+                &selection.lineage,
+                selection
+                    .replay
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            ],
+            |row| row.get(0),
         )
-        .fetch_one(connection)
-        .await
         .map_err(StoreError::from)
 }
 
-async fn payload(
-    connection: &mut SqliteConnection,
-    key: PayloadKey,
-) -> Result<Payload, StoreError> {
+fn payload(connection: &Connection, key: PayloadKey) -> Result<Payload, StoreError> {
     let sequence = i64::try_from(key.source_sequence)
         .map_err(|_| invalid("semantic payload sequence exceeds SQLite range"))?;
     let index = i64::try_from(key.item_index)
         .map_err(|_| invalid("semantic payload index exceeds SQLite range"))?;
-    crate::connection::worker_query(connection, move |worker| {
-        Box::pin(async move {
-            use futures_util::TryStreamExt;
-            // One indexed seek handles Pieces and source metadata together. Canonical
-            // fragments have no pieces, so their LEFT JOIN produces one metadata row.
-            let mut records = sqlx::query(
-                "SELECT f.storage_kind,f.byte_offset,f.byte_len,p.bytes
-            FROM context_semantic_fragments f LEFT JOIN context_semantic_fragment_pieces p
-              ON p.source_sequence=f.source_sequence AND p.source_index=f.source_index
-            WHERE f.source_sequence=? AND f.source_index=? ORDER BY p.piece_index",
-            )
-            .bind(sequence)
-            .bind(index)
-            .fetch(&mut *worker);
-            let first = records
-                .try_next()
-                .await?
-                .ok_or_else(|| invalid("semantic payload is missing"))?;
-            let source = SemanticPayloadSource::from_metadata(
-                sequence,
-                index,
-                first.try_get("storage_kind")?,
-                first.try_get("byte_offset")?,
-                first.try_get("byte_len")?,
-            )?;
-            match source {
-                SemanticPayloadSource::CanonicalModelPart(span) => {
-                    if first.try_get::<Option<Vec<u8>>, _>("bytes")?.is_some() {
-                        return Err(invalid("canonical semantic payload has extracted pieces"));
-                    }
-                    drop(records);
-                    span.read(worker)
-                }
-                SemanticPayloadSource::CanonicalToolProjection(span) => {
-                    if first.try_get::<Option<Vec<u8>>, _>("bytes")?.is_some() {
-                        return Err(invalid("canonical semantic payload has extracted pieces"));
-                    }
-                    drop(records);
-                    span.read(worker)
-                }
-                SemanticPayloadSource::Pieces => {
-                    let mut bytes: Vec<u8> = first
-                        .try_get::<Option<Vec<u8>>, _>("bytes")?
-                        .ok_or_else(|| invalid("semantic payload is missing"))?;
-                    while let Some(piece) = records.try_next().await? {
-                        let piece: Vec<u8> = piece.try_get("bytes")?;
-                        bytes.extend_from_slice(&piece);
-                    }
-                    Ok(serde_json::from_slice(&bytes)?)
-                }
+    let mut statement = connection.prepare_cached(
+        "SELECT f.storage_kind,f.byte_offset,f.byte_len,p.bytes
+         FROM context_semantic_fragments f LEFT JOIN context_semantic_fragment_pieces p
+           ON p.source_sequence=f.source_sequence AND p.source_index=f.source_index
+         WHERE f.source_sequence=? AND f.source_index=? ORDER BY p.piece_index",
+    )?;
+    let mut records = statement.query(rusqlite::params![sequence, index])?;
+    let first = records
+        .next()?
+        .ok_or_else(|| invalid("semantic payload is missing"))?;
+    let kind: String = first.get("storage_kind")?;
+    let source = SemanticPayloadSource::from_metadata(
+        sequence,
+        index,
+        &kind,
+        first.get("byte_offset")?,
+        first.get("byte_len")?,
+    )?;
+    let first_bytes: Option<Vec<u8>> = first.get("bytes")?;
+    match source {
+        SemanticPayloadSource::CanonicalModelPart(span) => {
+            if first_bytes.is_some() {
+                return Err(invalid("canonical semantic payload has extracted pieces"));
             }
-        })
-    })
-    .await
+            drop(records);
+            span.read(connection)
+        }
+        SemanticPayloadSource::CanonicalToolProjection(span) => {
+            if first_bytes.is_some() {
+                return Err(invalid("canonical semantic payload has extracted pieces"));
+            }
+            drop(records);
+            span.read(connection)
+        }
+        SemanticPayloadSource::Pieces => {
+            let mut bytes = first_bytes.ok_or_else(|| invalid("semantic payload is missing"))?;
+            while let Some(piece) = records.next()? {
+                let piece: Vec<u8> = piece.get("bytes")?;
+                bytes.extend_from_slice(&piece);
+            }
+            Ok(serde_json::from_slice(&bytes)?)
+        }
+    }
 }
 
-pub(crate) async fn resolve(
-    connection: &mut SqliteConnection,
+pub(crate) fn resolve(
+    connection: &Connection,
     rows: Vec<SemanticRow>,
 ) -> Result<Vec<ResolvedRow>, StoreError> {
     let mut resolved = Vec::with_capacity(rows.len());
@@ -354,9 +342,7 @@ pub(crate) async fn resolve(
             | SemanticKind::ImportedAssistant { payload: key }
             | SemanticKind::ExecutorText { payload: key }
             | SemanticKind::ToolResult { payload: key, .. }
-            | SemanticKind::Notification { payload: key, .. } => {
-                Some(payload(connection, *key).await?)
-            }
+            | SemanticKind::Notification { payload: key, .. } => Some(payload(connection, *key)?),
         };
         resolved.push(ResolvedRow {
             row,
@@ -373,12 +359,9 @@ impl EventLog {
         cursor: Option<SemanticCursor>,
         limit: usize,
     ) -> Result<SemanticPage, StoreError> {
-        self.validate_root()?;
         let selection = selection.clone();
         self.connection
-            .read_interruptible(move |connection| {
-                Box::pin(async move { rows(connection, &selection, cursor, limit, None).await })
-            })
+            .read_interruptible(move |connection| rows(connection, &selection, cursor, limit, None))
             .await
     }
 
@@ -389,13 +372,10 @@ impl EventLog {
         cursor: Option<SemanticCursor>,
         limit: usize,
     ) -> Result<SemanticPage, StoreError> {
-        self.validate_root()?;
         let selection = selection.clone();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(
-                    async move { rows(connection, &selection, cursor, limit, Some(group)).await },
-                )
+                rows(connection, &selection, cursor, limit, Some(group))
             })
             .await
     }
@@ -405,16 +385,16 @@ impl EventLog {
         &self,
         rows: &[SemanticRow],
     ) -> Result<Vec<ResolvedRow>, StoreError> {
-        self.validate_root()?;
         let rows = rows.to_vec();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut transaction = connection.begin().await?;
-                    let resolved = resolve(&mut transaction, rows).await?;
-                    transaction.commit().await?;
-                    Ok(resolved)
-                })
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let resolved = resolve(&transaction, rows)?;
+                transaction.commit()?;
+                Ok(resolved)
             })
             .await
     }
@@ -425,13 +405,11 @@ impl EventLog {
         invocation: &str,
         through: u64,
     ) -> Result<Option<RowPosition>, StoreError> {
-        self.validate_root()?;
         let invocation = invocation.to_owned();
         let owner = owner.to_owned();
-        self.connection.read_interruptible(move |connection|Box::pin(async move {
-            let cut:Option<(i64,i64)>=sqlx::query_as("SELECT cut_sequence,cut_index FROM context_semantic_cuts WHERE owner_session_id=? AND invocation_id=? AND revision<=? ORDER BY revision DESC LIMIT 1")
-                .bind(owner).bind(invocation).bind(through as i64).fetch_optional(connection).await?;
+        self.connection.read_interruptible(move |connection|{
+            let cut:Option<(i64,i64)>=connection.prepare_cached("SELECT cut_sequence,cut_index FROM context_semantic_cuts WHERE owner_session_id=? AND invocation_id=? AND revision<=? ORDER BY revision DESC LIMIT 1")?.query_row(rusqlite::params![owner, invocation, through as i64], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             cut.map(|(sequence,index)|Ok(RowPosition { source_sequence:crate::sequence_number(sequence)?,item_index:crate::sequence_number(index)? })).transpose()
-        })).await
+        }).await
     }
 }

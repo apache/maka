@@ -22,19 +22,16 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::session::Lineage;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeSet;
 
-pub(super) async fn check(
-    staged: &mut SqliteConnection,
-    destination: &mut SqliteConnection,
-) -> Result<(), StoreError> {
+pub(super) fn check(staged: &Connection, destination: &Connection) -> Result<(), StoreError> {
     let mut sessions = BTreeSet::new();
     let mut after = 0i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
+        let row: Option<(i64, String)> = staged.prepare_cached(
             "SELECT number,record_json FROM frames WHERE kind IN ('session','copy','event') AND number>? ORDER BY number LIMIT 1",
-        ).bind(after).fetch_optional(&mut *staged).await?;
+        )?.query_row(rusqlite::params![after], |row| Ok((row.get(0)?,row.get(1)?,))).optional()?;
         let Some((number, json)) = row else { break };
         match serde_json::from_str(&json)? {
             Record::Session { id, .. } => {
@@ -63,16 +60,20 @@ pub(super) async fn check(
             }
             Record::Event { json, .. } => {
                 let event: RuntimeEvent = serde_json::from_str(&json)?;
-                let collision: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM event_log WHERE event_id=?1)
+                let collision: bool = destination
+                    .prepare_cached(
+                        "SELECT EXISTS(SELECT 1 FROM event_log WHERE event_id=?1)
                      OR EXISTS(SELECT 1 FROM event_log WHERE invocation_id=?2)
                      OR (?3 IS NOT NULL AND EXISTS(SELECT 1 FROM event_log WHERE operation_id=?3))",
-                )
-                .bind(&event.id)
-                .bind(&event.invocation.invocation_id)
-                .bind(event.fact.operation_id())
-                .fetch_one(&mut *destination)
-                .await?;
+                    )?
+                    .query_row(
+                        rusqlite::params![
+                            &event.id,
+                            &event.invocation.invocation_id,
+                            event.fact.operation_id()
+                        ],
+                        |row| row.get(0),
+                    )?;
                 if collision {
                     return Err(StoreError::SessionConflict);
                 }
@@ -87,8 +88,7 @@ pub(super) async fn check(
                     &event.invocation.run_id,
                     &event.invocation.invocation_id,
                     claim,
-                )
-                .await?;
+                )?;
                 if let Fact::InvocationEnded {
                     outcome: InvocationOutcome::HandoffPaused { pause },
                 } = &event.fact
@@ -98,8 +98,7 @@ pub(super) async fn check(
                         &pause.intent.successor_run_id,
                         &pause.intent.successor_invocation_id,
                         Some(&pause.intent.claim_id),
-                    )
-                    .await?;
+                    )?;
                 }
                 sessions.insert(event.invocation.session_id);
             }
@@ -108,7 +107,7 @@ pub(super) async fn check(
         after = number;
     }
     for session in sessions {
-        let collision: bool = sqlx::query_scalar(
+        let collision: bool = destination.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?1)
              OR EXISTS(SELECT 1 FROM context_source_prefixes WHERE kind='session' AND owner=?1)
              OR EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?1 OR source_session_id=?1)
@@ -116,7 +115,7 @@ pub(super) async fn check(
              OR EXISTS(SELECT 1 FROM plugin_sessions WHERE session_id=?1)
              OR EXISTS(SELECT 1 FROM session_imports WHERE session_id=?1)
              OR EXISTS(SELECT 1 FROM session_bundle_members WHERE session_id=?1)",
-        ).bind(session).fetch_one(&mut *destination).await?;
+        )?.query_row(rusqlite::params![session], |row| row.get(0))?;
         if collision {
             return Err(StoreError::SessionConflict);
         }
@@ -124,24 +123,21 @@ pub(super) async fn check(
     Ok(())
 }
 
-async fn identities(
-    db: &mut SqliteConnection,
+fn identities(
+    db: &Connection,
     run: &str,
     invocation: &str,
     claim: Option<&str>,
 ) -> Result<(), StoreError> {
-    let occupied: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM event_log WHERE invocation_id=?1)
+    let occupied: bool = db
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM event_log WHERE invocation_id=?1)
          OR EXISTS(SELECT 1 FROM event_log WHERE kind='invocation_opened' AND
            (json_extract(COALESCE(event_header,retained_json),'$.invocation.run_id')=?2
             OR json_extract(event_header,'$.fact.input.claim.id')=?3))",
-    )
-    .bind(invocation)
-    .bind(run)
-    .bind(claim)
-    .fetch_one(&mut *db)
-    .await?;
-    if occupied || crate::handoff::reservation_conflict(db, run, invocation, claim, None).await? {
+        )?
+        .query_row(rusqlite::params![invocation, run, claim], |row| row.get(0))?;
+    if occupied || crate::handoff::reservation_conflict(db, run, invocation, claim, None)? {
         return Err(StoreError::SessionConflict);
     }
     Ok(())

@@ -27,21 +27,6 @@ struct ReadAndClose {
     read: StoreError,
     close: rusqlite::Error,
 }
-pub(super) fn with_material<T>(
-    raw: &rusqlite::Connection,
-    id: i64,
-    bytes: u64,
-    use_reader: impl FnOnce(&mut rusqlite::blob::Blob<'_>) -> Result<T, StoreError>,
-) -> Result<T, StoreError> {
-    let mut blob = raw.blob_open("main", "event_bodies", "payload", id, true)?;
-    let result = (|| {
-        if blob.len() as u64 != bytes {
-            return Err(invalid("canonical body length changed"));
-        }
-        use_reader(&mut blob)
-    })();
-    settle(result, blob.close())
-}
 fn settle<T>(result: Result<T, StoreError>, closed: rusqlite::Result<()>) -> Result<T, StoreError> {
     match (result, closed) {
         (result, Ok(())) => result,
@@ -51,12 +36,13 @@ fn settle<T>(result: Result<T, StoreError>, closed: rusqlite::Result<()>) -> Res
 }
 
 use super::recipe::{Layout, Slot};
-use std::io::{self, Seek, SeekFrom};
+use std::io;
 fn invalid(reason: &'static str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, reason).into()
 }
 #[derive(Clone, Copy)]
 pub(crate) struct SpanMetadata {
+    sequence: i64,
     live: bool,
     length: Option<i64>,
     body_reference: Option<i64>,
@@ -67,23 +53,13 @@ pub(crate) struct SpanMetadata {
 pub(crate) const SPAN_COLUMNS: &str = "e.event_header IS NOT NULL AS canonical_live,
  e.canonical_bytes AS canonical_length,e.body_id AS canonical_body_reference,
  e.header_offset AS canonical_offset,canonical_body.id AS canonical_body_id,
- canonical_body.raw_bytes AS canonical_raw_bytes";
+ length(canonical_body.payload) AS canonical_raw_bytes,e.sequence AS canonical_sequence";
 
 impl SpanMetadata {
-    pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, StoreError> {
-        use sqlx::Row;
-        Ok(Self {
-            live: row.try_get("canonical_live")?,
-            length: row.try_get("canonical_length")?,
-            body_reference: row.try_get("canonical_body_reference")?,
-            slot_offset: row.try_get("canonical_offset")?,
-            body_id: row.try_get("canonical_body_id")?,
-            raw_bytes: row.try_get("canonical_raw_bytes")?,
-        })
-    }
-    pub(crate) fn from_handle(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         let base = row.as_ref().column_index("canonical_live")?;
         Ok(Self {
+            sequence: row.get(base + 6)?,
             live: row.get(base)?,
             length: row.get(base + 1)?,
             body_reference: row.get(base + 2)?,
@@ -109,7 +85,7 @@ pub(crate) fn with_span<T>(
     raw.query_row(&query, [sequence], |row| {
         Ok(with_span_metadata(
             raw,
-            SpanMetadata::from_handle(row)?,
+            SpanMetadata::from_row(row)?,
             offset,
             bytes,
             consume,
@@ -125,6 +101,7 @@ pub(crate) fn with_span_metadata<T>(
     consume: impl FnOnce(&mut dyn Read) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     let SpanMetadata {
+        sequence,
         live,
         length,
         body_reference,
@@ -151,24 +128,87 @@ pub(crate) fn with_span_metadata<T>(
             if reference == id && position >= 0 && id > 0 && bytes > 0 =>
         {
             (
-                Slot {
+                Some(Slot {
                     offset: position as u64,
                     bytes: bytes as u64,
-                },
-                id,
+                }),
+                Some(id),
             )
         }
-        _ => return Err(invalid("canonical tool projection lacks its body slot")),
+        (None, None, None, None) => (None, None),
+        _ => return Err(invalid("canonical body binding differs")),
     };
-    Layout::new(length, Some(slot))?;
+    Layout::new(length, slot)?;
     let end = offset
         .checked_add(bytes)
-        .ok_or_else(|| invalid("canonical span length overflows"))?;
-    if offset < slot.offset || end > slot.offset + slot.bytes {
-        return Err(invalid("canonical tool range exceeds its body slot"));
+        .filter(|end| *end <= length)
+        .ok_or_else(|| invalid("canonical range exceeds event"))?;
+    let in_body = slot.is_some_and(|slot| offset >= slot.offset && end <= slot.offset + slot.bytes);
+    let header = if in_body {
+        None
+    } else {
+        Some(raw.blob_open("main", "event_log", "event_header", sequence, true)?)
+    };
+    let body = if let Some(id) = id {
+        Some(raw.blob_open("main", "contents", "payload", id, true)?)
+    } else {
+        None
+    };
+    let mut reader = SpanReader {
+        header,
+        body,
+        slot,
+        offset,
+        remaining: bytes,
+    };
+    let result = consume(&mut reader);
+    let result = settle(
+        result,
+        reader.body.take().map_or(Ok(()), |body| body.close()),
+    );
+    settle(
+        result,
+        reader.header.take().map_or(Ok(()), |header| header.close()),
+    )
+}
+
+struct SpanReader<'db> {
+    header: Option<rusqlite::blob::Blob<'db>>,
+    body: Option<rusqlite::blob::Blob<'db>>,
+    slot: Option<Slot>,
+    offset: u64,
+    remaining: u64,
+}
+impl Read for SpanReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let requested = self.remaining.min(out.len() as u64);
+        if requested == 0 {
+            return Ok(0);
+        }
+        let (blob, offset, available) = match self.slot {
+            Some(slot) if self.offset >= slot.offset && self.offset < slot.offset + slot.bytes => (
+                self.body.as_ref(),
+                self.offset - slot.offset,
+                slot.offset + slot.bytes - self.offset,
+            ),
+            Some(slot) if self.offset < slot.offset => {
+                (self.header.as_ref(), self.offset, slot.offset - self.offset)
+            }
+            Some(slot) => (
+                self.header.as_ref(),
+                self.offset - slot.bytes + 4,
+                self.remaining,
+            ),
+            None => (self.header.as_ref(), self.offset, self.remaining),
+        };
+        let bytes = requested.min(available) as usize;
+        let offset = usize::try_from(offset)
+            .map_err(|_| io::Error::other("canonical range exceeds address space"))?;
+        blob.ok_or_else(|| io::Error::other("missing canonical span material"))?
+            .read_at_exact(&mut out[..bytes], offset)
+            .map_err(io::Error::other)?;
+        self.offset += bytes as u64;
+        self.remaining -= bytes as u64;
+        Ok(bytes)
     }
-    with_material(raw, id, slot.bytes, |reader| {
-        reader.seek(SeekFrom::Start(offset - slot.offset))?;
-        consume(&mut reader.take(bytes))
-    })
 }

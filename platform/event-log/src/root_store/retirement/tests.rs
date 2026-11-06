@@ -80,19 +80,21 @@ async fn editable_turn(log: &EventLog) {
 async fn retirement_snapshot(log: &EventLog) -> (Vec<(String, i64)>, i64, i64) {
     log.connection
         .read(|db| {
-            Box::pin(async move {
-                let revisions =
-                    sqlx::query_as("SELECT id,revision FROM session_control ORDER BY id")
-                        .fetch_all(&mut *db)
-                        .await?;
-                let retirements = sqlx::query_scalar("SELECT COUNT(*) FROM session_retirements")
-                    .fetch_one(&mut *db)
-                    .await?;
-                let receipts = sqlx::query_scalar("SELECT COUNT(*) FROM session_removal_receipts")
-                    .fetch_one(db)
-                    .await?;
-                Ok((revisions, retirements, receipts))
-            })
+            let revisions = db
+                .prepare_cached("SELECT id,revision FROM session_control ORDER BY id")?
+                .query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let retirements = db.query_row(
+                "SELECT COUNT(*) FROM session_retirements",
+                rusqlite::params![],
+                |row| row.get(0),
+            )?;
+            let receipts = db.query_row(
+                "SELECT COUNT(*) FROM session_removal_receipts",
+                rusqlite::params![],
+                |row| row.get(0),
+            )?;
+            Ok((revisions, retirements, receipts))
         })
         .await
         .unwrap()
@@ -159,11 +161,7 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
     let draft = root.session("draft").await.unwrap().scoped().await.unwrap();
     draft.retain_session("draft").await.unwrap();
     drop(draft);
-    owner
-        .connection
-        .run(|_| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap();
+    owner.connection.run(|_| Ok(())).await.unwrap();
     let expanded = owner.preview_session_removal("parent").await.unwrap();
     assert_eq!(expanded.remove, ["draft", "parent"]);
     let before = retirement_snapshot(&owner).await;
@@ -191,11 +189,7 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
     );
     assert_eq!(retirement_snapshot(&owner).await, before);
     drop(stale);
-    owner
-        .connection
-        .run(|_| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap();
+    owner.connection.run(|_| Ok(())).await.unwrap();
 
     let removing = root.clone();
     let removal = tokio::spawn(async move {
@@ -335,7 +329,7 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
 }
 
 #[tokio::test]
-async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_cancels() {
+async fn archive_and_retirement_wait_for_cross_session_sql_after_observer_cancels() {
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
     let session = root
@@ -345,25 +339,17 @@ async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_canc
     let lease = session.execution_scope(None).await.unwrap().accept();
     let running = lease.store();
     let original = session.owner().unwrap();
-    let other = root
-        .partitions
-        .iter()
-        .find(|log| !Arc::ptr_eq(log, &original))
-        .unwrap();
+    let other = &root.log;
     let log = other.scoped(running.execution.as_ref().unwrap().custody().unwrap());
     let (entered, reached) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let caller = tokio::spawn(async move {
         log.connection
-            .run(move |db| {
-                Box::pin(async move {
-                    db.run_with_connection(move |_| {
-                        entered.send(()).unwrap();
-                        blocked.recv_timeout(Duration::from_secs(30)).unwrap();
-                    })
-                    .await?;
-                    Ok(())
-                })
+            .run(move |_| {
+                entered.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(30)).unwrap();
+
+                Ok(())
             })
             .await
     });
@@ -381,15 +367,10 @@ async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_canc
         Err(StoreError::SessionBusy)
     ));
     let revision = session.get::<Value>().await.unwrap().unwrap().revision;
-    root.begin_session_removal("session", revision)
-        .await
-        .unwrap();
-    assert!(!root.session_retirement_ready("session").await.unwrap());
-    assert!(matches!(
-        root.finish_session_retirement("session").await,
-        Err(StoreError::SessionBusy)
-    ));
+    let mut retirement = Box::pin(root.begin_session_removal("session", revision));
+    assert!(futures_util::poll!(&mut retirement).is_pending());
     release.send(()).unwrap();
+    retirement.await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if root

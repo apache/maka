@@ -250,7 +250,7 @@ async fn second_record_sql_failure_rolls_back_the_complete_import_and_allows_ret
         )
         .await;
     assert!(
-        matches!(result,Err(StoreError::Sqlx(error)) if error.as_database_error().and_then(|error|error.code()).as_deref()==Some("1811"))
+        matches!(result.as_ref().map_err(StoreError::underlying),Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))) if error.extended_code == 1811)
     );
     assert_eq!(*notices.borrow(), through);
     assert!(!notices.has_changed().unwrap());

@@ -25,29 +25,28 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 
-async fn opening(tx: &mut SqliteConnection, id: &str) -> Result<Option<RuntimeEvent>, StoreError> {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT event_header
+fn opening(tx: &rusqlite::Connection, id: &str) -> Result<Option<RuntimeEvent>, StoreError> {
+    let json: Option<String> = tx
+        .prepare_cached(
+            "SELECT event_header
          FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
-    )
-    .bind(id)
-    .fetch_optional(tx)
-    .await?;
+        )?
+        .query_row(rusqlite::params![id], |row| row.get(0))
+        .optional()?;
     json.map(|json| serde_json::from_str(&json).map_err(StoreError::from))
         .transpose()
 }
 
 /// Canonical append authenticates each immutable prefix. Control reads only
 /// openings, seals and edge identity, keeping model-history size out of Stop.
-pub(crate) async fn read(
-    tx: &mut SqliteConnection,
+pub(crate) fn read(
+    tx: &rusqlite::Connection,
     source: &Invocation,
 ) -> Result<TurnBoundary, StoreError> {
-    let mut current = opening(tx, &source.invocation_id)
-        .await?
+    let mut current = opening(tx, &source.invocation_id)?
         .ok_or_else(|| super::invalid("handoff owner opening is missing"))?;
     if current.invocation != *source {
         return Err(super::invalid("handoff owner identity changed"));
@@ -57,7 +56,7 @@ pub(crate) async fn read(
         if !seen.insert(current.invocation.run_id.clone()) {
             return Err(super::invalid("handoff owner cycle"));
         }
-        let boundary = crate::turns::project(tx, current).await?;
+        let boundary = crate::turns::project(tx, current)?;
         let InvocationState::Ended {
             outcome: InvocationOutcome::HandoffPaused { pause },
             ..
@@ -65,7 +64,7 @@ pub(crate) async fn read(
         else {
             return Ok(boundary);
         };
-        let Some(next) = opening(tx, &pause.intent.successor_invocation_id).await? else {
+        let Some(next) = opening(tx, &pause.intent.successor_invocation_id)? else {
             return Ok(boundary);
         };
         let Fact::InvocationOpened {
@@ -87,11 +86,12 @@ pub(crate) async fn read(
                 "handoff successor changed its sealed source",
             ));
         }
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_events WHERE invocation_id=?")
-                .bind(&boundary.invocation.invocation_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let count: i64 = tx
+            .prepare_cached("SELECT COUNT(*) FROM runtime_events WHERE invocation_id=?")?
+            .query_row(
+                rusqlite::params![&boundary.invocation.invocation_id],
+                |row| row.get(0),
+            )?;
         if u64::try_from(count).ok() != Some(claim.source.high_water) {
             return Err(super::invalid(
                 "handoff successor changed its source boundary",

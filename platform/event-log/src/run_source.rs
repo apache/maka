@@ -23,8 +23,8 @@ use maka_agent_facts::continuation::RunBoundary;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
+use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, SqliteConnection};
 
 /// Canonical evidence for one physical Run cut, retaining only its endpoints.
 /// Boundary high-water counts Run-local events; endpoint sequences are root positions.
@@ -45,7 +45,6 @@ impl EventLog {
         run: &str,
         up_to: Option<u64>,
     ) -> Result<Option<RunSource>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(run)?;
         if up_to.is_some_and(|n| n == 0 || n > MAX_SAFE_INTEGER) {
@@ -53,56 +52,46 @@ impl EventLog {
         }
         let (session, run) = (session.to_owned(), run.to_owned());
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
+            .read(move |connection| {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
                     let Some(invocation) =
-                        crate::turns::run_invocation(&mut tx, &session, &run).await?
+                        crate::turns::run_invocation(&tx, &session, &run)?
                     else {
                         return Ok(None);
                     };
                     let through = if let Some(up_to) = up_to {
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT sequence FROM context_source_prefixes WHERE kind='invocation' AND owner=? AND ordinal=?",
-                        )
-                        .bind(&invocation)
-                        .bind(up_to as i64)
-                        .fetch_optional(&mut *tx)
-                        .await?
+                        tx.prepare_cached("SELECT sequence FROM context_source_prefixes WHERE kind='invocation' AND owner=? AND ordinal=?")?.query_row(rusqlite::params![&invocation,up_to as i64], |row| row.get(0)).optional()?
                         .ok_or_else(|| invalid("requested Run prefix is unavailable"))?
                     } else {
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT MAX(sequence) FROM runtime_events WHERE invocation_id = ?",
-                        )
-                        .bind(&invocation)
-                        .fetch_one(&mut *tx)
-                        .await?
+                        tx.prepare_cached("SELECT MAX(sequence) FROM runtime_events WHERE invocation_id = ?")?.query_row(rusqlite::params![&invocation], |row| row.get(0))?
                     };
-                    let source = read(&mut tx, &session, &run, &invocation, through).await?;
-                    tx.commit().await?;
+                    let source = read(&tx, &session, &run, &invocation, through)?;
+                    tx.commit()?;
                     Ok(Some(source))
-                })
+                }
             })
             .await
     }
 }
 
-pub(crate) async fn read(
-    connection: &mut SqliteConnection,
+pub(crate) fn read(
+    connection: &rusqlite::Connection,
     session: &str,
     run: &str,
     invocation_id: &str,
     through: i64,
 ) -> Result<RunSource, StoreError> {
-    let (sequence, count, root): (i64, i64, Vec<u8>) = sqlx::query_as(
-        "SELECT sequence,ordinal,hash FROM context_source_prefixes
+    let (sequence, count, root): (i64, i64, Vec<u8>) = connection
+        .prepare_cached(
+            "SELECT sequence,ordinal,hash FROM context_source_prefixes
          WHERE kind='invocation' AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
-    )
-    .bind(invocation_id)
-    .bind(through)
-    .fetch_optional(&mut *connection)
-    .await?
-    .ok_or_else(|| invalid("Run source is empty"))?;
+        )?
+        .query_row(rusqlite::params![invocation_id, through], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?
+        .ok_or_else(|| invalid("Run source is empty"))?;
     if through != i64::MAX && sequence != through {
         return Err(invalid("requested Run prefix is unavailable"));
     }
@@ -113,14 +102,12 @@ pub(crate) async fn read(
             "Run source high-water is not a positive safe integer",
         ));
     }
-    let (opened,json):(i64,String)=sqlx::query_as(
-        "SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? ORDER BY sequence LIMIT 1")
-        .bind(invocation_id).fetch_one(&mut *connection).await?;
+    let (opened,json):(i64,String)=connection.prepare_cached("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? ORDER BY sequence LIMIT 1")?.query_row(rusqlite::params![invocation_id], |row| Ok((row.get(0)?,row.get(1)?,)))?;
     let opening = StoredEvent {
         sequence: sequence_number(opened)?,
         event: serde_json::from_str::<RuntimeEvent>(&json)?,
     };
-    let json = crate::canonical::one(connection, sequence_number(through)?).await?;
+    let json = crate::canonical::one(connection, sequence_number(through)?)?;
     let last = StoredEvent {
         sequence: sequence_number(through)?,
         event: serde_json::from_str::<RuntimeEvent>(&json)?,
@@ -153,16 +140,14 @@ pub(crate) async fn read(
 
 /// Read only writer-admitted relationship metadata for ordinary lineage views.
 /// Explicit RunSource exports separately materialize their requested endpoints.
-pub(crate) async fn admitted_boundary(
-    connection: &mut SqliteConnection,
+pub(crate) fn admitted_boundary(
+    connection: &rusqlite::Connection,
     invocation: &str,
     through: i64,
 ) -> Result<(RunBoundary, u64), StoreError> {
-    let (sequence,count,root,identity):(i64,i64,Vec<u8>,String)=sqlx::query_as(
-        "SELECT p.sequence,p.ordinal,p.hash,l.identity_json FROM context_source_prefixes p
+    let (sequence,count,root,identity):(i64,i64,Vec<u8>,String)=connection.prepare_cached("SELECT p.sequence,p.ordinal,p.hash,l.identity_json FROM context_source_prefixes p
          JOIN context_source_lineages l ON l.invocation_id=p.owner
-         WHERE p.kind='invocation' AND p.owner=? AND p.sequence<=? ORDER BY p.sequence DESC LIMIT 1")
-        .bind(invocation).bind(through).fetch_optional(connection).await?
+         WHERE p.kind='invocation' AND p.owner=? AND p.sequence<=? ORDER BY p.sequence DESC LIMIT 1")?.query_row(rusqlite::params![invocation,through], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,))).optional()?
         .ok_or_else(||invalid("Run source is empty"))?;
     if through != i64::MAX && through != sequence {
         return Err(invalid("requested Run prefix is unavailable"));

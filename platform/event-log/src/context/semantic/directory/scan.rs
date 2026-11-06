@@ -939,13 +939,13 @@ impl Scan<'_> {
     }
 }
 
-pub(super) enum PayloadRoot {
+pub(in crate::context::semantic) enum PayloadRoot {
     Payload,
     ToolProjection,
     ModelPart,
 }
 
-pub(super) fn payload(
+pub(in crate::context::semantic) fn payload(
     reader: &mut dyn Read,
     root: PayloadRoot,
     mut child: impl FnMut(ListKind, u64, ChildDirectory) -> Result<(), StoreError>,

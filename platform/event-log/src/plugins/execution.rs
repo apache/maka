@@ -29,8 +29,8 @@ use maka_agent_ports::execution::Progress;
 use maka_agent_ports::execution::Receipt;
 use maka_agent_ports::execution::Submit;
 use maka_capabilities::storage::Namespace;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
     /// Observe pending admission and canonical delivery in one read transaction.
@@ -39,7 +39,6 @@ impl EventLog {
         namespace: &Namespace,
         operation: &maka_agent_ports::execution::SessionOperation,
     ) -> Result<Option<Observation>, StoreError> {
-        self.validate_root()?;
         operation
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
@@ -48,27 +47,27 @@ impl EventLog {
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
+            .read(move |connection| {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
                     let Some(receipt) = read(
-                        &mut tx,
+                        &tx,
                         &package,
                         &scope,
                         &operation.session_id,
                         &operation.operation_id,
                     )
-                    .await?
+                    ?
                     else {
                         return Ok(None);
                     };
                     let invocation = &receipt.invocation;
                     let boundary = crate::turns::read(
-                        &mut tx,
+                        &tx,
                         &invocation.session_id,
                         Some(&invocation.turn_id),
                     )
-                    .await?;
+                    ?;
                     let mut attention_id = None;
                     let (progress, terminal_event_id) = match boundary {
                         Some(boundary) => {
@@ -82,10 +81,10 @@ impl EventLog {
                                 }
                                 InvocationState::WaitingForUser => {
                                     let mut requests = crate::interactions::pending(
-                                        &mut tx,
+                                        &tx,
                                         &invocation.session_id,
                                     )
-                                    .await?
+                                    ?
                                     .into_iter()
                                     .filter(|request| {
                                         request.run_id == boundary.invocation.run_id
@@ -117,11 +116,11 @@ impl EventLog {
                         }
                         None => {
                             let pending = crate::message_admissions::read(
-                                &mut tx,
+                                &tx,
                                 &invocation.session_id,
                                 &receipt.message_id,
                             )
-                            .await?
+                            ?
                             .ok_or_else(|| {
                                 invalid("accepted execution has no pending or canonical owner")
                             })?;
@@ -131,8 +130,8 @@ impl EventLog {
                             (Progress::Pending, None)
                         }
                     };
-                    let through_sequence = crate::observation::high_water(&mut tx).await?;
-                    tx.commit().await?;
+                    let through_sequence = crate::observation::high_water(&tx)?;
+                    tx.commit()?;
                     Ok(Some(Observation {
                         receipt,
                         progress,
@@ -140,7 +139,7 @@ impl EventLog {
                         terminal_event_id,
                         attention_id,
                     }))
-                })
+                }
             })
             .await
     }
@@ -154,7 +153,6 @@ impl EventLog {
         request: Submit,
         pending: PendingMessageAdmission,
     ) -> Result<Receipt, StoreError> {
-        self.validate_root()?;
         request
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
@@ -192,10 +190,10 @@ impl EventLog {
         let commits = self.commits.session(&request.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
                     if let Some(receipt) =
-                        read(&mut tx, &package, &scope, &request.session_id, &request.operation_id).await?
+                        read(&tx, &package, &scope, &request.session_id, &request.operation_id)?
                     {
                         if receipt.content_digest != digest
                             || receipt.invocation.session_id != request.session_id
@@ -209,24 +207,18 @@ impl EventLog {
                         message_id: pending.source.message.message_id.clone(),
                         content_digest: digest,
                     };
-                    if insert::insert(&mut tx, &pending, insert::Owner::Unsealed)
-                        .await?
+                    if insert::insert(&tx, &pending, insert::Owner::Unsealed)
+                        ?
                         .is_none()
                     {
                         return Err(StoreError::EventConflict);
                     }
-                    sqlx::query("INSERT INTO plugin_execution_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)")
-                        .bind(&package)
-                        .bind(&scope)
-                        .bind(&request.session_id)
-                        .bind(&request.operation_id)
-                        .bind(serde_json::to_string(&receipt)?)
-                        .execute(&mut *tx)
-                        .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    tx.execute("INSERT INTO plugin_execution_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)", rusqlite::params![&package, &scope, &request.session_id, &request.operation_id, serde_json::to_string(&receipt)?])
+                        ?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
                     Ok(receipt)
-                })
+                }
             })
             .await
     }
@@ -236,7 +228,6 @@ impl EventLog {
         namespace: &Namespace,
         operation: &maka_agent_ports::execution::SessionOperation,
     ) -> Result<Option<Receipt>, StoreError> {
-        self.validate_root()?;
         operation
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
@@ -245,8 +236,8 @@ impl EventLog {
         let scope = String::from(namespace.scope().clone());
         let operation = operation.clone();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
+            .read(move |connection| {
+                {
                     read(
                         connection,
                         &package,
@@ -254,30 +245,22 @@ impl EventLog {
                         &operation.session_id,
                         &operation.operation_id,
                     )
-                    .await
-                })
+                }
             })
             .await
     }
 }
 
-async fn read(
-    connection: &mut SqliteConnection,
+fn read(
+    connection: &Connection,
     package: &str,
     scope: &str,
     session: &str,
     operation: &str,
 ) -> Result<Option<Receipt>, StoreError> {
-    let row: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
-         FROM plugin_execution_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?",
-    )
-    .bind(package)
-    .bind(scope)
-    .bind(session)
-    .bind(operation)
-    .fetch_optional(connection)
-    .await?;
+    let row: Option<Option<String>> = connection.query_row("SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
+         FROM plugin_execution_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?", rusqlite::params![package, scope, session, operation], |row| row.get(0)).optional()
+    ?;
     row.map(|encoded| {
         let receipt: Receipt = serde_json::from_str(&encoded.ok_or(StoreError::PrefixTooLarge)?)?;
         for id in [

@@ -23,7 +23,7 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 mod root;
 
@@ -110,34 +110,34 @@ impl EventLog {
         )>,
         StoreError,
     > {
-        self.validate_root()?;
         sessions::validate_id(invocation_id)?;
         let invocation_id = invocation_id.to_owned();
         let expected_session = self.expected_session.clone();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+                let row: Option<(String, Option<String>, Option<String>)> = connection
+                    .query_row(
                         "SELECT json_extract(event_header, '$.invocation'),
                     json_extract(event_header, '$.fact.input.claim.source'),
                     json_extract(event_header, '$.fact.input.request_fingerprint')
                  FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'
                    AND (? IS NULL OR event_session = ?)",
+                        rusqlite::params![
+                            invocation_id,
+                            expected_session.as_deref(),
+                            expected_session.as_deref()
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
-                    .bind(invocation_id)
-                    .bind(expected_session.as_deref())
-                    .bind(expected_session.as_deref())
-                    .fetch_optional(connection)
-                    .await?;
-                    row.map(|(invocation, source, fingerprint)| {
-                        Ok((
-                            serde_json::from_str(&invocation)?,
-                            serde_json::from_str(&source.ok_or(StoreError::EventConflict)?)?,
-                            fingerprint.ok_or(StoreError::EventConflict)?,
-                        ))
-                    })
-                    .transpose()
+                    .optional()?;
+                row.map(|(invocation, source, fingerprint)| {
+                    Ok((
+                        serde_json::from_str(&invocation)?,
+                        serde_json::from_str(&source.ok_or(StoreError::EventConflict)?)?,
+                        fingerprint.ok_or(StoreError::EventConflict)?,
+                    ))
                 })
+                .transpose()
             })
             .await
     }
@@ -148,41 +148,39 @@ impl EventLog {
         session_id: &str,
         invocation_id: &str,
     ) -> Result<Option<(TurnBoundary, u64)>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session_id)?;
         sessions::validate_id(invocation_id)?;
         let session = session_id.to_owned();
         let invocation = invocation_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let opening: Option<String> = sqlx::query_scalar(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let opening: Option<String> = tx
+                    .query_row(
                         "SELECT event_header FROM runtime_events WHERE invocation_id = ?1
                  AND kind = 'invocation_opened'
                  AND json_extract(event_header, '$.invocation.session_id') = ?2",
+                        rusqlite::params![invocation, session],
+                        |row| row.get(0),
                     )
-                    .bind(invocation)
-                    .bind(session)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    let result = match opening {
-                        Some(opening) => {
-                            let boundary =
-                                project(&mut tx, serde_json::from_str(&opening)?).await?;
-                            let high_water: i64 = sqlx::query_scalar(
-                                "SELECT COUNT(*) FROM runtime_events WHERE invocation_id = ?",
-                            )
-                            .bind(&boundary.invocation.invocation_id)
-                            .fetch_one(&mut *tx)
-                            .await?;
-                            Some((boundary, high_water as u64))
-                        }
-                        None => None,
-                    };
-                    tx.commit().await?;
-                    Ok(result)
-                })
+                    .optional()?;
+                let result = match opening {
+                    Some(opening) => {
+                        let boundary = project(&tx, serde_json::from_str(&opening)?)?;
+                        let high_water: i64 = tx.query_row(
+                            "SELECT COUNT(*) FROM runtime_events WHERE invocation_id = ?",
+                            rusqlite::params![&boundary.invocation.invocation_id],
+                            |row| row.get(0),
+                        )?;
+                        Some((boundary, high_water as u64))
+                    }
+                    None => None,
+                };
+                tx.commit()?;
+                Ok(result)
             })
             .await
     }
@@ -190,15 +188,15 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<TurnBoundary>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session_id)?;
         let session = session_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    read(&mut tx, &session, None).await
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                read(&tx, &session, None)
             })
             .await
     }
@@ -208,19 +206,15 @@ impl EventLog {
         &self,
         invocation: &Invocation,
     ) -> Result<Option<maka_agent_facts::execution::InvocationConfiguration>, StoreError> {
-        self.validate_root()?;
         let invocation = invocation.clone();
-        self.connection.read(move |connection| Box::pin(async move {
-            let configuration: Option<String> = sqlx::query_scalar(
-                "SELECT json_extract(event_header, '$.fact.configuration') FROM runtime_events
+        self.connection.read(move |connection| {
+            let configuration: Option<String> = connection.query_row("SELECT json_extract(event_header, '$.fact.configuration') FROM runtime_events
                  WHERE invocation_id = ?1 AND kind = 'invocation_opened'
                  AND json_extract(event_header, '$.invocation.session_id') = ?2
                  AND json_extract(event_header, '$.invocation.run_id') = ?3
-                 AND json_extract(event_header, '$.invocation.turn_id') = ?4"
-            ).bind(&invocation.invocation_id).bind(&invocation.session_id).bind(&invocation.run_id).bind(&invocation.turn_id)
-                .fetch_optional(connection).await?.flatten();
+                 AND json_extract(event_header, '$.invocation.turn_id') = ?4", rusqlite::params![&invocation.invocation_id, &invocation.session_id, &invocation.run_id, &invocation.turn_id], |row| row.get(0)).optional()?.flatten();
             configuration.map(|value| serde_json::from_str(&value).map_err(StoreError::from)).transpose()
-        })).await
+        }).await
     }
 
     /// Exact physical Run, including an earlier Run of the same logical Turn.
@@ -229,24 +223,21 @@ impl EventLog {
         session_id: &str,
         run_id: &str,
     ) -> Result<Option<TurnBoundary>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session_id)?;
         sessions::validate_id(run_id)?;
         let (session_id, run_id) = (session_id.to_owned(), run_id.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let Some(invocation) = run_invocation(&mut tx, &session_id, &run_id).await? else {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+                    let Some(invocation) = run_invocation(&tx, &session_id, &run_id)? else {
                         return Ok(None);
                     };
-                    let opening: String = sqlx::query_scalar(
-                        "SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
-                    ).bind(invocation).fetch_one(&mut *tx).await?;
-                    let result = project(&mut tx, serde_json::from_str(&opening)?).await?;
-                    tx.commit().await?;
+                    let opening: String = tx.query_row("SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'", rusqlite::params![invocation], |row| row.get(0))?;
+                    let result = project(&tx, serde_json::from_str(&opening)?)?;
+                    tx.commit()?;
                     Ok(Some(result))
-                })
+                }
             })
             .await
     }
@@ -258,64 +249,61 @@ impl EventLog {
         session_id: &str,
         turn_id: &str,
     ) -> Result<Option<TurnBoundary>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session_id)?;
         sessions::validate_id(turn_id)?;
         let session_id = session_id.to_owned();
         let turn_id = turn_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut transaction = connection.begin().await?;
-                    let result = read(&mut transaction, &session_id, Some(&turn_id)).await?;
-                    transaction.commit().await?;
-                    Ok(result)
-                })
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = read(&transaction, &session_id, Some(&turn_id))?;
+                transaction.commit()?;
+                Ok(result)
             })
             .await
     }
 }
 
 /// Caller holds one read transaction when combining with metadata or a cursor.
-pub(crate) async fn read(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read(
+    connection: &rusqlite::Connection,
     session_id: &str,
     turn_id: Option<&str>,
 ) -> Result<Option<TurnBoundary>, StoreError> {
-    let opening: Option<String> = sqlx::query_scalar(
-        "SELECT event_header FROM runtime_events
+    let opening: Option<String> = connection
+        .query_row(
+            "SELECT event_header FROM runtime_events
              WHERE kind = 'invocation_opened'
              AND json_extract(event_header, '$.invocation.session_id') = ?1
              AND (?2 IS NULL OR json_extract(event_header, '$.invocation.turn_id') = ?2)
              ORDER BY sequence DESC LIMIT 1",
-    )
-    .bind(session_id)
-    .bind(turn_id)
-    .fetch_optional(&mut *connection)
-    .await?;
+            rusqlite::params![session_id, turn_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     let Some(opening) = opening else {
         return Ok(None);
     };
-    Ok(Some(
-        project(connection, serde_json::from_str(&opening)?).await?,
-    ))
+    Ok(Some(project(connection, serde_json::from_str(&opening)?)?))
 }
 
 /// Fail closed on ambiguous legacy/synthetic identities; never choose a newer Run.
-pub(crate) async fn run_invocation(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn run_invocation(
+    connection: &rusqlite::Connection,
     session: &str,
     run: &str,
 ) -> Result<Option<String>, StoreError> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT invocation_id FROM runtime_events WHERE kind = 'invocation_opened'
+    let ids: Vec<String> = connection
+        .prepare_cached(
+            "SELECT invocation_id FROM runtime_events WHERE kind = 'invocation_opened'
          AND json_extract(event_header, '$.invocation.session_id') = ?
          AND json_extract(event_header, '$.invocation.run_id') = ? LIMIT 2",
-    )
-    .bind(session)
-    .bind(run)
-    .fetch_all(connection)
-    .await?;
+        )?
+        .query_map(rusqlite::params![session, run], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     if ids.len() > 1 {
         return Err(StoreError::InvalidTransition(
             "Run names multiple invocations".into(),
@@ -324,8 +312,8 @@ pub(crate) async fn run_invocation(
     Ok(ids.into_iter().next())
 }
 
-pub(crate) async fn project(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn project(
+    connection: &rusqlite::Connection,
     opening: RuntimeEvent,
 ) -> Result<TurnBoundary, StoreError> {
     let Fact::InvocationOpened {
@@ -337,10 +325,8 @@ pub(crate) async fn project(
             "invalid stored invocation opening".into(),
         ));
     };
-    let root = root::read(connection, &opening.invocation, &input).await?;
-    let terminal: Option<String> = sqlx::query_scalar(
-            "SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_ended'",
-        ).bind(&opening.invocation.invocation_id).fetch_optional(&mut *connection).await?;
+    let root = root::read(connection, &opening.invocation, &input)?;
+    let terminal: Option<String> = connection.query_row("SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_ended'", rusqlite::params![&opening.invocation.invocation_id], |row| row.get(0)).optional()?;
     let state = if let Some(terminal) = terminal {
         let terminal: RuntimeEvent = serde_json::from_str(&terminal)?;
         let Fact::InvocationEnded { outcome } = terminal.fact else {
@@ -357,8 +343,7 @@ pub(crate) async fn project(
             event_id: terminal.id,
             outcome,
         }
-    } else if crate::interactions::pending(connection, &opening.invocation.session_id)
-        .await?
+    } else if crate::interactions::pending(connection, &opening.invocation.session_id)?
         .iter()
         .any(|request| {
             request.run_id == opening.invocation.run_id
@@ -367,9 +352,7 @@ pub(crate) async fn project(
     {
         InvocationState::WaitingForUser
     } else {
-        let requested: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ? AND kind = 'model_requested')",
-            ).bind(&opening.invocation.invocation_id).fetch_one(&mut *connection).await?;
+        let requested: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ? AND kind = 'model_requested')", rusqlite::params![&opening.invocation.invocation_id], |row| row.get(0))?;
         if requested {
             InvocationState::Running
         } else {
@@ -449,22 +432,24 @@ mod tests {
             writer
                 .connection
                 .run(move |connection| {
-                    Box::pin(async move {
-                        let mut tx = connection.begin().await?;
+                    {
+                        let tx = rusqlite::Transaction::new_unchecked(
+                            connection,
+                            rusqlite::TransactionBehavior::Deferred,
+                        )?;
                         // Hold an uncommitted terminal on the actual writer while readers
                         // must still see the previously committed opening and event count.
                         crate::append::ingress::insert(
-                            &mut tx,
+                            &tx,
                             &pending_terminal,
                             serde_json::to_string(&pending_terminal)?,
                             crate::append::ingress::Position::Admitted,
-                        )
-                        .await?;
+                        )?;
                         entered.send(()).unwrap();
-                        gate.await.unwrap();
-                        tx.commit().await?;
+                        gate.blocking_recv().unwrap();
+                        tx.commit()?;
                         Ok(())
-                    })
+                    }
                 })
                 .await
         });

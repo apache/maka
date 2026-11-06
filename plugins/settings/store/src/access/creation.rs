@@ -48,54 +48,52 @@ impl ConfigurationStore {
             return Err(invalid("credential state does not match creation mode"));
         }
         self.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
-                let mut records = load(tx).await?;
-                if records.iter().any(|c| {
-                    c.credential_id == credential.credential_id
-                        || c.credential_hash == credential.credential_hash
-                }) {
-                    return Err(invalid("duplicate access credential identity or hash"));
-                }
-                if let Some(id) = owner_credential_id {
-                    let owner = records
-                        .iter()
-                        .find(|c| {
-                            c.credential_id == id
-                                && c.principal_kind == ManagedPrincipalKind::RemoteOwner
-                                && c.client_instance_id().is_some()
-                        })
-                        .ok_or_else(|| {
-                            invalid("capability owner must be an active bound remote owner")
-                        })?;
-                    credential.capability_owner = Some(CapabilityOwnerIdentity {
-                        principal_id: owner.principal_id.clone(),
-                        client_instance_id: owner.client_instance_id().unwrap().into(),
-                    });
-                }
-                validate(&credential)?;
-                let mut revoked = Vec::new();
-                records.retain(|c| {
-                    let remove = same_principal(c, &credential)
-                        && match mode {
-                            AccessCreateMode::Issue => false,
-                            AccessCreateMode::Replace => {
-                                !matches!(c.state, CredentialState::Revoked { .. })
-                            }
-                            AccessCreateMode::Prepare => {
-                                matches!(c.state, CredentialState::Pending { .. })
-                            }
-                        };
-                    if remove {
-                        revoked.push(c.credential_id.clone());
-                    }
-                    !remove
+            let mut records = load(tx)?;
+            if records.iter().any(|c| {
+                c.credential_id == credential.credential_id
+                    || c.credential_hash == credential.credential_hash
+            }) {
+                return Err(invalid("duplicate access credential identity or hash"));
+            }
+            if let Some(id) = owner_credential_id {
+                let owner = records
+                    .iter()
+                    .find(|c| {
+                        c.credential_id == id
+                            && c.principal_kind == ManagedPrincipalKind::RemoteOwner
+                            && c.client_instance_id().is_some()
+                    })
+                    .ok_or_else(|| {
+                        invalid("capability owner must be an active bound remote owner")
+                    })?;
+                credential.capability_owner = Some(CapabilityOwnerIdentity {
+                    principal_id: owner.principal_id.clone(),
+                    client_instance_id: owner.client_instance_id().unwrap().into(),
                 });
-                records.push(credential.clone());
-                save(tx, &records).await?;
-                Ok(AccessChange {
-                    value: credential,
-                    revoked,
-                })
+            }
+            validate(&credential)?;
+            let mut revoked = Vec::new();
+            records.retain(|c| {
+                let remove = same_principal(c, &credential)
+                    && match mode {
+                        AccessCreateMode::Issue => false,
+                        AccessCreateMode::Replace => {
+                            !matches!(c.state, CredentialState::Revoked { .. })
+                        }
+                        AccessCreateMode::Prepare => {
+                            matches!(c.state, CredentialState::Pending { .. })
+                        }
+                    };
+                if remove {
+                    revoked.push(c.credential_id.clone());
+                }
+                !remove
+            });
+            records.push(credential.clone());
+            save(tx, &records)?;
+            Ok(AccessChange {
+                value: credential,
+                revoked,
             })
         })
         .await

@@ -436,7 +436,7 @@ async fn cancellation_drains_bounded_reader_and_corruption_never_emits_success()
         let path = f
             .root
             .join("history-checkpoints/objects")
-            .join(first["bundle"]["digest"].as_str().unwrap());
+            .join(head["manifest"]["digest"].as_str().unwrap());
         std::fs::write(path, b"damaged").unwrap();
         assert!(
             read(&f.app, &f.issuer, &session, head["revision"].clone())

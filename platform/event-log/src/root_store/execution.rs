@@ -21,6 +21,7 @@ use super::*;
 use maka_agent_facts::workspace::{BindingRef, PermissionBasis};
 use maka_agent_facts::{event::Invocation, tools::ToolError};
 use maka_capabilities::call::{Resources, Scope, Ticket};
+use rusqlite::OptionalExtension;
 use std::sync::{Mutex, OnceLock};
 use tokio_util::sync::CancellationToken;
 
@@ -423,16 +424,16 @@ impl SessionStore {
         let reference: Option<BindingRef> = owner
             .connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let raw: Option<String> =
-                        sqlx::query_scalar("SELECT configuration FROM session_control WHERE id=?")
-                            .bind(id)
-                            .fetch_optional(connection)
-                            .await?;
-                    crate::workspace_bindings::attached(&serde_json::from_str(
-                        &raw.ok_or(StoreError::SessionNotFound)?,
-                    )?)
-                })
+                let raw: Option<String> = connection
+                    .query_row(
+                        "SELECT configuration FROM session_control WHERE id=?",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                crate::workspace_bindings::attached(&serde_json::from_str(
+                    &raw.ok_or(StoreError::SessionNotFound)?,
+                )?)
             })
             .await?;
         let binding = self
@@ -457,25 +458,24 @@ impl SessionStore {
         observed
             .connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    crate::sessions::removal::require_accepting(&mut tx, &id).await?;
-                    let available: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND archived=0)",
-                    )
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    if !available {
-                        return Err(StoreError::SessionRetired);
-                    }
-                    if crate::workspace_bindings::permission_basis(&mut tx, &id).await? != expected
-                    {
-                        return Err(StoreError::PermissionRevoked);
-                    }
-                    tx.rollback().await?;
-                    Ok(())
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                crate::sessions::removal::require_accepting(&tx, &id)?;
+                let available: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND archived=0)",
+                    rusqlite::params![&id],
+                    |row| row.get(0),
+                )?;
+                if !available {
+                    return Err(StoreError::SessionRetired);
+                }
+                if crate::workspace_bindings::permission_basis(&tx, &id)? != expected {
+                    return Err(StoreError::PermissionRevoked);
+                }
+                tx.rollback()?;
+                Ok(())
             })
             .await?;
         drop(observed);

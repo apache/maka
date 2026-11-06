@@ -23,7 +23,7 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::interaction::ClosureReason;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::entity_id;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::Connection;
 
 impl EventLog {
     pub async fn close_run_interactions(
@@ -50,7 +50,6 @@ impl EventLog {
         reason: ClosureReason,
         now: u64,
     ) -> Result<usize, StoreError> {
-        self.validate_root()?;
         let outcome = InteractionOutcome::Closure {
             reason,
             committed_at: now,
@@ -63,22 +62,25 @@ impl EventLog {
         );
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
                     let (count, approval_ready) =
-                        close_notified_in_transaction(&mut tx, scope.as_ref(), &outcome).await?;
+                        close_notified_in_transaction(&tx, scope.as_ref(), &outcome)?;
                     if count > 0 {
-                        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                        tx.commit().map_err(StoreError::CommitUnknown)?;
                         // Interaction facts wake observers without advancing the execution cursor.
                         commits.metadata();
                         if approval_ready {
                             commits.activations();
                         }
                     } else {
-                        tx.rollback().await?;
+                        tx.rollback()?;
                     }
                     Ok(count)
-                })
+                }
             })
             .await
     }
@@ -95,29 +97,27 @@ fn validate_scope(invocation: &Invocation) -> Result<(), StoreError> {
     Ok(())
 }
 
-pub(crate) async fn require_closed(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_closed(
+    connection: &Connection,
     invocation: &Invocation,
 ) -> Result<(), StoreError> {
     validate_scope(invocation)?;
-    if visit_pending(connection, Some(invocation), None).await?.0 > 0 {
+    if visit_pending(connection, Some(invocation), None)?.0 > 0 {
         return Err(invalid("cannot seal a Run with pending interactions"));
     }
     Ok(())
 }
 
-pub(crate) async fn close_in_transaction(
-    connection: &mut SqliteConnection,
+pub(crate) fn close_in_transaction(
+    connection: &Connection,
     scope: Option<&Invocation>,
     outcome: &InteractionOutcome,
 ) -> Result<usize, StoreError> {
-    Ok(close_notified_in_transaction(connection, scope, outcome)
-        .await?
-        .0)
+    Ok(close_notified_in_transaction(connection, scope, outcome)?.0)
 }
 
-pub(crate) async fn close_notified_in_transaction(
-    connection: &mut SqliteConnection,
+pub(crate) fn close_notified_in_transaction(
+    connection: &Connection,
     scope: Option<&Invocation>,
     outcome: &InteractionOutcome,
 ) -> Result<(usize, bool), StoreError> {
@@ -128,7 +128,7 @@ pub(crate) async fn close_notified_in_transaction(
     if let Some(scope) = scope {
         validate_scope(scope)?;
     }
-    visit_pending(connection, scope, Some(outcome)).await
+    visit_pending(connection, scope, Some(outcome))
 }
 
 pub(super) const PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
@@ -137,13 +137,12 @@ pub(super) const PENDING_ROOT_PAGE: &str = "SELECT request_id FROM interaction_p
     WHERE request_id > ? ORDER BY request_id LIMIT 64";
 pub(super) const ALL_PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
     WHERE session_id=?1 AND request_id>?2
-    UNION ALL SELECT request_id FROM root_app_pending WHERE session_id=?1 AND request_id>?2
     ORDER BY request_id LIMIT 64";
 
 /// Bound allocations independently of the number of requests in the root.
 /// Decode and validate source facts before deciding Run membership or closing.
-async fn visit_pending(
-    connection: &mut SqliteConnection,
+fn visit_pending(
+    connection: &Connection,
     scope: Option<&Invocation>,
     closure: Option<&InteractionOutcome>,
 ) -> Result<(usize, bool), StoreError> {
@@ -154,35 +153,36 @@ async fn visit_pending(
         // Separate statements keep Session closure an indexed Session seek,
         // while startup recovery pages the global active set only.
         let ids: Vec<String> = if let Some(scope) = scope {
-            sqlx::query_scalar(if closure.is_some() {
-                PENDING_SESSION_PAGE
-            } else {
-                ALL_PENDING_SESSION_PAGE
-            })
-            .bind(&scope.session_id)
-            .bind(&after)
-            .fetch_all(&mut *connection)
-            .await?
+            connection
+                .prepare_cached(if closure.is_some() {
+                    PENDING_SESSION_PAGE
+                } else {
+                    ALL_PENDING_SESSION_PAGE
+                })?
+                .query_map(rusqlite::params![&scope.session_id, &after], |row| {
+                    row.get(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
         } else {
-            sqlx::query_scalar(PENDING_ROOT_PAGE)
-                .bind(&after)
-                .fetch_all(&mut *connection)
-                .await?
+            connection
+                .prepare_cached(PENDING_ROOT_PAGE)?
+                .query_map(rusqlite::params![&after], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?
         };
         if ids.is_empty() {
             return Ok((count, approval_ready));
         }
         for id in &ids {
             if scope.is_none() && closure.is_some() {
-                let preserved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1)").bind(id).fetch_one(&mut *connection).await?;
+                let preserved:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1)", rusqlite::params![id], |row| row.get(0))?;
                 if preserved {
                     continue;
                 }
             }
             let record = if closure.is_some() {
-                read_local(connection, id).await?
+                read_local(connection, id)?
             } else {
-                read_scoped(connection, id, scope.map(|scope| scope.session_id.as_str())).await?
+                read_scoped(connection, id, scope.map(|scope| scope.session_id.as_str()))?
             }
             .ok_or_else(|| invalid("stored interaction disappeared"))?;
             if let Some(scope) = scope
@@ -198,15 +198,13 @@ async fn visit_pending(
             closure
                 .validate_for_request(&record.request)
                 .map_err(invalid)?;
-            sqlx::query("INSERT INTO interaction_outcomes VALUES (?, ?)")
-                .bind(id)
-                .bind(encode(closure)?)
-                .execute(&mut *connection)
-                .await?;
-            approval_ready |=
-                crate::native_approvals::waits_for_interaction(connection, id).await?;
+            connection.execute(
+                "INSERT INTO interaction_outcomes VALUES (?, ?)",
+                rusqlite::params![id, encode(closure)?],
+            )?;
+            approval_ready |= crate::native_approvals::waits_for_interaction(connection, id)?;
             count += 1;
-            crate::sessions::advance_revision(connection, &record.session_id).await?;
+            crate::sessions::advance_revision(connection, &record.session_id)?;
         }
         after = ids.last().expect("nonempty page").clone();
     }

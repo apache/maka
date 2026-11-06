@@ -23,8 +23,8 @@ use crate::{EventLog, StoreError, root::RootOwner};
 use maka_plugin_core::{
     composition::InstanceId, deployment::DeploymentRef, operation::RecoveryRef,
 };
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, Row, SqliteConnection};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -103,19 +103,21 @@ fn consumer_valid(consumer: &InstanceId) -> Result<(), StoreError> {
         .map_err(|error| invalid(error.to_string()))
 }
 
-async fn read(
-    connection: &mut SqliteConnection,
+fn read(
+    connection: &Connection,
     domain: &str,
     deployment: Uuid,
     consumer: &InstanceId,
     operation: Uuid,
 ) -> Result<Option<CallerIntent>, StoreError> {
-    let row = sqlx::query("SELECT cursor, source_revision, reference_json, recovery_json FROM application_intents WHERE deployment=? AND consumer=? AND operation=?")
-        .bind(deployment.to_string()).bind(serde_json::to_string(consumer)?).bind(operation.to_string()).fetch_optional(connection).await?;
-    row.map(|row| {
-        let reference: RecoveryRef =
-            serde_json::from_str(&row.try_get::<String, _>("reference_json")?)?;
-        let recovery = serde_json::from_str(&row.try_get::<String, _>("recovery_json")?)?;
+    let row = connection.query_row(
+        "SELECT cursor, source_revision, reference_json, recovery_json FROM application_intents WHERE deployment=? AND consumer=? AND operation=?",
+        params![deployment.to_string(), serde_json::to_string(consumer)?, operation.to_string()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+    ).optional()?;
+    row.map(|(cursor, source_revision, reference_json, recovery_json)| {
+        let reference: RecoveryRef = serde_json::from_str(&reference_json)?;
+        let recovery = serde_json::from_str(&recovery_json)?;
         reference.validate().map_err(|e| invalid(e.to_string()))?;
         if reference.operation != operation {
             return Err(StoreError::EventConflict);
@@ -123,10 +125,9 @@ async fn read(
         let caller = DeploymentRef {
             state_domain: domain.into(),
             deployment,
-            revision: row.try_get::<i64, _>("source_revision")? as u64,
+            revision: source_revision as u64,
         };
         caller.validate().map_err(invalid)?;
-        let cursor = row.try_get::<i64, _>("cursor")?;
         if cursor <= 0 {
             return Err(invalid("invalid caller intent cursor"));
         }
@@ -155,11 +156,7 @@ impl EventLog {
             return Err(invalid("invalid caller intent identity"));
         }
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    read(connection, &domain, deployment, &consumer, operation).await
-                })
-            })
+            .read(move |connection| read(connection, &domain, deployment, &consumer, operation))
             .await
     }
 
@@ -255,29 +252,40 @@ impl EventLog {
         if deployment.is_nil() || after > i64::MAX as u64 || !(1..=128).contains(&limit) {
             return Err(invalid("invalid caller intent page"));
         }
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin().await?;
-            let mut query = sqlx::QueryBuilder::new("SELECT CASE WHEN length(CAST(operation AS BLOB)) = 36 THEN operation END AS operation, consumer FROM application_intents WHERE deployment=");
-            query.push_bind(deployment.to_string());
-            if let Some(consumer) = &consumer { query.push(" AND consumer=").push_bind(serde_json::to_string(consumer)?); }
-            query.push(" AND cursor>").push_bind(after as i64).push(" ORDER BY cursor LIMIT ").push_bind(limit as i64);
-            let operations = query.build().fetch_all(&mut *tx).await?;
+        self.connection.read(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+            let consumer = consumer.as_ref().map(serde_json::to_string).transpose()?;
+            let sql = if consumer.is_some() {
+                "SELECT CASE WHEN length(CAST(operation AS BLOB)) = 36 THEN operation END AS operation, consumer FROM application_intents WHERE deployment=?1 AND cursor>?2 AND consumer=?4 ORDER BY cursor LIMIT ?3"
+            } else {
+                "SELECT CASE WHEN length(CAST(operation AS BLOB)) = 36 THEN operation END AS operation, consumer FROM application_intents WHERE deployment=?1 AND cursor>?2 ORDER BY cursor LIMIT ?3"
+            };
+            let operations = {
+                let mut statement = tx.prepare_cached(sql)?;
+                let decode = |row: &rusqlite::Row<'_>| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?));
+                let rows = if let Some(consumer) = consumer {
+                    statement.query_map(params![deployment.to_string(), after as i64, limit as i64, consumer], decode)?
+                } else {
+                    statement.query_map(params![deployment.to_string(), after as i64, limit as i64], decode)?
+                };
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
             let mut intents = Vec::with_capacity(operations.len());
             let mut bytes = 2; // The complete array, including brackets and commas.
-            for row in operations {
-                let operation = row.try_get::<Option<String>, _>("operation")?.ok_or_else(|| invalid("invalid caller operation"))?;
-                let consumer: InstanceId = serde_json::from_str(&row.try_get::<Option<String>, _>("consumer")?.ok_or_else(|| invalid("invalid caller consumer"))?)?;
+            for (operation, consumer) in operations {
+                let operation = operation.ok_or_else(|| invalid("invalid caller operation"))?;
+                let consumer: InstanceId = serde_json::from_str(&consumer.ok_or_else(|| invalid("invalid caller consumer"))?)?;
                 consumer_valid(&consumer)?;
-                let intent = read(&mut tx,&domain,deployment,&consumer,Uuid::parse_str(&operation).map_err(|_| invalid("invalid caller operation"))?).await?.ok_or_else(|| invalid("caller intent disappeared"))?;
+                let intent = read(&tx,&domain,deployment,&consumer,Uuid::parse_str(&operation).map_err(|_| invalid("invalid caller operation"))?)?.ok_or_else(|| invalid("caller intent disappeared"))?;
                 let encoded = serde_json::to_string(&intent)?;
                 let size = encoded.len() + usize::from(!intents.is_empty());
                 if !intents.is_empty() && size > MAX_PAGE.saturating_sub(bytes) { break; }
                 bytes += size;
                 intents.push(intent);
             }
-            tx.commit().await?;
+            tx.commit()?;
             Ok(intents)
-        })).await
+        }).await
     }
 }
 
@@ -303,52 +311,47 @@ impl crate::writeback::Statement for WriteIntent {
     type Output = RecordedIntent;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<Self::Value>, StoreError>>
-    {
-        Box::pin(async move {
-            let Self {
-                domain,
+        connection: &Connection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        let Self {
+            domain,
+            caller,
+            consumer,
+            reference,
+            recovery,
+            encoded,
+            encoded_recovery,
+            owner,
+        } = self;
+        let old = read(
+            connection,
+            &domain,
+            caller.deployment,
+            &consumer,
+            reference.operation,
+        )?;
+        let changed = old.is_none();
+        let intent = if let Some(old) = old {
+            if old.reference != reference || old.recovery != recovery {
+                return Err(StoreError::EventConflict);
+            }
+            // The first source and original reference survive later caller updates.
+            old
+        } else {
+            super::operations::require_source(connection, &caller)?;
+            connection.execute("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,recovery_json) VALUES (?,?,?,?,?,?)", params![caller.deployment.to_string(), serde_json::to_string(&consumer)?, reference.operation.to_string(), caller.revision as i64, encoded, encoded_recovery])?;
+            CallerIntent {
+                cursor: connection.last_insert_rowid() as u64,
                 caller,
                 consumer,
                 reference,
                 recovery,
-                encoded,
-                encoded_recovery,
-                owner,
-            } = self;
-            let old = read(
-                connection,
-                &domain,
-                caller.deployment,
-                &consumer,
-                reference.operation,
-            )
-            .await?;
-            let changed = old.is_none();
-            let intent = if let Some(old) = old {
-                if old.reference != reference || old.recovery != recovery {
-                    return Err(StoreError::EventConflict);
-                }
-                // The first source and original reference survive later caller updates.
-                old
-            } else {
-                super::operations::require_source(connection, &caller).await?;
-                let result = sqlx::query("INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json,recovery_json) VALUES (?,?,?,?,?,?)")
-                    .bind(caller.deployment.to_string()).bind(serde_json::to_string(&consumer)?).bind(reference.operation.to_string()).bind(caller.revision as i64).bind(encoded).bind(encoded_recovery).execute(&mut *connection).await?;
-                CallerIntent {
-                    cursor: result.last_insert_rowid() as u64,
-                    caller,
-                    consumer,
-                    reference,
-                    recovery,
-                }
-            };
-            Ok(crate::writeback::Prepared {
-                value: IntentValue { intent, owner },
-                changed,
-                notification: crate::writeback::Notification::Metadata,
-            })
+            }
+        };
+        Ok(crate::writeback::Prepared {
+            value: IntentValue { intent, owner },
+            changed,
+            notification: crate::writeback::Notification::Metadata,
         })
     }
     fn committed(IntentValue { intent, owner }: Self::Value) -> Self::Output {

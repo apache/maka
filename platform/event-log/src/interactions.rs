@@ -35,7 +35,7 @@ use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::SessionGrant;
 use maka_agent_facts::interaction::entity_id;
 use records::{invalid, read_local};
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 /// A conflicting retry returns the actual canonical fact, never the candidate.
 pub struct InteractionCommit {
@@ -72,7 +72,6 @@ impl EventLog {
         request: &InteractionRecord,
         invocation: Option<maka_agent_facts::event::Invocation>,
     ) -> Result<InteractionCommit, StoreError> {
-        self.validate_root()?;
         request.validate().map_err(invalid)?;
         if matches!(request.request, InteractionRequest::ComputerApp { .. }) {
             return Err(invalid("computer application consent is owned by the Root"));
@@ -87,47 +86,44 @@ impl EventLog {
         let commits = self.commits.session(&request.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    require_local_identity(&mut tx, &request.request_id, &request.session_id)
-                        .await?;
-                    if let Some(mut record) = read_local(&mut tx, &request.request_id).await? {
-                        Self::require_session_scope(
-                            expected_session.as_deref(),
-                            &record.session_id,
-                        )?;
-                        let outcome = record.outcome.take();
-                        let matches = record == request;
-                        record.outcome = outcome;
-                        return Ok(InteractionCommit { matches, record });
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                require_local_identity(&tx, &request.request_id, &request.session_id)?;
+                if let Some(mut record) = read_local(&tx, &request.request_id)? {
+                    Self::require_session_scope(expected_session.as_deref(), &record.session_id)?;
+                    let outcome = record.outcome.take();
+                    let matches = record == request;
+                    record.outcome = outcome;
+                    return Ok(InteractionCommit { matches, record });
+                }
+                crate::sessions::removal::require_accepting(&tx, &request.session_id)?;
+                if let Some(invocation) = invocation {
+                    let turn = crate::turns::read(&tx, &request.session_id, None)?
+                        .ok_or_else(|| invalid("interaction invocation is unavailable"))?;
+                    if turn.invocation != invocation
+                        || matches!(turn.state, crate::turns::InvocationState::Ended { .. })
+                    {
+                        return Err(invalid("interaction invocation is no longer active"));
                     }
-                    crate::sessions::removal::require_accepting(&mut tx, &request.session_id)
-                        .await?;
-                    if let Some(invocation) = invocation {
-                        let turn = crate::turns::read(&mut tx, &request.session_id, None)
-                            .await?
-                            .ok_or_else(|| invalid("interaction invocation is unavailable"))?;
-                        if turn.invocation != invocation
-                            || matches!(turn.state, crate::turns::InvocationState::Ended { .. })
-                        {
-                            return Err(invalid("interaction invocation is no longer active"));
-                        }
-                    }
-                    permissions::require_revision(&mut tx, &request).await?;
-                    sqlx::query("INSERT INTO interaction_requests VALUES (?, ?, ?, ?)")
-                        .bind(&request.request_id)
-                        .bind(&request.session_id)
-                        .bind(request.created_at as i64)
-                        .bind(encoded)
-                        .execute(&mut *tx)
-                        .await?;
-                    crate::sessions::advance_revision(&mut tx, &request.session_id).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.metadata();
-                    Ok(InteractionCommit {
-                        matches: true,
-                        record: request,
-                    })
+                }
+                permissions::require_revision(&tx, &request)?;
+                tx.execute(
+                    "INSERT INTO interaction_requests VALUES (?, ?, ?, ?)",
+                    rusqlite::params![
+                        &request.request_id,
+                        &request.session_id,
+                        request.created_at as i64,
+                        encoded
+                    ],
+                )?;
+                crate::sessions::advance_revision(&tx, &request.session_id)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.metadata();
+                Ok(InteractionCommit {
+                    matches: true,
+                    record: request,
                 })
             })
             .await
@@ -140,7 +136,6 @@ impl EventLog {
         request_id: &str,
         outcome: InteractionOutcome,
     ) -> Result<InteractionCommit, StoreError> {
-        self.validate_root()?;
         entity_id(request_id).map_err(invalid)?;
         outcome.validate().map_err(invalid)?;
         if matches!(outcome, InteractionOutcome::ComputerAppDecision { .. }) {
@@ -151,13 +146,13 @@ impl EventLog {
         let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let mut record = read_local(&mut tx, &request_id)
-                        .await?
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+                    let mut record = read_local(&tx, &request_id)
+                        ?
                         .ok_or_else(|| invalid("interaction request not found"))?;
                     Self::require_session_scope(expected_session.as_deref(), &record.session_id)?;
-                    require_local_identity(&mut tx, &request_id, &record.session_id).await?;
+                    require_local_identity(&tx, &request_id, &record.session_id)?;
                     if matches!(record.request, InteractionRequest::ComputerApp { .. }) {
                         return Err(invalid("computer application consent is owned by the Root"));
                     }
@@ -179,13 +174,10 @@ impl EventLog {
                         | InteractionOutcome::ClientCapabilityDecision { decision: Decision::Allow, .. }
                         | InteractionOutcome::SessionApprovalDecision { decision: Decision::Allow, .. }
                     ) {
-                        permissions::require_revision(&mut tx, &record).await?;
+                        permissions::require_revision(&tx, &record)?;
                     }
-                    sqlx::query("INSERT INTO interaction_outcomes VALUES (?, ?)")
-                        .bind(&request_id)
-                        .bind(records::encode(&outcome)?)
-                        .execute(&mut *tx)
-                        .await?;
+                    tx.execute("INSERT INTO interaction_outcomes VALUES (?, ?)", rusqlite::params![&request_id, records::encode(&outcome)?])
+                        ?;
                     if let InteractionOutcome::ClientCapabilityDecision {
                         decision: Decision::Allow,
                         committed_at,
@@ -201,29 +193,24 @@ impl EventLog {
                             granted_at: *committed_at,
                             basis: *basis,
                         };
-                        sqlx::query(
-                            "INSERT INTO client_capability_session_grants VALUES (?, ?)
+                        tx.execute("INSERT INTO client_capability_session_grants VALUES (?, ?)
                              ON CONFLICT(authority_key) DO UPDATE SET record_json=excluded.record_json
                              WHERE json_type(excluded.record_json,'$.basis')='object'
-",
-                        )
-                        .bind(records::authority_key(&grant.session_id, &grant.target)?)
-                        .bind(records::encode(&grant)?)
-                        .execute(&mut *tx)
-                        .await?;
+", rusqlite::params![records::authority_key(&grant.session_id, &grant.target)?, records::encode(&grant)?])
+                        ?;
                     }
-                    let approval_ready = crate::native_approvals::waits_for_interaction(&mut tx, &request_id).await?;
+                    let approval_ready = crate::native_approvals::waits_for_interaction(&tx, &request_id)?;
                     let commits = commits.for_session(&record.session_id);
                     record.outcome = Some(outcome);
-                    crate::sessions::advance_revision(&mut tx, &record.session_id).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    crate::sessions::advance_revision(&tx, &record.session_id)?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
                     if approval_ready { commits.activations(); }
                     Ok(InteractionCommit {
                         matches: true,
                         record,
                     })
-                })
+                }
             })
             .await
     }
@@ -232,24 +219,17 @@ impl EventLog {
         &self,
         request_id: &str,
     ) -> Result<Option<InteractionRecord>, StoreError> {
-        self.validate_root()?;
         entity_id(request_id).map_err(invalid)?;
         let expected_session = self.expected_session.clone();
         let request_id = request_id.to_owned();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let record =
-                        records::read_scoped(connection, &request_id, expected_session.as_deref())
-                            .await?;
-                    if let Some(record) = &record {
-                        Self::require_session_scope(
-                            expected_session.as_deref(),
-                            &record.session_id,
-                        )?;
-                    }
-                    Ok(record)
-                })
+                let record =
+                    records::read_scoped(connection, &request_id, expected_session.as_deref())?;
+                if let Some(record) = &record {
+                    Self::require_session_scope(expected_session.as_deref(), &record.session_id)?;
+                }
+                Ok(record)
             })
             .await
     }
@@ -258,17 +238,17 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Vec<InteractionRecord>, StoreError> {
-        self.validate_root()?;
         entity_id(session_id).map_err(invalid)?;
         let session_id = session_id.to_owned();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let result = pending(&mut tx, &session_id).await?;
-                    tx.commit().await?;
-                    Ok(result)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = pending(&tx, &session_id)?;
+                tx.commit()?;
+                Ok(result)
             })
             .await
     }
@@ -278,34 +258,29 @@ impl EventLog {
         session_id: &str,
         target: &GrantTarget,
     ) -> Result<Option<SessionGrant>, StoreError> {
-        self.validate_root()?;
         let session_id = session_id.to_owned();
         let target = target.clone();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let result = capability_grant(&mut tx, &session_id, &target).await?;
-                    tx.commit().await?;
-                    Ok(result)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = capability_grant(&tx, &session_id, &target)?;
+                tx.commit()?;
+                Ok(result)
             })
             .await
     }
 }
 
-async fn require_local_identity(
-    connection: &mut sqlx::SqliteConnection,
+fn require_local_identity(
+    connection: &rusqlite::Connection,
     request_id: &str,
     session_id: &str,
 ) -> Result<(), StoreError> {
-    let root: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM root_app_requests WHERE request_id=? AND session_id=?)",
-    )
-    .bind(request_id)
-    .bind(session_id)
-    .fetch_one(connection)
-    .await?;
+    let root: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM interaction_requests WHERE request_id=? AND session_id=? AND json_extract(record_json,'$.request.kind')='computer_app')", rusqlite::params![request_id, session_id], |row| row.get(0))
+    ?;
     if root {
         return Err(invalid("interaction identity belongs to the Root"));
     }
@@ -313,18 +288,19 @@ async fn require_local_identity(
 }
 
 /// Original grant and current permission boundary observed in one transaction.
-pub(crate) async fn capability_grant(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn capability_grant(
+    connection: &rusqlite::Connection,
     session: &str,
     target: &GrantTarget,
 ) -> Result<Option<SessionGrant>, StoreError> {
     let key = records::authority_key(session, target)?;
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT record_json FROM client_capability_session_grants WHERE authority_key = ?",
-    )
-    .bind(&key)
-    .fetch_optional(&mut *connection)
-    .await?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record_json FROM client_capability_session_grants WHERE authority_key = ?",
+            rusqlite::params![&key],
+            |row| row.get(0),
+        )
+        .optional()?;
     let Some(raw) = raw else {
         return Ok(None);
     };
@@ -334,7 +310,7 @@ pub(crate) async fn capability_grant(
         return Err(invalid("stored Session grant authority changed"));
     }
     if let Some(basis) = grant.basis
-        && crate::workspace_bindings::permission_basis(connection, session).await? != Some(basis)
+        && crate::workspace_bindings::permission_basis(connection, session)? != Some(basis)
     {
         return Ok(None);
     }
@@ -343,23 +319,21 @@ pub(crate) async fn capability_grant(
 
 const PENDING_INTERACTIONS: &str = "SELECT request_id,created_at FROM interaction_pending
     WHERE session_id=?1
-    UNION ALL SELECT request_id,created_at FROM root_app_pending WHERE session_id=?1
     ORDER BY created_at,request_id";
 
 /// Read inside the caller's observation transaction for a coherent projection.
-pub(crate) async fn pending(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn pending(
+    connection: &rusqlite::Connection,
     session_id: &str,
 ) -> Result<Vec<InteractionRecord>, StoreError> {
-    let ids: Vec<String> = sqlx::query_scalar(PENDING_INTERACTIONS)
-        .bind(session_id)
-        .fetch_all(&mut *connection)
-        .await?;
+    let ids: Vec<String> = connection
+        .prepare_cached(PENDING_INTERACTIONS)?
+        .query_map(rusqlite::params![session_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     let mut records = Vec::with_capacity(ids.len());
     for id in ids {
         records.push(
-            records::read_scoped(connection, &id, Some(session_id))
-                .await?
+            records::read_scoped(connection, &id, Some(session_id))?
                 .ok_or_else(|| invalid("stored interaction disappeared"))?,
         );
     }

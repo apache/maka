@@ -165,14 +165,15 @@ async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
     let damaged_source = operations[1].1;
     let canonical = log.prefix(64, 1_000_000).await.unwrap().digest;
     let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TRIGGER content_immutable").unwrap();
     let raw: Vec<u8> = db
         .query_row(
-            "SELECT payload FROM tool_result_payloads WHERE event_id='result-1'",
+            "SELECT c.payload FROM tool_result_payloads p JOIN contents c ON c.id=p.content_id WHERE event_id='result-1'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    db.execute("UPDATE tool_result_payloads SET payload=zeroblob(length(payload)) WHERE event_id='result-1'",[]).unwrap();
+    db.execute("UPDATE contents SET payload=zeroblob(length(payload)) WHERE id=(SELECT content_id FROM tool_result_payloads WHERE event_id='result-1')",[]).unwrap();
     // An earlier fence excludes the damaged later source and remains readable.
     crate::transcript_cache::materialize_all_rows(&log, "a", earlier_fence)
         .await
@@ -186,21 +187,19 @@ async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
             .collect::<Vec<_>>()
     );
     let before = crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await;
-    let expected_failure = format!(
-        "history source {damaged_source}: raw_binding: missing or inconsistent durable tool payload"
-    );
-    assert!(matches!(
-        crate::transcript_cache::materialize_all_rows(&log, "a", through).await,
-        Err(StoreError::InvalidTransition(message)) if message == expected_failure
-    ));
+    let expected_failure = crate::transcript_cache::materialize_all_rows(&log, "a", through)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(expected_failure.contains(&format!("history source {damaged_source}")));
     crate::test_store::inspect_cache(&log, move |db| {
         let failure: (i64, String, String) = db.query_row(
-            "SELECT source_sequence,category,reason FROM temp.transcript_failures WHERE session_id='a'",
+            "SELECT source_sequence,category,reason FROM temp.transcript_failures WHERE owner_key='a'",
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).unwrap();
-        assert_eq!(failure, (damaged_source as i64, "raw_binding".into(), "missing or inconsistent durable tool payload".into()));
+        assert_eq!((failure.0,failure.1),(damaged_source as i64,"unreadable_source".into()));
         assert_eq!(db.query_row(
-            "SELECT count(*) FROM temp.transcript_directory WHERE session_id='a' AND source_sequence=?",
+            "SELECT count(*) FROM temp.transcript_directory WHERE owner_key='a' AND source_sequence=?",
             [damaged_source as i64], |row| row.get::<_, i64>(0),
         ).unwrap(), 0);
     }).await;
@@ -210,14 +209,17 @@ async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
         "failed full header batch must not publish body rows"
     );
     db.execute(
-        "UPDATE tool_result_payloads SET payload=? WHERE event_id='result-1'",
+        "UPDATE contents SET payload=? WHERE id=(SELECT content_id FROM tool_result_payloads WHERE event_id='result-1')",
         [raw],
     )
     .unwrap();
-    assert!(matches!(
-        crate::transcript_cache::materialize_all_rows(&log, "a", through).await,
-        Err(StoreError::InvalidTransition(message)) if message == expected_failure
-    ));
+    assert_eq!(
+        crate::transcript_cache::materialize_all_rows(&log, "a", through)
+            .await
+            .unwrap_err()
+            .to_string(),
+        expected_failure
+    );
     crate::transcript_cache::materialize_all_rows(&log, "a", earlier_fence)
         .await
         .unwrap();

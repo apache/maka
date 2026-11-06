@@ -20,7 +20,7 @@
 use super::{MessageQueue, QueueChange, QueueEdit, invalid};
 use crate::{StoreError, message_admissions::PendingMessageAdmission};
 use maka_agent_facts::message::MessageDisposition as Disposition;
-use sqlx::SqliteConnection;
+use rusqlite::Connection;
 use std::collections::HashMap;
 
 pub(crate) struct Applied {
@@ -28,8 +28,8 @@ pub(crate) struct Applied {
     pub changed: bool,
 }
 
-pub(crate) async fn apply(
-    tx: &mut SqliteConnection,
+pub(crate) fn apply(
+    tx: &Connection,
     session: &str,
     mut queue: MessageQueue,
     edit: QueueEdit,
@@ -69,12 +69,9 @@ pub(crate) async fn apply(
             if queue.entries[index].source.disposition != Disposition::Followup {
                 return Err(invalid("message is already steering"));
             }
-            let active: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM local_runtime_events o WHERE o.kind = 'invocation_opened'
+            let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM local_runtime_events o WHERE o.kind = 'invocation_opened'
                  AND o.invocation_id = ? AND json_extract(o.event_header, '$.invocation') = json(?)
-                 AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id = o.invocation_id AND t.kind = 'invocation_ended'))"
-            ).bind(&invocation.invocation_id).bind(serde_json::to_string(&invocation)?)
-                .fetch_one(&mut *tx).await?;
+                 AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id = o.invocation_id AND t.kind = 'invocation_ended'))", rusqlite::params![&invocation.invocation_id, serde_json::to_string(&invocation)?], |row| row.get(0))?;
             if !active {
                 return Err(invalid("no active Run can accept steering"));
             }
@@ -160,19 +157,14 @@ pub(crate) async fn apply(
     };
     if changed {
         for entry in &retracted {
-            sqlx::query("INSERT INTO message_cancellations(session_id, message_id, cancellation_id) VALUES (?, ?, ?)")
-                .bind(session).bind(&entry.source.message.message_id)
-                .bind(cancellation.as_deref().expect("retraction claim")).execute(&mut *tx).await?;
-            sqlx::query("DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?")
-                .bind(session)
-                .bind(&entry.source.message.message_id)
-                .execute(&mut *tx)
-                .await?;
+            tx.execute("INSERT INTO message_cancellations(session_id, message_id, cancellation_id) VALUES (?, ?, ?)", rusqlite::params![session, &entry.source.message.message_id, cancellation.as_deref().expect("retraction claim")])?;
+            tx.execute(
+                "DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?",
+                rusqlite::params![session, &entry.source.message.message_id],
+            )?;
         }
         for (index, entry) in queue.entries.iter().enumerate() {
-            sqlx::query("UPDATE message_admissions SET position = ?, record_json = ? WHERE session_id = ? AND message_id = ?")
-                .bind(index as i64 + 1).bind(serde_json::to_string(entry)?)
-                .bind(session).bind(&entry.source.message.message_id).execute(&mut *tx).await?;
+            tx.execute("UPDATE message_admissions SET position = ?, record_json = ? WHERE session_id = ? AND message_id = ?", rusqlite::params![index as i64 + 1, serde_json::to_string(entry)?, session, &entry.source.message.message_id])?;
         }
     }
     Ok(Applied {

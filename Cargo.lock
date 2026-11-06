@@ -1078,23 +1078,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bindgen"
-version = "0.73.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
-dependencies = [
- "bitflags 2.13.2",
- "cexpr",
- "clang-sys",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 2.1.3",
- "shlex 2.0.1",
- "syn 3.0.9",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7105,7 +7088,6 @@ version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0e7f1cd558a82cc3af091ed13f0f03846f89851c60a10713ce5cfd484195494"
 dependencies = [
- "bindgen 0.73.2",
  "cc",
  "pkg-config",
  "vcpkg",
@@ -7676,6 +7658,7 @@ dependencies = [
  "nsh-platform-tui",
  "ratatui",
  "reqwest",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",
@@ -7800,7 +7783,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sqlx",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
@@ -7878,6 +7860,8 @@ dependencies = [
 name = "maka-event-log"
 version = "0.2.0"
 dependencies = [
+ "async-channel",
+ "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
  "futures-util",
@@ -7898,13 +7882,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sqlx",
- "sqlx-core",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "unicode-normalization",
+ "url",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -8078,6 +8061,7 @@ dependencies = [
  "maka-process",
  "maka-sandbox",
  "reqwest",
+ "rusqlite",
  "schemars 1.2.3",
  "serde",
  "serde_json",

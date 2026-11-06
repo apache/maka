@@ -153,7 +153,7 @@ pub(super) type Row = (RowPosition, Vec<u8>, String, i64);
 pub(super) fn rows(db: &Connection, session: &str) -> Vec<Row> {
     db.prepare(
         "SELECT source_sequence, item_index, payload, digest, total_bytes FROM temp.transcript_rows
-        WHERE session_id = ? ORDER BY source_sequence, item_index",
+        WHERE owner_key = ? ORDER BY source_sequence, item_index",
     )
     .unwrap()
     .query_map([session], |row| {

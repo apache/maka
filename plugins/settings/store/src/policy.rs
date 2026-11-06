@@ -28,7 +28,7 @@ use maka_agent_facts::configuration::policy::RuntimePolicySnapshot;
 use maka_agent_facts::configuration::policy::decode_canonical_snapshot;
 use maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER;
 use maka_agent_facts::configuration::validation::revision;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 
 impl ConfigurationStore {
     pub async fn set_message_predictions(
@@ -77,10 +77,8 @@ impl ConfigurationStore {
     }
     /// Reads the root policy without materializing defaults into persistence.
     pub async fn runtime_policy(&self) -> Result<RuntimePolicySnapshot> {
-        self.transaction(TransactionMode::Deferred, |connection| {
-            Box::pin(read(connection))
-        })
-        .await
+        self.transaction(TransactionMode::Deferred, |connection| read(connection))
+            .await
     }
 
     /// Replaces chat defaults in the same root-owned transaction as its CAS.
@@ -152,54 +150,48 @@ impl ConfigurationStore {
     ) -> Result<RuntimePolicyMutationResult> {
         revision(expected_revision, false).map_err(ConfigError::Invalid)?;
         self.transaction(TransactionMode::Immediate, move |connection| {
-            Box::pin(async move {
-                let mut snapshot = read(connection).await?;
-                if snapshot.revision != expected_revision {
-                    return Ok(RuntimePolicyMutationResult::RevisionConflict {
-                        expected_revision,
-                        actual_revision: snapshot.revision,
-                    });
-                }
-                if snapshot.revision == MAX_SAFE_INTEGER {
-                    return Err(ConfigError::Invalid(
-                        "runtime policy revision exhausted".into(),
-                    ));
-                }
-                snapshot.revision += 1;
-                let previous_proxy = snapshot.policy.network_proxy.clone();
-                update(&mut snapshot.policy);
-                if !maka_agent_facts::configuration::policy::network_update::same_route(
-                    &previous_proxy,
-                    &snapshot.policy.network_proxy,
-                ) {
-                    crate::network::invalidate_tests(connection).await?;
-                }
-                write(connection, &snapshot).await?;
-                Ok(RuntimePolicyMutationResult::Committed {
-                    revision: snapshot.revision,
-                })
+            let mut snapshot = read(connection)?;
+            if snapshot.revision != expected_revision {
+                return Ok(RuntimePolicyMutationResult::RevisionConflict {
+                    expected_revision,
+                    actual_revision: snapshot.revision,
+                });
+            }
+            if snapshot.revision == MAX_SAFE_INTEGER {
+                return Err(ConfigError::Invalid(
+                    "runtime policy revision exhausted".into(),
+                ));
+            }
+            snapshot.revision += 1;
+            let previous_proxy = snapshot.policy.network_proxy.clone();
+            update(&mut snapshot.policy);
+            if !maka_agent_facts::configuration::policy::network_update::same_route(
+                &previous_proxy,
+                &snapshot.policy.network_proxy,
+            ) {
+                crate::network::invalidate_tests(connection)?;
+            }
+            write(connection, &snapshot)?;
+            Ok(RuntimePolicyMutationResult::Committed {
+                revision: snapshot.revision,
             })
         })
         .await
     }
 }
 
-pub(crate) async fn write(
-    connection: &mut SqliteConnection,
-    snapshot: &RuntimePolicySnapshot,
-) -> Result<()> {
+pub(crate) fn write(connection: &Connection, snapshot: &RuntimePolicySnapshot) -> Result<()> {
     snapshot.validate().map_err(ConfigError::Invalid)?;
     let document = serde_json::to_string(snapshot)?;
-    sqlx::query("INSERT INTO runtime_policy(singleton, document) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET document = excluded.document")
-        .bind(document).execute(connection).await?;
+    connection.execute("INSERT INTO runtime_policy(singleton, document) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET document = excluded.document", rusqlite::params![document])?;
     Ok(())
 }
 
-pub(crate) async fn read(connection: &mut SqliteConnection) -> Result<RuntimePolicySnapshot> {
-    let document: Option<String> =
-        sqlx::query_scalar("SELECT document FROM runtime_policy WHERE singleton = 1")
-            .fetch_optional(connection)
-            .await?;
+pub(crate) fn read(connection: &Connection) -> Result<RuntimePolicySnapshot> {
+    let document: Option<String> = connection
+        .prepare_cached("SELECT document FROM runtime_policy WHERE singleton = 1")?
+        .query_row(rusqlite::params![], |row| row.get(0))
+        .optional()?;
     let Some(document) = document else {
         return Ok(RuntimePolicySnapshot {
             revision: 0,

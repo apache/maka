@@ -386,3 +386,91 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
     }
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn completed_answers_preserve_absence_and_accept_the_exact_end_cursor() {
+    let temp = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&temp.path().join("answers.sqlite"))
+        .await
+        .unwrap();
+    for (session, text) in [("empty", ""), ("answer", "中🙂")] {
+        let record = ModelPartRecord {
+            ordinal: 0,
+            message_id: format!("message-{session}"),
+            started_at: std::time::UNIX_EPOCH,
+            provider_part_id: None,
+            part: Arc::new(ModelPart::Text {
+                text_kind: TextKind::Text,
+                text: text.into(),
+                provider_options: None,
+            }),
+        };
+        for mut fact in [
+            opening(),
+            request(false),
+            Fact::ModelCompleted {
+                step_id: "step".into(),
+                output: ModelCompletion {
+                    compaction: None,
+                    parts: vec![CompletionPart::Own(record)],
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: Default::default(),
+                    provider_options: None,
+                    response_id: None,
+                    model: None,
+                    timestamp: None,
+                },
+            },
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Completed,
+            },
+        ] {
+            if let Fact::ModelRequested { step_id, .. } | Fact::ModelCompleted { step_id, .. } =
+                &mut fact
+            {
+                *step_id = format!("step-{session}");
+            }
+            log.append(&EventWrite::plain(event(session, fact)).unwrap())
+                .await
+                .unwrap();
+        }
+        for offset in [0, text.len() as u64] {
+            let observed = log
+                .work_observation(
+                    session,
+                    maka_event_log::observation::WorkOrigin::Invocation(format!(
+                        "invocation-{session}"
+                    )),
+                    offset,
+                    None,
+                )
+                .await
+                .unwrap();
+            if text.is_empty() {
+                assert!(observed.answer.is_none());
+            } else {
+                let answer = observed.answer.unwrap();
+                assert_eq!(answer.text, &text[offset as usize..]);
+                assert!(answer.complete);
+            }
+        }
+        if !text.is_empty() {
+            let error = log
+                .work_observation(
+                    session,
+                    maka_event_log::observation::WorkOrigin::Invocation(format!(
+                        "invocation-{session}"
+                    )),
+                    text.len() as u64 + 1,
+                    None,
+                )
+                .await
+                .err()
+                .expect("a cursor beyond the answer must fail");
+            assert!(
+                matches!(error.underlying(), maka_event_log::StoreError::InvalidTransition(message) if message == "answer cursor exceeds answer length")
+            );
+        }
+    }
+    log.close().await.unwrap();
+}

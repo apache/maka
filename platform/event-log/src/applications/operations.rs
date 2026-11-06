@@ -30,10 +30,10 @@ use maka_plugin_core::{
         RecoveryProtocol, RecoveryRef,
     },
 };
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqliteConnection};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -391,34 +391,44 @@ fn validate_settlement(
     }
     Ok(())
 }
-async fn read(
-    connection: &mut SqliteConnection,
-    reference: &RecoveryRef,
-) -> Result<Option<Record>, StoreError> {
+fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Record>, StoreError> {
     let namespace = serde_json::to_string(&reference.namespace)?;
-    let Some(row) = sqlx::query(
-        "SELECT source_revision, contract_digest, request_json, outcome_json,
-        cleanup_json
-        FROM application_operations WHERE deployment=? AND namespace=? AND operation=?",
-    )
-    .bind(reference.source.deployment.to_string())
-    .bind(namespace)
-    .bind(reference.operation.to_string())
-    .fetch_optional(connection)
-    .await?
+    let row = connection.query_row(
+        "SELECT source_revision, contract_digest, request_json, outcome_json, cleanup_json,c.payload AS outcome_value
+        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
+        params![reference.source.deployment.to_string(), namespace, reference.operation.to_string()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<Vec<u8>>>(5)?)),
+    ).optional()?;
+    let Some((
+        source_revision,
+        contract_digest,
+        request_json,
+        outcome_json,
+        cleanup_json,
+        outcome_value,
+    )) = row
     else {
         return Ok(None);
     };
-    let request: OperationRequest<RecoveryContract> =
-        serde_json::from_str(&row.try_get::<String, _>("request_json")?)?;
-    let outcome: OperationOutcome =
-        serde_json::from_str(&row.try_get::<String, _>("outcome_json")?)?;
-    let cleanup: OperationCleanup =
-        serde_json::from_str(&row.try_get::<String, _>("cleanup_json")?)?;
+    let request: OperationRequest<RecoveryContract> = serde_json::from_str(&request_json)?;
+    let outcome = match serde_json::from_str::<StoredOutcome>(&outcome_json)? {
+        StoredOutcome::Unresolved => OperationOutcome::Unresolved,
+        StoredOutcome::Unknown { diagnostic } => OperationOutcome::Unknown { diagnostic },
+        StoredOutcome::Returned => OperationOutcome::Returned {
+            value: serde_json::from_slice(&outcome_value.ok_or(
+                rusqlite::Error::InvalidColumnType(
+                    5,
+                    "outcome_value".into(),
+                    rusqlite::types::Type::Null,
+                ),
+            )?)?,
+        },
+    };
+    let cleanup: OperationCleanup = serde_json::from_str(&cleanup_json)?;
     let expected = request.stored_reference()?;
     if expected != *reference
-        || row.try_get::<String, _>("contract_digest")? != reference.contract.digest
-        || row.try_get::<i64, _>("source_revision")? != reference.source.revision as i64
+        || contract_digest != reference.contract.digest
+        || source_revision != reference.source.revision as i64
     {
         return Err(StoreError::EventConflict);
     }
@@ -572,23 +582,18 @@ impl EventLog {
         self.operation_domain(reference)?;
         let reference = reference.clone();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    read(connection, &reference)
-                        .await
-                        .map(|record| record.map(|record| record.observation))
-                })
+            .read(move |connection| {
+                read(connection, &reference).map(|record| record.map(|record| record.observation))
             })
             .await
     }
 }
 
-pub(crate) async fn require_pending(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_pending(
+    connection: &Connection,
     reference: &RecoveryRef,
 ) -> Result<(), StoreError> {
-    let record = read(connection, reference)
-        .await?
+    let record = read(connection, reference)?
         .ok_or_else(|| invalid("original application operation missing"))?;
     if !matches!(record.observation.outcome, OperationOutcome::Unresolved) {
         return Err(invalid("original application operation is not pending"));
@@ -621,59 +626,41 @@ impl crate::writeback::Statement for WriteDispatch {
     type Output = Dispatch;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<Self::Value>, StoreError>>
-    {
-        Box::pin(async move {
-            let Self {
-                request,
+        connection: &Connection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        let Self {
+            request,
+            reference,
+            contract_json,
+            request_json,
+            owner,
+            dispatch,
+        } = self;
+        if let Some(record) = read(connection, &reference)? {
+            // The original origin remains historical observation. New request
+            // authorization must be checked again by the trusted embedding.
+            if record.request.consumer != request.consumer || record.request.input != request.input
+            {
+                return Err(StoreError::EventConflict);
+            }
+            return Ok(crate::writeback::Prepared {
+                value: DispatchValue(PreparedDispatch::Existing(record.observation)),
+                changed: false,
+                notification: crate::writeback::Notification::None,
+            });
+        }
+        require_source(connection, &reference.source)?;
+        connection.execute("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING", params![&reference.contract.digest, contract_json.as_ref()])?;
+        connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, request_json, serde_json::to_string(&OperationOutcome::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
+
+        Ok(crate::writeback::Prepared {
+            value: DispatchValue(PreparedDispatch::New {
                 reference,
-                contract_json,
-                request_json,
                 owner,
                 dispatch,
-            } = self;
-            if let Some(record) = read(connection, &reference).await? {
-                // The original origin remains historical observation. New request
-                // authorization must be checked again by the trusted embedding.
-                if record.request.consumer != request.consumer
-                    || record.request.input != request.input
-                {
-                    return Err(StoreError::EventConflict);
-                }
-                return Ok(crate::writeback::Prepared {
-                    value: DispatchValue(PreparedDispatch::Existing(record.observation)),
-                    changed: false,
-                    notification: crate::writeback::Notification::None,
-                });
-            }
-            require_source(connection, &reference.source).await?;
-            sqlx::query("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
-                        .bind(&reference.contract.digest)
-                        .bind(contract_json.as_ref())
-                        .execute(&mut *connection)
-                        .await?;
-            sqlx::query("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                        .bind(reference.source.deployment.to_string())
-                        .bind(serde_json::to_string(&reference.namespace)?)
-                        .bind(reference.operation.to_string())
-                        .bind(reference.source.revision as i64)
-                        .bind(request_json)
-                        .bind(serde_json::to_string(&OperationOutcome::Unresolved)?)
-                        .bind(serde_json::to_string(&OperationCleanup::Unconfirmed)?)
-                        .bind(&reference.contract.digest)
-                        .execute(&mut *connection)
-                        .await?;
-
-            Ok(crate::writeback::Prepared {
-                value: DispatchValue(PreparedDispatch::New {
-                    reference,
-                    owner,
-                    dispatch,
-                }),
-                changed: true,
-                notification: crate::writeback::Notification::Metadata,
-            })
+            }),
+            changed: true,
+            notification: crate::writeback::Notification::Metadata,
         })
     }
     fn committed(value: Self::Value) -> Self::Output {
@@ -708,41 +695,51 @@ impl crate::writeback::Statement for WriteSettlement {
     type Output = OperationObservation;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<Self::Value>, StoreError>>
-    {
-        Box::pin(async move {
-            let Self {
-                reference,
-                outcome,
-                cleanup,
-            } = self;
-            let old = read(connection, &reference)
-                .await?
-                .ok_or_else(|| invalid("original dispatch missing"))?
-                .observation;
-            let observation = OperationObservation {
-                reference: reference.clone(),
-                outcome,
-                cleanup,
-            };
-            let changed = matches!(old.outcome, OperationOutcome::Unresolved);
-            if !changed {
-                if old != observation {
-                    return Err(StoreError::EventConflict);
-                }
-            } else {
-                sqlx::query("UPDATE application_operations SET outcome_json=?, cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?")
-                    .bind(serde_json::to_string(&observation.outcome)?).bind(serde_json::to_string(&observation.cleanup)?)
-                    .bind(reference.source.deployment.to_string()).bind(serde_json::to_string(&reference.namespace)?)
-                    .bind(reference.operation.to_string()).execute(&mut *connection).await?;
+        connection: &Connection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        let Self {
+            reference,
+            outcome,
+            cleanup,
+        } = self;
+        let old = read(connection, &reference)?
+            .ok_or_else(|| invalid("original dispatch missing"))?
+            .observation;
+        let observation = OperationObservation {
+            reference: reference.clone(),
+            outcome,
+            cleanup,
+        };
+        let changed = matches!(old.outcome, OperationOutcome::Unresolved);
+        if !changed {
+            if old != observation {
+                return Err(StoreError::EventConflict);
             }
+        } else {
+            let (stored, value) = match &observation.outcome {
+                OperationOutcome::Unresolved => (StoredOutcome::Unresolved, None),
+                OperationOutcome::Unknown { diagnostic } => (
+                    StoredOutcome::Unknown {
+                        diagnostic: diagnostic.clone(),
+                    },
+                    None,
+                ),
+                OperationOutcome::Returned { value } => {
+                    let bytes = serde_json::to_vec(value)?;
+                    let digest = maka_agent_facts::artifact::content_digest(&bytes);
+                    (
+                        StoredOutcome::Returned,
+                        Some(crate::content::put(connection, &digest, &bytes)?),
+                    )
+                }
+            };
+            connection.execute("UPDATE application_operations SET outcome_json=?, outcome_content_id=?, cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?", params![serde_json::to_string(&stored)?, value, serde_json::to_string(&observation.cleanup)?, reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string()])?;
+        }
 
-            Ok(crate::writeback::Prepared {
-                value: observation,
-                changed,
-                notification: crate::writeback::Notification::Metadata,
-            })
+        Ok(crate::writeback::Prepared {
+            value: observation,
+            changed,
+            notification: crate::writeback::Notification::Metadata,
         })
     }
     fn committed(value: Self::Value) -> Self::Output {
@@ -758,20 +755,26 @@ impl crate::writeback::Statement for WriteSettlement {
 
 /// Partitions resolve this name through the immutable Root control source view;
 /// standalone stores use the same local source table. Keep this in the write tx.
-pub(crate) async fn require_source(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_source(
+    connection: &Connection,
     source: &DeploymentRef,
 ) -> Result<(), StoreError> {
-    let exists: bool = sqlx::query_scalar(
+    let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM application_sources WHERE deployment=? AND revision=?)",
-    )
-    .bind(source.deployment.to_string())
-    .bind(source.revision as i64)
-    .fetch_one(connection)
-    .await?;
+        params![source.deployment.to_string(), source.revision as i64],
+        |row| row.get(0),
+    )?;
     if exists {
         Ok(())
     } else {
         Err(invalid("original application source missing"))
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredOutcome {
+    Unresolved,
+    Returned,
+    Unknown { diagnostic: String },
 }

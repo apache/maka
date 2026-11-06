@@ -19,7 +19,6 @@
 
 use super::*;
 use maka_host_runtime::application::Client;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 fn resource_contract() -> Contract {
     let mut value = attached_contract();
@@ -261,26 +260,31 @@ async fn original_bundle_survives_prepare_dispatch_and_new_capture_cannot_replay
             .unwrap();
         assert_eq!(observation.reference, reference);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let mut sql = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new()
-                .filename(journal_database(
-                    &dir.path().join("root"),
-                    "application_operations",
-                    reference.operation,
-                ))
-                .read_only(true),
-        )
+        let database = journal_database(
+            &dir.path().join("root"),
+            "application_operations",
+            reference.operation,
+        );
+        let raw: String = tokio::task::spawn_blocking(move || {
+            let connection = rusqlite::Connection::open_with_flags(
+                database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            connection
+                .query_row(
+                    "SELECT request_json FROM application_operations",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        })
         .await
         .unwrap();
-        let raw: String = sqlx::query_scalar("SELECT request_json FROM application_operations")
-            .fetch_one(&mut sql)
-            .await
-            .unwrap();
         let stored: Value = serde_json::from_str(&raw).unwrap();
         assert!(stored["capture"].as_str().is_some());
         assert_eq!(stored["input"], json!("public"));
         assert!(stored.get("attachments").is_none() && stored.get("metadata").is_none());
-        sql.close().await.unwrap();
         app.shutdown().await.unwrap();
         drop(binding);
         drop(client);

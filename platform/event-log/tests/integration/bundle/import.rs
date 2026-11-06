@@ -30,7 +30,6 @@ use maka_event_log::{
     bundle::{BundleError, StagedBundle},
 };
 use serde_json::{Value, json};
-use sqlx::Connection;
 use std::collections::BTreeMap;
 
 pub(crate) async fn roundtrip(bytes: &[u8]) {
@@ -72,14 +71,8 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
         .map(|s| (s.id.clone(), json!({"policy":"destination policy"})))
         .collect();
 
-    let mut faults = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
-    )
-    .await
-    .unwrap();
-    sqlx::raw_sql(
-        "CREATE TRIGGER fail_bundle AFTER INSERT ON event_log BEGIN SELECT RAISE(ABORT,'fixture publication fault'); END;",
-    ).execute(&mut faults).await.unwrap();
+    let faults = rusqlite::Connection::open(&path).unwrap();
+    faults.execute_batch("CREATE TRIGGER fail_bundle AFTER INSERT ON event_log BEGIN SELECT RAISE(ABORT,'fixture publication fault'); END;").unwrap();
     assert!(
         log.import_bundle(staged, &binding, bindings.clone())
             .await
@@ -92,26 +85,27 @@ pub(crate) async fn roundtrip(bytes: &[u8]) {
         "SELECT COUNT(*) FROM session_history_copies",
     ] {
         assert_eq!(
-            sqlx::query_scalar::<_, i64>(query)
-                .fetch_one(&mut faults)
-                .await
+            faults
+                .query_row(query, rusqlite::params![], |row| row.get::<_, i64>(0))
                 .unwrap(),
             0
         );
     }
     assert!(log.get_session::<Value>(&root).await.unwrap().is_none());
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM event_log")
-            .fetch_one(&mut faults)
-            .await
+        faults
+            .query_row(
+                "SELECT COUNT(*) FROM event_log",
+                rusqlite::params![],
+                |row| row.get::<_, i64>(0)
+            )
             .unwrap(),
         2
     );
-    sqlx::query("DROP TRIGGER fail_bundle")
-        .execute(&mut faults)
-        .await
+    faults
+        .execute("DROP TRIGGER fail_bundle", rusqlite::params![])
         .unwrap();
-    faults.close().await.unwrap();
+    faults.close().unwrap();
 
     let receipt = log
         .import_bundle(
