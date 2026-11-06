@@ -25,6 +25,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -35,6 +36,8 @@ import { afterEach, describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import { prepareFileMutation } from '../file-mutation-guard.js';
+import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import {
   canReadPath,
   canWritePath,
@@ -79,6 +82,244 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  test('Write preparation uses the same write grant and missing-target identity as execution', async () => {
+    const workspace = await temporaryDirectory('maka-worker-prepare-grant-');
+    const { client, requests } = fakeClient();
+    for (const kind of ['prepare_write', 'write'] as const) {
+      await client.execute({
+        operation:
+          kind === 'prepare_write'
+            ? { kind, path: 'notes.txt', eligible: true }
+            : { kind, path: 'notes.txt', content: 'after' },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'missing',
+      });
+    }
+    assert.equal(requests[0]!.operation.kind, 'prepare_write');
+    assert.deepEqual(Object.keys(requests[0]!.operation).sort(), [
+      'cwd',
+      'eligible',
+      'kind',
+      'path',
+    ]);
+    assert.deepEqual(requests[0]!.operationBoundary, requests[1]!.operationBoundary);
+    assert.deepEqual(requests[0]!.expectedTarget, requests[1]!.expectedTarget);
+    assert.equal(requests[0]!.expectedTarget.access, 'write');
+    // Native namespaces must recheck their actual directories inside the worker.
+    assert.equal(requests[0]!.hostDirectories, undefined);
+  });
+
+  test('Edit preparation uses the execution write grant and existing identity', async () => {
+    const cwd = await temporaryDirectory('maka-edit-prepare-grant-');
+    const path = join(cwd, 'notes.txt');
+    await writeFile(path, 'before');
+    const stat = await lstat(path, { bigint: true });
+    const { client, requests } = fakeClient();
+    for (const kind of ['prepare_edit', 'edit'] as const) {
+      await client.execute({
+        operation:
+          kind === 'prepare_edit'
+            ? { kind, path, eligible: true }
+            : { kind, path, oldString: 'before', newString: 'after' },
+        cwd,
+        mode: 'ask',
+        expectedIdentity: { dev: String(stat.dev), ino: String(stat.ino) },
+      });
+    }
+    assert.deepEqual(Object.keys(requests[0]!.operation).sort(), [
+      'cwd',
+      'eligible',
+      'kind',
+      'path',
+    ]);
+    assert.deepEqual(requests[0]!.operationBoundary, requests[1]!.operationBoundary);
+    assert.deepEqual(requests[0]!.expectedTarget, requests[1]!.expectedTarget);
+    assert.equal(requests[0]!.expectedTarget.access, 'write');
+    assert.equal(requests[0]!.hostDirectories, undefined);
+  });
+
+  for (const eligible of [true, false]) {
+    test(`a read-only profile cannot prepare an Edit (eligible=${eligible})`, async () => {
+      const cwd = await temporaryDirectory('maka-edit-prepare-denied-');
+      const path = join(cwd, 'notes.txt');
+      await writeFile(path, 'before');
+      const { client, requests } = fakeClient();
+      await assert.rejects(
+        client.execute({
+          operation: { kind: 'prepare_edit', path, eligible },
+          cwd,
+          permissionProfile: createReadOnlyPermissionProfile(),
+          expectedIdentity: 'unchecked',
+        }),
+        (error: unknown) =>
+          error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+      );
+      assert.deepEqual(requests, []);
+    });
+  }
+
+  test('a prepared Write rejects substituted host directory identity before worker launch', async () => {
+    const workspace = await temporaryDirectory('maka-worker-prepare-host-');
+    const path = join(workspace, 'notes.txt');
+    const guard = await prepareFileMutation(workspace, path, { kind: 'write', eligible: true });
+    assert.ok(guard);
+    guard.workspace.identity.ino += '1';
+    const { client, requests } = fakeClient();
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path, content: 'after', guard },
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'missing',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError && error.reason === 'path_changed',
+    );
+    assert.deepEqual(requests, []);
+  });
+
+  for (const swapAt of ['launch', 'worker', 'after-write'] as const) {
+    test(`a prepared Write rejects a parent replacement during ${swapAt}`, async () => {
+      const cwd = await temporaryDirectory('maka-worker-parent-race-');
+      const parent = join(cwd, 'parent');
+      const previous = join(cwd, 'previous');
+      const path = join(parent, 'target.txt');
+      await mkdir(parent);
+      const guard = await prepareFileMutation(cwd, path, { kind: 'write', eligible: true });
+      assert.ok(guard);
+      const swap = async () => {
+        await rename(parent, previous);
+        await mkdir(parent);
+      };
+      let dispatched = false;
+      const client = new FilesystemWorkerClient({
+        platform: 'darwin',
+        sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+        getLaunchSpec: async () => {
+          if (swapAt === 'launch') await swap();
+          return {
+            ok: true,
+            spec: {
+              program: process.execPath,
+              args: [],
+              env: {},
+              runtimeReadableRoots: [],
+              executableRoots: [process.execPath],
+            },
+          };
+        },
+        runProcess: async (input) => {
+          dispatched = true;
+          const request = FilesystemWorkerRequestSchema.parse(JSON.parse(input.stdin));
+          assert.equal(request.hostDirectories, undefined);
+          if (swapAt === 'worker') await swap();
+          const response = await executeFilesystemWorkerRequest(request);
+          if (swapAt === 'after-write') {
+            assert.ok(response.ok);
+            await swap();
+          }
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify(response),
+            stderrTail: '',
+            timedOut: false,
+            aborted: false,
+            responseOverflow: false,
+            dispatched: true,
+          };
+        },
+      });
+      await assert.rejects(
+        client.execute({
+          operation: { kind: 'write', path, content: 'after', guard },
+          cwd,
+          mode: 'ask',
+          expectedIdentity: 'missing',
+        }),
+        (error: unknown) =>
+          error instanceof FilesystemWorkerClientError &&
+          error.reason === (swapAt === 'after-write' ? 'outcome_unknown' : 'path_changed'),
+      );
+      assert.equal(dispatched, swapAt !== 'launch');
+      await assert.rejects(readFile(path), { code: 'ENOENT' });
+      if (swapAt === 'after-write') {
+        assert.equal(await readFile(join(previous, 'target.txt'), 'utf8'), 'after');
+      } else {
+        await assert.rejects(readFile(join(previous, 'target.txt')), { code: 'ENOENT' });
+      }
+    });
+  }
+
+  test('a prepared Write rejects a replacement Linux mount source', {
+    skip: process.platform !== 'linux',
+  }, async () => {
+    const cwd = await temporaryDirectory('maka-worker-mount-race-');
+    const parent = join(cwd, 'parent');
+    await mkdir(parent);
+    const path = join(parent, 'target.txt');
+    const guard = await prepareFileMutation(cwd, path, { kind: 'write', eligible: true });
+    assert.ok(guard);
+    let transformed = false;
+    const manager = new SandboxManager([]);
+    const transform = manager.transform.bind(manager);
+    const client = new FilesystemWorkerClient({
+      platform: 'linux',
+      sandboxManager: Object.assign(manager, {
+        transform(request: SandboxTransformRequest): SandboxTransformResult {
+          transformed = true;
+          return transform(request);
+        },
+      }),
+      getLaunchSpec: async () => {
+        await rename(parent, join(cwd, 'previous'));
+        await mkdir(parent);
+        return {
+          ok: true,
+          spec: {
+            program: process.execPath,
+            args: [],
+            env: {},
+            runtimeReadableRoots: [],
+            executableRoots: [process.execPath],
+          },
+        };
+      },
+      runProcess: async () => {
+        throw new Error('must not dispatch');
+      },
+    });
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path, content: 'after', guard },
+        cwd,
+        mode: 'ask',
+        expectedIdentity: 'missing',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError &&
+        error.reason === 'path_changed' &&
+        error.message.includes('before pinning'),
+    );
+    assert.equal(transformed, false);
+    await assert.rejects(readFile(path), { code: 'ENOENT' });
+  });
+
+  test('a read-only profile cannot prepare a Write', async () => {
+    const workspace = await temporaryDirectory('maka-worker-prepare-denied-');
+    const { client, requests } = fakeClient();
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'prepare_write', path: 'notes.txt', eligible: true },
+        cwd: workspace,
+        permissionProfile: createReadOnlyPermissionProfile(),
+        expectedIdentity: 'missing',
+      }),
+      (error: unknown) =>
+        error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+    );
+    assert.deepEqual(requests, []);
+  });
   test('authorizes delete against the symlink entry', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-delete-link-');
     const target = join(workspace, 'target.txt');
@@ -467,6 +708,33 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     );
   });
 
+  test('rejects the upstream v12 worker before accepting a response', async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-old-protocol-');
+    const target = join(workspace, 'file.ts');
+    await writeFile(target, 'const value = 1;', 'utf8');
+    const { client, requests } = fakeClient({ responseVersion: 12 });
+
+    await assert.rejects(
+      client.execute({
+        operation: grepOperation(target),
+        cwd: workspace,
+        mode: 'ask',
+        expectedIdentity: 'unchecked',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'invalid_response');
+        assert.equal(error.stage, 'protocol');
+        return true;
+      },
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(
+      FilesystemWorkerRequestSchema.safeParse({ ...requests[0], version: 12 }).success,
+      false,
+    );
+  });
+
   test('preserves an explicit sandbox denial from the worker protocol', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-sandbox-denial-');
     const target = join(workspace, 'file.ts');
@@ -697,6 +965,7 @@ describe('filesystem worker Windows Glob path context', () => {
 function fakeClient(
   options: {
     operationErrorCode?: FilesystemWorkerErrorCode;
+    responseVersion?: number;
     platform?: SandboxPlatform;
     beforeLaunchSpecReturn?: () => void;
   } = {},
@@ -754,7 +1023,7 @@ function fakeClient(
         stdout: JSON.stringify(
           options.operationErrorCode
             ? {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+                version: options.responseVersion ?? FILESYSTEM_WORKER_PROTOCOL_VERSION,
                 requestId: request.requestId,
                 ok: false,
                 error: {
@@ -763,7 +1032,7 @@ function fakeClient(
                 },
               }
             : {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+                version: options.responseVersion ?? FILESYSTEM_WORKER_PROTOCOL_VERSION,
                 requestId: request.requestId,
                 ok: true,
                 result: fakeResult(request),
@@ -803,6 +1072,19 @@ function windowsRecordingSandboxManager(transforms: SandboxTransformRequest[]): 
 
 function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
   switch (request.operation.kind) {
+    case 'prepare_write':
+    case 'prepare_edit':
+      return { kind: request.operation.kind };
+    case 'edit':
+      return {
+        kind: 'edit',
+        ok: true,
+        path: request.operation.path,
+        replacements: 1,
+        matchedVia: 'exact',
+        startLine: 1,
+        endLine: 1,
+      };
     case 'read':
       return request.operation.path.endsWith('.png')
         ? { kind: 'read_image', base64: 'iVBORw==', mimeType: 'image/png' }

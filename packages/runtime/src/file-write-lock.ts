@@ -35,6 +35,40 @@
 
 const tails = new Map<string, Promise<void>>();
 
+/** A prepared write owns the same queue across preparation, T1 and execution. */
+export async function acquireFileWriteLock(key: string, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  const previous = tails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => held);
+  tails.set(key, tail);
+  void tail.then(() => {
+    if (tails.get(key) === tail) tails.delete(key);
+  });
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => {
+      release();
+      reject(signal?.reason ?? new Error('Write preparation aborted'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    if (signal?.aborted) abort();
+    await Promise.race([previous, cancelled]);
+    signal?.throwIfAborted();
+    return release;
+  } catch (error) {
+    release();
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
 /**
  * Runs `fn` exclusively for `key`: it waits until any prior work for `key`
  * settles, then runs, then releases the key for the next waiter. Distinct keys

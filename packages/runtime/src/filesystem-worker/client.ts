@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { FileMutationDirectories } from '../file-mutation-guard-contract.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -100,7 +101,7 @@ export interface FilesystemWorkerExecuteInput {
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
   /**
-   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   * The caller's T0 guard, see `FilesystemWorkerExpectedIdentity`.
    *
    * REQUIRED for write operations: the client throws at runtime when a write
    * arrives without one, so a JavaScript caller (which TypeScript cannot
@@ -352,11 +353,73 @@ export class FilesystemWorkerClient {
       ...parsedOperation.data,
       path: target.enforcementPath,
     });
+    // Linux mount namespaces may expose synthetic ancestor inodes. Keep the
+    // host identity bound to the actual mount source and verify host visibility.
+    let hostDirectories: FileMutationDirectories | undefined;
+    const captureDirectory = async (path: string) => {
+      const metadata = await lstat(path, { bigint: true });
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error('Directory changed');
+      return { dev: String(metadata.dev), ino: String(metadata.ino) };
+    };
+    const directoriesUnchanged = async () => {
+      if (!hostDirectories) return true;
+      try {
+        const workspace = await captureDirectory(canonicalCwd);
+        const parent = await captureDirectory(dirname(target.enforcementPath));
+        return (
+          workspace.dev === hostDirectories.workspace.dev &&
+          workspace.ino === hostDirectories.workspace.ino &&
+          parent.dev === hostDirectories.parent.dev &&
+          parent.ino === hostDirectories.parent.ino
+        );
+      } catch {
+        return false;
+      }
+    };
+    if (
+      operation.kind === 'prepare_write' ||
+      operation.kind === 'prepare_edit' ||
+      ((operation.kind === 'write' || operation.kind === 'edit') && operation.guard)
+    ) {
+      try {
+        hostDirectories = {
+          workspace: await captureDirectory(canonicalCwd),
+          parent: await captureDirectory(dirname(target.enforcementPath)),
+        };
+      } catch {
+        throw clientError(
+          'path_changed',
+          'validation',
+          requestId,
+          'Write directories could not be observed.',
+        );
+      }
+      if ((operation.kind === 'write' || operation.kind === 'edit') && operation.guard) {
+        const guard = operation.guard;
+        if (
+          guard.workspace.path !== canonicalCwd ||
+          guard.target.path !== target.enforcementPath ||
+          guard.workspace.identity.dev !== hostDirectories.workspace.dev ||
+          guard.workspace.identity.ino !== hostDirectories.workspace.ino ||
+          guard.target.parentIdentity.dev !== hostDirectories.parent.dev ||
+          guard.target.parentIdentity.ino !== hostDirectories.parent.ino
+        ) {
+          throw clientError(
+            'path_changed',
+            'validation',
+            requestId,
+            'The prepared Write directories changed.',
+          );
+        }
+      }
+    }
     const request = {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId,
       operation,
       operationBoundary,
+      ...(hostDirectories ? { hostDirectories } : {}),
       expectedTarget: {
         enforcementPath: target.enforcementPath,
         access,
@@ -369,7 +432,7 @@ export class FilesystemWorkerClient {
         identity: typeof writeIdentity === 'object' ? (identity ?? 'missing') : writeIdentity,
       },
     } as const;
-    const requestJson = JSON.stringify(request);
+    let requestJson = JSON.stringify(request);
     if (Buffer.byteLength(requestJson, 'utf8') > FILESYSTEM_WORKER_MAX_REQUEST_BYTES) {
       throw clientError('request_overflow', 'validation', requestId);
     }
@@ -518,6 +581,19 @@ export class FilesystemWorkerClient {
           pinnedMetadata.push({ ...pinned, path: metadata.path });
         }
       }
+      if (
+        hostDirectories &&
+        pinnedRuntimeWritableRoot &&
+        (String(pinnedRuntimeWritableRoot.device) !== hostDirectories.parent.dev ||
+          String(pinnedRuntimeWritableRoot.inode) !== hostDirectories.parent.ino)
+      ) {
+        throw clientError(
+          'path_changed',
+          'validation',
+          requestId,
+          'The prepared Write parent changed before pinning.',
+        );
+      }
       transformed = this.input.sandboxManager.transform({
         platform,
         command: {
@@ -571,6 +647,22 @@ export class FilesystemWorkerClient {
         profileName: effectiveProfile.name ?? effectiveProfile.type,
       });
     }
+
+    if (!(await directoriesUnchanged())) {
+      releasePinnedPaths();
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The prepared Write directories changed before launch.',
+      );
+    }
+    // Native namespaces must validate their real directories inside the worker.
+    // Only Linux bind mounts need the host identities in place of synthetic ones.
+    requestJson = JSON.stringify({
+      ...request,
+      hostDirectories: transformed.sandboxType === 'linux' ? hostDirectories : undefined,
+    });
 
     let processResult: Awaited<ReturnType<FilesystemWorkerProcessRunner>>;
     try {
@@ -703,6 +795,19 @@ export class FilesystemWorkerClient {
         'protocol',
         requestId,
         undefined,
+        false,
+        {},
+        true,
+      );
+    }
+    if (!(await directoriesUnchanged())) {
+      throw clientError(
+        operation.kind === 'write' || operation.kind === 'edit'
+          ? 'outcome_unknown'
+          : 'path_changed',
+        'operation',
+        requestId,
+        'The prepared Write directories changed while the worker ran.',
         false,
         {},
         true,
