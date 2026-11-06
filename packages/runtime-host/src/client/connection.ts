@@ -1075,6 +1075,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#clientCapabilities.close(error);
     this.#configurationChangeListeners.clear();
     this.#artifactChangeListeners.clear();
+    this.#connectionCatalogChangeListeners.clear();
+    this.#projectCatalogChangeListeners.clear();
     this.#sessionCatalogChangeListeners.clear();
     this.#scheduledTaskChangeListeners.clear();
     if (gracefulPeerClose) this.#transport.closeAfterFlush();
