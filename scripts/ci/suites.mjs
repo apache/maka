@@ -117,7 +117,12 @@ export const suites = {
   contracts: {
     workspace: 'root',
     packages: ['maka-schema', 'maka-workbench'],
-    extraInputs: [...productInputs, 'skills/maka-plugin-authoring/assets'],
+    extraInputs: [
+      ...productInputs,
+      'products/maka/terminal-shell/tests/fixtures',
+      'products/maka/terminal-shell/tests/real_host',
+      'skills/maka-plugin-authoring/assets',
+    ],
   },
   product: {
     workspace: 'root',
