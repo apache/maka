@@ -17,41 +17,33 @@
  * under the License.
  */
 
-//! The workbench in a window of NSH's AppKit backend, macOS's default. It has
-//! one Host: the window does not follow a Host that stops, and refuses a UI
-//! reload rather than pausing its input for one.
+//! The workbench in a window of NSH's AppKit backend, macOS's default. It
+//! follows the Root's Host, but refuses an in-place UI reload rather than
+//! pausing its input for one.
 
 use crate::{
-    host::{self, Connection},
+    host::{self, Connection, FIRST_PAUSE, RECONNECT_LIMIT, Root, STEADY},
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
-use maka_workbench::reload::{Request, UiReload};
+use maka_workbench::reload::Request;
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
+use std::time::Instant;
 use tokio::{runtime::Runtime, sync::watch};
 
-pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
-    let Connection {
-        bindings,
-        config,
-        endpoint,
-        epoch,
-    } = first;
-    let directory = config
+pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
+    let directory = first
+        .config
         .data_dir
         .as_ref()
         .expect("Host admission sets the client directory");
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
-    let reloading = config
-        .context
-        .get::<UiReload>()
-        .expect("the admitted workbench owns its UI reload channel")
-        .take_requests();
-    let config = shell.attach(config);
+    let config = shell.attach(first.config.clone());
+    let (quit, quitting) = watch::channel(false);
     carry_out(requests, &runtime);
-    refuse_reloads(reloading, &runtime);
+    let mut following = runtime.spawn(follow(first, root, shell, quitting));
     let options = AppOptions {
         app_id: APP_ID.into(),
         title: TITLE.into(),
@@ -63,7 +55,18 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
-    runtime.block_on(host::detach(bindings, &endpoint, epoch));
+    quit.send_replace(true);
+    runtime.block_on(async {
+        // Admission can still be in flight when the window closes. Give it
+        // the same bounded grace period as a connected client's detach.
+        if tokio::time::timeout(host::DETACH_LIMIT, &mut following)
+            .await
+            .is_err()
+        {
+            following.abort();
+            let _ = following.await;
+        }
+    });
     runtime.shutdown_background();
     Ok(())
 }
@@ -106,12 +109,61 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
 }
 
-fn refuse_reloads(mut reloading: tokio::sync::mpsc::UnboundedReceiver<Request>, runtime: &Runtime) {
-    runtime.spawn(async move {
-        while let Some(request) = reloading.recv().await {
-            if let Request::Pause(ready) = request {
-                let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
+async fn follow(
+    mut current: Connection,
+    root: Root,
+    shell: Shell,
+    mut quitting: watch::Receiver<bool>,
+) {
+    let mut pause = FIRST_PAUSE;
+    loop {
+        let reached = Instant::now();
+        let mut reloading = current.bindings.reload().take_requests();
+        let stopped = host::stopped(current.endpoint.clone(), current.epoch);
+        tokio::pin!(stopped);
+        while !*quitting.borrow() {
+            tokio::select! {
+                _ = quitting.changed() => break,
+                _ = &mut stopped => break,
+                Some(request) = reloading.recv() => {
+                    if let Request::Pause(ready) = request {
+                        let _ = ready.send(Err("the AppKit window cannot reload its UI".into()));
+                    }
+                }
             }
         }
-    });
+        // Settle the old client's journal before admitting the next client.
+        host::detach(current.bindings, &current.endpoint, current.epoch).await;
+        drop(current.config);
+        if *quitting.borrow() {
+            return;
+        }
+        let mut wait = reached.elapsed() < STEADY;
+        if !wait {
+            pause = FIRST_PAUSE;
+        }
+        current = loop {
+            if wait {
+                tokio::select! {
+                    _ = quitting.changed() => return,
+                    _ = tokio::time::sleep(pause) => {}
+                }
+                pause = (pause * 2).min(RECONNECT_LIMIT);
+            }
+            if *quitting.borrow() {
+                return;
+            }
+            wait = true;
+            match root.connect(tokio::runtime::Handle::current()).await {
+                Ok(connection) => break connection,
+                Err(error) => eprintln!("maka-desktop-shell: reconnecting: {error}"),
+            }
+        };
+        if *quitting.borrow() {
+            host::detach(current.bindings, &current.endpoint, current.epoch).await;
+            return;
+        }
+        let config = shell.attach(current.config.clone());
+        with_running_view(move |view| view.load_with_config(config));
+    }
 }

@@ -96,4 +96,4 @@ pub async fn detach(bindings: Bindings, endpoint: &Path, epoch: Uuid) {
 #[cfg(not(windows))]
 mod reconnect;
 #[cfg(not(windows))]
-pub use reconnect::{Root, stopped};
+pub use reconnect::{FIRST_PAUSE, RECONNECT_LIMIT, Root, STEADY, stopped};

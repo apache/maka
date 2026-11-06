@@ -32,7 +32,7 @@
 //! The window opens where it was when it last closed (see [`Placement`]).
 
 use crate::{
-    host::{self, Connection, Root},
+    host::{self, Connection, FIRST_PAUSE, RECONNECT_LIMIT, Root, STEADY},
     placement::Placement,
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
@@ -43,22 +43,8 @@ use nsh_platform_gpui::{
     gpui::{self, App, AppContext as _, Focusable as _, SystemNotification, WindowHandle},
     titlebar_options,
 };
-use std::{
-    cell::RefCell,
-    path::PathBuf,
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Instant};
 use tokio::{runtime::Handle, sync::watch};
-
-/// The first pause between attempts to reach the Root's next Host.
-const FIRST_PAUSE: Duration = Duration::from_secs(1);
-
-/// The longest pause between attempts to reach the Root's next Host.
-const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
-/// How long the window must have used a Host for the next one to be tried at
-/// once after it stops.
-const STEADY: Duration = Duration::from_secs(60);
 
 /// Set and not empty on macOS, the shell opens this window instead of the
 /// AppKit one.
@@ -81,7 +67,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     })?;
     #[cfg(target_os = "macos")]
     if std::env::var_os(GPUI).is_none_or(|value| value.is_empty()) {
-        return crate::appkit::run(first, runtime);
+        return crate::appkit::run(first, root, runtime);
     }
     run(first, root, runtime)
 }

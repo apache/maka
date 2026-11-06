@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! GPUI Host-following lifecycle.
+//! Host-following lifecycle shared by the desktop backends.
 
 use super::{Connection, runs};
 use maka_event_log::root;
@@ -31,6 +31,13 @@ use uuid::Uuid;
 
 const CHECK_EVERY: Duration = Duration::from_secs(2);
 const RECHECK_AFTER: Duration = Duration::from_millis(500);
+
+/// The first pause between attempts to reach the Root's next Host.
+pub const FIRST_PAUSE: Duration = Duration::from_secs(1);
+/// The longest pause between attempts to reach the Root's next Host.
+pub const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
+/// How long a connection must last to retry immediately after its Host stops.
+pub const STEADY: Duration = Duration::from_secs(60);
 
 /// The Root the desktop serves, and the launcher that starts its Host.
 #[derive(Clone)]
