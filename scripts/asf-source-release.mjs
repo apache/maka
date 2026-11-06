@@ -74,6 +74,7 @@ const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
 
 const textSourceExtensions = new Set([
   '.astro',
+  '.c',
   '.cjs',
   '.css',
   '.csv',
