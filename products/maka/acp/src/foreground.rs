@@ -46,9 +46,7 @@ pub(crate) struct Foreground {
     session: Arc<Session>,
     active: Active,
     target: WorkTarget,
-    execution: Option<Execution>,
-    shared: bool,
-    cancelled: bool,
+    work: WorkObservation,
     projection: Projection,
     capabilities: acp::ClientCapabilities,
     after: u64,
@@ -57,6 +55,30 @@ pub(crate) struct Foreground {
     message_starts: HashMap<String, u64>,
     user: Vec<HistoryChunk>,
 }
+
+enum WorkObservation {
+    Pending,
+    Delivered { execution: Execution, shared: bool },
+    Cancelled,
+}
+
+impl WorkObservation {
+    fn execution(&self) -> Option<&Execution> {
+        match self {
+            Self::Delivered { execution, .. } => Some(execution),
+            Self::Pending | Self::Cancelled => None,
+        }
+    }
+
+    fn settled(&self) -> bool {
+        match self {
+            Self::Pending => false,
+            Self::Delivered { execution, .. } => terminal(&execution.state),
+            Self::Cancelled => true,
+        }
+    }
+}
+
 impl Foreground {
     pub async fn run(mut self) {
         let result = self.observe().await;
@@ -95,21 +117,16 @@ impl Foreground {
                 json!({"sessionId":self.session.id,"target":self.target,"cursor":null}),
             )
             .await?;
-        match work {
+        self.work = match work {
             Work::Delivered {
                 shared, execution, ..
-            } => {
-                self.shared = shared;
-                self.execution = Some(execution);
-            }
-            Work::Pending => {}
-            Work::Cancelled => {
-                self.cancelled = true;
-            }
+            } => WorkObservation::Delivered { execution, shared },
+            Work::Pending => WorkObservation::Pending,
+            Work::Cancelled => WorkObservation::Cancelled,
             Work::Missing | Work::Changed => {
                 return Err("Original accepted Agent work is unavailable or changed".into());
             }
-        }
+        };
         Ok(())
     }
     async fn observe(&mut self) -> Result<acp::StopReason, Error> {
@@ -144,12 +161,7 @@ impl Foreground {
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            if self.cancelled
-                || self
-                    .execution
-                    .as_ref()
-                    .is_some_and(|execution| terminal(&execution.state))
-            {
+            if self.work.settled() {
                 callbacks.abort_all();
                 while callbacks.join_next().await.is_some() {}
                 return self.finish().await;
@@ -168,8 +180,8 @@ impl Foreground {
                     .await?;
                 if record.outcome.is_some()
                     || self
-                        .execution
-                        .as_ref()
+                        .work
+                        .execution()
                         .is_none_or(|execution| record.turn_id != execution.turn_id)
                 {
                     continue;
@@ -218,7 +230,7 @@ impl Foreground {
                     },
                     _ = heartbeat.tick() => {
                         self.refresh().await?;
-                        if self.cancelled || self.execution.as_ref().is_some_and(|execution| terminal(&execution.state)) { break None; }
+                        if self.work.settled() { break None; }
                     },
                 }
             };
@@ -247,14 +259,14 @@ impl Foreground {
     }
     async fn frame(&mut self, page: DeliveryPage) -> Result<(), Error> {
         if let DeliveryPage::Preview { page } = &page {
-            if self.execution.is_none() {
+            if self.work.execution().is_none() {
                 self.refresh().await?;
             }
             let current = match page {
                 PreviewPage::Empty { .. } => true,
                 PreviewPage::Cut { invocation_id, .. } => self
-                    .execution
-                    .as_ref()
+                    .work
+                    .execution()
                     .is_some_and(|execution| &execution.invocation_id == invocation_id),
             };
             if current {
@@ -268,7 +280,7 @@ impl Foreground {
         } = page
         {
             // Resolve queued work before deciding which execution's events belong here.
-            if self.execution.is_none() {
+            if self.work.execution().is_none() {
                 self.refresh().await?;
             }
             let mut catchup = false;
@@ -277,8 +289,8 @@ impl Foreground {
             let mut ended_steps = HashSet::new();
             for event in events {
                 if self
-                    .execution
-                    .as_ref()
+                    .work
+                    .execution()
                     .is_none_or(|execution| execution.invocation_id != event.invocation_id)
                 {
                     continue;
@@ -378,8 +390,8 @@ impl Foreground {
         }
         for chunk in chunks {
             if self
-                .execution
-                .as_ref()
+                .work
+                .execution()
                 .is_some_and(|execution| chunk.turn_id == execution.turn_id)
             {
                 let updates = self.projection.chunk(&chunk)?;
@@ -411,13 +423,10 @@ impl Foreground {
         let refresh_tools = self.projection.unsettled_tool_positions().collect();
         self.catchup(observation.through, catchup_from, refresh_tools, None)
             .await?;
-        if self.cancelled {
+        if matches!(self.work, WorkObservation::Cancelled) {
             return Ok(acp::StopReason::Cancelled);
         }
-        let execution = self
-            .execution
-            .as_ref()
-            .ok_or("Agent work has not settled")?;
+        let execution = self.work.execution().ok_or("Agent work has not settled")?;
         let updates = self.projection.finish(
             &execution.turn_id,
             matches!(execution.state, ExecutionState::Completed),
@@ -442,9 +451,9 @@ impl Foreground {
             let mut requested = false;
             loop {
                 self.refresh().await?;
-                if self.cancelled || self.execution.as_ref().is_some_and(|execution| terminal(&execution.state)) { return Ok::<_, Error>(()); }
-                if let Some(execution) = &self.execution {
-                    if self.shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
+                if self.work.settled() { return Ok::<_, Error>(()); }
+                if let WorkObservation::Delivered { execution, shared } = &self.work {
+                    if *shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
                     if !requested {
                         let _: Stopped = self.client.mutate("agent", "stop", json!({"sessionId":self.session.id,"invocationId":execution.invocation_id}), Attachments::new()).await?;
                         requested = true;
