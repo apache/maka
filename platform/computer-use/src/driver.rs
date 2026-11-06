@@ -88,7 +88,7 @@ struct BoundSession {
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
     native_turns: Mutex<native_computer::NativeTurns>,
     session: Arc<CuaDriverSession>,
-    started: OnceCell<Result<(), ToolError>>,
+    started: OnceCell<Result<(), DriverError>>,
 }
 
 struct RetiringEpoch {
@@ -143,10 +143,10 @@ impl BoundSession {
                     })
                     .await
                     .map(|_| ())
-                    .map_err(|error| native_error(error, language))
             })
             .await
-            .clone()?;
+            .as_ref()
+            .map_err(|error| native_error(error, language))?;
         Ok(self.session.clone())
     }
 }
@@ -535,7 +535,7 @@ impl Driver {
         let result = session
             .scroll_native_pages(request)
             .await
-            .map_err(|error| native_error(error, language))?;
+            .map_err(|error| native_error(&error, language))?;
         native_input_result(result, language)
     }
 
@@ -562,7 +562,7 @@ impl Driver {
         let result = session
             .move_native_pointer(request)
             .await
-            .map_err(|error| native_error(error, language))?;
+            .map_err(|error| native_error(&error, language))?;
         native_input_result(result, language)
     }
     pub fn with_audio(audio_enabled: bool) -> Self {
@@ -838,7 +838,7 @@ impl Driver {
             biased;
             _ = cancellation.cancelled() => return Err(ToolError::Failed("Computer Use observation cancelled".into())),
             result = session.observe_native_window(request, options) => result,
-        }.map_err(|error| native_error(error, language))?;
+        }.map_err(|error| native_error(&error, language))?;
         native_input_result(result, language)
     }
 
@@ -868,7 +868,7 @@ impl Driver {
         let result = session
             .input_native_window(request)
             .await
-            .map_err(|error| native_error(error, language))?;
+            .map_err(|error| native_error(&error, language))?;
         native_input_result(result, language)
     }
 
@@ -899,7 +899,7 @@ impl Driver {
             biased;
             _ = cancellation.cancelled() => return Err(ToolError::OutcomeUnknown("Computer Use native element invocation cancelled; input outcome unknown".into())),
             result = session.click_native_element_window(request) => result,
-        }.map_err(|error| native_error(error, language))?;
+        }.map_err(|error| native_error(&error, language))?;
         native_element_result(result, language)
     }
 
@@ -930,7 +930,7 @@ impl Driver {
             biased;
             _ = cancellation.cancelled() => return Err(ToolError::OutcomeUnknown("Computer Use native element invocation cancelled; input outcome unknown".into())),
             result = session.scroll_native_element_window(request) => result,
-        }.map_err(|error| native_error(error, language))?;
+        }.map_err(|error| native_error(&error, language))?;
         native_element_result(result, language)
     }
 
@@ -958,7 +958,7 @@ impl Driver {
         let result = session
             .capture_prepared_window(prepared, include_accessibility_tree)
             .await
-            .map_err(|error| native_error(error, language))?;
+            .map_err(|error| native_error(&error, language))?;
         if result.is_error {
             let code = result
                 .error_code
@@ -1096,7 +1096,7 @@ impl Driver {
                         .await
                 }
             }
-            .map_err(|error| native_error(error, language))?
+            .map_err(|error| native_error(&error, language))?
         };
         #[cfg(target_os = "windows")]
         {
@@ -1147,7 +1147,7 @@ impl Driver {
                         mode: SessionPermissionMode::Standard,
                         capability_manifest_path: None,
                     })
-                    .map_err(|error| native_error(error, language))?;
+                    .map_err(|error| native_error(&error, language))?;
                 entry.insert(Arc::new(BoundSession {
                     session,
                     started: OnceCell::new(),
@@ -1442,14 +1442,14 @@ fn refusal(code: &str, reason: &str, language: Language) -> String {
     message
 }
 
-fn native_error(error: DriverError, language: Language) -> ToolError {
+fn native_error(error: &DriverError, language: Language) -> ToolError {
     match error {
         DriverError::Shutdown => ToolError::Failed(crate::language::inactive(language).into()),
         DriverError::ActionInterrupted {
             completion: ActionCompletion::NotStarted,
             reason,
-        } => ToolError::Failed(reason),
-        DriverError::ActionInterrupted { reason, .. } => ToolError::OutcomeUnknown(reason),
+        } => ToolError::Failed(reason.clone()),
+        DriverError::ActionInterrupted { reason, .. } => ToolError::OutcomeUnknown(reason.clone()),
         DriverError::Transport { .. }
         | DriverError::Protocol { .. }
         | DriverError::Worker { .. }
@@ -1462,6 +1462,44 @@ fn native_error(error: DriverError, language: Language) -> ToolError {
 mod tests {
     use super::*;
     use cua_driver_contract::{EndSessionInput, GetSessionInput, StartSessionInput};
+
+    #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "the SDK requires an interactive Windows desktop even for lifecycle administration"
+    )]
+    async fn failed_bound_session_reports_each_observers_language() {
+        let mut driver = Driver::default();
+        let bound = driver
+            .bind_epoch(NativeEpochId::new(), Language::En)
+            .unwrap();
+        bound.session.close();
+
+        for (language, expected) in [
+            (
+                Language::En,
+                "Computer Use session is inactive. Call cua_reset and rebind targets.",
+            ),
+            (
+                Language::ZhCn,
+                "Computer Use 会话已失效。请调用 cua_reset 并重新绑定目标。",
+            ),
+            (
+                Language::En,
+                "Computer Use session is inactive. Call cua_reset and rebind targets.",
+            ),
+        ] {
+            let error = match bound.ready(language).await {
+                Ok(_) => panic!("a closed SDK session must not be started again"),
+                Err(error) => error,
+            };
+            let ToolError::Failed(message) = error else {
+                panic!("a session closed before startup has no uncertain effect: {error:?}");
+            };
+            assert_eq!(message, expected);
+        }
+        driver.close().await.unwrap();
+    }
 
     #[tokio::test]
     async fn dropping_an_epoch_close_observer_keeps_the_original_cleanup() {
