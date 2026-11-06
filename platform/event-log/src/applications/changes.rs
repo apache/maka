@@ -200,7 +200,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        store
+        let third = store
             .commit_application(id, 2, input(), vec![], vec![])
             .await
             .unwrap();
@@ -208,7 +208,22 @@ mod tests {
             .commit_application(id, 3, input(), vec![], vec![])
             .await
             .unwrap();
-        assert_eq!(pending.await.unwrap(), fourth);
+        // An accepted head read may finish between the two commits.
+        let next = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        if next == third {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), changes.next())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                fourth
+            );
+        } else {
+            assert_eq!(next, fourth);
+        }
         let mut foreign = fourth.clone();
         foreign.state_domain = uuid::Uuid::new_v4().to_string();
         assert!(store.subscribe_application(foreign).is_err());
