@@ -24,7 +24,16 @@ import type { OriginalMutation } from './host';
 type Trigger = 'live' | 'catch_up';
 type Suggestion = NonNullable<ReturnType<ComposerPrediction['current']>>;
 type Result = { sourceTurnId: string; policyRevision: number; suggestion: string | null };
-type Source = { turnId: string; trigger: Trigger; contextKey: string };
+type Source = {
+  readonly turnId: string;
+  readonly trigger: Trigger;
+  readonly contextKey: string;
+  settingsReady: boolean;
+  state:
+    | { kind: 'unsettled' }
+    | { kind: 'settled'; revision: number; value: Suggestion | null }
+    | { kind: 'dismissed' };
+};
 export function predictionTrigger(input: {
   completedTurnId: string | null;
   activeTurnId: string | null;
@@ -116,12 +125,9 @@ export function createMessagePrediction(options: Options) {
   let alive = true;
   let eligible = false;
   let source: Source | null = null;
-  let dismissed = false;
   let shown: Suggestion | null = null;
-  let settled: { source: Source; revision: number; value: Suggestion | null } | null = null;
   let request: Request | null = null;
   let reading: { source: Source; stale: boolean } | null = null;
-  let settingsReady = false;
 
   const publish = (value: Suggestion | null) => {
     if (!alive || shown === value) return;
@@ -139,7 +145,7 @@ export function createMessagePrediction(options: Options) {
     return (
       alive &&
       eligible &&
-      !dismissed &&
+      ticket.source.state.kind !== 'dismissed' &&
       !ticket.cancelled &&
       source === ticket.source &&
       config?.revision === ticket.revision &&
@@ -177,14 +183,15 @@ export function createMessagePrediction(options: Options) {
           result.policyRevision !== ticket.revision
         )
           return;
-        settled = {
-          source: ticket.source,
+        const settled = {
+          kind: 'settled' as const,
           revision: ticket.revision,
           value:
             result.suggestion === null
               ? null
               : { sourceTurnId: result.sourceTurnId, text: result.suggestion },
         };
+        ticket.source.state = settled;
         publish(settled.value);
         return;
       }
@@ -195,9 +202,10 @@ export function createMessagePrediction(options: Options) {
         if (
           !ticket.cancelled &&
           source === ticket.source &&
-          (settled?.source !== ticket.source || settled.revision !== ticket.revision)
+          (ticket.source.state.kind !== 'settled' ||
+            ticket.source.state.revision !== ticket.revision)
         )
-          settled = { source: ticket.source, revision: ticket.revision, value: null };
+          ticket.source.state = { kind: 'settled', revision: ticket.revision, value: null };
         request = null;
         refresh();
       }
@@ -214,8 +222,8 @@ export function createMessagePrediction(options: Options) {
         (value) => {
           if (!alive || source !== ticket.source) return;
           const revision = preferences.revision();
-          settingsReady = revision === null || value.revision >= revision;
-          ticket.stale = !settingsReady;
+          ticket.source.settingsReady = revision === null || value.revision >= revision;
+          ticket.stale = !ticket.source.settingsReady;
           observePredictionPreferences(value);
           refresh();
         },
@@ -233,13 +241,13 @@ export function createMessagePrediction(options: Options) {
 
   function refresh() {
     if (!alive) return;
-    if (!eligible || !source || dismissed) {
+    if (!eligible || !source || source.state.kind === 'dismissed') {
       publish(null);
       cancel();
       return;
     }
     const config = preferences.value();
-    if (!settingsReady || !config) {
+    if (!source.settingsReady || !config) {
       publish(null);
       cancel();
       readPreferences();
@@ -250,8 +258,8 @@ export function createMessagePrediction(options: Options) {
       cancel();
       return;
     }
-    if (settled?.source === source && settled.revision === config.revision) {
-      publish(settled.value);
+    if (source.state.kind === 'settled' && source.state.revision === config.revision) {
+      publish(source.state.value);
       return;
     }
     publish(null);
@@ -270,7 +278,7 @@ export function createMessagePrediction(options: Options) {
   }
 
   const changedPreferences = () => {
-    if (!preferences.value()) settingsReady = false;
+    if (source && !preferences.value()) source.settingsReady = false;
     refresh();
   };
   const unsubscribe = preferences.subscribe(changedPreferences);
@@ -278,7 +286,7 @@ export function createMessagePrediction(options: Options) {
     current: () => shown,
     dismiss(sourceTurnId) {
       if (source?.turnId !== sourceTurnId) return;
-      dismissed = true;
+      source.state = { kind: 'dismissed' };
       refresh();
     },
   };
@@ -291,16 +299,16 @@ export function createMessagePrediction(options: Options) {
           (source === null || source.contextKey === contextKey))
       )
         return;
-      source = turnId === null ? null : { turnId, trigger, contextKey };
-      dismissed = false;
-      settled = null;
-      settingsReady = false;
+      source =
+        turnId === null
+          ? null
+          : { turnId, trigger, contextKey, settingsReady: false, state: { kind: 'unsettled' } };
       refresh();
     },
     eligible(value: boolean) {
       if (!alive || eligible === value) return;
       eligible = value;
-      if (!value) settingsReady = false;
+      if (!value && source) source.settingsReady = false;
       refresh();
     },
     dispose() {
