@@ -51,8 +51,7 @@ pub(super) fn calibration(
     let (Some(binding), LatestMainContext::Selected(latest)) = (binding, latest) else {
         return Ok(None);
     };
-    if !latest.projection_current
-        || latest.model_id != provider.model
+    if latest.model_id != provider.model
         || latest.route_identity != crate::runner::digest(provider)?
         || latest.connection_id.as_deref() != Some(binding.connection_id.as_str())
         || latest.checkpoint_event_id.as_deref() != checkpoint
@@ -66,7 +65,7 @@ pub(super) fn calibration(
         return Ok(None);
     };
     // The previous input is measured, including cache reads. Only the change in
-    // rendered input is estimated; prior output and newly settled tools occur once in that change.
+    // rendered input is estimated, including archived results removed since that request.
     Ok(Some(Calibration {
         input,
         estimated: breakdown.estimated_tokens(),
@@ -228,9 +227,7 @@ impl Pending {
         let Some(checkpoint) = checkpoint else {
             return Ok(false);
         };
-        let session = checkpoint.invocation.session_id.clone();
-        inner.log.append(&EventWrite::plain(checkpoint)?).await?;
-        inner.shared.clear_loaded(&session)?;
+        record(inner, checkpoint).await?;
         Ok(true)
     }
 }
@@ -301,15 +298,95 @@ pub(super) async fn compact_now(
 }
 
 pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
+    stop(pending).await.map(|_| ())
+}
+
+pub(super) async fn finish(
+    inner: &RunContext,
+    pending: &mut Option<Pending>,
+) -> Result<(), RunError> {
+    if let Some(checkpoint) = stop(pending).await? {
+        record(inner, checkpoint).await?;
+    }
+    Ok(())
+}
+
+async fn record(
+    inner: &RunContext,
+    checkpoint: maka_agent_facts::event::RuntimeEvent,
+) -> Result<(), RunError> {
+    let session = checkpoint.invocation.session_id.clone();
+    inner.log.append(&EventWrite::plain(checkpoint)?).await?;
+    inner.shared.clear_loaded(&session)?;
+    Ok(())
+}
+
+async fn stop(
+    pending: &mut Option<Pending>,
+) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
     if let Some(Pending {
         cancellation,
         state,
     }) = pending.take()
     {
         cancellation.0.cancel();
-        if let CandidateState::Running(worker) = state {
-            join_worker(worker).await?;
+        match state {
+            CandidateState::Running(worker) => return join_worker(worker).await,
+            CandidateState::Ready(checkpoint) => return Ok(Some(*checkpoint)),
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::{
+        context::PreparedContextBreakdown, execution::ModelBinding, model::ModelUsage,
+    };
+    use maka_event_log::context::AcceptedMainContext;
+
+    #[test]
+    fn archived_tools_keep_measured_input_as_the_incremental_baseline() {
+        let provider = maka_model::ProviderConfig {
+            adapter: None,
+            capabilities: Default::default(),
+            image_input: None,
+            network: Default::default(),
+            kind: maka_model::ProviderKind::OpenaiChatCompletions,
+            model: "test".into(),
+            base_url: "http://localhost/v1".into(),
+            auth: maka_model::ProviderAuth::ApiKey("fixture".into()),
+            headers: Default::default(),
+            body_overlay: None,
+        };
+        let binding = ModelBinding {
+            connection_id: "connection".into(),
+            connection_slug: "fixture".into(),
+            model: "test".into(),
+        };
+        let mut breakdown = PreparedContextBreakdown::default();
+        breakdown.tool.estimated_tokens = 494_166;
+        let latest = LatestMainContext::Selected(Box::new(AcceptedMainContext {
+            projection_current: false,
+            sequence: 3,
+            finished_at: None,
+            requested_at: None,
+            model_id: "test".into(),
+            route_identity: crate::runner::digest(&provider).unwrap(),
+            connection_id: Some("connection".into()),
+            checkpoint_event_id: None,
+            context: None,
+            context_breakdown: Some(breakdown),
+            usage: ModelUsage {
+                input_tokens: Some(384_869),
+                ..Default::default()
+            },
+        }));
+        let baseline = calibration(&provider, Some(&binding), &latest, None)
+            .unwrap()
+            .expect("archiving changes the rendered delta, not the measured baseline");
+        assert_eq!(baseline.estimate(483_113), 373_816);
+        assert_eq!(baseline.estimate(504_166), 394_869);
+    }
 }

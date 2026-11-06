@@ -634,7 +634,16 @@ async fn run_from(
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err(crate::cleanup::unconfirmed()));
-    let summary_cleanup = auto_context::drain(&mut pending).await;
+    let summary_cleanup = if matches!(
+        &result,
+        Ok(StepExit::Terminal(
+            maka_agent_facts::event::InvocationOutcome::Completed
+        ))
+    ) {
+        auto_context::finish(inner, &mut pending).await
+    } else {
+        auto_context::drain(&mut pending).await
+    };
     let tool_cleanup = tools.shutdown().await;
     if matches!(&result, Err(error) if error.is_cleanup_unconfirmed())
         || matches!(&summary_cleanup, Err(error) if error.is_cleanup_unconfirmed())

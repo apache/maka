@@ -235,6 +235,144 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_background_summary_survives_turn_and_engine_restart() {
+    for native in [false, true] {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("events.sqlite");
+            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let observed = log.clone();
+            let server = tokio::spawn(async move {
+                let (mut old, _) = listener.accept().await.unwrap();
+                fixture::read_request(&mut old).await;
+                if native {
+                    crate::codex_compaction::respond_with_usage(
+                        &mut old,
+                        crate::codex_compaction::message("old-answer"),
+                        "old-answer",
+                        json!({"input_tokens":100_000,"output_tokens":30}),
+                    )
+                    .await;
+                } else {
+                    fixture::respond_with_usage(
+                        &mut old,
+                        "old-answer",
+                        "stop",
+                        json!({"prompt_tokens":100_000,"completion_tokens":30}),
+                    )
+                    .await;
+                }
+                let history = if native { "input" } else { "messages" };
+                let mut summary = None;
+                let mut main = None;
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let request = fixture::read_request(&mut socket).await;
+                    if (native
+                        && request[history]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|item| item["type"] == "compaction_trigger"))
+                        || (!native
+                            && request[history].to_string().contains(
+                                maka_agent_facts::context::default_compaction_prompt(
+                                    maka_agent_facts::language::Language::En,
+                                )
+                                .lines()
+                                .next()
+                                .unwrap(),
+                            ))
+                    {
+                        summary = Some(socket);
+                    } else {
+                        assert!(request[history].to_string().contains("old-answer"));
+                        main = Some(socket);
+                    }
+                }
+                let mut commits = observed.subscribe_commits();
+                if native {
+                    crate::codex_compaction::respond(
+                        summary.as_mut().unwrap(),
+                        crate::codex_compaction::native("summary-marker"),
+                        "summary",
+                    )
+                    .await;
+                } else {
+                    fixture::respond(summary.as_mut().unwrap(), fixture::SUMMARY, "stop").await;
+                }
+                loop {
+                    let prefix = observed.prefix(100, 256 * 1024).await.unwrap();
+                    if prefix.events.iter().any(|e| {
+                        matches!(&e.event.fact,
+                        Fact::ModelCompleted { output, .. }
+                            if serde_json::to_string(output).unwrap().contains("summary-marker"))
+                    }) {
+                        break;
+                    }
+                    commits.changed().await.unwrap();
+                }
+                drop(observed);
+                respond_for(main.as_mut().unwrap(), "answer-after-capture", native).await;
+                let (mut next, _) = listener.accept().await.unwrap();
+                let request = fixture::read_request(&mut next).await;
+                let messages = request[history].to_string();
+                assert!(messages.contains("summary-marker"));
+                assert!(!messages.contains("old-answer"));
+                let messages = request[history].as_array().unwrap();
+                for (role, text) in [
+                    ("assistant", "answer-after-capture"),
+                    ("user", "question-followup"),
+                ] {
+                    assert_eq!(
+                        messages
+                            .iter()
+                            .filter(|message| message["role"] == role
+                                && message["content"].to_string().contains(text))
+                            .count(),
+                        1,
+                        "the checkpoint tail retains each message once"
+                    );
+                }
+                respond_for(&mut next, "continued without another summary", native).await;
+            });
+            let worker = engine();
+            for (id, threshold) in [("old", None), ("next", Some(110_000))] {
+                let mut input = fixture::input(&base, id, false);
+                input.context = context(threshold);
+                if native {
+                    configure_native(&mut input, &base, threshold);
+                }
+                worker
+                    .run(log.store(), input, CancellationToken::new())
+                    .await
+                    .unwrap();
+            }
+            worker.drain().await;
+            drop(worker);
+            Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+            let log = SessionFixture::open(&path).await.unwrap();
+            let worker = engine();
+            let mut input = fixture::input(&base, "followup", false);
+            input.context = context(Some(110_000));
+            if native {
+                configure_native(&mut input, &base, Some(110_000));
+            }
+            worker
+                .run(log.store(), input, CancellationToken::new())
+                .await
+                .unwrap();
+            worker.drain().await;
+            server.await.unwrap();
+        })
+        .await
+        .expect("a completed summary must remain usable after reopening the Session");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_summary_drains_before_terminal_handoff_and_retirement() {
     for ending in ["complete", "cancel", "handoff", "retire", "summary-tool"] {
         tokio::time::timeout(Duration::from_secs(20), async {
