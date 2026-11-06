@@ -76,6 +76,7 @@ pub(crate) fn set(surface: &Rc<Surface>, keymap: Arc<Keymap>) {
         let weak = Rc::downgrade(surface);
         let (id, in_text, repeat) = (binding.id, binding.in_text, binding.repeat);
         let action = gtk::CallbackAction::new(move |_, _| match weak.upgrade() {
+            Some(surface) if surface.input_paused.get() => glib::Propagation::Stop,
             Some(surface) if fires(&surface, in_text) => {
                 watch_releases(&surface);
                 let held = &surface.keymap.held;
@@ -126,6 +127,9 @@ pub(crate) fn clear(surface: &Surface) {
 /// focus is reports it, as its shortcut's action would. False if none.
 #[cfg(feature = "dev")]
 pub(crate) fn press(surface: &Surface, stroke: Keystroke) -> bool {
+    if surface.input_paused.get() {
+        return true;
+    }
     let keymap = surface.keymap.keymap.borrow().clone();
     let Some(keymap) = keymap else {
         return false;
@@ -149,6 +153,9 @@ pub(crate) fn press(surface: &Surface, stroke: Keystroke) -> bool {
 /// menu's shortcuts (`chrome.rs`), whose controller the window runs first,
 /// give way to it, as menus' key equivalents do on macOS.
 pub(crate) fn claims(surface: &Surface, event: &gtk::gdk::Event) -> bool {
+    if surface.input_paused.get() {
+        return true;
+    }
     surface
         .keymap
         .triggers

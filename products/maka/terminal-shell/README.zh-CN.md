@@ -23,7 +23,7 @@
 
 NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo 从这里构建运行时、TSX 打包器、`nsh-base` 组件和 UI 类型声明生成器，无需单独检出 NSH。相关的 NSH 与 Maka 修改在同一源码树中完成，并通过终端的[真实 Host 测试](tests/real_host/mod.rs)一起验证：`cargo test -p maka-cli --no-default-features --test integration terminal::`。
 
-桌面首次发送测试使用无窗口的 GPUI 渲染器：`cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`。仅运行终端测试时不会构建这些桌面依赖。
+桌面首次发送测试在 macOS 和 Windows 上使用平台原生离屏渲染器：`cargo nextest run --locked -p maka-cli --no-default-features --features desktop-tests --test integration -E 'test(terminal::desktop_new_session)' -j 1`。仅运行终端测试时不会构建这些桌面依赖。 原生像素编辑器和指针测试使用 `cargo test -p maka-terminal-shell --test native-pixels`，自定义测试入口保证 AppKit 在进程主线程运行。
 
 ## 启动
 
@@ -37,13 +37,13 @@ cargo run -p maka-cli
 
 安装后直接运行 `maka` 或 `maka terminal-shell`，终端界面与 CLI 使用同一个可执行文件。`--root` 指定 Root，`--session` 打开已有会话，`--help` 查看参数；相对 Root 路径按调用时的工作目录解析。
 
-启动时会协商图片协议和显示尺寸。在 Linux（含 WSL）、macOS 和 Windows 上，终端提供所需能力时，整个界面通过 Kitty、Sixel 或 iTerm2 显示 GPU 渲染的像素帧；否则，同一个应用自动使用 Unicode 呈现。两种呈现方式都支持鼠标和键盘操作。界面缩放为 100% 时，像素界面跟随终端字体密度：每行对应 16 个逻辑像素，图像仍使用终端报告的完整物理分辨率。窗口或终端字号变化时，布局与指针坐标同步更新。
+启动时会协商图片协议和显示尺寸。在 macOS 和 Windows 上，终端提供所需能力时，整个界面通过 Kitty、Sixel 或 iTerm2 显示平台原生离屏像素帧；否则，同一个应用自动使用 Unicode 呈现。Linux（含 WSL）目前使用 Unicode 呈现，因为 GTK 后端仍需要显示服务器。两种呈现方式都支持鼠标和键盘操作。界面缩放为 100% 时，像素界面跟随终端字体密度：每行对应 16 个逻辑像素，图像仍使用终端报告的完整物理分辨率。窗口或终端字号变化时，布局与指针坐标同步更新。
 
 在 **Settings → General** 的 **Interface scale** 中选择预设，或输入百分比并按 Enter 预览。**Save** 保存当前缩放；**Reset to 100%** 预览 100%，**Cancel** 或离开页面会恢复已保存的缩放。Ctrl+0 或 Ctrl+Alt+0 将缩放重置为 100% 并保存（macOS 对应 Cmd+0 或 Cmd+Alt+0）。像素界面会按新缩放重新布局和栅格化文字；Unicode 界面请使用终端自身的字号。
 
-输入、CPU 布局、绘制和 GPU 命令编码仍走原生 UI 路径，持有所有权的 GPU 命令交给已有后台执行器，在同一任务中连续提交并回读。回读结束后才编码下一场景，保持 GPU 资源写入与轮询顺序。图像编码和终端输出仍可与原生工作及后续帧渲染重叠，捕获无需等待前一帧的终端确认。
+原生输入、布局和离屏捕获由平台 UI 线程负责。AppKit 运行在进程主线程，终端输入、输出和传输由独立线程负责。拥有完整所有权的 RGBA 快照交给后台图像编码；编码和终端输出可与原生工作及后续帧捕获重叠，捕获无需等待前一帧的终端确认。
 
-Kitty 在 GPU 继续绘制时准备完整的无损快照。唯一写入方在前一帧确认后选择交替图像槽，将已确认图像保留在下方，只有完整写出并收到对应成功回复后才提交给原生界面。等待写入的快照可以合并，已开始的事务必须完整结束；这些确认不代表屏幕垂直同步。会话持有的任一图像槽收到失败回复都会结束图像会话。窗口尺寸变化会立即使旧指针坐标失效。
+Kitty 在 原生后端继续绘制时准备完整的无损快照。唯一写入方在前一帧确认后选择交替图像槽，将已确认图像保留在下方，只有完整写出并收到对应成功回复后才提交给原生界面。等待写入的快照可以合并，已开始的事务必须完整结束；这些确认不代表屏幕垂直同步。会话持有的任一图像槽收到失败回复都会结束图像会话。窗口尺寸变化会立即使旧指针坐标失效。
 
 相邻且修饰键相同的未按键鼠标移动合并为最新位置；点击、拖拽、滚轮、键盘和输入法事件保留顺序，并隔开这些移动序列。
 

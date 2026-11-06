@@ -170,12 +170,12 @@ const cross = zh
   ? [
       { id: 'layout', icon: 'layout', title: '布局随窗口重组', body: 'Flexbox 和 Grid 由 Taffy 排版，配合 Tailwind 断点（md:、lg:）和 Rust 里的 window() 尺寸：聊天应用在宽窗口里并排显示侧栏、会话列表和消息，在手机上一次显示一屏。', chips: ['md:', 'window()', 'Taffy'] },
       { id: 'input', icon: 'pointer', title: '每种设备的输入方式', body: '桌面上是指针、悬停、右键、快捷键和焦点；手机上是触摸、手势、软键盘和页面导航。nsh/base 的基础组件同时承载两者，应用代码只有一份。', chips: ['Menu', 'ContextMenu', 'NavStack'] },
-      { id: 'verify', icon: 'check', title: '在每个目标上验证', body: 'nsh test 无界面地运行应用的测试，也能在 macOS、Windows、Linux 和 GPUI 窗口、iOS 模拟器、Android 设备或浏览器里，用平台自己的输入运行同样的测试。', chips: ['nsh test', '--target ios', '--target web'] },
+      { id: 'verify', icon: 'check', title: '在每个目标上验证', body: 'nsh test 无界面地运行应用的测试，也能在 macOS、Windows、Linux 窗口、iOS 模拟器、Android 设备或浏览器里，用平台自己的输入运行同样的测试。', chips: ['nsh test', '--target ios', '--target web'] },
     ]
   : [
       { id: 'layout', icon: 'layout', title: 'Layouts that reshape', body: 'Flexbox and grid laid out by Taffy, with Tailwind breakpoints (md:, lg:) and the window’s size in Rust: a chat app shows its sidebar, conversations and messages side by side in a wide window, and one screen at a time on a phone.', chips: ['md:', 'window()', 'Taffy'] },
       { id: 'input', icon: 'pointer', title: 'The input each device expects', body: 'A pointer, hover, right clicks, shortcuts and focus on the desktop; touches, gestures, the software keyboard and page navigation on phones. nsh/base’s components carry both, so the app’s code stays one.', chips: ['Menu', 'ContextMenu', 'NavStack'] },
-      { id: 'verify', icon: 'check', title: 'Checked on every target', body: 'nsh test runs the app’s tests headless, and the same tests in macOS, Windows, Linux and GPUI windows, an iOS simulator, an Android device or a browser, with the platform’s own input.', chips: ['nsh test', '--target ios', '--target web'] },
+      { id: 'verify', icon: 'check', title: 'Checked on every target', body: 'nsh test runs the app’s tests headless, and the same tests in macOS, Windows, Linux windows, an iOS simulator, an Android device or a browser, with the platform’s own input.', chips: ['nsh test', '--target ios', '--target web'] },
     ];
 
 const caps = zh
@@ -208,17 +208,17 @@ const capGroups = zh
 const uses = zh
   ? [
       { tag: '从这里开始', label: '独立应用', title: '交付到六个平台', body: '用 Rust、TSX 或两者编写应用，nsh package 把它打成可安装的 iOS、Android、macOS、Windows、Linux 应用，或一个静态网站。', code: 'app', checks: ['Rust 应用完整编译成 Native 代码', '每个目标一条命令', 'Rust 改动自动重建，TSX 热更新'], cta: '快速上手', href: 'docs/getting-started' },
-      { tag: '', label: '动态界面与插件', title: '发布之后再扩展应用', body: '在任意页面嵌入 NshAppView（iOS）、NshView（Android）、AppView（桌面与 GPUI 应用）或在网页里用 createPlayer，运行时加载签名的 TSX 模块。', code: 'host', checks: ['一个页面可以放多个模块', '宿主注册自己的 Native 组件', '更新按你的节奏下发'], cta: '各平台的嵌入方式', href: 'docs/platforms' },
+      { tag: '', label: '动态界面与插件', title: '发布之后再扩展应用', body: '在任意页面嵌入 NshAppView（iOS）、NshView（Android）、AppView（原生桌面应用）或在网页里用 createPlayer，运行时加载签名的 TSX 模块。', code: 'host', checks: ['一个页面可以放多个模块', '宿主注册自己的 Native 组件', '更新按你的节奏下发'], cta: '各平台的嵌入方式', href: 'docs/platforms' },
       { tag: '', label: 'AI 生成的界面', title: '用界面而不是文字回答', body: '模型为每次请求写一个模块，服务器检查并签名，应用在沙箱里以 Native 方式显示它。', code: 'ai', checks: ['每个回答一个 TSX 文件', '下发前完成类型检查与 trace', '只拥有宿主授予的能力'], cta: '签名与沙箱', href: 'docs/sandbox-and-capabilities' },
     ]
   : [
       { tag: 'Start here', label: 'Standalone apps', title: 'Ship to six platforms', body: 'Write the app in Rust, TSX or both, and nsh package makes an installable iOS, Android, macOS, Windows or Linux app, or a static website.', code: 'app', checks: ['Rust apps compile entirely to native code', 'One command per target', 'Rebuilds for Rust, hot updates for TSX'], cta: 'Getting started', href: 'docs/getting-started' },
-      { tag: '', label: 'Dynamic UI and plugins', title: 'Extend the app after release', body: 'Embed an NshAppView (iOS), NshView (Android), AppView (desktop and GPUI apps) or createPlayer (a web page) on any screen, and load signed TSX modules into it at run time.', code: 'host', checks: ['Several modules on one screen', 'The host’s own native components', 'Updates on your schedule'], cta: 'Embedding, per platform', href: 'docs/platforms' },
+      { tag: '', label: 'Dynamic UI and plugins', title: 'Extend the app after release', body: 'Embed an NshAppView (iOS), NshView (Android), AppView (native desktop apps) or createPlayer (a web page) on any screen, and load signed TSX modules into it at run time.', code: 'host', checks: ['Several modules on one screen', 'The host’s own native components', 'Updates on your schedule'], cta: 'Embedding, per platform', href: 'docs/platforms' },
       { tag: '', label: 'AI-generated UI', title: 'Answer with an interface', body: 'A model writes a module per request, your server checks and signs it, and the app shows it natively, in a sandbox.', code: 'ai', checks: ['One TSX file per answer', 'Type-checked and traced before it ships', 'Only the capabilities the host grants'], cta: 'Signing and sandboxing', href: 'docs/sandbox-and-capabilities' },
     ];
 
 // Platforms in the order the docs list them: phones, desktops, the web,
-// then GPUI (all three desktops, for apps that embed NSH).
+// Desktop embedding uses each OS native AppView.
 const platforms = zh
   ? [
       { name: 'iOS', detail: 'UIKit · CoreText · iOS 15+', cmd: '--target ios' },
@@ -227,7 +227,6 @@ const platforms = zh
       { name: 'Windows', detail: 'Win32 · Direct2D · DirectWrite · 10 1809+', cmd: '--target windows' },
       { name: 'Linux', detail: 'GTK 4 · Pango · GTK 4.14+', cmd: '--target linux' },
       { name: 'Web', detail: 'HTML · CSS · 现代浏览器', cmd: '--target web' },
-      { name: 'GPUI', detail: 'GPUI · 嵌入 GPUI 与 GPUI Kit 应用（macOS / Windows / Linux）', cmd: '--target gpui' },
     ]
   : [
       { name: 'iOS', detail: 'UIKit · CoreText · iOS 15+', cmd: '--target ios' },
@@ -236,7 +235,6 @@ const platforms = zh
       { name: 'Windows', detail: 'Win32 · Direct2D · DirectWrite · 10 1809+', cmd: '--target windows' },
       { name: 'Linux', detail: 'GTK 4 · Pango · GTK 4.14+', cmd: '--target linux' },
       { name: 'Web', detail: 'HTML · CSS · modern browsers', cmd: '--target web' },
-      { name: 'GPUI', detail: 'GPUI · embedded in GPUI and GPUI Kit apps (macOS / Windows / Linux)', cmd: '--target gpui' },
     ];
 
 // Hand-colored snippets: real API, coloured with the site's code tokens.
@@ -268,7 +266,7 @@ const snippets: Record<string, string> = {
     `${cm('$')} nsh run my-app ${k('--target')} macos`,
     `${cm('$')} nsh package my-app ${k('--target')} windows`,
     `${cm('# --template ts for TSX')}`,
-    `${cm('# ios · android · macos · windows · linux · gpui · web')}`,
+    `${cm('# ios · android · macos · windows · linux · web')}`,
   ].join('\n'),
 };
 const heroSnippet = 'nsh init my-app';

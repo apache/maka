@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      viewBox="0 0 880 480" width="100%" role="img" aria-labelledby="t d">
   <title id="t">One module, many hosts</title>
-  <desc id="d">One module, App.tsx, is built once into bundle.nshc. The same Rust runtime runs it everywhere: QuickJS, the reactive graph, the renderer, Taffy layout, text and the components. iOS draws UIKit views from iOS 15.0, embedded as NshAppView. Android draws Android views from API 28, Android 9, embedded as NshView. The desktops draw AppKit views on macOS, Win32 windows with Direct2D on Windows and GTK 4 widgets on Linux, embedded as AppView. GPUI draws GPUI elements on macOS, Windows and Linux, embedded as an AppView in GPUI apps. The web renders HTML in a browser page, embedded with createPlayer. All are supported.</desc>
+  <desc id="d">One module, App.tsx, is built once into bundle.nshc. The same Rust runtime runs it everywhere: QuickJS, the reactive graph, the renderer, Taffy layout, text and the components. iOS draws UIKit views from iOS 15.0, embedded as NshAppView. Android draws Android views from API 28, Android 9, embedded as NshView. The desktops draw AppKit views on macOS, Win32 windows with Direct2D on Windows and GTK 4 widgets on Linux, embedded as AppView. The former GPUI backend and embedding API are retired; use the desktop platform AppView. The web renders HTML in a browser page, embedded with createPlayer. All are supported.</desc>
 
   <defs>
     <style>
@@ -81,7 +81,6 @@
     <path id="to-ios" d="M504,248 V262 Q504,268 498,268 H238 Q232,268 232,274 V310"/>
     <path id="to-android" d="M504,248 V262 Q504,268 498,268 H374 Q368,268 368,274 V310"/>
     <path id="to-desktop" d="M504,248 V310"/>
-    <path id="to-gpui" d="M504,248 V262 Q504,268 510,268 H634 Q640,268 640,274 V310"/>
     <path id="to-web" d="M504,248 V262 Q504,268 510,268 H770 Q776,268 776,274 V310"/>
   </defs>
 
@@ -135,11 +134,6 @@
   </g>
   <g class="token">
     <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
-    <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-gpui" xlink:href="#to-gpui"/></animateMotion>
-    <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
-  </g>
-  <g class="token">
-    <circle class="token-halo" r="8"/><circle class="token-core" r="3.5"/>
     <animateMotion dur="5s" repeatCount="indefinite" rotate="0" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear"><mpath href="#to-web" xlink:href="#to-web"/></animateMotion>
     <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.46;0.52;1"/>
   </g>
@@ -168,10 +162,10 @@
 
   <rect class="card stage" x="578" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
   <text class="name" x="592" y="337">GPUI</text>
-  <text class="fact" x="592" y="357" font-size="10.5">GPUI elements</text>
-  <text class="note" x="592" y="374" font-size="10">Mac, Windows, Linux</text>
-  <text class="note mono" x="592" y="391">AppView</text>
-  <text class="status" x="592" y="412">SUPPORTED</text>
+  <text class="fact" x="592" y="357" font-size="10.5">Backend retired</text>
+  <text class="note" x="592" y="374" font-size="10">Use native desktop</text>
+  <text class="note mono" x="592" y="391">See migration guide</text>
+  <text class="status" x="592" y="412">RETIRED</text>
 
   <rect class="card stage" x="714" y="312" width="124" height="112" rx="9" style="animation-delay:-2.6s"/>
   <text class="name" x="728" y="337">Web</text>
@@ -180,5 +174,5 @@
   <text class="note mono" x="728" y="391">createPlayer</text>
   <text class="status" x="728" y="412">SUPPORTED</text>
 
-  <text class="claim" x="24" y="466">iOS, Android, macOS, Windows, Linux, GPUI and the web: one bundle, every platform's own UI.</text>
+  <text class="claim" x="24" y="466">iOS, Android, macOS, Windows, Linux and the web: one bundle, every platform's own UI.</text>
 </svg>

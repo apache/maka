@@ -3,9 +3,7 @@ name: Release crates
 # Publishes nsh's crates to crates.io: the main workspace's crates that do
 # not inherit `publish = false` (Cargo.toml), the libraries and the
 # development hosts and release runners (`nsh` builds an app with Rust
-# crates of its own from them, at its own version), then the GPUI
-# workspace's (`crates/gpui`: `nsh-platform-gpui` and its development host),
-# which depend on them.
+# crates of its own from them, at its own version).
 #
 # - Pushing a tag `vX.Y.Z` (the workspace version in Cargo.toml) publishes
 #   that version, alongside `release.yml`'s distribution.
@@ -15,7 +13,7 @@ name: Release crates
 # Crates whose version is already on crates.io are skipped, so a run that
 # failed half way (crates.io limits how many new crates an account publishes
 # in a row) can be run again. A new version also updates the `version` of
-# the `nsh-*` entries in both workspaces' `[workspace.dependencies]`.
+# the `nsh-*` entries in the workspace’s `[workspace.dependencies]`.
 #
 # Needs the `CARGO_REGISTRY_TOKEN` secret (a crates.io token with the
 # publish-update scope, and publish-new for crates not published yet).
@@ -69,7 +67,7 @@ jobs:
             exit 1
           fi
           # The `nsh-*` dependencies must ask for the version being published.
-          if grep -E '^nsh-[a-z-]+ = \{' Cargo.toml crates/gpui/Cargo.toml | grep -v "version = \"$version\""; then
+          if grep -E '^nsh-[a-z-]+ = \{' Cargo.toml | grep -v "version = \"$version\""; then
             echo "::error::Set version = \"$version\" on the nsh-* entries of [workspace.dependencies] above"
             exit 1
           fi
@@ -81,10 +79,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tmp"
           echo "TMPDIR=$RUNNER_TEMP/tmp" >> "$GITHUB_ENV"
 
-      # QuickJS is C (bindgen needs libclang); `nsh-platform-linux` links
-      # GTK 4, Pango and WebKitGTK 6.0; `nsh-platform-gpui` GPUI's X11 /
-      # Wayland / xkbcommon / fontconfig libraries, GTK 3 and WebKitGTK 4.1
-      # (feature `webview`) and GStreamer (feature `video`), as in gpui.yml.
+      # QuickJS needs libclang; native GTK links Pango and WebKitGTK.
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -93,9 +88,7 @@ jobs:
             libgtk-4-dev libwebkitgtk-6.0-dev \
             libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
             libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -126,18 +119,3 @@ jobs:
           if [[ -z "$packages" ]]; then echo "Nothing to publish"; exit 0; fi
           # cargo publishes them in dependency order.
           cargo publish $DRY_RUN $packages
-
-      # Packaging it needs the main workspace's crates of this version on
-      # crates.io, so a dry run only lists what its package would hold.
-      - name: Publish the GPUI workspace
-        working-directory: crates/gpui
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          packages=$(bash "$RUNNER_TEMP/unpublished.sh")
-          if [[ -z "$packages" ]]; then echo "Nothing to publish"; exit 0; fi
-          if [[ -n "$DRY_RUN" ]]; then
-            cargo package --list $packages
-          else
-            cargo publish $packages
-          fi

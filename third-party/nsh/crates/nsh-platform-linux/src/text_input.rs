@@ -374,29 +374,70 @@ impl Ctx {
         self.selection_changed();
     }
 
-    /// A paste (Ctrl+V, Shift+Insert, the context menu) into the editor
-    /// `widget`: reports what the clipboard holds (`onPaste`) if the app
-    /// listens, read now, on the user's paste (GTK reads it asynchronously:
-    /// the report may come after the text it inserts); whether the editor
-    /// pastes its text (`pasteBehavior`).
+    /// Owns the asynchronous paste so reload waits for its event and edit,
+    /// including a clipboard owned by another process.
     fn pasting(&self, widget: &gtk::Widget) -> bool {
         let Some((surface, view, input)) = self.get() else {
-            return true;
+            return false;
         };
-        if view.state().events.contains(EventKind::Paste) {
-            let id = view.id();
-            let surface = Rc::downgrade(&surface);
-            crate::system::read_pasted(widget.clipboard(), move |paste| {
-                if let Some(surface) = surface.upgrade() {
-                    surface.event(id, EventKind::Paste, EventPayload::Paste(Box::new(paste)));
-                }
-            });
+        if surface.input_paused.get() || !input.config.borrow().editable {
+            return false;
         }
+        let reports = view.state().events.contains(EventKind::Paste);
         let inserts = input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert;
-        // Its insertion (and the deletion of the selection it replaces)
-        // types no key.
-        input.pasting.set(inserts);
-        inserts
+        if !reports && !inserts {
+            return false;
+        }
+        let generation = surface.admit_paste();
+        let weak = Rc::downgrade(&surface);
+        let context = self.clone();
+        crate::system::read_pasted(widget.clipboard(), move |paste| {
+            let Some(surface) = weak.upgrade() else {
+                return;
+            };
+            if !surface.paste_is_current(generation) {
+                return;
+            }
+            if let Some((_, view, input)) = context.get() {
+                let text = inserts.then(|| paste.text.clone());
+                if reports {
+                    surface.event(
+                        view.id(),
+                        EventKind::Paste,
+                        EventPayload::Paste(Box::new(paste)),
+                    );
+                }
+                if let Some(text) = text.filter(|text| !text.is_empty()) {
+                    input.pasting.set(true);
+                    // Do not hold the editor borrow across GTK's edit signals.
+                    let editor = input.editor.borrow().clone();
+                    match editor {
+                        Editor::Line(field) => {
+                            let (start, end) = field.selection_bounds().unwrap_or_else(|| {
+                                let position = field.position();
+                                (position, position)
+                            });
+                            field.delete_text(start, end);
+                            let mut position = start;
+                            field.insert_text(&text, &mut position);
+                            field.set_position(position);
+                        }
+                        Editor::Area { view, .. } => {
+                            let buffer = view.buffer();
+                            buffer.begin_user_action();
+                            buffer.delete_selection(true, true);
+                            buffer.insert_at_cursor(&text);
+                            buffer.end_user_action();
+                        }
+                    }
+                    input.pasting.set(false);
+                    context.flush_change();
+                }
+            }
+            surface.finish_paste(generation);
+        });
+        // The callback above inserts it once; GTK must not read it again.
+        false
     }
 
     /// The caret or selection may have moved.
@@ -1459,6 +1500,26 @@ pub(crate) fn blur_all(surface: &Rc<Surface>) {
         && focus.is_ancestor(root)
     {
         window.set_focus(None::<&gtk::Widget>);
+    }
+}
+
+/// Reports edits GTK queued for idle before a reload's engine barrier.
+pub(crate) fn flush_changes(surface: &Rc<Surface>) {
+    let views: Vec<_> = surface.mounter.borrow().views.values().cloned().collect();
+    for view in views {
+        let input = view.state().input.clone();
+        if let Some(input) = input {
+            let context = Ctx {
+                surface: Rc::downgrade(surface),
+                view: view.downgrade(),
+                input: Rc::downgrade(&input),
+            };
+            context.flush_change();
+            let ending_composition = input.composition_idle.borrow().is_some();
+            if ending_composition {
+                context.flush_composition();
+            }
+        }
     }
 }
 

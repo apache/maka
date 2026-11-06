@@ -5,6 +5,8 @@ order: 61
 group: tools
 ---
 
+> 本分支已移除 GPUI 后端和嵌入 API。下文保留的旧 GPUI 专属说明不再是可用入口；请参阅[原生后端迁移](./gpui.md)，使用 AppKit、Direct2D 或 GTK。
+
 # 测试
 
 NSH 以 **无界面（headless）** 方式运行应用：使用真实的引擎（与设备上相同的响应式图、渲染器、组件、布局和列表虚拟化，

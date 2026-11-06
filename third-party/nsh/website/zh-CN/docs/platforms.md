@@ -1,13 +1,13 @@
 ---
 title: 平台概览
-description: "NSH 在哪些平台上运行：iOS、Android、macOS、Windows、Linux、GPUI、终端和 Web，每个平台都有自己的后端；在各平台上如何运行、打包和嵌入 Rust 或 TSX 应用，以及各自需要什么。"
+description: "NSH 在哪些平台上运行：iOS、Android、macOS、Windows、Linux、终端和 Web，每个平台都有自己的后端；在各平台上如何运行、打包和嵌入 Rust 或 TSX 应用，以及各自需要什么。"
 order: 10
 group: platforms
 ---
 
 # 平台概览
 
-NSH 运行在手机、桌面、终端和网页上：iOS、Android、macOS、Windows、Linux、GPUI、终端单元格和 Web。每个平台都有自己的后端，用平台自己的界面技术绘制：同一个应用在 iPhone 上是 UIKit 视图，在 Mac 上是 AppKit 视图，在 Linux 上是 GTK 4 控件，在 GPUI 应用里是 GPUI 元素，在终端里是 Ratatui 单元格，在浏览器里是 HTML，文本、输入、无障碍和深色模式都是平台自己的。后端之上的部分全部共享：响应式图、渲染器、Taffy 布局、组件和原生模块在每个平台上都是同一份 Rust 代码，所以一个应用可以在所有平台上运行。用 Rust 编写的应用就是这份代码加上你的 crate，不带 JavaScript 虚拟机；TSX 应用则在它之上用 QuickJS 运行自己的模块（[用 Rust 开发](./rust.md)）。
+NSH 运行在手机、桌面、终端和网页上：iOS、Android、macOS、Windows、Linux、终端单元格和 Web。每个平台都有自己的后端，用平台自己的界面技术绘制：同一个应用在 iPhone 上是 UIKit 视图，在 Mac 上是 AppKit 视图，在 Linux 上是 GTK 4 控件，在终端里是 Ratatui 单元格，在浏览器里是 HTML，文本、输入、无障碍和深色模式都是平台自己的。后端之上的部分全部共享：响应式图、渲染器、Taffy 布局、组件和原生模块在每个平台上都是同一份 Rust 代码，所以一个应用可以在所有平台上运行。用 Rust 编写的应用就是这份代码加上你的 crate，不带 JavaScript 虚拟机；TSX 应用则在它之上用 QuickJS 运行自己的模块（[用 Rust 开发](./rust.md)）。
 
 在每个平台上，应用都有同样的两种用法：打包成该平台可安装的应用（`nsh package`），或嵌入你自己的原生应用——宿主可以链接一个 Rust 根组件，也可以在运行时加载 TSX。开发时用 `nsh run`（改动 Rust 会重新构建并重启应用，改动 TSX 是热更新）。
 
@@ -20,7 +20,6 @@ NSH 运行在手机、桌面、终端和网页上：iOS、Android、macOS、Wind
 | [macOS](./macos.md) | AppKit 与 Core Animation；CoreText | macOS 14+ | `nsh run --target macos` | ad hoc 签名的 `.app` |
 | [Windows](./windows.md) | 用 Direct2D 绘制的 Win32 窗口；DirectWrite | Windows 10 1809+、Windows 11 | `nsh run`（Windows 上的默认目标） | 一个目录和一个 `.zip` |
 | [Linux](./linux.md) | GTK 4 控件；Pango | GTK 4.14+ | `nsh run`（Linux 上的默认目标） | 一个目录和一个 `.tar.gz` |
-| [GPUI](./gpui.md) | GPUI；GPUI 的文字系统 | macOS、Windows、Linux（Vulkan） | 在你的 GPUI 应用里；TSX 也可用 `nsh run --target gpui` | 随嵌入它的 GPUI 应用发布 |
 | [终端](./tui.md) | Ratatui；终端字素 | macOS、Windows、Linux | `nsh run --target tui` | 控制台程序与资源，以及本机系统格式的归档 |
 | [Web](./web.md) | HTML 与 CSS；浏览器的字体 | 现代浏览器，桌面和手机 | `nsh run --target web` | 一个静态网站 |
 
@@ -54,7 +53,6 @@ nsh package App.tsx --target macos
 | macOS | `AppView`（一个 `NSView`） | Rust 根组件、TSX bundle | `nsh-platform-macos` crate | Rust |
 | Windows | `AppView`（一个子窗口） | Rust 根组件、TSX bundle | `nsh-platform-windows` crate | Rust |
 | Linux | `AppView`（一个 GTK 控件） | Rust 根组件、TSX bundle | `nsh-platform-linux` crate | Rust |
-| GPUI（macOS、Windows、Linux） | `AppView`（一个 GPUI 视图） | Rust 根组件、TSX bundle、签名包 | `nsh-platform-gpui` crate | Rust |
 | iOS | `AppView`（一个 `UIView`） | Rust 根组件、TSX bundle | `nsh-platform-ios` crate | Rust |
 | iOS | `NshAppView`（一个 `UIView`） | TSX bundle、签名包 | `NativeShell.xcframework` | Swift |
 | Android | `NshView`（一个 `FrameLayout`） | TSX bundle、签名包 | `nsh.aar` | Java 或 Kotlin |

@@ -83,10 +83,15 @@ impl MountSink for Sink {
 
 /// Called when the app reports a fatal error (development hosts show it).
 pub(crate) type ErrorHandler = Box<dyn Fn(&str)>;
+type InputReady = Box<dyn FnOnce(Result<(), String>) + Send>;
 
 /// One engine and its views.
 pub(crate) struct Surface {
     key: u64,
+    generation: Cell<u64>,
+    pub(crate) input_paused: Cell<bool>,
+    pending_pastes: Cell<usize>,
+    input_ready: RefCell<Vec<InputReady>>,
     /// The root view (node [`ROOT_ID`]): the surface's widget.
     pub(crate) root: NshView,
     /// Views by node id, and what mounting needs between items.
@@ -128,6 +133,7 @@ pub(crate) struct Surface {
     shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
+    pub(crate) image_assets: RefCell<Option<nsh_core::image::loader::ReadAsset>>,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// What the running app may reach (checked for image redirects).
@@ -194,6 +200,11 @@ impl Surface {
             test_model: RefCell::default(),
             shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
+            image_assets: RefCell::new(None),
+            generation: Cell::new(0),
+            input_paused: Cell::new(false),
+            pending_pastes: Cell::new(0),
+            input_ready: RefCell::new(Vec::new()),
             image_cache: RefCell::new(None),
             access: RefCell::new(Arc::default()),
             native: Default::default(),
@@ -242,7 +253,6 @@ impl Surface {
     }
 
     /// The surface `key` names, while it exists.
-    #[cfg(feature = "dev")]
     pub(crate) fn by_key(key: u64) -> Option<Rc<Surface>> {
         SURFACES.with(|s| s.borrow().get(&key).and_then(Weak::upgrade))
     }
@@ -319,6 +329,11 @@ impl Surface {
 
     /// Stops the app and removes its views.
     pub(crate) fn stop(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
+        self.pending_pastes.set(0);
+        for done in self.input_ready.take() {
+            done(Err("the UI engine stopped while pausing input".into()));
+        }
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
@@ -339,6 +354,61 @@ impl Surface {
         if let Some(control) = &*self.control.borrow() {
             f(control);
         }
+    }
+
+    pub(crate) fn admit_paste(&self) -> u64 {
+        self.pending_pastes.set(self.pending_pastes.get() + 1);
+        self.generation.get()
+    }
+
+    pub(crate) fn paste_is_current(&self, generation: u64) -> bool {
+        self.generation.get() == generation
+    }
+
+    pub(crate) fn finish_paste(self: &Rc<Self>, generation: u64) {
+        if !self.paste_is_current(generation) {
+            return;
+        }
+        self.pending_pastes.set(self.pending_pastes.get() - 1);
+        if self.pending_pastes.get() == 0 {
+            for done in self.input_ready.take() {
+                self.input_barrier(done);
+            }
+        }
+    }
+
+    /// Orders admitted native edits before the host's reload transaction.
+    pub(crate) fn input_barrier(
+        self: &Rc<Self>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        if self.pending_pastes.get() != 0 {
+            self.input_ready.borrow_mut().push(Box::new(done));
+            return;
+        }
+        let Some(control) = self.control.borrow().clone() else {
+            done(Err("the UI engine is not running".into()));
+            return;
+        };
+        let (key, generation) = (self.key, self.generation.get());
+        control.advance_clock(std::time::Duration::ZERO, move || {
+            glib::MainContext::default().invoke(move || {
+                let Some(surface) =
+                    Self::by_key(key).filter(|surface| surface.generation.get() == generation)
+                else {
+                    done(Err("the UI engine changed while pausing input".into()));
+                    return;
+                };
+                surface.drain();
+                crate::text_input::flush_changes(&surface);
+                let control = surface.control.borrow().clone();
+                if let Some(control) = control {
+                    control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
+                } else {
+                    done(Err("the UI engine stopped while pausing input".into()));
+                }
+            });
+        });
     }
 
     /// Sends an event to JS.

@@ -18,19 +18,29 @@
  */
 
 use super::probe::{Capabilities, MouseCoordinates, PixelOrigin};
-use gpui::{PlatformInput, point, px};
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use nsh_terminal::PlatformInput;
+use nsh_terminal::{point, px};
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 use std::time::{Duration, Instant};
-use termina::{
-    Event,
-    event::{KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind},
-};
+use termina::Event;
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use termina::event::{KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind};
+
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 #[derive(Default)]
 pub(super) struct Mapping {
-    last_click: Option<(MouseButton, gpui::Point<gpui::Pixels>, Instant, usize)>,
+    last_click: Option<(
+        MouseButton,
+        nsh_terminal::Point<nsh_terminal::Pixels>,
+        Instant,
+        usize,
+    )>,
     clicks: usize,
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 impl Mapping {
     pub fn input(&mut self, event: &Event, caps: Capabilities) -> Option<PlatformInput> {
         match event {
@@ -76,20 +86,26 @@ impl Mapping {
                     | KeyCode::Modifier(_)
                     | KeyCode::Media(_) => return None,
                 };
-                let keystroke = gpui::Keystroke {
-                    modifiers,
-                    key,
-                    key_char,
+                let keystroke = {
+                    let mut value = nsh_terminal::Keystroke::default();
+                    value.modifiers = modifiers;
+                    value.key = key;
+                    value.key_char = key_char;
+                    value
                 };
                 Some(match event.kind {
-                    KeyEventKind::Release => PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
-                    KeyEventKind::Press | KeyEventKind::Repeat => {
-                        PlatformInput::KeyDown(gpui::KeyDownEvent {
-                            keystroke,
-                            is_held: event.kind == KeyEventKind::Repeat,
-                            prefer_character_input: false,
-                        })
-                    }
+                    KeyEventKind::Release => PlatformInput::KeyUp({
+                        let mut value = nsh_terminal::KeyUpEvent::default();
+                        value.keystroke = keystroke;
+                        value
+                    }),
+                    KeyEventKind::Press | KeyEventKind::Repeat => PlatformInput::KeyDown({
+                        let mut value = nsh_terminal::KeyDownEvent::default();
+                        value.keystroke = keystroke;
+                        value.is_held = event.kind == KeyEventKind::Repeat;
+                        value.prefer_character_input = false;
+                        value
+                    }),
                 })
             }
             Event::SgrMouse(mouse) => {
@@ -117,7 +133,7 @@ impl Mapping {
         &mut self,
         kind: MouseEventKind,
         mods: Modifiers,
-        position: gpui::Point<gpui::Pixels>,
+        position: nsh_terminal::Point<nsh_terminal::Pixels>,
     ) -> PlatformInput {
         let modifiers = modifiers(mods);
         match kind {
@@ -133,29 +149,37 @@ impl Mapping {
                     })
                     .map_or(1, |(_, _, _, clicks)| clicks % 3 + 1);
                 self.last_click = Some((button, position, now, self.clicks));
-                PlatformInput::MouseDown(gpui::MouseDownEvent {
-                    button: mouse_button(button),
-                    position,
-                    modifiers,
-                    click_count: self.clicks,
-                    first_mouse: false,
+                PlatformInput::MouseDown({
+                    let mut value = nsh_terminal::MouseDownEvent::default();
+                    value.button = mouse_button(button);
+                    value.position = position;
+                    value.modifiers = modifiers;
+                    value.click_count = self.clicks;
+                    value.first_mouse = false;
+                    value
                 })
             }
-            MouseEventKind::Up(button) => PlatformInput::MouseUp(gpui::MouseUpEvent {
-                button: mouse_button(button),
-                position,
-                modifiers,
-                click_count: self.clicks.max(1),
+            MouseEventKind::Up(button) => PlatformInput::MouseUp({
+                let mut value = nsh_terminal::MouseUpEvent::default();
+                value.button = mouse_button(button);
+                value.position = position;
+                value.modifiers = modifiers;
+                value.click_count = self.clicks.max(1);
+                value
             }),
-            MouseEventKind::Drag(button) => PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                position,
-                pressed_button: Some(mouse_button(button)),
-                modifiers,
+            MouseEventKind::Drag(button) => PlatformInput::MouseMove({
+                let mut value = nsh_terminal::MouseMoveEvent::default();
+                value.position = position;
+                value.pressed_button = Some(mouse_button(button));
+                value.modifiers = modifiers;
+                value
             }),
-            MouseEventKind::Moved => PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                position,
-                pressed_button: None,
-                modifiers,
+            MouseEventKind::Moved => PlatformInput::MouseMove({
+                let mut value = nsh_terminal::MouseMoveEvent::default();
+                value.position = position;
+                value.pressed_button = None;
+                value.modifiers = modifiers;
+                value
             }),
             MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
@@ -168,11 +192,13 @@ impl Mapping {
                     MouseEventKind::ScrollRight => (-3.0, 0.0),
                     _ => unreachable!(),
                 };
-                PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                    position,
-                    modifiers,
-                    delta: gpui::ScrollDelta::Lines(point(x, y)),
-                    touch_phase: gpui::TouchPhase::Moved,
+                PlatformInput::ScrollWheel({
+                    let mut value = nsh_terminal::ScrollWheelEvent::default();
+                    value.position = position;
+                    value.modifiers = modifiers;
+                    value.delta = nsh_terminal::ScrollDelta::Lines(point(x, y));
+                    value.touch_phase = nsh_terminal::TouchPhase::Moved;
+                    value
                 })
             }
         }
@@ -183,7 +209,7 @@ impl Mapping {
 pub(super) fn mouse_position(
     event: &Event,
     caps: Capabilities,
-) -> Option<gpui::Point<gpui::Pixels>> {
+) -> Option<nsh_terminal::Point<nsh_terminal::Pixels>> {
     let position = match event {
         Event::SgrMouse(mouse) => {
             let position = match caps.mouse {
@@ -210,7 +236,11 @@ pub(super) fn mouse_position(
     Some(position / caps.scale_factor())
 }
 
-fn cell_centre(x: u16, y: u16, caps: Capabilities) -> Option<gpui::Point<gpui::Pixels>> {
+fn cell_centre(
+    x: u16,
+    y: u16,
+    caps: Capabilities,
+) -> Option<nsh_terminal::Point<nsh_terminal::Pixels>> {
     if caps.size.cols == 0 || caps.size.rows == 0 {
         return None;
     }
@@ -220,22 +250,23 @@ fn cell_centre(x: u16, y: u16, caps: Capabilities) -> Option<gpui::Point<gpui::P
     ))
 }
 
-fn mouse_button(button: MouseButton) -> gpui::MouseButton {
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+fn mouse_button(button: MouseButton) -> nsh_terminal::MouseButton {
     match button {
-        MouseButton::Left => gpui::MouseButton::Left,
-        MouseButton::Right => gpui::MouseButton::Right,
-        MouseButton::Middle => gpui::MouseButton::Middle,
+        MouseButton::Left => nsh_terminal::MouseButton::Left,
+        MouseButton::Right => nsh_terminal::MouseButton::Right,
+        MouseButton::Middle => nsh_terminal::MouseButton::Middle,
     }
 }
 
-fn modifiers(modifiers: Modifiers) -> gpui::Modifiers {
-    gpui::Modifiers {
-        control: modifiers.contains(Modifiers::CONTROL),
-        alt: modifiers.contains(Modifiers::ALT),
-        shift: modifiers.contains(Modifiers::SHIFT),
-        platform: modifiers.intersects(Modifiers::SUPER | Modifiers::META),
-        function: false,
-    }
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+fn modifiers(modifiers: Modifiers) -> nsh_terminal::Modifiers {
+    let mut value = nsh_terminal::Modifiers::default();
+    value.control = modifiers.contains(Modifiers::CONTROL);
+    value.alt = modifiers.contains(Modifiers::ALT);
+    value.shift = modifiers.contains(Modifiers::SHIFT);
+    value.platform = modifiers.intersects(Modifiers::SUPER | Modifiers::META);
+    value
 }
 
 #[cfg(test)]
@@ -346,7 +377,7 @@ mod tests {
         let Some(PlatformInput::MouseMove(event)) = mapping.input(&drag, letterbox) else {
             panic!("a captured drag keeps its physical position outside the canvas");
         };
-        assert_eq!(event.pressed_button, Some(gpui::MouseButton::Left));
+        assert_eq!(event.pressed_button, Some(nsh_terminal::MouseButton::Left));
         assert_eq!(
             (f32::from(event.position.x), f32::from(event.position.y)),
             (-5.0, 650.0)
@@ -377,7 +408,7 @@ mod density_tests {
             assert_eq!(caps.scale_factor(), f32::from(cell_height) / 16.0);
             assert_eq!(
                 caps.logical_viewport(),
-                Some(gpui::size(px(640.0), px(640.0)))
+                Some(nsh_terminal::size(px(640.0), px(640.0)))
             );
             let event = |x, y| {
                 Event::SgrMouse(termina::event::SgrMouseEvent {
@@ -414,7 +445,7 @@ mod density_tests {
             };
             assert_eq!(
                 zoomed.logical_viewport(),
-                Some(gpui::size(px(512.0), px(512.0)))
+                Some(nsh_terminal::size(px(512.0), px(512.0)))
             );
             assert_eq!(
                 mouse_position(&event(3, 4), zoomed),

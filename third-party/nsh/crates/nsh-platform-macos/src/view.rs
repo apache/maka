@@ -1000,7 +1000,7 @@ fn scripted_type() -> Option<NSEventType> {
 
 /// Runs `f` (which hands `event` to a window) with `event` as the one
 /// AppKit handles, for the root's `hitTest:`.
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "dev", feature = "terminal", test))]
 pub(crate) fn scripted<R>(event: &NSEvent, f: impl FnOnce() -> R) -> R {
     let old = SCRIPTED.replace(Some(event.retain()));
     let r = f();
@@ -1210,6 +1210,18 @@ impl NshView {
         }
         if let Some(layer) = c.layer() {
             layer.setSublayerTransform(IDENTITY);
+        }
+    }
+
+    /// Invalidates the terminal capture for native visual work outside engine batches.
+    #[cfg(feature = "terminal")]
+    pub(crate) fn invalidate_capture(&self) {
+        if let Some(surface) = self.0.keyboard_surface()
+            && surface.terminal.get()
+        {
+            surface
+                .capture_revision
+                .set(surface.capture_revision.get().wrapping_add(1));
         }
     }
 

@@ -26,7 +26,7 @@ use crate::{android, term};
 pub(crate) struct RunArgs {
     /// The app: its directory (whose `App.tsx` is the entry) or its entry
     /// module; else a demo of the gallery, by its name (any case), which
-    /// the gallery opens at (`cargo run -- accordion`, as GPUI Kit's story).
+    /// the gallery opens at (`cargo run -- accordion`).
     #[arg(default_value = "examples/gallery")]
     entry: String,
     /// With a demo of the gallery: show only its section with this title
@@ -34,7 +34,7 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     section: Option<String>,
     /// Where to run: `macos` (the AppKit host), `catalyst`, `ios` (a
-    /// simulator), `android`, `linux`, `windows`, `gpui` (the GPUI host),
+    /// simulator), `android`, `linux`, `windows`,
     /// or `tui` (this terminal);
     /// default: the machine's own backend (`macos` on macOS, `linux` on
     /// Linux, `windows` on Windows), else `android`.

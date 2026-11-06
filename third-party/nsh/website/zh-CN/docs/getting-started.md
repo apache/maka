@@ -6,6 +6,8 @@ group: start
 demo: guide-getting-started
 ---
 
+> 本分支已移除 GPUI 后端和嵌入 API。下文保留的旧 GPUI 专属说明不再是可用入口；请参阅[原生后端迁移](./gpui.md)，使用 AppKit、Direct2D 或 GTK。
+
 # 快速开始
 
 本指南创建一个 NSH 应用，在你面向的平台上运行它，再把它发布出去。NSH 应用用 Rust 或 TSX 编写，运行在同一个引擎上：Rust

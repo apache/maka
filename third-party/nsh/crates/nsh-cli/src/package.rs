@@ -3,8 +3,7 @@
 //! command line tools (`codesign`, and `actool` for icons), macOS packaging
 //! `codesign` and `sips`, Linux packaging `tar`; Windows packaging needs
 //! nothing (`windows.rs`), nor does the web's (`web.rs`). Each desktop OS
-//! packages with its native backend's runner; GPUI is the backend for
-//! embedding in GPUI apps and has no package of its own.
+//! packages with its native backend's runner.
 //! Terminal apps use a console runner and resources archived as `.tar.gz`
 //! on Unix and `.zip` on Windows.
 
@@ -42,9 +41,7 @@ pub(crate) enum PackageTarget {
     /// The web: a static site (`index.html` and files named by their
     /// content) for any web server or CDN.
     Web,
-    /// Packages made with the GPUI runner, which is gone: GPUI is the
-    /// backend for embedding in GPUI apps. Refused with the OS's own target
-    /// to use instead ([`PackageTarget::desktop`]).
+    /// Retired target, retained for an actionable native migration error.
     #[value(hide = true)]
     Gpui,
     /// A terminal: a console executable and resources, archived for this OS.
@@ -52,18 +49,11 @@ pub(crate) enum PackageTarget {
 }
 
 impl PackageTarget {
-    /// This machine's desktop target (`None` off macOS, Windows and
-    /// Linux): where `--target gpui` points.
-    fn desktop() -> Option<PackageTarget> {
-        if cfg!(target_os = "macos") {
-            Some(PackageTarget::Macos)
-        } else if cfg!(windows) {
-            Some(PackageTarget::Windows)
-        } else if cfg!(target_os = "linux") {
-            Some(PackageTarget::Linux)
-        } else {
-            None
+    pub(crate) fn check_supported(self) -> anyhow::Result<()> {
+        if self == PackageTarget::Gpui {
+            bail!(crate::run::GPUI_RETIRED);
         }
+        Ok(())
     }
 }
 
@@ -276,17 +266,7 @@ pub(crate) fn release_name_and_id(
 }
 
 pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
-    if options.target == PackageTarget::Gpui {
-        let instead = PackageTarget::desktop()
-            .and_then(|t| clap::ValueEnum::to_possible_value(&t))
-            .map_or("macos, windows or linux".to_owned(), |v| {
-                v.get_name().to_owned()
-            });
-        bail!(
-            "GPUI is the backend for embedding in GPUI and GPUI Kit apps (`AppView`), not for packages: \
-             package this app with --target {instead}"
-        );
-    }
+    options.target.check_supported()?;
     if !options.abis.is_empty() && options.target != PackageTarget::Android {
         bail!("--abi only applies to --target android");
     }
@@ -1290,34 +1270,6 @@ mod tests {
             signed_app_id("ABCDE12345.com.example.app", "com.example.app"),
             "ABCDE12345.com.example.app"
         );
-    }
-
-    #[test]
-    fn gpui_points_to_this_oss_target() {
-        use clap::ValueEnum as _;
-
-        use super::PackageTarget;
-        // Still parsed, so the refusal can say what to use instead.
-        assert_eq!(
-            PackageTarget::from_str("gpui", false).unwrap(),
-            PackageTarget::Gpui
-        );
-        assert!(
-            PackageTarget::Gpui
-                .to_possible_value()
-                .unwrap()
-                .is_hide_set()
-        );
-        let expected = if cfg!(target_os = "macos") {
-            Some(PackageTarget::Macos)
-        } else if cfg!(windows) {
-            Some(PackageTarget::Windows)
-        } else if cfg!(target_os = "linux") {
-            Some(PackageTarget::Linux)
-        } else {
-            None
-        };
-        assert_eq!(PackageTarget::desktop(), expected);
     }
 
     #[test]

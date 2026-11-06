@@ -19,6 +19,9 @@
 
 # Native Shell (NSH)
 
+This branch retires the GPUI backend, terminal adapter, embedding example and vendored GPUI rendering implementation. Desktop rendering uses AppKit, Direct2D and GTK; terminal pixel transport uses `nsh-terminal` and the native offscreen surfaces. The original upstream inventory remains provenance for the imported snapshot, including files subsequently removed. See [the breaking-change migration guide](docs/dev/gpui.md).
+
+
 This directory initially imported the complete tracked source of
 [`M4n5ter/nsh`, `tui/terminal-backend`](https://github.com/M4n5ter/nsh/tree/tui/terminal-backend)
 at `de176695240d550f2b303643b8019146c7989e7f`. The maintained upstream is

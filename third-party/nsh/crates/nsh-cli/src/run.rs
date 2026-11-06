@@ -12,6 +12,7 @@ use crate::{dev::DevSession, runtime::Platform, ui};
 
 const APP_NAME: &str = "NshDev";
 pub(crate) const BUNDLE_ID: &str = "com.longbridge.nsh.host";
+pub(crate) const GPUI_RETIRED: &str = "GPUI support is retired, including its embedding API; use this OS's native backend with --target macos, windows or linux";
 
 /// Where `nsh dev` and `nsh run` run the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -31,14 +32,21 @@ pub(crate) enum Target {
     /// The web development host, in the browser (the dev server serves its
     /// page).
     Web,
-    /// The GPUI development host, in a window on this machine (macOS,
-    /// Windows or Linux): the app as GPUI apps that embed it show it.
+    /// Retired standalone target, retained for an actionable migration error.
+    #[value(hide = true)]
     Gpui,
     /// The development host in this terminal.
     Tui,
 }
 
 impl Target {
+    pub(crate) fn check_standalone(self) -> anyhow::Result<()> {
+        if self == Target::Gpui {
+            bail!(GPUI_RETIRED);
+        }
+        Ok(())
+    }
+
     /// The default: this system’s native desktop host (AppKit on macOS,
     /// GTK on Linux, Win32 on Windows; the browser elsewhere).
     pub(crate) fn native() -> Target {
@@ -59,7 +67,7 @@ impl Target {
             Target::Linux => crate::runtime::Platform::Linux,
             Target::Macos => crate::runtime::Platform::MacOs,
             Target::Windows => crate::runtime::Platform::Windows,
-            Target::Gpui => crate::runtime::Platform::Gpui,
+            Target::Gpui => unreachable!("retired target rejected before runtime selection"),
             Target::Tui => crate::runtime::Platform::Tui,
             Target::Ios | Target::Android | Target::Web => {
                 crate::runtime::Platform::IphoneSimulator
@@ -94,20 +102,9 @@ pub(crate) struct HostWindow<'a> {
 
 impl HostWindow<'_> {
     /// Refuses the options `target`'s host does not take. An app of Rust
-    /// only (`rust_root`) runs in its runner on macOS, Linux and Windows;
-    /// GPUI has no runner (it is the backend for embedding in GPUI apps),
-    /// so such an app does not run there at all.
+    /// only (`rust_root`) runs in its runner instead of a development host.
     fn check(&self, target: Target, rust_root: bool) -> anyhow::Result<()> {
-        if rust_root && target == Target::Gpui {
-            bail!(
-                "a Rust app runs on this OS's own backend (--target macos, linux or windows); \
-                 GPUI apps embed its root with AppView"
-            );
-        }
-        let desktop = matches!(
-            target,
-            Target::Macos | Target::Linux | Target::Windows | Target::Gpui
-        );
+        let desktop = matches!(target, Target::Macos | Target::Linux | Target::Windows);
         if self.name.is_some() && (target != Target::Macos || rust_root) {
             bail!(
                 "--name needs --target macos and a TSX entry (the other hosts do not take it yet)"
@@ -120,7 +117,7 @@ impl HostWindow<'_> {
         }
         if self.size.is_some() && (!desktop || rust_root) {
             bail!(
-                "--window-size needs a desktop host (--target macos, linux, windows or gpui) and a TSX entry"
+                "--window-size needs a desktop host (--target macos, linux or windows) and a TSX entry"
             );
         }
         Ok(())
@@ -152,6 +149,7 @@ pub(crate) fn run(
     device: Option<&str>,
     window: HostWindow<'_>,
 ) -> anyhow::Result<()> {
+    target.check_standalone()?;
     let HostFlags { limits, trace, fps } = flags;
     if fps
         && !matches!(
@@ -257,17 +255,7 @@ pub(crate) fn run(
                 .args(window.args());
             run_local(&session, &mut command, "the Windows host")
         }
-        // In place on every OS: GPUI makes the process a regular app (on
-        // macOS too) without an app bundle around it.
-        Target::Gpui => {
-            let mut command = Command::new(&host);
-            command.env("NSH_DEV_APP_DIR", work.parent().expect("source directory"));
-            command
-                .args(&args)
-                .args(["--app-id", &crate::package::app_id(entry)?])
-                .args(window.args());
-            run_local(&session, &mut command, "the GPUI host")
-        }
+        Target::Gpui => unreachable!("retired target rejected before host launch"),
         Target::Tui => {
             let mut command = Command::new(&host);
             command.env("NSH_DEV_APP_DIR", work.parent().expect("source directory"));
@@ -467,7 +455,7 @@ fn run_rust_app(
             session.print_web_url();
             session.watch(|| Ok(false))
         }
-        Target::Gpui => unreachable!("refused by HostWindow::check"),
+        Target::Gpui => unreachable!("retired target rejected before host launch"),
     }
 }
 
@@ -1017,8 +1005,24 @@ mod tests {
 
     use super::{HostWindow, Target};
 
-    /// `--window-size` reaches every desktop host; GPUI runs no app of
-    /// Rust only.
+    #[test]
+    fn retired_gpui_target_explains_the_native_replacement() {
+        let target = Target::from_str("gpui", false).unwrap();
+        let error = target.check_standalone().unwrap_err().to_string();
+        assert!(error.contains("retired"));
+        assert!(error.contains("macos, windows or linux"));
+        for target in [
+            Target::Macos,
+            Target::Windows,
+            Target::Linux,
+            Target::Tui,
+            Target::Web,
+        ] {
+            assert!(target.check_standalone().is_ok());
+        }
+    }
+
+    /// `--window-size` reaches every desktop development host.
     #[test]
     fn the_desktop_hosts_take_a_size() {
         for target in [Target::Macos, Target::Linux, Target::Windows] {
@@ -1027,12 +1031,11 @@ mod tests {
                 "Rust app, {target:?}"
             );
         }
-        assert!(HostWindow::default().check(Target::Gpui, true).is_err());
         let sized = HostWindow {
             size: Some("700x500"),
             ..HostWindow::default()
         };
-        for target in [Target::Macos, Target::Linux, Target::Windows, Target::Gpui] {
+        for target in [Target::Macos, Target::Linux, Target::Windows] {
             assert!(sized.check(target, false).is_ok(), "{target:?}");
         }
         for target in [
@@ -1063,7 +1066,7 @@ mod tests {
         };
         assert!(placed.check(Target::Macos, false).is_ok());
         assert!(placed.check(Target::Macos, true).is_err());
-        for target in [Target::Linux, Target::Windows, Target::Gpui, Target::Ios] {
+        for target in [Target::Linux, Target::Windows, Target::Ios] {
             assert!(placed.check(target, false).is_err(), "{target:?}");
         }
         assert_eq!(placed.args(), ["--display", "2"]);
@@ -1134,12 +1137,5 @@ mod tests {
             status.success(),
             "the child must exit after its own cleanup"
         );
-    }
-
-    #[test]
-    fn gpui_is_a_target_with_its_own_host() {
-        let target = Target::from_str("gpui", false).unwrap();
-        assert_eq!(target, Target::Gpui);
-        assert_eq!(target.platform().binary(false), "nsh-gpui-host");
     }
 }

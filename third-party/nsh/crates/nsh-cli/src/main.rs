@@ -165,7 +165,7 @@ enum Command {
         junit: Option<PathBuf>,
         /// Run the apps the tests open on this platform's development host
         /// instead of headless: the steps act with the platform's own input
-        /// (macos, linux, windows, gpui, web, ios and android; web runs them
+        /// (macos, linux, windows, web, ios and android; web runs them
         /// in a headless Chrome, Edge or Chromium, ios in a simulator,
         /// android on the first device adb lists).
         #[arg(long, value_enum)]
@@ -240,7 +240,7 @@ enum Command {
     Package(Box<PackageArgs>),
     /// Run an app in a development host with hot reload. Defaults to
     /// AppKit on macOS, GTK on Linux and Win32 on Windows; select mobile
-    /// hosts, Mac Catalyst, GPUI, a browser or the terminal with --target.
+    /// hosts, Mac Catalyst, a browser or the terminal with --target.
     Run {
         /// The entry module, or the app's directory (default: the current one),
         /// whose `App.tsx` is the entry.
@@ -282,7 +282,7 @@ enum Command {
         name: Option<String>,
         /// The window's initial size, `WxH` in points (the host's default
         /// by default; the desktop hosts: `--target macos`, `linux`,
-        /// `windows`, `gpui`).
+        /// `windows`).
         #[arg(long = "window-size", value_name = "WIDTHxHEIGHT")]
         size: Option<String>,
         /// The display the window opens on, centered: 1 is the primary
@@ -520,6 +520,18 @@ fn no_limits_for_rust(
 }
 
 fn run(mut command: Command) -> anyhow::Result<()> {
+    // Refuse retired targets before resolving or building an app, or
+    // replacing an existing development session.
+    match &command {
+        Command::Run { target, .. }
+        | Command::Dev { target, .. }
+        | Command::Test {
+            target: Some(target),
+            ..
+        } => target.check_standalone()?,
+        Command::Package(args) => args.target.check_supported()?,
+        _ => {}
+    }
     // A package given to `nsh publish` has no app to resolve or build.
     if let Command::Publish {
         entry,
@@ -943,6 +955,29 @@ mod command_tests {
                 };
                 assert_eq!(target, expected);
             }
+        }
+    }
+
+    #[test]
+    fn retired_targets_fail_before_resolving_the_app() {
+        for command in ["dev", "run", "test", "package"] {
+            let cli = Cli::try_parse_from([
+                "nsh",
+                command,
+                "/nonexistent/nsh-retired-target-app",
+                "--target",
+                "gpui",
+            ])
+            .unwrap();
+            let error = super::run(cli.command).unwrap_err().to_string();
+            assert!(
+                error.contains("GPUI support is retired"),
+                "{command}: {error}"
+            );
+            assert!(
+                error.contains("--target macos, windows or linux"),
+                "{command}: {error}"
+            );
         }
     }
 

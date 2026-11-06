@@ -5,7 +5,7 @@ A TSX app with a Rust crate of its own: `App.tsx` is the app, and the directory 
 module (`Format`) and a class (`Counter`) that `App.tsx` imports from `__SPECIFIER__`.
 
 ```sh
-nsh run                      # this machine's backend; --target ios, android, web, macos, linux, windows or gpui
+nsh run                      # this machine's backend; --target ios, android, web, macos, linux or windows
 nsh check                    # cargo check of the crate, then type checks App.tsx against the declarations generated from it
 nsh test                     # cargo test, then App.test.tsx, headless; --target to run it on a platform
 nsh package --target web     # or ios, android, macos, linux, windows

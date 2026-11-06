@@ -632,7 +632,7 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
         NSEventType::RightMouseDown => context_menu(surface, x, y, event.modifierFlags()),
         NSEventType::LeftMouseDown => {
             // A title bar of the app's own moves the window.
-            if crate::chrome::mouse_down(surface, event, x, y) {
+            if !surface.terminal.get() && crate::chrome::mouse_down(surface, event, x, y) {
                 return;
             }
             input.last.set(Some((x, y)));

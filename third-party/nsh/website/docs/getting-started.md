@@ -6,6 +6,8 @@ group: start
 demo: guide-getting-started
 ---
 
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Getting started
 
 This guide creates an NSH app, runs it on the platforms you target, and ships it. NSH apps are written in Rust or TSX,

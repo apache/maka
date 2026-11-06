@@ -855,6 +855,27 @@ thread_local! {
     static FOCUS: RefCell<FxHashMap<u64, Focus>> = RefCell::default();
 }
 
+/// An engine reload releases its old editor but keeps the window's activation state.
+pub(crate) fn stopped(surface: &Surface) {
+    let view = FOCUS.with(|focus| {
+        focus
+            .borrow_mut()
+            .get_mut(&surface.key())
+            .and_then(|focus| focus.view.take())
+    });
+    if let Some(input) = view.as_ref().and_then(input_of) {
+        input.focused.set(false);
+        input.active.set(false);
+        input.model.borrow_mut().composition = None;
+    }
+    blink::update();
+}
+
+/// Do not retain an editor after its owning native surface has gone away.
+pub(crate) fn disposed(key: u64) {
+    let _ = FOCUS.try_with(|focus| focus.borrow_mut().remove(&key));
+}
+
 /// The input of a view: a function, so that the view's state is not
 /// borrowed through an `if let` block (focusing borrows it mutably).
 fn input_of(view: &NshView) -> Option<Rc<InputState>> {
@@ -934,6 +955,13 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
     if old.as_ref() == view {
         return;
     }
+    surface.terminal_focus_generation.set(
+        surface
+            .terminal_focus_generation
+            .get()
+            .checked_add(1)
+            .expect("native focus generation exhausted"),
+    );
     crate::input::cancel_keyboard_press(surface);
     if let Some(old) = &old {
         cancel_composition(surface);
@@ -1967,6 +1995,14 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     };
     let unit = if m.ctrl { Unit::Word } else { Unit::Char };
     let vk = event.vk;
+    #[cfg(feature = "terminal")]
+    if surface.terminal_active.get().is_some()
+        && input.model.borrow().composition.is_some()
+        && (vk == VK_RETURN.0 || vk == VK_ESCAPE.0)
+    {
+        // Only the terminal IME protocol can commit or cancel its preedit.
+        return true;
+    }
     // Movements: the caret goes, the text stays.
     let moved = |f: &dyn Fn(&mut Model)| {
         f(&mut input.model.borrow_mut());
@@ -2379,6 +2415,81 @@ mod tests {
     }
 
     #[test]
+    fn stopped_surface_releases_editor_without_reactivating_a_hidden_reload() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        focus_view(&surface, &view);
+        window_focus(&surface, false);
+        let input = input_of(&view).unwrap();
+        surface.stop();
+        assert!(!input.focused.get());
+        assert!(!input.active.get());
+        assert!(FOCUS.with(|focus| focus.borrow()[&surface.key()].view.is_none()));
+        assert!(!window_active(&surface));
+        let key = surface.key();
+        drop(surface);
+        assert!(!FOCUS.with(|focus| focus.borrow().contains_key(&key)));
+    }
+
+    #[test]
+    fn inactive_editor_retains_selection_and_restores_its_caret_on_activation() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        let input = input_of(&view).unwrap();
+        input.model.borrow_mut().set_text("a😀b");
+        focus_view(&surface, &view);
+        set_selection(&view, 1, 3);
+        let selection = input.model.borrow().selection();
+        window_focus(&surface, false);
+        assert_eq!(focused(&surface), Some(view.clone()));
+        assert_eq!(input.model.borrow().selection(), selection);
+        assert!(!input.active.get());
+        window_focus(&surface, true);
+        assert_eq!(focused(&surface), Some(view));
+        assert_eq!(input.model.borrow().selection(), selection);
+        assert!(input.active.get());
+        assert!(input.caret_on.get());
+        blur_all(&surface);
+    }
+
+    #[cfg(feature = "terminal")]
+    #[test]
+    fn terminal_preedit_waits_for_protocol_commit_and_replaces_selection_once() {
+        let surface = Surface::new(Default::default());
+        surface.terminal_active.set(Some(true));
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        let input = input_of(&view).unwrap();
+        input.model.borrow_mut().set_text("a😀b");
+        focus_view(&surface, &view);
+        set_selection(&view, 1, 3);
+        terminal_composition(&surface, "", "中文", None, true).unwrap();
+        for vk in [0x0D, 0x1B] {
+            assert!(key(
+                &surface,
+                &KeyEvent {
+                    vk,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default()
+                }
+            ));
+            assert_eq!(input.model.borrow().text(), "a😀b");
+            assert!(terminal_is_composing(&surface));
+        }
+        terminal_composition(&surface, "中", "", None, false).unwrap();
+        assert_eq!(input.model.borrow().text(), "a中b");
+        assert_eq!(input.count.get(), 1);
+        assert!(!terminal_is_composing(&surface));
+        blur_all(&surface);
+    }
+
+    #[test]
     fn configured_tokens_style_and_delete_whole_skill() {
         use nsh_core::input_tokens::{InputTokenRule, InputTokenStyle};
         let surface = Surface::new(Default::default());
@@ -2456,4 +2567,126 @@ mod tests {
         assert_eq!(target_clause(&[3, 0]), Some((0, 1)));
         assert_eq!(target_clause(&[0, 2]), None);
     }
+}
+
+/// The terminal's input method uses the same editing model as IMM32.
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_target(surface: &Surface) -> Option<(u64, Bounds<Points>)> {
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if !input.config.borrow().editable {
+        return None;
+    }
+    let caret = caret_bounds(&view, &input);
+    let (x, y, w, h) = view.to_root()?.bounds(
+        caret.origin.x.0,
+        caret.origin.y.0,
+        caret.size.width.0,
+        caret.size.height.0,
+    )?;
+    Some((u64::from(view.id()), crate::geom::rect(x, y, w, h)))
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_composition(
+    surface: &Rc<Surface>,
+    commit: &str,
+    preedit: &str,
+    selection: Option<std::ops::Range<usize>>,
+    active: bool,
+) -> Result<(), String> {
+    let Some(view) = focused(surface) else {
+        return Ok(());
+    };
+    let Some(input) = input_of(&view) else {
+        return Ok(());
+    };
+    if !input.config.borrow().editable {
+        return Ok(());
+    }
+    let selection = selection.unwrap_or(preedit.len()..preedit.len());
+    if selection.start > selection.end
+        || selection.end > preedit.len()
+        || !preedit.is_char_boundary(selection.start)
+        || !preedit.is_char_boundary(selection.end)
+    {
+        return Err("composition selection is not a UTF-8 boundary".into());
+    }
+    if !commit.is_empty() {
+        input.model.borrow_mut().composition = None;
+        input.relayout();
+        insert(surface, &view, &input, commit, true);
+        report_composition(surface, &view, &input);
+    }
+    input.model.borrow_mut().composition = active.then(|| {
+        Composition::new(
+            preedit.to_owned(),
+            selection.end,
+            (selection.start != selection.end).then_some((selection.start, selection.end)),
+        )
+    });
+    input.relayout();
+    input.wake_caret();
+    input.reveal();
+    view.changed();
+    report_composition(surface, &view, &input);
+    report_caret(surface, &view, &input);
+    Ok(())
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_paste(surface: &Surface, content: nsh_core::PasteEvent) {
+    let Some(view) = focused(surface) else {
+        return;
+    };
+    let Some(input) = input_of(&view) else {
+        return;
+    };
+    if view.state().events.contains(EventKind::Paste) {
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(content.clone())),
+        );
+    }
+    if input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert {
+        let text = pasted(&content.text, input.multiline());
+        if !text.is_empty() {
+            insert(surface, &view, &input, &text, false);
+        }
+    }
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
+    let view = focused(surface)?;
+    let input = input_of(&view)?;
+    if input.secure() {
+        return None;
+    }
+    let text = input.model.borrow().text().to_owned();
+    Some(text)
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_validate_selection(
+    surface: &Surface,
+    range: &std::ops::Range<usize>,
+) -> Result<(), String> {
+    let view = focused(surface).ok_or("no focused native editor")?;
+    let input = input_of(&view).ok_or("no focused native editor")?;
+    let model = input.model.borrow();
+    if range.start > range.end {
+        return Err("inverted text selection".into());
+    }
+    crate::terminal::utf16_offset(model.text(), range.start)?;
+    crate::terminal::utf16_offset(model.text(), range.end)?;
+    Ok(())
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_is_composing(surface: &Surface) -> bool {
+    focused(surface)
+        .and_then(|view| input_of(&view))
+        .is_some_and(|input| input.model.borrow().composition.is_some())
 }

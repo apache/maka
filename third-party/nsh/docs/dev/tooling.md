@@ -1,3 +1,6 @@
+> GPUI support is retired in this branch. Standalone applications and embedding hosts use native platform APIs; see [the breaking-change migration guide](gpui.md). Historical GPUI implementation notes below are not supported entrypoints.
+
+
 # Tooling: TypeScript, the dev server, runtimes
 
 ## TypeScript

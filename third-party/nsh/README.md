@@ -2,7 +2,7 @@
 
 **Build once, native everywhere.** Native Shell is a native UI framework for iOS, Android, macOS, Windows,
 Linux and the web, built in Rust. It unifies components, state, logic and API, with app-owned visual design and
-platform rendering: native views on iOS, Android, macOS, Windows and Linux, HTML on the web, GPUI in GPUI apps and Ratatui in terminals, with the
+platform rendering: native views on iOS, Android, macOS, Windows and Linux, HTML on the web and Ratatui in terminals, with the
 platform's own text, input and interaction (a menu is a popup on the desktop and a sheet on a phone). Write the
 whole app in Rust, its screens in TSX, or combine both with shared Rust components.
 
@@ -47,12 +47,11 @@ Rust apps, TSX modules and AI-generated UI.
 | macOS | AppKit, Core Animation, CoreText | `AppView` (Rust, `nsh-platform-macos`) | macOS 14+ |
 | Windows | Win32, Direct2D, DirectWrite | `AppView` (Rust, `nsh-platform-windows`) | Windows 10 1809+ |
 | Linux | GTK 4, Pango | `AppView` (Rust, `nsh-platform-linux`) | GTK 4.14+ |
-| GPUI (macOS, Windows, Linux) | GPUI (GPUI Fast) | `AppView` (Rust, a GPUI view, `nsh-platform-gpui`) | macOS, Windows; Linux with Vulkan |
 | Terminal (macOS, Windows, Linux) | Ratatui, Crossterm | `AppView` (Rust, a Ratatui region, `nsh-platform-tui`) | Interactive terminal |
 | Web | HTML, CSS | `createPlayer` (JavaScript) or an iframe | Modern browsers |
 
-Each desktop runs and packages apps with its own backend (AppKit, Win32, GTK 4). The GPUI backend draws with GPUI on
-all three desktops and embeds NSH in GPUI and GPUI Kit apps; `nsh run --target gpui` shows an app as they do. The web
+Each desktop runs and packages apps with its own backend (AppKit, Win32, GTK 4). The retired GPUI embedding API
+and standalone target are covered in the [native migration guide](docs/dev/gpui.md). The web
 platform (`nsh run --target web`, `nsh package --target web`) publishes apps as static sites and runs the website's
 live demos.
 The terminal backend (`nsh run --target tui`, `nsh package --target tui`) shares the same runtime and layout,
@@ -163,7 +162,6 @@ nsh run my-app --target linux      # GTK 4 window
 <summary>GPUI (macOS, Windows, Linux)</summary>
 
 ```sh
-nsh run my-app --target gpui       # as GPUI apps that embed it show it
 ```
 
 </details>

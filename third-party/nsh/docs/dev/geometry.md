@@ -1,3 +1,5 @@
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Units and geometry
 
 NSH's Rust code types its units and shapes as GPUI's `gpui::geometry` does, in `nsh_core::geometry`

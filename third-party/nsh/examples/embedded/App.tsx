@@ -1,5 +1,5 @@
 // The nsh app the embedding samples (examples/embed-ios, examples/embed-android,
-// crates/gpui/nsh-platform-gpui/examples/embed.rs) run. The badge is a native
+// native embedding hosts) run. The badge is a native
 // view of the host app, registered as `embed.badge` (`NshAppView.register(component:)`,
 // `NshView.registerComponent`); the rest talks to the host app through its
 // channel (`nsh`): the host's launch parameters, its messages, a call it

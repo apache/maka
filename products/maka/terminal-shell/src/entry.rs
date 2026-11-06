@@ -65,6 +65,7 @@ impl Args {
     }
 
     /// Runs against the selected public Host using the caller's Tokio runtime.
+    /// On macOS the caller must poll this future on the OS main thread.
     /// Host cleanup completes before an error is returned to the caller.
     pub async fn run(self) -> Result<(), String> {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -94,53 +95,43 @@ impl Args {
         config.data_dir = Some(client_directory);
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
-        let (result, gpu_worker) = if stop.load(Ordering::Acquire) {
-            (Ok(()), None)
+        let (jobs, mut native_jobs) = tokio::sync::mpsc::unbounded_channel::<terminal::NativeJob>();
+        let result = if stop.load(Ordering::Acquire) {
+            Ok(())
         } else {
-            tokio::task::spawn_blocking(move || {
-                let mut gpu_worker = None;
-                // Keep the native renderer owner outside the same panic boundary
-                // that Tokio previously supplied for this blocking terminal task.
+            let mut transport = tokio::task::spawn_blocking(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    terminal::run(config, stop.clone(), &mut gpu_worker)
+                    terminal::run(config, stop.clone(), jobs)
                 }));
                 stop.store(true, Ordering::Release);
-                if let Some(worker) = &gpu_worker {
-                    worker.thread().unpark();
-                }
-                let result = result.unwrap_or_else(|panic| {
+                result.unwrap_or_else(|panic| {
                     let message = panic
                         .downcast_ref::<&str>()
                         .copied()
                         .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("unknown panic");
                     Err(format!("terminal worker panicked: {message}"))
-                });
-                (result, gpu_worker)
-            })
-            .await
-            .unwrap_or_else(|error| (Err(format!("terminal worker: {error}")), None))
+                })
+            });
+            loop {
+                tokio::select! {
+                    result = &mut transport => break result
+                        .unwrap_or_else(|error| Err(format!("terminal worker: {error}"))),
+                    Some(job) = native_jobs.recv() => {
+                        // The launcher directly block_on's this future on the OS
+                        // main thread. AppKit construction, pumping and destruction
+                        // stay here; neither transport nor Host IO waits on drawing.
+                        job();
+                    }
+                }
+            }
         };
-        // Terminal restoration precedes Host-scope cleanup. A blocked GPU must
-        // not retain that scope, but its native resources must finish before
-        // the runtime and process can exit.
+        // Restore terminal modes before closing the admitted Host scope.
         let cleanup = bindings
             .close()
             .await
             .map_err(|error| format!("terminal Host cleanup: {error}"));
-        let gpu_cleanup = if let Some(worker) = gpu_worker {
-            tokio::task::spawn_blocking(move || {
-                worker
-                    .join()
-                    .map_err(|_| "terminal GPUI worker panicked".to_owned())?
-            })
-            .await
-            .map_err(|error| format!("terminal GPUI join: {error}"))
-            .and_then(|result| result)
-        } else {
-            Ok(())
-        };
-        let errors: Vec<_> = [result, cleanup, gpu_cleanup]
+        let errors: Vec<_> = [result, cleanup]
             .into_iter()
             .filter_map(Result::err)
             .collect();

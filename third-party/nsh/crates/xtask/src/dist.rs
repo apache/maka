@@ -8,7 +8,6 @@
 //! dist/nsh/runtime/macos/{nsh-macos-host,nsh-macos-app}        development host, packaged app runner
 //! dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        development host, packaged app runner
 //! dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  development host, packaged app runner
-//! dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                   development host (GPUI; apps embed it, never package it)
 //! dist/nsh/runtime/tui/{nsh-tui-host,nsh-tui-app}[.exe]       terminal host, packaged app runner
 //! dist/nsh/runtime/android/{release,dev}/                      classes.dex, lib/<abi>/libnsh.so (stripped),
 //!                                                              symbols/<abi>/libnsh.so (with symbols)
@@ -24,8 +23,8 @@
 //! GTK 4, Pango and, for web views, WebKitGTK 6.0 must be installed;
 //! without WebKitGTK's development files it is built with placeholders for
 //! web views and needs only GTK); the Windows runtime likewise, on
-//! Windows only (where the CLI is `bin/nsh.exe`). The GPUI development host
-//! is built for this machine on each of the three. The web runtime is built
+//! Windows only (where the CLI is `bin/nsh.exe`). The terminal runtime is
+//! built for this machine on each of the three. The web runtime is built
 //! everywhere: it needs a clang that targets wasm32 and `llvm-ar`
 //! (`docs/dev/web.md`).
 
@@ -117,31 +116,6 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         copy(
             &release.join("release").join(exe(package)),
             &out.join("runtime/tui").join(exe(package)),
-        )?;
-    }
-
-    // GPUI is the backend for embedding in GPUI apps: its development
-    // host only, no release runner.
-    if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
-        let package = "nsh-gpui-host";
-        // The GPUI backend is a workspace of its own (`crates/gpui`), built
-        // into the same `target/`.
-        cargo(
-            &[
-                "build",
-                "--release",
-                "--manifest-path",
-                "crates/gpui/Cargo.toml",
-                "--target-dir",
-                "target",
-                "-p",
-                package,
-            ],
-            "the development host for GPUI",
-        )?;
-        copy(
-            &release.join("release").join(exe(package)),
-            &out.join("runtime/gpui").join(exe(package)),
         )?;
     }
 

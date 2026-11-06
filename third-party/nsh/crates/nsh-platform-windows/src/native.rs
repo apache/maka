@@ -311,6 +311,15 @@ pub(crate) struct NativeState {
 }
 
 impl NativeState {
+    #[cfg(feature = "terminal")]
+    pub(crate) fn needs_window_composition(&self) -> bool {
+        self.hosts.borrow().values().any(|host| match host {
+            Host::Web(_) => true,
+            Host::Component(item) => item.window.get().is_some(),
+            Host::Video(_) => false,
+        })
+    }
+
     /// Uses `components` (an [`crate::AppOptions`]'s registry).
     pub(crate) fn set_components(&self, components: Components) {
         *self.components.borrow_mut() = components;

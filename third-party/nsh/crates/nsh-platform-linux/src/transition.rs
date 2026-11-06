@@ -195,7 +195,7 @@ pub(crate) fn text_changed(
 ) {
     let recolor = transition::recolor(old, text, &view.state().style, reduce_motion(surface));
     if recolor.starts() {
-        animate(view, |live| live.recolor(recolor));
+        animate(surface, view, |live| live.recolor(recolor));
     } else if let Some(live) = view.state_mut().live.as_deref_mut() {
         live.recolor(recolor);
     }
