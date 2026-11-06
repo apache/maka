@@ -95,6 +95,7 @@ pub(crate) fn set_disk_cache(surface: &Surface, cache: Option<DiskCache>) {
 /// Where this surface's images resolve `asset:/` URIs.
 pub(crate) fn set_asset_base(surface: &Rc<Surface>, base: Option<AssetBase>) {
     *surface.asset_base.borrow_mut() = base;
+    surface.image_assets.borrow_mut().take();
 }
 
 /// What a load of `uri` for `surface` goes through: its asset base, its
@@ -105,7 +106,7 @@ fn context(surface: &Surface, uri: &str) -> Context {
     let remote = uri.starts_with("http://") || uri.starts_with("https://");
     Context {
         asset_base: surface.asset_base.borrow().clone(),
-        read_asset: None,
+        read_asset: surface.image_assets.borrow().clone(),
         access: surface.access.borrow().clone(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())

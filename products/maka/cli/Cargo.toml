@@ -29,7 +29,7 @@ autotests = false
 [features]
 default = ["native-desktop"]
 native-desktop = ["maka-computer-use/native-desktop"]
-desktop-tests = ["dep:gpui", "dep:gpui_wgpu", "dep:nsh-platform-gpui", "dep:nsh-gpui-terminal"]
+desktop-tests = []
 
 [[bin]]
 name = "maka"
@@ -45,11 +45,17 @@ test = false
 name = "integration"
 path = "tests/integration/main.rs"
 
+[[test]]
+name = "native-desktop"
+path = "tests/native_desktop.rs"
+harness = false
+required-features = ["desktop-tests"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { workspace = true, features = ["terminal"] }
+
 [dependencies]
-gpui = { package = "gpui-fast", version = "0.1.10", default-features = false, optional = true }
-gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"], optional = true }
-nsh-platform-gpui = { workspace = true, optional = true }
-nsh-gpui-terminal = { workspace = true, optional = true }
+nsh-terminal.workspace = true
 maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
@@ -124,5 +130,6 @@ tempfile.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { workspace = true, features = ["terminal"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Diagnostics_Debug", "Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }

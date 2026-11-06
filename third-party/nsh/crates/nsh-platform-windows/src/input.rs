@@ -2881,4 +2881,259 @@ mod tests {
         assert!((zoom_factor(-ZOOM_NOTCH.0) - 1.1).abs() < 1e-5);
         assert!((zoom_factor(2.0 * ZOOM_NOTCH.0) - 1.0 / 1.21).abs() < 1e-5);
     }
+
+    #[test]
+    fn retiring_a_held_press_owner_cancels_after_its_hit_child_moves() {
+        use nsh_core::{MountItem, ViewKind};
+
+        for retirement in [
+            None,
+            Some(MountItem::Remove { id: 2 }),
+            Some(MountItem::Delete { id: 2 }),
+        ] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+            for (id, parent, frame) in [
+                (2, ROOT_ID, rect(0.0, 0.0, 100.0, 100.0)),
+                (6, ROOT_ID, rect(200.0, 0.0, 100.0, 100.0)),
+                (4, 2, rect(0.0, 0.0, 50.0, 50.0)),
+            ] {
+                for item in [
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::View,
+                    },
+                    MountItem::Frame { id, frame },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    surface.mounter.borrow_mut().apply(&surface, &item);
+                }
+            }
+            let owner = surface.view(2).unwrap();
+            owner.state_mut().events.set(EventKind::Press, true);
+            track_states(&surface, &owner, PRESSED);
+            let mouse = |kind| {
+                pointer(
+                    &surface,
+                    PointerEvent {
+                        kind,
+                        x: 20.0,
+                        y: 20.0,
+                        button: 0,
+                        pointer: 1,
+                        touch: false,
+                        pen: false,
+                        time: surface.clock(),
+                        modifiers: Modifiers::default(),
+                        clicks: 1,
+                        buttons: u8::from(matches!(kind, PointerKind::Down | PointerKind::Move)),
+                    },
+                )
+            };
+            mouse(PointerKind::Down);
+            assert_eq!(owner.state().states & PRESSED, PRESSED);
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::Insert {
+                    parent: 6,
+                    child: 4,
+                    before: None,
+                },
+            );
+            // The hit child moved away, but the original press is still held
+            // by A. Removing or deleting A must revoke it before Up can
+            // fire press_out.
+            assert_eq!(surface.input.pointers.borrow().len(), 1);
+            if let Some(item) = retirement {
+                surface.mounter.borrow_mut().apply(&surface, &item);
+                assert!(surface.input.pointers.borrow().is_empty());
+                assert_eq!(owner.state().states & PRESSED, 0);
+            } else {
+                surface.mounter.borrow_mut().apply(
+                    &surface,
+                    &MountItem::Insert {
+                        parent: ROOT_ID,
+                        child: 2,
+                        before: Some(6),
+                    },
+                );
+                assert_eq!(surface.input.pointers.borrow().len(), 1);
+                assert_eq!(owner.state().states & PRESSED, PRESSED);
+            }
+            mouse(PointerKind::Up);
+            assert!(surface.input.pointers.borrow().is_empty());
+            assert_eq!(owner.state().states & PRESSED, 0);
+        }
+    }
+
+    #[test]
+    fn retiring_a_historical_touch_or_gate_owner_cancels_its_moved_target() {
+        use nsh_core::MountItem;
+
+        for capture in ["touch", "gate"] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+            for (id, parent, frame) in [
+                (2, ROOT_ID, rect(0.0, 0.0, 100.0, 100.0)),
+                (6, ROOT_ID, rect(200.0, 0.0, 100.0, 100.0)),
+                (4, 2, rect(0.0, 0.0, 50.0, 50.0)),
+            ] {
+                for item in [
+                    MountItem::Create {
+                        id,
+                        kind: ViewKind::View,
+                    },
+                    MountItem::Frame { id, frame },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    surface.mounter.borrow_mut().apply(&surface, &item);
+                }
+            }
+            let owner = surface.view(2).unwrap();
+            if capture == "touch" {
+                owner.state_mut().events.set(EventKind::Touch, true);
+            } else {
+                owner.state_mut().props.pan_activation = Some(nsh_core::PanActivation::horizontal(
+                    Points(6.0),
+                    Points(8.0),
+                ));
+            }
+            let mouse = |kind| {
+                pointer(
+                    &surface,
+                    PointerEvent {
+                        kind,
+                        x: 20.0,
+                        y: 20.0,
+                        button: 0,
+                        pointer: 1,
+                        touch: false,
+                        pen: false,
+                        time: surface.clock(),
+                        modifiers: Modifiers::default(),
+                        clicks: 1,
+                        buttons: u8::from(matches!(kind, PointerKind::Down | PointerKind::Move)),
+                    },
+                )
+            };
+            mouse(PointerKind::Down);
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::Insert {
+                    parent: 6,
+                    child: 4,
+                    before: None,
+                },
+            );
+            assert_eq!(surface.view(4).unwrap().parent_view().unwrap().id(), 6);
+            surface.mounter.borrow_mut().apply(
+                &surface,
+                &MountItem::RetireListCell {
+                    id: 2,
+                    request: 1,
+                    roots: vec![2],
+                },
+            );
+            assert!(!owner.attached());
+            assert!(
+                surface.input.pointers.borrow().is_empty(),
+                "{capture} capture survived retirement"
+            );
+            mouse(PointerKind::Move);
+            mouse(PointerKind::Up);
+            assert!(surface.input.pointers.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn retiring_a_dragged_row_keeps_its_surviving_ancestor_scroll() {
+        use nsh_core::{MountBatch, MountItem};
+
+        let surface = Surface::new(nsh_engine::Environment::default());
+        let apply = |batch: MountBatch| {
+            let mut mounter = surface.mounter.borrow_mut();
+            for item in &batch.items {
+                mounter.apply(&surface, item);
+            }
+            mounter.end_batch(&surface);
+        };
+        surface.root.state_mut().frame = rect(0.0, 0.0, 300.0, 400.0);
+        apply(MountBatch {
+            items: vec![
+                MountItem::Create {
+                    id: 2,
+                    kind: ViewKind::Scroll,
+                },
+                MountItem::Frame {
+                    id: 2,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+                MountItem::ScrollContent {
+                    id: 2,
+                    size: nsh_core::geometry::size(Points(300.0), Points(2000.0)),
+                },
+                MountItem::Create {
+                    id: 4,
+                    kind: ViewKind::View,
+                },
+                MountItem::Frame {
+                    id: 4,
+                    frame: rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::ProjectRoot {
+                    parent: 2,
+                    id: 4,
+                    following: vec![],
+                },
+            ],
+        });
+        let scroll = surface.view(2).unwrap();
+        let touch = |kind, y, time| {
+            pointer(
+                &surface,
+                PointerEvent {
+                    kind,
+                    x: 100.0,
+                    y,
+                    button: 0,
+                    pointer: 7,
+                    touch: true,
+                    pen: false,
+                    time,
+                    modifiers: Modifiers::default(),
+                    clicks: 1,
+                    buttons: 0,
+                },
+            )
+        };
+        touch(PointerKind::Down, 100.0, 1.0);
+        touch(PointerKind::Move, 60.0, 1.1);
+        let before = scroll.state().scroll.as_ref().unwrap().y.0;
+        assert!(before > 0.0);
+        apply(MountBatch {
+            items: vec![MountItem::RetireListCell {
+                id: 4,
+                request: 1,
+                roots: vec![4],
+            }],
+        });
+        assert!(!surface.view(4).unwrap().attached());
+        touch(PointerKind::Move, 20.0, 1.2);
+        assert!(scroll.state().scroll.as_ref().unwrap().y.0 > before);
+        touch(PointerKind::Up, 20.0, 1.3);
+        assert!(surface.input.pointers.borrow().is_empty());
+    }
 }

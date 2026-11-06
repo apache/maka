@@ -53,6 +53,8 @@ mod surface;
 #[cfg(feature = "dev")]
 mod synth;
 mod system;
+#[cfg(feature = "terminal")]
+pub mod terminal;
 mod text;
 mod text_input;
 mod transition;

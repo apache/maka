@@ -291,6 +291,8 @@ pub(crate) struct InputState {
     /// The text an input method is composing, while a composition is in
     /// progress.
     composition: RefCell<Option<String>>,
+    #[cfg(feature = "terminal")]
+    terminal_original: RefCell<Option<NSRange>>,
     /// A value from JS (text, count) that came during a composition,
     /// applied when it ends.
     pending_value: RefCell<Option<(String, u32)>>,
@@ -363,6 +365,11 @@ impl Ctx {
         input.update_placeholder();
         input.editing.set(false);
         if input.applying.get() {
+            return;
+        }
+        #[cfg(feature = "terminal")]
+        if input.terminal_original.borrow().is_some() {
+            self.composition_changed();
             return;
         }
         let count = input.count.get() + 1;
@@ -535,6 +542,8 @@ impl Ctx {
             }
         }
         if !focused {
+            #[cfg(feature = "terminal")]
+            terminal_cancel_input(&input);
             // Leaving the input ends its composition.
             input.editing.set(false);
             self.compose(&input, None);
@@ -542,6 +551,9 @@ impl Ctx {
         if input.focused.replace(focused) == focused {
             return;
         }
+        surface
+            .focus_generation
+            .set(surface.focus_generation.get().wrapping_add(1));
         set_focused(&surface, &view, focused);
         if focused {
             // The scroll views around show the field, as on phones.
@@ -1039,12 +1051,12 @@ define_class!(
     }
 );
 
-/// A test's paste (`nsh test --target macos`): `content` on a pasteboard of
+/// An in-process paste: `content` on a pasteboard of
 /// its own (the machine's clipboard stays as it was), pasted into the
 /// focused input as the user's paste is: reported, then its text read
 /// from that pasteboard as `pasteBehavior` says.
-#[cfg(feature = "dev")]
-pub(crate) fn test_paste(
+#[cfg(any(feature = "dev", feature = "terminal"))]
+pub(crate) fn paste(
     window: &objc2_app_kit::NSWindow,
     content: &nsh_core::PasteEvent,
 ) -> Result<(), String> {
@@ -1056,6 +1068,14 @@ pub(crate) fn test_paste(
             (area, area.ivars().get().cloned())
         } else if let Some(editor) = object.downcast_ref::<FieldEditor>() {
             (editor, field_ctx(editor))
+        } else if let Some(editor) = object.downcast_ref::<NSTextView>() {
+            let cx = editor.delegate().and_then(|delegate| {
+                let object: &AnyObject = ProtocolObject::as_ref(&*delegate);
+                object
+                    .downcast_ref::<SecureField>()
+                    .and_then(|field| field.ivars().get().cloned())
+            });
+            (editor, cx)
         } else {
             return Err("no input of the app has the focus".into());
         };
@@ -1536,6 +1556,8 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
             pending_selection: Cell::new(None),
             known: RefCell::new(String::new()),
             composition: RefCell::new(None),
+            #[cfg(feature = "terminal")]
+            terminal_original: RefCell::new(None),
             pending_value: RefCell::new(None),
             editing: Cell::new(false),
             focusing: Cell::new(false),
@@ -2375,4 +2397,177 @@ mod tests {
         assert_eq!(key_of("\n"), "Enter");
         assert_eq!(key_of("x"), "x");
     }
+}
+
+/// The focused native editor and its owning node, including window field editors.
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_editor(surface: &Surface) -> Option<(u32, Retained<NSTextView>)> {
+    let responder = surface.root.ns().window()?.firstResponder()?;
+    let object: &AnyObject = &responder;
+    let cx = if let Some(area) = object.downcast_ref::<TextArea>() {
+        area.ivars().get().cloned()
+    } else if let Some(editor) = object.downcast_ref::<FieldEditor>() {
+        field_ctx(editor)
+    } else if let Some(editor) = object.downcast_ref::<NSTextView>() {
+        let delegate = editor.delegate()?;
+        let object: &AnyObject = ProtocolObject::as_ref(&*delegate);
+        object
+            .downcast_ref::<SecureField>()
+            .and_then(|field| field.ivars().get().cloned())
+    } else {
+        None
+    }?;
+    let (_, view, input) = cx.get()?;
+    if !input.focused.get() {
+        return None;
+    }
+    let editor = input.editor.borrow().editing()?;
+    let text = editor.downcast_ref::<NSTextView>()?;
+    if !text.isEditable() {
+        return None;
+    }
+    let id = view.state().id;
+    // SAFETY: the editor is live and retained for the returned handle.
+    Some((id, unsafe {
+        Retained::retain(text as *const NSTextView as *mut NSTextView)
+    }?))
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_caret(surface: &Surface) -> Option<Bounds<Points>> {
+    let (id, _) = terminal_editor(surface)?;
+    let mounter = surface.mounter.borrow();
+    let view = mounter.views.get(&id)?;
+    let input = view.state().input.clone()?;
+    input.editor.borrow().caret(surface.root.ns())
+}
+
+/// Reads a focused editor without exposing secure input content.
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_text(surface: &Surface) -> Option<String> {
+    let (id, editor) = terminal_editor(surface)?;
+    let mounter = surface.mounter.borrow();
+    let view = mounter.views.get(&id)?;
+    let input = view.state().input.clone()?;
+    if input.config.borrow().secure {
+        return None;
+    }
+    Some(editor.string().to_string())
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_allows_copy(surface: &Surface) -> bool {
+    let Some((id, _)) = terminal_editor(surface) else {
+        return false;
+    };
+    let mounter = surface.mounter.borrow();
+    let Some(view) = mounter.views.get(&id) else {
+        return false;
+    };
+    view.state()
+        .input
+        .as_ref()
+        .is_some_and(|input| !input.config.borrow().secure)
+}
+
+#[cfg(feature = "terminal")]
+fn terminal_cancel_input(input: &InputState) {
+    let original = input.terminal_original.borrow_mut().take();
+    let Some(range) = original else {
+        return;
+    };
+    input.applying.set(true);
+    let editor = input.editor.borrow().clone();
+    if let Some(text) = editor
+        .editing()
+        .and_then(|text| text.downcast::<NSTextView>().ok())
+    {
+        text.unmarkText();
+    }
+    editor.set_text(&input.known.borrow());
+    if !editor.select(
+        range.location as u32,
+        (range.location + range.length) as u32,
+    ) {
+        input.pending_selection.set(Some((
+            range.location as u32,
+            (range.location + range.length) as u32,
+        )));
+    }
+    input.applying.set(false);
+    input.update_placeholder();
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_compose(
+    surface: &Surface,
+    commit: &str,
+    preedit: &str,
+    selection: NSRange,
+    active: bool,
+) -> bool {
+    let Some((id, editor)) = terminal_editor(surface) else {
+        return false;
+    };
+    let input = {
+        let mounter = surface.mounter.borrow();
+        let Some(view) = mounter.views.get(&id) else {
+            return false;
+        };
+        let Some(input) = view.state().input.clone() else {
+            return false;
+        };
+        input
+    };
+    let replacement = NSRange::new(isize::MAX as usize, 0);
+    if !commit.is_empty() {
+        input.terminal_original.borrow_mut().take();
+        // SAFETY: NSString is a valid NSTextInputClient insertion; NSNotFound replaces the mark/selection.
+        let _: () = unsafe {
+            msg_send![&*editor, insertText: &*NSString::from_str(commit), replacementRange: replacement]
+        };
+    }
+    if active {
+        if input.terminal_original.borrow().is_none() {
+            *input.terminal_original.borrow_mut() = Some(editor.selectedRange());
+        }
+        // Preedit is native visual/editing state, not committed application text.
+        input.applying.set(true);
+        // SAFETY: the caller validated the UTF-16 range in preedit; NSString conforms to the text input contract.
+        let _: () = unsafe {
+            msg_send![&*editor, setMarkedText: &*NSString::from_str(preedit), selectedRange: selection, replacementRange: replacement]
+        };
+        input.applying.set(false);
+        input.cx.composition_changed();
+    } else {
+        if commit.is_empty() {
+            terminal_cancel_input(&input);
+        }
+        editor.unmarkText();
+        input.cx.composition_changed();
+    }
+    true
+}
+
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_candidate(surface: &Surface) -> Option<Bounds<Points>> {
+    let (_, editor) = terminal_editor(surface)?;
+    if !editor.hasMarkedText() {
+        return terminal_caret(surface);
+    }
+    let window = editor.window()?;
+    let at = NSRange::new(editor.markedRange().location, 0);
+    // SAFETY: no actual range is requested from AppKit.
+    let screen = unsafe { editor.firstRectForCharacterRange_actualRange(at, std::ptr::null_mut()) };
+    let rect = surface
+        .root
+        .ns()
+        .convertRect_fromView(window.convertRectFromScreen(screen), None);
+    Some(Bounds::new(
+        Point::new(px(rect.origin.x as f32), px(rect.origin.y as f32)),
+        Size::new(
+            px((rect.size.width as f32).max(1.0)),
+            px(rect.size.height as f32),
+        ),
+    ))
 }

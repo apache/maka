@@ -37,6 +37,7 @@ pub(crate) fn starter(
     fps: bool,
     display: Option<usize>,
 ) -> anyhow::Result<StartHost> {
+    target.check_standalone()?;
     if browser.is_some() && target != Target::Web {
         anyhow::bail!("--browser goes with --target web");
     }
@@ -57,11 +58,8 @@ pub(crate) fn starter(
         Target::Android => return crate::test_android::starter(work),
         _ => {}
     }
-    if !matches!(
-        target,
-        Target::Macos | Target::Linux | Target::Windows | Target::Gpui
-    ) {
-        anyhow::bail!("nsh test --target takes macos, linux, windows, gpui, web, ios or android");
+    if !matches!(target, Target::Macos | Target::Linux | Target::Windows) {
+        anyhow::bail!("nsh test --target takes macos, linux, windows, web, ios or android");
     }
     // Built (in a checkout) or found once, before the first test.
     let host = crate::runtime::test_host(target.platform())?;
@@ -76,14 +74,6 @@ pub(crate) fn starter(
 /// page) or they fill a device's screen.
 pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
     use nsh_testing::Platform;
-    // This machine's desktop: the GPUI host's.
-    let desktop = if cfg!(target_os = "macos") {
-        Platform::Macos
-    } else if cfg!(windows) {
-        Platform::Windows
-    } else {
-        Platform::Linux
-    };
     let (name, platform, sized) = match target {
         Target::Ios | Target::Catalyst => ("ios", Platform::Ios, false),
         Target::Android => ("android", Platform::Android, false),
@@ -91,7 +81,7 @@ pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
         Target::Windows => ("windows", Platform::Windows, true),
         Target::Linux => ("linux", Platform::Linux, true),
         Target::Web => ("web", Platform::Web, true),
-        Target::Gpui => ("gpui", desktop, true),
+        Target::Gpui => unreachable!("starter rejects the retired target"),
         Target::Tui => unreachable!("starter rejects terminal test hosts"),
     };
     let mut host = nsh_testing::HostTarget::default();
@@ -173,12 +163,6 @@ fn start(
         // it too: AppKit would shrink the window to the screen, and the
         // app would lay out in less room than the test expects.
         command.arg("--keep-window-size");
-    }
-    if target == Target::Gpui && cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some()
-    {
-        // Screenshots read the window from the X server: under X11
-        // (Xwayland on a Wayland desktop).
-        command.env_remove("WAYLAND_DISPLAY");
     }
     if let Some(size) = options.size {
         command.args([

@@ -1,5 +1,7 @@
 # AGENTS.md
 
+GPUI backend, embedding API and standalone targets are retired in this branch. Use the native platform APIs and read `docs/dev/gpui.md` for breaking changes and known capture/input differences. GPUI references describing geometry or component design are provenance, not dependencies.
+
 Native Shell (NSH for short in prose; crates, the CLI, the JS module and Java package all use `nsh`) is designed for
 AI-generated, dynamically delivered native UI: native apps embed it (`NshAppView` on iOS, `NshView` on Android,
 `AppView` on macOS, Windows and Linux) and load TSX modules at run time — signed, sandboxed by the host, rendered with
@@ -11,8 +13,7 @@ toolchain is pure Rust and does not need Node.js; app developers get a prebuilt 
 never need Rust either. Every platform has a native backend: iOS with UIKit views (`nsh-platform-ios`), Android with
 Android views (`nsh-platform-android`), macOS with AppKit views (`nsh-platform-macos`), Windows in Win32 windows drawn
 with Direct2D (`nsh-platform-windows`), Linux with GTK 4 widgets (`nsh-platform-linux`). Each desktop OS has one
-backend for standalone apps (AppKit, Win32, GTK 4); the GPUI backend (`nsh-platform-gpui`) draws on macOS, Windows and
-Linux and is the backend for embedding in GPUI / GPUI Kit apps; the web platform
+backend for standalone and embedded apps (AppKit, Win32, GTK 4); the web platform
 (`nsh-platform-web`) renders apps as HTML in a browser page, and `nsh package --target web` publishes them as static
 sites. The terminal backend (`nsh-platform-tui`) draws into Ratatui buffers on all three desktops and embeds in
 terminal apps. NSH is layered as GPUI Kit is: `nsh-core` is NSH's `gpui` (primitives, layout, rendering), `nsh-base` its
@@ -139,28 +140,6 @@ crates/
                        --script renders deterministic UTF-8 snapshots in memory (docs/dev/tui.md)
   nsh-tui-host/        Development host in a terminal (`nsh run --target tui`): connects to a dev server or runs a bundle
   nsh-tui-app/         Release runner in a terminal (`nsh package --target tui`)
-  gpui/                The GPUI backend: a workspace of its own (`crates/gpui/Cargo.toml`, its own `Cargo.lock` and GPUI's dependencies),
-                       excluded from the main one, so the main workspace's builds, tests and CI never build GPUI:
-  gpui/nsh-platform-gpui/ GPUI backend (macOS, Windows, Linux): the Windows backend's retained `NshView` tree, input,
-                       scrolling and editing logic, painted by one GPUI element per surface (`render.rs`: `SurfaceElement`,
-                       `DrawCx` with the transform and opacity GPUI lacks), text shaped by GPUI's text system on the engine
-                       thread, the main-thread queue (`rt.rs`), GPUI events (`events.rs`, keys as Windows VK codes);
-                       `AppView` is a GPUI view for GPUI / GPUI Kit apps; features `webview` (wry), `video` (GStreamer),
-                       `dev` as above, `shot` (screenshots on macOS / Windows: GPUI's test support); it is the
-                       backend for embedding, standalone apps run on each OS's own backend (docs/dev/gpui.md)
-  gpui/nsh-gpui-host/  Development host on GPUI (`nsh run --target gpui`): shows a TSX app as GPUI apps that embed it
-                       show it; connects to a dev server or runs a bundle
-  nsh-ios-host/        Development host app (Catalyst / iOS simulator); connects to a dev server or runs a local bundle
-  nsh-ios-app/         Release runner: the executable of iOS apps built by `nsh package`
-  nsh-cli/             The `nsh` command line (a binary): init / build / test / check / dev / run / package; keygen /
-                       certify / publish / verify / revoke; apps with Rust components of their own (`rust_app.rs`: each crate
-                       nsh.json `"rust"` names, one or a list, has a `#[native_module("…")]` fn; a generated workspace in `.nsh/rust`
-                       with a `describe` program, which prints the sets as data for the CLI to bundle, compile and declare with, the
-                       hosts and runners, and the headless runner of `nsh test`; it takes nsh's crates where the app's crates do:
-                       crates.io at the CLI's version, or the checkout they depend on by path; docs/dev/tooling.md); web packages and the
-                       browser host's pages (`web.rs`, `web/`); `nsh test --target web`'s headless browser (`cdp.rs`, `test_web.rs`);
-                       what it prints (`ui.rs`:
-                       one line per step, tools' output only on failure, `-v` for everything; docs/dev/tooling.md "Output")
   xtask/               Maintainer tasks: `cargo xtask android` (Android runtime), `ios-embed` (the iOS SDK), `dist` (the distribution),
                        `web` (the WebAssembly runtime and the website's demos), `compat` (runs `nsh-compat` against this checkout;
                        `compat record <version>`: records a release there)
@@ -175,8 +154,7 @@ examples/             Example apps (gallery: a demo index, one module per demo, 
                       for exporting components, modules and classes and registering native components, with Rust and TypeScript tests of the TSX entry; counter,
                       with a test; host-echo: an app calling its web page's host (`nsh`'s `host`, nsh.json `web.host`), the host
                       module and their tests), embedding samples
-                      (embed-ios, embed-android; embed-gpui: a GPUI Kit app, its own workspace; `run/` the root's
-                      `cargo run -p example-embed-gpui`) and the app they run (embedded: uses a native component the samples
+                      (embed-ios, embed-android) and the app they run (embedded: uses a native component the samples
                       register); bench: component benchmarks
 ```
 
@@ -185,7 +163,7 @@ icons, finishes, theme and table part classes. Change shared visual rules there.
 the gallery shell/navigation; `website/demos/palette.ts` is the documentation adapter. See that layer's README.
 
 Dependency direction: `nsh-core` ← `nsh-js` ← `nsh-engine` (also ← `nsh-package`) ← `nsh-platform-*` ←
-`nsh-ios-host` / `nsh-ios-app` / `nsh-linux-host` / `nsh-linux-app` / `nsh-macos-host` / `nsh-macos-app` / `nsh-windows-host` / `nsh-windows-app` / `nsh-gpui-host` / `nsh-tui-host` / `nsh-tui-app`; `nsh-cli` depends on `nsh-bundler`, `nsh-js` and `nsh-engine`; `nsh-bundler`'s feature `bundle` depends on `nsh-js` (to check
+`nsh-ios-host` / `nsh-ios-app` / `nsh-linux-host` / `nsh-linux-app` / `nsh-macos-host` / `nsh-macos-app` / `nsh-windows-host` / `nsh-windows-app` / `nsh-tui-host` / `nsh-tui-app`; `nsh-cli` depends on `nsh-bundler`, `nsh-js` and `nsh-engine`; `nsh-bundler`'s feature `bundle` depends on `nsh-js` (to check
 imports against the names native modules export); `nsh-base` depends on `nsh-core` only and is used by the bundler
 (declarations), the platforms and the CLI (registry). An app's own crates (its UI sets) depend on `nsh-core` only and
 are never linked into the CLI: it reads their UI sets as data (`nsh_core::element::description`); the hosts and runners
@@ -212,7 +190,7 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | the Linux backend (`nsh-platform-linux`, GTK 4) | `docs/dev/linux.md` |
 | the macOS backend (`nsh-platform-macos`, AppKit) | `docs/dev/macos.md` |
 | the Windows backend (`nsh-platform-windows`, Win32 / Direct2D) | `docs/dev/windows.md` |
-| the GPUI backend (`nsh-platform-gpui`, macOS / Windows / Linux) | `docs/dev/gpui.md` |
+| migration from the retired GPUI API | `docs/dev/gpui.md` |
 | the terminal backend (`nsh-platform-tui`, Ratatui) | `docs/dev/tui.md` |
 | anything apps use: exports, `nsh:rt`, props, events, style keys, Tailwind, declarations, behavior, formats | `docs/dev/compatibility.md` |
 | a hot path | `docs/dev/performance.md` (baselines) |
@@ -249,10 +227,10 @@ to, put the details in nsh-docs and the summary here. Before changing an area, r
 ## Commands
 
 ```sh
-cargo run [-- <app>] [-- --target catalyst|ios|android|gpui]                       # the gallery on this machine's backend (AppKit / GTK / Win32), hot reload; rebuilt and restarted on Rust changes
+cargo run [-- <app>] [-- --target catalyst|ios|android]                       # the gallery on this machine's backend (AppKit / GTK / Win32), hot reload; rebuilt and restarted on Rust changes
 cargo run -- accordion [--section settings]                                        # the gallery opened at one demo (by name), only its section with that title: no taps or scrolling
 NSH_GALLERY_DEMO=accordion NSH_GALLERY_SECTION=settings ./target/debug/nsh test examples/gallery/App.tsx --target linux   # the same under nsh test (steps on stdin)
-cargo xtask [<app>] [--target catalyst|ios|android|gpui] [-v]                      # the same without cargo's own two lines; -v (any nsh / xtask command): all output
+cargo xtask [<app>] [--target catalyst|ios|android] [-v]                      # the same without cargo's own two lines; -v (any nsh / xtask command): all output
 cargo build -p nsh-cli                                                             # build the nsh CLI
 ./target/debug/nsh init my-app --template ts|rust|mixed                            # new app: TSX, Rust (a Cargo project, "root"), or TSX that is also a crate ("rust": "."); asks on a terminal without --template
 cargo build -p nsh-ios-host --target aarch64-apple-ios-macabi                          # the Catalyst development host (nsh run builds it in a checkout)
@@ -261,16 +239,13 @@ cargo build -p nsh-ios-app --target aarch64-apple-ios-sim                       
 cargo build -p nsh-linux-host                                                          # the Linux (GTK) development host (`nsh run` on Linux builds it in a checkout)
 cargo build -p nsh-macos-host                                                          # the macOS (AppKit) development host (`nsh run --target macos` builds it in a checkout)
 cargo build -p nsh-windows-host                                                        # the Windows development host (`nsh run` on Windows builds it in a checkout)
-cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host                    # the GPUI development host (`nsh run --target gpui` builds it in a checkout)
-cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host --features nsh-gpui-host/runtime-shaders   # the same on a Mac without Xcode's Metal Toolchain (GPUI compiles its shaders at run time)
-cargo run -p example-embed-gpui                                                        # the GPUI Kit embedding example (a std-only runner that only runs `cargo run` in its own workspace)
 ./target/debug/nsh test examples/counter/App.tsx --trace                    # headless run: prints mount items and the time of every commit
 echo 'await app.scroll("id:photos", 3000)' | ./target/release/nsh test examples/gallery/Bench.tsx --trace   # headless scrolling (10pt per frame): per-frame list cost
 echo 'await app.press("label:Plan"); await app.wait(500)' | ./target/debug/nsh test examples/hopper/App.tsx --trace   # steps from stdin (`app`: nsh/test's App)
 ./target/debug/nsh test examples/gallery                                   # the app's tests (`*.test.tsx`, `nsh/test`), headless; --trace prints batches
 ./target/debug/nsh test examples/gallery --target macos                    # the same tests in macOS windows: native input at the views (`nsh_testing::agent`)
 ./target/debug/nsh test examples/gallery --target web                      # in a headless Chrome / Edge / Chromium (found, or --browser <PATH>): trusted input over CDP
-xvfb-run -a ./target/debug/nsh test examples/gallery --target linux        # in GTK windows (a virtual display here); also windows, gpui
+xvfb-run -a ./target/debug/nsh test examples/gallery --target linux        # in GTK windows (a virtual display here); also windows
 ./target/debug/nsh test examples/gallery --target ios                      # in an iOS simulator: a finger's touches and the keyboard's typing, as UIKit gets them
 ./target/debug/nsh test examples/gallery --target android                  # on the first device adb lists: MotionEvents and KeyEvents at the window's views
 echo 'await app.screenshot("a.png"); await app.press("label:Navigation"); await app.screenshot("b.png")' | ./target/debug/nsh test examples/gallery/App.tsx --target macos   # check a platform change: steps from stdin in its window
@@ -280,7 +255,6 @@ echo 'await app.screenshot("a.png"); await app.press("label:Navigation"); await 
 ./target/debug/nsh run examples/gallery --target android                   # on an emulator / device (needs `cargo xtask android --dev`)
 ./target/debug/nsh run examples/gallery --target linux                     # in a GTK window (the default on Linux)
 ./target/debug/nsh run examples/gallery --target windows                   # in a Win32 window, 1200×800 (the default on Windows)
-./target/debug/nsh run examples/gallery --target gpui                      # in a GPUI window (macOS, Windows, Linux), as GPUI apps embed it
 ./target/debug/nsh run examples/terminal-workbench --target tui            # in this terminal, with hot reload
 ./target/debug/nsh package examples/terminal-workbench --target tui        # console executable and resources, archived for this OS
 ./target/debug/nsh-tui-host --bundle build/bundle.nshc --size 120x40 --script "wait 300; shot screen.txt; quit"   # headless text snapshot
@@ -315,8 +289,6 @@ cargo clippy -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app --al
 cargo clippy -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app --all-targets   # the terminal backend (macOS / Windows / Linux)
 cargo test -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app                  # tests and in-memory terminal rendering, no display needed
 cargo test -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app               # its tests (on Windows; they open no window)
-(cd crates/gpui && cargo clippy --all-targets --features nsh-platform-gpui/dev)        # the GPUI backend, its own workspace (empty off the desktops)
-(cd crates/gpui && cargo test && cargo +nightly fmt --all)                              # its tests (they open no window) and formatting
 cd website && bun run dev                                                       # the documentation site (builds the player too)
 ```
 
@@ -327,13 +299,7 @@ host it is an empty crate, so always run clippy on platform code with the Cataly
 check them on Linux, with the GTK 4 (≥ 4.14) development packages installed. `nsh-platform-macos` and its hosts are
 empty off macOS (`target_os = "macos"`, not Catalyst). `nsh-platform-windows` and its hosts are empty off Windows:
 check them on Windows, with the MSVC Build Tools, the Windows SDK and LLVM (libclang for QuickJS' bindings);
-`RUST_MIN_STACK=268435456` if rustc overflows its stack on the `windows` crate. The GPUI backend (`crates/gpui`) is
-a workspace of its own: the main workspace's `cargo test --workspace` and clippy never build it, and its CI runs only when
-it changes (and daily). Its crates build on all three desktops and are empty elsewhere; on Linux they need GPUI's X11 /
-Wayland / xkbcommon / fontconfig packages plus GTK 3, WebKitGTK 4.1 (feature `webview`, on by default) and GStreamer
-1.20+ with its base plug-ins (feature `video`, the host's); on macOS Xcode's Metal Toolchain, or the
-feature `runtime-shaders` (`docs/dev/gpui.md`), which the CLI turns on when `xcrun metal` fails. It builds into the
-repository's `target/`; dependencies only it uses are declared in `crates/gpui/Cargo.toml`, not the root. `.cargo/config.toml` sets
+`RUST_MIN_STACK=268435456` if rustc overflows its stack on the `windows` crate. `.cargo/config.toml` sets
 `IPHONEOS_DEPLOYMENT_TARGET = 15.0` for Rust and C alike.
 
 The terminal backend is in the main workspace and builds on macOS, Windows and Linux using Rust libraries and the
@@ -527,7 +493,7 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   platforms) (`docs/dev/styles.md` "Colors").
 - Library crates only log through the `log` facade (no `eprintln!`); performance logs use target `nsh::perf`, JS logs target `js`. Binaries install the logger.
   The CLI prints through `nsh-cli`'s `ui.rs` (steps, captured tools, `error` reports), xtask through `term.rs`.
-- Dependencies are declared once in the root `Cargo.toml` `[workspace.dependencies]` (the GPUI backend's in `crates/gpui/Cargo.toml`); crates only write `.workspace = true`.
+- Dependencies are declared once in the root `Cargo.toml` `[workspace.dependencies]` ; crates only write `.workspace = true`.
 - Every `unsafe` block has a `// SAFETY:` comment.
 - A crate's integration tests are one test binary (`tests/<name>/main.rs` with a module per area, as
   `nsh-engine/tests/engine/`), never a new `tests/*.rs`: each binary links its own copy of the bundler, QuickJS and
@@ -599,7 +565,7 @@ Each workflow runs only when what it builds changes: the Rust workflows list the
 derived from the dependency graph. A new crate, a new path dependency or a new workflow updates those lists
 (`python3 .github/ci/paths.py --print`); the `CI paths` workflow fails when a list misses a crate its workflow builds.
 It runs on every pull request: its `check` job is the status check main requires, so a pull request no other workflow
-reports `check` for (one touching only `crates/gpui`) can still merge. The Compat workflow's `compat` job is required
+reports `check` for (one touching only documentation) can still merge. The Compat workflow's `compat` job is required
 too, so it also runs on every pull request, and its `dorny/paths-filter` step (held to the graph by `paths.py` the same
 way) decides whether it builds and checks or passes at once.
 Every pull-request workflow also handles `merge_group: checks_requested`, so GitHub's merge queue tests the
@@ -637,14 +603,14 @@ objects directly. Preserve the existing parallel-agent build and test limits whi
 
 ## Verification after changes
 
-1. `cargo test --workspace`, plus fmt and clippy as listed above (including the Catalyst target, the macOS crates, `cargo xtask clippy-android`, on Linux the Linux crates, on Windows the Windows crates; for changes in `crates/gpui` or to what it uses, its own tests and clippy there).
+1. `cargo test --workspace`, plus fmt and clippy as listed above (including the Catalyst target, the macOS crates, `cargo xtask clippy-android`, on Linux the Linux crates, on Windows the Windows crates).
 2. Changes to the runtime (`nsh-js`), engine or core: run `nsh test --trace` and check item counts and timings. Changes to
    anything apps use: `cargo xtask compat` passes, and `tests/compat/` checks the change (`docs/dev/compatibility.md`).
 3. Changes to the platform layer: launch with `nsh run`, check screenshots and simulate input where needed (the terminal needs the Screen
    Recording and Accessibility permissions; while the screen is locked the frontmost app is `loginwindow` and clicks fail, but window
    screenshots still work). iOS simulator: `xcrun simctl io booted screenshot`, `xcrun simctl ui booted appearance dark`.
    Android: `adb exec-out screencap -p`, `adb shell input tap|swipe|text|keyevent` (all work with the screen locked).
-   The desktops: `nsh test <entry> --target macos|linux|windows|gpui` with steps on standard input
+   The desktops: `nsh test <entry> --target macos|linux|windows` with steps on standard input
    (`await app.screenshot("a.png"); await app.press("label:Plan")`) opens the app in the platform's window, acts with
    its input at the views the selectors name and takes screenshots, without touching the screen; the app's tests run
    there the same way (`docs/dev/tooling.md` "On a real platform"). Linux: under Xvfb (`xvfb-run -a`) on a machine

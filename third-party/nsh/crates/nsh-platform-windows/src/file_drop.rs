@@ -307,3 +307,28 @@ impl IDropTarget_Impl for Destination_Impl {
         Ok(())
     }
 }
+
+/// Terminal file transport uses the same native hit target and enter/drop/leave events.
+#[cfg(feature = "terminal")]
+pub(crate) fn terminal_drop(
+    surface: &Surface,
+    paths: Vec<std::path::PathBuf>,
+    position: nsh_core::Point<nsh_core::Points>,
+) {
+    let target = input::file_drop_target(surface, position.x.0, position.y.0);
+    set_target(surface, target.clone());
+    let uris: Vec<_> = paths
+        .into_iter()
+        .filter_map(|p| url::Url::from_file_path(p).ok().map(String::from))
+        .collect();
+    if let Some(target) = target
+        && !uris.is_empty()
+    {
+        surface.event(
+            target.id(),
+            EventKind::FileDrop,
+            EventPayload::FileDrop(uris),
+        );
+    }
+    set_target(surface, None);
+}

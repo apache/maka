@@ -1,3 +1,5 @@
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Images
 
 - **Images**: background NSURLSession / file read → ImageIO downsampling decode at the view's pixel size → `NSCache` (purged under memory pressure);

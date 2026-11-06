@@ -14,7 +14,6 @@
 //! runtime/macos/nsh-macos-app                release runner (macOS)
 //! runtime/windows/nsh-windows-host.exe       development host (Windows)
 //! runtime/windows/nsh-windows-app.exe        release runner (Windows)
-//! runtime/gpui/nsh-gpui-host[.exe]           development host (GPUI, this OS)
 //! runtime/tui/{nsh-tui-host,nsh-tui-app}[.exe] terminal host and release runner
 //! runtime/android/release/             classes.dex + lib/<abi>/libnsh.so
 //! runtime/android/dev/                 the same with development support
@@ -25,7 +24,7 @@
 //! ```
 //!
 //! In a cargo checkout, the same files come from `target/<triple>/<profile>`
-//! (with the profile of this CLI; Linux's, macOS's, Windows', GPUI's and TUI's
+//! (with the profile of this CLI; Linux's, macOS's, Windows' and TUI's
 //! from `target/<profile>`, as they are built for this machine), and are
 //! built with cargo first, so a run never uses a missing or stale host.
 //! The web runtime is always built with the `web` profile (a debug build is
@@ -59,9 +58,6 @@ pub(crate) enum Platform {
     MacOs,
     /// Windows (Win32), on this machine.
     Windows,
-    /// GPUI, on this machine (macOS, Windows or Linux): a development host
-    /// only, as GPUI is the backend for embedding in GPUI apps.
-    Gpui,
     /// A terminal on this machine.
     Tui,
 }
@@ -75,7 +71,6 @@ impl Platform {
             Platform::Linux => "linux",
             Platform::MacOs => "macos",
             Platform::Windows => "windows",
-            Platform::Gpui => "gpui",
             Platform::Tui => "tui",
         }
     }
@@ -86,11 +81,7 @@ impl Platform {
             Platform::IphoneOs => Some("aarch64-apple-ios"),
             Platform::IphoneSimulator => Some("aarch64-apple-ios-sim"),
             Platform::MacCatalyst => Some("aarch64-apple-ios-macabi"),
-            Platform::Linux
-            | Platform::MacOs
-            | Platform::Windows
-            | Platform::Gpui
-            | Platform::Tui => None,
+            Platform::Linux | Platform::MacOs | Platform::Windows | Platform::Tui => None,
         }
     }
 
@@ -104,8 +95,6 @@ impl Platform {
             (Platform::MacOs, true) => "nsh-macos-app",
             (Platform::Windows, false) => "nsh-windows-host",
             (Platform::Windows, true) => "nsh-windows-app",
-            (Platform::Gpui, false) => "nsh-gpui-host",
-            (Platform::Gpui, true) => unreachable!("GPUI apps are embedded, never packaged"),
             (Platform::Tui, false) => "nsh-tui-host",
             (Platform::Tui, true) => "nsh-tui-app",
             (_, false) => "nsh-ios-host",
@@ -139,7 +128,6 @@ impl Platform {
             Platform::Linux => "Linux",
             Platform::MacOs => "macOS",
             Platform::Windows => "Windows",
-            Platform::Gpui => "GPUI",
             Platform::Tui => "the terminal",
         };
         format!("the {what} for {platform}")
@@ -493,17 +481,6 @@ pub(crate) fn file(platform: Platform, runner: bool) -> anyhow::Result<PathBuf> 
     let profile = bin.file_name().context("cli profile dir")?;
     if let Some(root) = checkout(bin) {
         let mut args = vec!["build", "-p", name];
-        // The GPUI backend is a workspace of its own, built into the same
-        // `target/` (cargo reads `crates/gpui/.cargo/config.toml` only when
-        // run from there).
-        let manifest = root.join("crates/gpui/Cargo.toml");
-        let manifest = manifest.to_string_lossy();
-        let target_dir = root.join("target");
-        let target_dir = target_dir.to_string_lossy();
-        if matches!(platform, Platform::Gpui) {
-            args.extend(["--manifest-path", &manifest, "--target-dir", &target_dir]);
-            args.extend(gpui_features());
-        }
         if let Some(triple) = platform.triple() {
             args.extend(["--target", triple]);
         }
@@ -532,33 +509,6 @@ pub(crate) fn file(platform: Platform, runner: bool) -> anyhow::Result<PathBuf> 
     built.push(profile);
     built.push(file_name);
     existing(built, platform, name)
-}
-
-/// The cargo arguments a build of a GPUI host adds: on a Mac
-/// where Xcode cannot run `metal`, which GPUI's build script precompiles
-/// its shaders with, `nsh-platform-gpui`'s `runtime-shaders` feature, so
-/// GPUI compiles them when the app starts. Every GPUI host, the
-/// checkout's and those of apps with Rust crates, depends on
-/// `nsh-platform-gpui`.
-pub(crate) fn gpui_features() -> &'static [&'static str] {
-    if !metal_toolchain_missing() {
-        return &[];
-    }
-    crate::ui::note(
-        "no Metal Toolchain: GPUI compiles its shaders when the app starts \
-         (`xcodebuild -downloadComponent MetalToolchain` installs one to precompile them)",
-    );
-    &["--features", "nsh-platform-gpui/runtime-shaders"]
-}
-
-/// Whether this is a Mac where Xcode cannot run `metal` (no Metal
-/// Toolchain).
-fn metal_toolchain_missing() -> bool {
-    cfg!(target_os = "macos")
-        && !Command::new("xcrun")
-            .args(["metal", "--version"])
-            .output()
-            .is_ok_and(|out| out.status.success())
 }
 
 /// The workspace of a cargo checkout of nsh this CLI was built in
@@ -645,6 +595,30 @@ mod tests {
     use super::Platform;
 
     #[test]
+    fn native_desktop_runtimes_have_hosts_and_release_runners() {
+        for (platform, name, label) in [
+            (Platform::Linux, "linux", "Linux"),
+            (Platform::MacOs, "macos", "macOS"),
+            (Platform::Windows, "windows", "Windows"),
+        ] {
+            assert_eq!(platform.dir(), name);
+            assert_eq!(platform.triple(), None);
+            for (runner, suffix) in [(false, "host"), (true, "app")] {
+                let binary = format!("nsh-{name}-{suffix}");
+                assert_eq!(platform.binary(runner), binary);
+                assert_eq!(
+                    platform.file_name(runner),
+                    format!("{binary}{}", std::env::consts::EXE_SUFFIX)
+                );
+            }
+            assert_eq!(
+                platform.host(false),
+                format!("the development host for {label}")
+            );
+        }
+    }
+
+    #[test]
     fn tui_runtimes_are_console_programs_for_this_machine() {
         assert_eq!(Platform::Tui.dir(), "tui");
         assert_eq!(Platform::Tui.triple(), None);
@@ -710,18 +684,6 @@ mod tests {
         assert_eq!(args[0], "--config");
         assert!(args[1].to_str().unwrap().contains("getrandom_backend"));
         assert!(command.get_envs().next().is_none());
-    }
-
-    #[test]
-    fn gpui_runtimes_are_built_for_this_machine() {
-        assert_eq!(Platform::Gpui.dir(), "gpui");
-        assert_eq!(Platform::Gpui.triple(), None);
-        assert_eq!(Platform::Gpui.binary(false), "nsh-gpui-host");
-        assert_eq!(
-            Platform::Gpui.file_name(false),
-            format!("nsh-gpui-host{}", std::env::consts::EXE_SUFFIX)
-        );
-        assert_eq!(Platform::Gpui.host(false), "the development host for GPUI");
     }
 
     /// A rebuild of a development runtime keeps the syntaxes it has rather

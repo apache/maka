@@ -19,20 +19,20 @@
 
 use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use gpui::{
-    AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, ExternalPaths,
-    FileDropEvent, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TextInputTarget, TouchPhase,
-    WindowBounds, WindowHandle, WindowOptions, point, px, size,
-};
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
-use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
-use nsh_platform_gpui::{AppOptions, AppView};
+#[cfg(target_os = "macos")]
+use nsh_platform_macos::TerminalSurface;
+#[cfg(windows)]
+use nsh_platform_windows::terminal::TerminalSurface;
+use nsh_terminal::{
+    Bounds, CandidateFrame, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, NativeSurface, PlatformInput, ScrollDelta, ScrollWheelEvent, TextInputTarget,
+    TouchPhase, point, px, size,
+};
 use serde_json::{Value, json};
 use sqlx::Connection;
 use std::{
-    cell::RefCell,
     future::Future,
     path::Path,
     rc::Rc,
@@ -42,19 +42,25 @@ use std::{
 use tokio::sync::{Notify, watch};
 use uuid::Uuid;
 
+macro_rules! native {
+    ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
+        let mut value = <$ty>::default();
+        $(value.$field = $value;)*
+        value
+    }};
+}
+
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
 
 struct Desktop {
-    platform: Rc<TerminalPlatform>,
+    platform: Rc<TerminalSurface>,
     frame: Arc<Mutex<Option<CandidateFrame>>>,
-    app: ApplicationHandle,
-    window: WindowHandle<AppView>,
+    host: nsh_engine::HostChannel,
     client: Client,
     bindings: Bindings,
     outcome: Arc<Mutex<Value>>,
     _foreground: watch::Sender<bool>,
     wake: Arc<Notify>,
-    errors: Rc<RefCell<Option<String>>>,
 }
 
 impl Desktop {
@@ -62,7 +68,10 @@ impl Desktop {
         Self::open_at(
             fixture,
             address,
-            size(gpui::DevicePixels(960), gpui::DevicePixels(640)),
+            size(
+                nsh_terminal::DevicePixels(960),
+                nsh_terminal::DevicePixels(640),
+            ),
             nsh_core::platform::Appearance::Dark,
         )
         .await
@@ -71,7 +80,7 @@ impl Desktop {
     async fn open_at(
         fixture: &Fixture,
         address: &Path,
-        dimensions: gpui::Size<gpui::DevicePixels>,
+        dimensions: nsh_terminal::Size<nsh_terminal::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
     ) -> Self {
         Self::open_config(fixture, address, dimensions, appearance, None).await
@@ -80,7 +89,7 @@ impl Desktop {
     async fn open_config(
         fixture: &Fixture,
         address: &Path,
-        dimensions: gpui::Size<gpui::DevicePixels>,
+        dimensions: nsh_terminal::Size<nsh_terminal::DevicePixels>,
         appearance: nsh_core::platform::Appearance,
         preview: Option<(String, &str, &str)>,
     ) -> Self {
@@ -122,73 +131,33 @@ impl Desktop {
         let notification = wake.clone();
         let frame = Arc::new(Mutex::new(None));
         let captured = frame.clone();
-        let platform = TerminalPlatform::new(
-            Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(move |frame| {
-                let frame = std::thread::spawn(move || frame.submit()?.complete())
-                    .join()
-                    .unwrap()
-                    .unwrap();
-                *captured.lock().unwrap() = Some(frame);
-            }),
-            Arc::new(move || notification.notify_one()),
-        )
-        .unwrap();
-        platform.set_viewport(dimensions, 1.0).unwrap();
-        let errors = Rc::new(RefCell::new(None));
-        let failed = errors.clone();
-        let opened = Rc::new(RefCell::new(None));
-        let window = opened.clone();
-        let app = Application::with_platform(platform.clone()).run_embedded(move |cx| {
-            *window.borrow_mut() = Some(
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                            point(px(0.0), px(0.0)),
-                            size(
-                                px(dimensions.width.0 as f32),
-                                px(dimensions.height.0 as f32),
-                            ),
-                        ))),
-                        inactive_frame_interval: None,
-                        ..Default::default()
-                    },
-                    move |window, cx| {
-                        cx.new(|cx| {
-                            let view = AppView::new(
-                                AppOptions {
-                                    host: config.host.clone(),
-                                    terminal_keyboard: true,
-                                    ..Default::default()
-                                },
-                                window,
-                                cx,
-                            );
-                            view.on_error(move |message| {
-                                *failed.borrow_mut() = Some(message.to_owned())
-                            });
-                            view.set_appearance(appearance, cx);
-                            view.load_with_config(config);
-                            window.focus(&view.focus_handle(cx), cx);
-                            view
-                        })
-                    },
-                )
-                .unwrap(),
-            );
-        });
-        let window = opened.borrow_mut().take().unwrap();
+        config.environment.color_scheme = appearance.resolve(config.environment.color_scheme);
+        let host = config.host.clone();
+        let platform = Rc::new(
+            TerminalSurface::new(
+                config,
+                dimensions,
+                1.0,
+                Box::new(move |frame| {
+                    let frame = std::thread::spawn(move || frame.submit()?.complete())
+                        .join()
+                        .unwrap()
+                        .unwrap();
+                    *captured.lock().unwrap() = Some(frame);
+                }),
+                Arc::new(move || notification.notify_one()),
+            )
+            .unwrap(),
+        );
         let desktop = Self {
             platform,
             frame,
-            app,
-            window,
+            host,
             client,
             bindings,
             outcome,
             _foreground: foreground,
             wake,
-            errors,
         };
         if let Some(label) = preview_ready {
             desktop.control(label).await;
@@ -199,11 +168,7 @@ impl Desktop {
     }
 
     fn event(&self, name: &str, value: Value) {
-        self.app.update(|cx| {
-            self.window
-                .update(cx, |view, _, _| view.host().send(name, value).unwrap())
-                .unwrap();
-        });
+        self.host.send(name, value).unwrap();
     }
 
     fn artifact(&self, name: &str) {
@@ -212,7 +177,6 @@ impl Desktop {
         };
         let directory = std::path::PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
-        self.app.update(|cx| cx.refresh_windows());
         self.pump();
         let guard = self.frame.lock().unwrap();
         let frame = guard.as_ref().unwrap();
@@ -224,7 +188,7 @@ impl Desktop {
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
     }
 
-    fn pixels(&self, bounds: Bounds<gpui::Pixels>) -> Option<Vec<u8>> {
+    fn pixels(&self, bounds: Bounds<nsh_terminal::Pixels>) -> Option<Vec<u8>> {
         let guard = self.frame.lock().unwrap();
         let frame = guard.as_ref()?;
         let stride = frame.size().width.0 as usize * 4;
@@ -242,12 +206,8 @@ impl Desktop {
     }
 
     fn pump(&self) {
-        self.platform.pump();
-        assert!(
-            self.errors.borrow().is_none(),
-            "UI error: {:?}",
-            self.errors.borrow()
-        );
+        self.platform.pump_with_draw(true);
+        assert!(self.platform.take_error().is_none(), "native UI failed");
     }
 
     async fn until<T>(&self, stage: &str, mut read: impl FnMut() -> Option<T>) -> T {
@@ -306,43 +266,33 @@ impl Desktop {
     }
 
     fn key(&self, name: &str, control: bool) {
-        self.key_with(
-            name,
-            Modifiers {
-                control,
-                ..Default::default()
-            },
-        );
+        self.key_with(name, native!(Modifiers { control: control }));
     }
 
     fn key_with(&self, name: &str, modifiers: Modifiers) {
-        let keystroke = Keystroke {
+        let keystroke = native!(Keystroke {
             key: name.into(),
             key_char: None,
-            modifiers,
-        };
+            modifiers: modifiers
+        });
         self.platform
-            .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            }))
+            .dispatch_input(PlatformInput::KeyDown(native!(
+                nsh_terminal::KeyDownEvent {
+                    keystroke: keystroke.clone(),
+                    is_held: false,
+                    prefer_character_input: false
+                }
+            )))
             .unwrap();
         self.platform
-            .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+            .dispatch_input(PlatformInput::KeyUp(native!(nsh_terminal::KeyUpEvent {
+                keystroke: keystroke
+            })))
             .unwrap();
     }
 
     async fn target_after(&self, previous: Option<TextInputTarget>) {
         self.until("the requested editor was not ready for text input", || {
-            let editable = self.app.update(|cx| {
-                self.window
-                    .update(cx, |view, window, cx| view.accepts_text_input(window, cx))
-                    .unwrap()
-            });
-            if !editable {
-                return None;
-            }
             self.platform
                 .text_input_target()
                 .filter(|target| Some(target) != previous.as_ref())
@@ -356,9 +306,7 @@ impl Desktop {
         self.key("a", true);
         self.key("c", true);
         self.until("the selected draft was not copied", || {
-            self.platform
-                .take_clipboard_write()
-                .and_then(|item| item.text())
+            self.platform.take_clipboard_write()
         })
         .await
     }
@@ -366,7 +314,7 @@ impl Desktop {
     async fn type_text(&self, text: &str) {
         self.target_after(None).await;
         self.key("a", true);
-        self.platform.paste(text).unwrap();
+        assert!(self.platform.paste(nsh_core::PasteEvent::new(text)));
         self.expect_text(text).await;
     }
 
@@ -391,39 +339,13 @@ impl Desktop {
         .await;
     }
 
-    fn drop_paths(&self, paths: Vec<std::path::PathBuf>, position: gpui::Point<gpui::Pixels>) {
-        self.platform
-            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                position,
-                pressed_button: Some(MouseButton::Left),
-                modifiers: Modifiers::default(),
-            }))
-            .unwrap();
+    fn drop_paths(
+        &self,
+        paths: Vec<std::path::PathBuf>,
+        position: nsh_terminal::Point<nsh_terminal::Pixels>,
+    ) {
+        self.platform.drop_paths(paths, position);
         self.pump();
-        self.app.update(|cx| {
-            cx.update_window(self.window.into(), |_, window, cx| {
-                window.dispatch_event(
-                    PlatformInput::FileDrop(FileDropEvent::Entered {
-                        position,
-                        paths: ExternalPaths(paths.into()),
-                    }),
-                    cx,
-                );
-            })
-            .unwrap();
-            self.window.update(cx, |_, _, cx| cx.notify()).unwrap();
-            cx.update_window(self.window.into(), |_, window, cx| {
-                window.refresh();
-                window.draw(cx).clear(cx);
-                for event in [
-                    FileDropEvent::Pending { position },
-                    FileDropEvent::Submit { position },
-                ] {
-                    window.dispatch_event(PlatformInput::FileDrop(event), cx);
-                }
-            })
-            .unwrap();
-        });
     }
 
     async fn new_draft(&self) {
@@ -443,19 +365,15 @@ impl Desktop {
     }
 
     /// Where the window shows controls labelled `label`.
-    fn controls(&self, label: &str) -> Vec<Bounds<gpui::Pixels>> {
-        self.app.update(|cx| {
-            self.window
-                .update(cx, |view, _, _| view.pressable_bounds(label))
-                .unwrap()
-        })
+    fn controls(&self, label: &str) -> Vec<Bounds<nsh_terminal::Pixels>> {
+        self.platform.pressable_bounds(label)
     }
 
     async fn composer_height(
         &self,
         stage: &str,
-        ready: impl Fn(gpui::Pixels) -> bool,
-    ) -> gpui::Pixels {
+        ready: impl Fn(nsh_terminal::Pixels) -> bool,
+    ) -> nsh_terminal::Pixels {
         self.until(stage, || {
             let fields = self.controls("Focus message composer");
             let [field] = fields.as_slice() else {
@@ -467,7 +385,7 @@ impl Desktop {
     }
 
     /// Where the window shows the one control labelled `label`, once it does.
-    async fn control(&self, label: &str) -> Bounds<gpui::Pixels> {
+    async fn control(&self, label: &str) -> Bounds<nsh_terminal::Pixels> {
         self.until(&format!("no single control labelled {label}"), || {
             let found = self.controls(label);
             (found.len() == 1).then(|| found[0])
@@ -486,19 +404,23 @@ impl Desktop {
         self.click_at(bounds.center(), MouseButton::Right);
     }
 
-    fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
+    fn press_at(&self, position: nsh_terminal::Point<nsh_terminal::Pixels>) {
         self.click_at(position, MouseButton::Left);
     }
 
     /// Scrolls whatever is under `position` down by `distance`.
-    fn scroll_at(&self, position: gpui::Point<gpui::Pixels>, distance: gpui::Pixels) {
+    fn scroll_at(
+        &self,
+        position: nsh_terminal::Point<nsh_terminal::Pixels>,
+        distance: nsh_terminal::Pixels,
+    ) {
         self.platform
-            .dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
                 position,
                 delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
                 modifiers: Modifiers::default(),
-                touch_phase: TouchPhase::Moved,
-            }))
+                touch_phase: TouchPhase::Moved
+            })))
             .unwrap();
         self.pump();
     }
@@ -520,26 +442,26 @@ impl Desktop {
         .await;
     }
 
-    fn click_at(&self, position: gpui::Point<gpui::Pixels>, button: MouseButton) {
+    fn click_at(&self, position: nsh_terminal::Point<nsh_terminal::Pixels>, button: MouseButton) {
         for input in [
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position,
+            PlatformInput::MouseMove(native!(MouseMoveEvent {
+                position: position,
                 pressed_button: None,
-                modifiers: Modifiers::default(),
-            }),
-            PlatformInput::MouseDown(MouseDownEvent {
-                button,
-                position,
-                modifiers: Modifiers::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-            PlatformInput::MouseUp(MouseUpEvent {
-                button,
-                position,
+                modifiers: Modifiers::default()
+            })),
+            PlatformInput::MouseDown(native!(MouseDownEvent {
+                button: button,
+                position: position,
                 modifiers: Modifiers::default(),
                 click_count: 1,
-            }),
+                first_mouse: false
+            })),
+            PlatformInput::MouseUp(native!(MouseUpEvent {
+                button: button,
+                position: position,
+                modifiers: Modifiers::default(),
+                click_count: 1
+            })),
         ] {
             self.platform.dispatch_input(input).unwrap();
             self.pump();
@@ -599,9 +521,7 @@ impl Desktop {
         )
         .await
         .unwrap();
-        self.app.update(|cx| {
-            self.window.update(cx, |view, _, _| view.stop()).unwrap();
-        });
+        self.platform.stop();
         self.client = fixture.client().await;
         self.bindings = Bindings::new(self.client.clone(), tokio::runtime::Handle::current());
         let mut config = maka_workbench::configuration(
@@ -616,22 +536,14 @@ impl Desktop {
             .context
             .with(self.bindings.reload())
             .with(maka_workbench::Foreground(receiver));
-        self.app.update(|cx| {
-            self.window
-                .update(cx, |view, window, cx| {
-                    view.set_appearance(appearance, cx);
-                    view.load_with_config(config);
-                    window.focus(&view.focus_handle(cx), cx);
-                })
-                .unwrap();
-        });
+        config.environment.color_scheme = appearance.resolve(config.environment.color_scheme);
+        self.host = config.host.clone();
+        self.platform.load_with_config(config);
         self
     }
 
     async fn close(self) {
-        self.app.update(|cx| {
-            self.window.update(cx, |view, _, _| view.stop()).unwrap();
-        });
+        self.platform.stop();
         self.bindings.close().await.unwrap();
     }
 }
@@ -644,7 +556,6 @@ async fn images_fixture() -> Fixture {
     .await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let mut fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);
@@ -764,7 +675,6 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_new_conversation_preserves_an_owned_worktree() {
     let mut fixture = Fixture::open_with_configuration(Options::default(), |config, directory| {
         config["agent"]["permissions"]["access"] = json!("workspace_write");
@@ -850,7 +760,6 @@ async fn desktop_new_conversation_preserves_an_owned_worktree() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_recovers_an_unavailable_remembered_folder() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
@@ -955,7 +864,6 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
     assert_eq!(images, vec![bytes.to_vec()], "{}", request.body);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot() {
     let mut fixture = images_fixture().await;
     let (path, bytes) = image_file(&fixture);
@@ -1018,7 +926,6 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_retries_a_failed_turn_in_place() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
@@ -1061,7 +968,6 @@ async fn desktop_retries_a_failed_turn_in_place() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     let mut fixture = Fixture::configured(Options {
         code_mode: true,
@@ -1097,13 +1003,15 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(1440), gpui::DevicePixels(800)),
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(800),
+        ),
         nsh_core::platform::Appearance::Dark,
     )
     .await;
@@ -1147,7 +1055,6 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let mut fixture = Fixture::open().await;
     let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
@@ -1155,7 +1062,10 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let desktop = Desktop::open_at(
         &fixture,
         &gate.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
     )
     .await;
@@ -1349,7 +1259,6 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
@@ -1368,17 +1277,10 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             let before = desktop
                 .composer_height("the pending composer did not lay out", |_| true)
                 .await;
-            assert!(desktop.app.update(|cx| {
-                desktop
-                    .window
-                    .update(cx, |view, _, _| {
-                        AppView::paste(
-                            view,
-                            nsh_core::PasteEvent::new(format!("'{}'", directory.display())),
-                        )
-                    })
-                    .unwrap()
-            }));
+            assert!(desktop.platform.paste(nsh_core::PasteEvent::new(format!(
+                "'{}'",
+                directory.display()
+            ))));
             let height = desktop
                 .composer_height("the pasted directory did not wrap", |height| {
                     height > before
@@ -1403,13 +1305,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             desktop.key("right", false);
         }
         for _ in 0..3 {
-            desktop.key_with(
-                "right",
-                Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
-            );
+            desktop.key_with("right", native!(Modifiers { shift: true }));
         }
         let _ = desktop.platform.take_clipboard_write();
         desktop
@@ -1418,7 +1314,6 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
                 desktop
                     .platform
                     .take_clipboard_write()
-                    .and_then(|item| item.text())
                     .filter(|text| text == "待替换")
             })
             .await;
@@ -1442,14 +1337,7 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
         desktop.platform.set_active(false).unwrap();
         desktop
             .until("the source file-manager window was not simulated", || {
-                desktop.app.update(|cx| {
-                    desktop
-                        .window
-                        .update(cx, |_, window, _| {
-                            (!window.is_window_active()).then_some(())
-                        })
-                        .unwrap()
-                })
+                (!desktop.platform.is_active()).then_some(())
             })
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
@@ -1482,7 +1370,6 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     let surface = [0x20, 0x21, 0x23];
     desktop
         .until("the staged image did not paint", || {
-            desktop.app.update(|cx| cx.refresh_windows());
             desktop.pump();
             let pixel = desktop.pixels(sample)?;
             (pixel[..3] != surface).then_some(())
@@ -1493,7 +1380,6 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
     let fixture = images_fixture().await;
     let path = fixture.directory.path().join("corrupt.png");
@@ -1528,7 +1414,10 @@ async fn disconnected_desktop(
     height: i32,
 ) {
     let mut fixture = Fixture::open().await;
-    let dimensions = size(gpui::DevicePixels(width), gpui::DevicePixels(height));
+    let dimensions = size(
+        nsh_terminal::DevicePixels(width),
+        nsh_terminal::DevicePixels(height),
+    );
     let desktop = Desktop::open_at(&fixture, &fixture.address, dimensions, appearance).await;
     desktop.new_draft().await;
     desktop.type_text("Start a response").await;
@@ -1641,13 +1530,11 @@ fn visual_case() -> (
 }
 
 // GPUI owns process-wide application state; visual cases run in separate processes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_connection_failure_has_one_status_below_the_workspace() {
     let (theme, appearance, layout, width, height) = visual_case();
     disconnected_desktop(theme, appearance, layout, width, height).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1663,7 +1550,10 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
         Some((source, "en", "Close settings")),
     )
@@ -1678,10 +1568,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     desktop.press("Copy sign-in code").await;
     let copied = desktop
         .until("the sign-in code was not copied", || {
-            desktop
-                .platform
-                .take_clipboard_write()
-                .and_then(|item| item.text())
+            desktop.platform.take_clipboard_write()
         })
         .await;
     assert_eq!(copied, "ABCD-EFGH");
@@ -1740,7 +1627,6 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1756,7 +1642,10 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
         Some((source, "en", "Close settings")),
     )
@@ -1868,7 +1757,6 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     let fixture = Fixture::open().await;
     let (theme, appearance, layout, width, height) = visual_case();
@@ -1884,7 +1772,10 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
         Some((source, "en", "Show diagram source")),
     )
@@ -1912,10 +1803,7 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     desktop.press("Copy code block").await;
     let copied = desktop
         .until("the diagram source was not copied", || {
-            desktop
-                .platform
-                .take_clipboard_write()
-                .and_then(|item| item.text())
+            desktop.platform.take_clipboard_write()
         })
         .await;
     assert_eq!(
@@ -1930,14 +1818,16 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft() {
     let mut fixture = Fixture::open().await;
     let (theme, appearance, layout, width, height) = visual_case();
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
     )
     .await;
@@ -1962,11 +1852,9 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         .await;
     desktop.target_after(previous).await;
     desktop.artifact("goal-before-objective");
-    desktop.app.update(|cx| {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-            "Read the project\nFix the actual problem and verify it".into(),
-        ))
-    });
+    desktop
+        .platform
+        .set_clipboard_text("Read the project\nFix the actual problem and verify it");
     desktop.key("v", true);
     desktop.artifact("goal-objective-entered");
     let start = desktop.control("Start Goal").await;
@@ -2097,7 +1985,6 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
     use super::support::mutate;
     use maka_agent_api::session::StoredSessionConfiguration;
@@ -2113,7 +2000,10 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(900),
+        ),
         appearance,
     )
     .await;
@@ -2339,7 +2229,10 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     desktop
         .platform
         .set_viewport(
-            size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+            size(
+                nsh_terminal::DevicePixels(width),
+                nsh_terminal::DevicePixels(height),
+            ),
             1.0,
         )
         .unwrap();
@@ -2364,7 +2257,6 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     use maka_agent_api::session::StoredSessionConfiguration;
     let fixture = Fixture::open().await;
@@ -2416,7 +2308,10 @@ async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(
+            nsh_terminal::DevicePixels(width),
+            nsh_terminal::DevicePixels(height),
+        ),
         appearance,
     )
     .await;
@@ -2532,13 +2427,15 @@ async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
+        size(
+            nsh_terminal::DevicePixels(1280),
+            nsh_terminal::DevicePixels(800),
+        ),
         nsh_core::platform::Appearance::Dark,
     )
     .await;
@@ -2549,29 +2446,30 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     draft.push_str("请检查 /skill:review 这个问题");
     // TerminalPlatform::paste injects IME text, which strips control characters.
     // Native clipboard paste keeps the diagnostic's line breaks.
-    desktop
-        .app
-        .update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(draft.clone())));
-    let keystroke = Keystroke {
+    desktop.platform.set_clipboard_text(&draft);
+    let keystroke = native!(Keystroke {
         key: "v".into(),
         key_char: None,
-        modifiers: Modifiers {
+        modifiers: native!(Modifiers {
             control: true,
-            shift: true,
-            ..Default::default()
-        },
-    };
+            shift: true
+        })
+    });
     desktop
         .platform
-        .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
-            keystroke: keystroke.clone(),
-            is_held: false,
-            prefer_character_input: false,
-        }))
+        .dispatch_input(PlatformInput::KeyDown(native!(
+            nsh_terminal::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false
+            }
+        )))
         .unwrap();
     desktop
         .platform
-        .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+        .dispatch_input(PlatformInput::KeyUp(native!(nsh_terminal::KeyUpEvent {
+            keystroke: keystroke
+        })))
         .unwrap();
     let card = desktop
         .until("the pasted draft did not size its composer", || {
@@ -2601,7 +2499,6 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     fixture.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_system_permission_guidance_uses_native_actions_without_paths() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2616,7 +2513,10 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        size(
+            nsh_terminal::DevicePixels(1120),
+            nsh_terminal::DevicePixels(800),
+        ),
         nsh_core::platform::Appearance::Dark,
         Some((source, "en", "Local Host")),
     )
@@ -2649,4 +2549,95 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
     }
     desktop.close().await;
     fixture.finish().await;
+}
+
+/// Native cases run on the process main thread, required by AppKit.
+pub(crate) const CASES: &[&str] = &[
+    "desktop_remembers_folders_without_restoring_unsent_drafts",
+    "desktop_new_conversation_preserves_an_owned_worktree",
+    "desktop_recovers_an_unavailable_remembered_folder",
+    "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
+    "desktop_retries_a_failed_turn_in_place",
+    "desktop_lists_a_scripts_tool_calls_in_place_of_the_script",
+    "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened",
+    "desktop_steering_freezes_each_message_and_queue_is_one_shot",
+    "desktop_file_gestures_preserve_drafts_and_stage_an_image",
+    "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image",
+    "desktop_connection_failure_has_one_status_below_the_workspace",
+    "desktop_model_settings_keeps_successful_sign_in_and_retries_models",
+    "desktop_provider_picker_searches_real_catalog_and_preserves_selection",
+    "desktop_mermaid_renders_markdown_and_toggles_its_source",
+    "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft",
+    "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside",
+    "desktop_child_conversations_manage_nested_and_archived_workers",
+    "desktop_composer_large_paste_keeps_controls_on_screen",
+    "desktop_system_permission_guidance_uses_native_actions_without_paths",
+];
+
+pub(crate) fn run(name: &str) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    match name {
+        "desktop_remembers_folders_without_restoring_unsent_drafts" => {
+            runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
+        }
+        "desktop_new_conversation_preserves_an_owned_worktree" => {
+            runtime.block_on(desktop_new_conversation_preserves_an_owned_worktree())
+        }
+        "desktop_recovers_an_unavailable_remembered_folder" => {
+            runtime.block_on(desktop_recovers_an_unavailable_remembered_folder())
+        }
+        "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot" => runtime
+            .block_on(
+                desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot(),
+            ),
+        "desktop_retries_a_failed_turn_in_place" => {
+            runtime.block_on(desktop_retries_a_failed_turn_in_place())
+        }
+        "desktop_lists_a_scripts_tool_calls_in_place_of_the_script" => {
+            runtime.block_on(desktop_lists_a_scripts_tool_calls_in_place_of_the_script())
+        }
+        "desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened" => {
+            runtime.block_on(desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened())
+        }
+        "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
+            runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())
+        }
+        "desktop_file_gestures_preserve_drafts_and_stage_an_image" => {
+            runtime.block_on(desktop_file_gestures_preserve_drafts_and_stage_an_image())
+        }
+        "desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image" => {
+            runtime.block_on(desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image())
+        }
+        "desktop_connection_failure_has_one_status_below_the_workspace" => {
+            runtime.block_on(desktop_connection_failure_has_one_status_below_the_workspace())
+        }
+        "desktop_model_settings_keeps_successful_sign_in_and_retries_models" => {
+            runtime.block_on(desktop_model_settings_keeps_successful_sign_in_and_retries_models())
+        }
+        "desktop_provider_picker_searches_real_catalog_and_preserves_selection" => runtime
+            .block_on(desktop_provider_picker_searches_real_catalog_and_preserves_selection()),
+        "desktop_mermaid_renders_markdown_and_toggles_its_source" => {
+            runtime.block_on(desktop_mermaid_renders_markdown_and_toggles_its_source())
+        }
+        "desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft" => runtime
+            .block_on(
+                desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft(),
+            ),
+        "desktop_parent_reviews_child_access_and_opens_attributed_sender_beside" => runtime
+            .block_on(desktop_parent_reviews_child_access_and_opens_attributed_sender_beside()),
+        "desktop_child_conversations_manage_nested_and_archived_workers" => {
+            runtime.block_on(desktop_child_conversations_manage_nested_and_archived_workers())
+        }
+        "desktop_composer_large_paste_keeps_controls_on_screen" => {
+            runtime.block_on(desktop_composer_large_paste_keeps_controls_on_screen())
+        }
+        "desktop_system_permission_guidance_uses_native_actions_without_paths" => {
+            runtime.block_on(desktop_system_permission_guidance_uses_native_actions_without_paths())
+        }
+        _ => panic!("unknown native test: {name}"),
+    }
 }

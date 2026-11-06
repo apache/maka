@@ -1,3 +1,5 @@
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Performance
 
 Performance is the project's first priority; the rules are in `AGENTS.md`. Changes to hot paths come with before /

@@ -6,7 +6,7 @@ name: CI paths
 # (.github/ci/paths.py). It runs on every pull request, whatever it
 # changes: its job is the `check` main's ruleset requires, which a pull
 # request that runs no other workflow with that job (one touching only
-# `crates/gpui`) would otherwise never report. It takes seconds.
+# documentation) would otherwise never report. It takes seconds.
 
 on:
   push:

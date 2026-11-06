@@ -187,6 +187,12 @@ pub(crate) struct Surface {
     /// The text selection ([`crate::text::Selected`]).
     pub(crate) selection: crate::text::Selected,
     engine: RefCell<Option<Engine>>,
+    pub(crate) capture_revision: Cell<u64>,
+    pub(crate) focus_generation: Cell<u64>,
+    pub(crate) terminal: Cell<bool>,
+    pub(crate) terminal_scale: Cell<f32>,
+    pub(crate) terminal_clipboard: RefCell<Option<String>>,
+    pub(crate) terminal_quit: Cell<bool>,
     control: RefCell<Option<EngineControl>>,
     rx: RefCell<Option<Receiver<Message>>>,
     pending: RefCell<Arc<AtomicBool>>,
@@ -278,6 +284,12 @@ impl Surface {
             input: Default::default(),
             selection: Default::default(),
             engine: RefCell::new(None),
+            capture_revision: Cell::new(0),
+            focus_generation: Cell::new(0),
+            terminal: Cell::new(false),
+            terminal_scale: Cell::new(1.0),
+            terminal_clipboard: RefCell::new(None),
+            terminal_quit: Cell::new(false),
             control: RefCell::new(None),
             rx: RefCell::new(None),
             pending: RefCell::new(Arc::new(AtomicBool::new(false))),
@@ -379,7 +391,13 @@ impl Surface {
                 *self.control.borrow_mut() = Some(engine.control());
                 *self.engine.borrow_mut() = Some(engine);
             }
-            Err(err) => log::error!("cannot start the engine: {err}"),
+            Err(err) => {
+                let error = format!("cannot start the engine: {err}");
+                log::error!("{error}");
+                if let Some(handler) = &*self.on_error.borrow() {
+                    handler(&error);
+                }
+            }
         }
     }
 
@@ -403,6 +421,11 @@ impl Surface {
         #[cfg(feature = "dev")]
         self.cosmetic_frames.set(0);
         crate::shader::clear(self);
+    }
+
+    #[cfg(feature = "terminal")]
+    pub(crate) fn running(&self) -> bool {
+        self.control.borrow().is_some()
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -537,7 +560,7 @@ impl Surface {
 
     /// Handles what the engine sent. While animations run (see the module
     /// doc), batches wait for the next frame ([`Surface::apply_queued`]).
-    fn drain(self: &Rc<Self>) {
+    pub(crate) fn drain(self: &Rc<Self>) {
         let monitor = self.perf.borrow().clone();
         let start = monitor.as_ref().map(|_| Instant::now());
         self.pending.borrow().store(false, Ordering::Release);
@@ -644,6 +667,8 @@ impl Surface {
     }
 
     fn apply(self: &Rc<Self>, batch: &MountBatch) {
+        self.capture_revision
+            .set(self.capture_revision.get().wrapping_add(1));
         crate::access::prepare(batch);
         for item in &batch.items {
             self.anim.borrow_mut().apply(item);
@@ -845,7 +870,9 @@ impl Surface {
 
     /// One display frame at `now`, `period` seconds after the previous one
     /// (the display link's, or the fallback timer's).
-    fn frame(self: &Rc<Self>, now: f64, period: f64) {
+    pub(crate) fn frame(self: &Rc<Self>, now: f64, period: f64) {
+        self.capture_revision
+            .set(self.capture_revision.get().wrapping_add(1));
         let Some(monitor) = self.perf.borrow().clone() else {
             return quiet(|| self.tick(now));
         };

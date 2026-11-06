@@ -233,3 +233,36 @@ mod tests {
         }
     }
 }
+
+/// Routes host-supplied files through the same native hit testing and enter/leave lifecycle.
+#[cfg(feature = "terminal")]
+pub(crate) fn paths(
+    surface: &Surface,
+    paths: Vec<std::path::PathBuf>,
+    position: nsh_core::Point<nsh_core::Points>,
+) {
+    let uris: Vec<String> = paths
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| {
+            let path = path.to_str()?;
+            NSURL::fileURLWithPath(&NSString::from_str(path))
+                .absoluteString()
+                .map(|url| url.to_string())
+        })
+        .collect();
+    let destination = input::file_drop_target(surface, position.x.0, position.y.0);
+    if uris.is_empty() {
+        clear(surface);
+        return;
+    }
+    set_target(surface, destination.clone());
+    if let Some(destination) = destination {
+        surface.event(
+            destination.id(),
+            EventKind::FileDrop,
+            EventPayload::FileDrop(uris),
+        );
+    }
+    clear(surface);
+}

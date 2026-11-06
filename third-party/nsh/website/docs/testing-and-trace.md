@@ -5,6 +5,8 @@ order: 61
 group: tools
 ---
 
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Testing
 
 NSH runs apps **headless**: the real engine (the same reactive graph, renderer, components, layout and list

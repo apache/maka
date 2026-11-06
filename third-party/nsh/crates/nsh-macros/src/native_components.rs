@@ -23,6 +23,12 @@ const PLATFORMS: &[(&str, &str)] = &[
 
 pub(crate) fn expand(platform: Ident, item: ItemFn) -> syn::Result<TokenStream2> {
     let name = platform.to_string();
+    if name == "gpui" {
+        return Err(syn::Error::new(
+            platform.span(),
+            "GPUI support is retired; register native components with #[native_components(macos)], #[native_components(windows)] or #[native_components(linux)] and the matching nsh-platform crate",
+        ));
+    }
     let Some((_, cfg)) = PLATFORMS.iter().find(|(p, _)| *p == name) else {
         let known: Vec<_> = PLATFORMS.iter().map(|(p, _)| format!("`{p}`")).collect();
         return Err(syn::Error::new(
@@ -145,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_platform_is_one_whose_hosts_register_components() {
-        for platform in ["android", "web", "gpui", "Windows"] {
+        for platform in ["android", "web", "Windows"] {
             let error = expand(
                 platform,
                 quote!(
@@ -156,6 +162,24 @@ mod tests {
             assert!(
                 error.contains("one of `windows`, `macos`, `linux`, `ios`"),
                 "{platform}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn retired_gpui_components_explain_the_native_replacement() {
+        let error = expand(
+            "gpui",
+            quote!(
+                fn components(components: &C) {}
+            ),
+        )
+        .unwrap_err();
+        assert!(error.contains("GPUI support is retired"), "{error}");
+        for platform in ["macos", "windows", "linux"] {
+            assert!(
+                error.contains(&format!("#[native_components({platform})]")),
+                "{error}"
             );
         }
     }

@@ -5,6 +5,8 @@ order: 3
 group: start
 ---
 
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Installation
 
 Everything NSH does goes through one command, `nsh`. It builds apps written in Rust or TSX, runs them on every platform, serves TSX to development hosts with hot updates, and packages installable apps. You can use it from a prebuilt distribution or build it from a checkout of the repository.

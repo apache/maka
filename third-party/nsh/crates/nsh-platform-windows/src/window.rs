@@ -546,6 +546,9 @@ unsafe extern "system" fn window_proc(
         }
     }
     let surface = data.surface.upgrade();
+    let terminal = surface
+        .as_ref()
+        .is_some_and(|surface| surface.terminal_active.get().is_some());
     if let Some(surface) = surface
         && let Some(result) = handle(&surface, data, hwnd, msg, wparam, lparam)
     {
@@ -561,7 +564,8 @@ unsafe extern "system" fn window_proc(
             o.set(o.get().saturating_sub(1));
             o.get()
         });
-        if left == 0 {
+        if left == 0 && !terminal {
+            // Terminal hosts reuse their UI thread; only a desktop app owns its message loop.
             // SAFETY: plain call.
             unsafe { PostQuitMessage(0) };
         }
@@ -617,7 +621,7 @@ fn handle(
             let _ = unsafe { EndPaint(hwnd, &ps) };
         }
         WM_ERASEBKGND => return Some(LRESULT(1)),
-        WM_SIZE => {
+        WM_SIZE if surface.terminal_active.get().is_none() => {
             // SAFETY: querying the foreground window does not retain its handle.
             surface.activation_changed(
                 wparam.0 != SIZE_MINIMIZED as usize && unsafe { GetForegroundWindow() } == hwnd,
@@ -627,7 +631,7 @@ fn handle(
             // stale pixels while it is resized.
             surface.paint();
         }
-        WM_DPICHANGED => {
+        WM_DPICHANGED if surface.terminal_active.get().is_none() => {
             // SAFETY: `lparam` is the suggested window rectangle.
             let r = unsafe { &*(lparam.0 as *const RECT) };
             // SAFETY: plain call on this window.
@@ -857,8 +861,12 @@ fn handle(
             return crate::text_input::ime(surface, hwnd, msg, wparam, lparam);
         }
         WM_ACTIVATE => surface.activation_changed(activation_active(wparam)),
-        WM_SETFOCUS => crate::text_input::window_focus(surface, true),
-        WM_KILLFOCUS => crate::text_input::window_focus(surface, false),
+        WM_SETFOCUS if surface.terminal_active.get().is_none() => {
+            crate::text_input::window_focus(surface, true)
+        }
+        WM_KILLFOCUS if surface.terminal_active.get().is_none() => {
+            crate::text_input::window_focus(surface, false)
+        }
         WM_GETOBJECT => return crate::access::get_object(surface, hwnd, wparam, lparam),
         WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
             crate::system::settings_changed(surface);

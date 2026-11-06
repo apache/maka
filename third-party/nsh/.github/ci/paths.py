@@ -68,17 +68,6 @@ WORKFLOWS = {
             "examples/rust-exports/**",
         ],
     },
-    "gpui.yml": {
-        # Shared main-workspace dependencies declared by crates/gpui.
-        "packages": [
-            "nsh-core", "nsh-dev", "nsh-testing", "nsh-engine",
-            "nsh-base", "nsh-bundler",
-        ],
-        "files": [
-            "crates/gpui/**", "third-party/gpui-wgpu/**",
-            "third-party/icy_sixel/**", "examples/embed-gpui/**",
-        ],
-    },
     "tui.yml": {
         "packages": ["nsh-platform-tui", "nsh-tui-host", "nsh-tui-app", "nsh-cli"],
         "files": [

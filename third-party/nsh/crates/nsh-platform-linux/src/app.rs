@@ -95,6 +95,8 @@ pub enum AppSource {
     Rust(Root),
     /// A JS bundle shipped with (or passed to) the app.
     Bundle(Bundle),
+    /// An engine configured by the embedding host.
+    Config(EngineConfig),
     /// A dev server (`ws://host:port/ws`); bundles are pushed on every
     /// rebuild.
     #[cfg(feature = "dev")]
@@ -213,6 +215,7 @@ pub struct AppView {
     /// ([`crate::chrome`]).
     outer: gtk::Box,
     options: RefCell<AppOptions>,
+    paused_focus: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
     #[cfg(feature = "dev")]
     pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
 }
@@ -238,6 +241,7 @@ impl AppView {
             overlay,
             outer,
             options: RefCell::new(options),
+            paused_focus: RefCell::new(None),
             #[cfg(feature = "dev")]
             dev: RefCell::new(None),
         });
@@ -319,6 +323,58 @@ impl AppView {
             .native
             .set_asset_base(options.asset_base.clone());
         self.surface.start(config);
+    }
+
+    /// Loads the host's engine configuration unchanged except for the native
+    /// viewport and environment. Its asset reader also serves image views.
+    pub fn load_with_config(&self, config: EngineConfig) {
+        let access = match &config.app {
+            App::Js(bundle) => bundle.policy.access(),
+            App::Rust(_) => nsh_engine::Policy::default().access(),
+        };
+        self.surface.native.set_access(Arc::new(access));
+        self.options.borrow_mut().host = config.host.clone();
+        self.surface.asset_base.borrow_mut().take();
+        self.surface.native.set_asset_base(None);
+        *self.surface.image_assets.borrow_mut() = config
+            .assets
+            .clone()
+            .map(|assets| nsh_core::image::loader::ReadAsset::new(move |uri| assets.read(uri)));
+        self.surface.start(config);
+        self.resume_input();
+    }
+
+    /// Refuses physical input and drains already admitted native edits before
+    /// acknowledging the host's reload transaction.
+    pub fn pause_input(&self, done: impl FnOnce(Result<(), String>) + Send + 'static) {
+        if self.surface.input_paused.replace(true) {
+            done(Err("input is already paused".into()));
+            return;
+        }
+        *self.paused_focus.borrow_mut() = self
+            .outer
+            .root()
+            .and_then(|root| root.focus())
+            .map(|focus| focus.downgrade());
+        crate::text_input::blur_all(&self.surface);
+        self.outer.set_sensitive(false);
+        crate::input::reset(&self.surface);
+        crate::text_input::flush_changes(&self.surface);
+        self.surface.input_barrier(done);
+    }
+
+    /// Restores input after a cancelled or completed reload.
+    pub fn resume_input(&self) {
+        self.surface.input_paused.set(false);
+        self.outer.set_sensitive(true);
+        if let Some(focus) = self
+            .paused_focus
+            .borrow_mut()
+            .take()
+            .and_then(|f| f.upgrade())
+        {
+            focus.grab_focus();
+        }
     }
 
     /// Where `asset:/` URIs resolve from now on.
@@ -429,6 +485,7 @@ pub fn run_app(source: AppSource, options: AppOptions) -> glib::ExitCode {
         match source {
             AppSource::Rust(root) => view.load(App::Rust(root)),
             AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
+            AppSource::Config(config) => view.load_with_config(config),
             #[cfg(feature = "dev")]
             AppSource::DevServer(url) => crate::dev::start(&view, url),
         }
@@ -503,4 +560,90 @@ fn unsafe_keep(window: &gtk::ApplicationWindow, view: Rc<AppView>) {
             view.stop();
         }
     });
+}
+
+#[cfg(all(test, feature = "js"))]
+mod tests {
+    use std::sync::{Mutex, mpsc};
+
+    use super::*;
+
+    struct Assets;
+    impl nsh_engine::Assets for Assets {
+        fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+            Ok(uri.as_bytes().to_vec())
+        }
+    }
+
+    #[test]
+    fn configured_load_keeps_host_assets_and_reload_input_lifecycle() {
+        crate::gtk_test::run(|| {
+            let context = glib::MainContext::default();
+            let _owner = context.acquire().unwrap();
+            let view = AppView::new(AppOptions {
+                asset_base: Some(AssetBase::Directory("/unused".into())),
+                ..Default::default()
+            });
+            view.surface.without_shader_renderer();
+            let mut policy = nsh_engine::Policy::default();
+            policy
+                .declared
+                .get_or_insert_default()
+                .host
+                .push("loaded".into());
+            let mut config = EngineConfig::new(
+                Bundle::source("import { host } from 'nsh'; host.post('loaded');".into())
+                    .with_policy(policy),
+            );
+            config.assets = Some(Arc::new(Assets));
+            let (loaded, loads) = mpsc::channel();
+            config.host.handle("loaded", move |_| {
+                loaded.send(()).unwrap();
+            });
+            view.load_with_config(config.clone());
+            assert!(crate::gtk_test::wait_until(|| loads.try_recv().is_ok()));
+            let assets = nsh_core::image::loader::Context {
+                asset_base: view.surface.asset_base.borrow().clone(),
+                read_asset: view.surface.image_assets.borrow().clone(),
+                ..Default::default()
+            };
+            let location = assets.resolve("asset:/icon.svg").unwrap();
+            let bytes = nsh_core::image::loader::read_now(&location, &assets).unwrap();
+            assert_eq!(bytes.bytes(), b"asset:/icon.svg");
+            let pending_paste = view.surface.admit_paste();
+            let ready = Arc::new(Mutex::new(None));
+            let result = ready.clone();
+            view.pause_input(move |done| *result.lock().unwrap() = Some(done));
+            assert!(!view.widget().is_sensitive());
+            assert!(ready.lock().unwrap().is_none());
+            view.surface.finish_paste(pending_paste);
+            assert!(crate::gtk_test::wait_until(|| ready
+                .lock()
+                .unwrap()
+                .is_some()));
+            assert_eq!(ready.lock().unwrap().take().unwrap(), Ok(()));
+            view.resume_input();
+            assert!(view.widget().is_sensitive());
+            view.pause_input(|_| {});
+            view.load_with_config(config);
+            assert!(crate::gtk_test::wait_until(|| loads.try_recv().is_ok()));
+            assert!(view.widget().is_sensitive());
+            view.stop();
+        });
+    }
+
+    #[test]
+    fn pausing_without_an_engine_reports_failure_and_can_resume() {
+        crate::gtk_test::run(|| {
+            let view = AppView::new(Default::default());
+            let (send, recv) = mpsc::channel();
+            view.pause_input(move |result| send.send(result).unwrap());
+            assert_eq!(
+                recv.try_recv().unwrap(),
+                Err("the UI engine is not running".into())
+            );
+            view.resume_input();
+            assert!(view.widget().is_sensitive());
+        });
+    }
 }

@@ -163,9 +163,8 @@ const isUnder =
 
 // Finite reviewed upstream files, not a blanket third-party directory exemption.
 // New Maka-only files (including platform/cleanup.rs) still require ASF headers.
-const gpuiUpstreamFiles = new Set(
+const upstreamFiles = new Set(
   [
-    'gpui-fast',
     'async-io',
     'gix-index',
     'gix-discover',
@@ -225,6 +224,7 @@ export const exclusionRules = [
         'products/maka/cli/DEPENDENCIES.rust.tsv',
         'platform/computer-use/THIRD_PARTY_NOTICES',
         'products/maka/cli/THIRD_PARTY_NOTICES.txt',
+        'products/maka/workbench/tests/fonts/OFL.txt',
       )(path) || path.startsWith('scripts/rust/licenses/'),
   },
   {
@@ -245,7 +245,7 @@ export const exclusionRules = [
         'platform/sandbox/src/seatbelt/base.sbpl',
         'platform/sandbox/src/seatbelt/network.sbpl',
       )(path) ||
-      gpuiUpstreamFiles.has(path) ||
+      upstreamFiles.has(path) ||
       isUnder('patches', '.patch')(path),
   },
   {

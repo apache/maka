@@ -61,6 +61,7 @@ struct Sink {
     tx: Sender<Message>,
     /// A wake-up is on its way: no need for another.
     pending: Arc<AtomicBool>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Sink {
@@ -68,6 +69,9 @@ impl Sink {
         let _ = self.tx.send(message);
         if !self.pending.swap(true, Ordering::AcqRel) {
             crate::window::wake(self.hwnd.load(Ordering::Acquire));
+            if let Some(wake) = &self.wake {
+                wake();
+            }
         }
     }
 }
@@ -112,6 +116,9 @@ pub(crate) type ActivationHandler = Box<dyn Fn(bool) + Send>;
 
 /// One engine and its views.
 pub(crate) struct Surface {
+    pub(crate) terminal_active: Cell<Option<bool>>,
+    pub(crate) terminal_focus_generation: Cell<u64>,
+    pub(crate) terminal_wake: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     key: u64,
     /// The root view (node [`ROOT_ID`]): fills the window.
     pub(crate) root: NshView,
@@ -224,6 +231,9 @@ impl Surface {
         let root = NshView::new(ROOT_ID, nsh_core::ViewKind::View);
         let mounter = Mounter::new(root.clone());
         let surface = Rc::new(Surface {
+            terminal_active: Cell::new(None),
+            terminal_focus_generation: Cell::new(0),
+            terminal_wake: RefCell::new(None),
             key,
             root: root.clone(),
             views: mounter.views.clone(),
@@ -400,6 +410,7 @@ impl Surface {
             hwnd: self.hwnd.clone(),
             tx,
             pending: pending.clone(),
+            wake: self.terminal_wake.borrow().clone(),
         };
         *self.rx.borrow_mut() = Some(rx);
         *self.pending.borrow_mut() = pending;
@@ -426,12 +437,18 @@ impl Surface {
                 *self.control.borrow_mut() = Some(engine.control());
                 *self.engine.borrow_mut() = Some(engine);
             }
-            Err(err) => log::error!("cannot start the engine: {err}"),
+            Err(err) => {
+                log::error!("cannot start the engine: {err}");
+                if let Some(handler) = &*self.on_error.borrow() {
+                    handler(&err.to_string());
+                }
+            }
         }
     }
 
     /// Stops the app and removes its views.
     pub(crate) fn stop(&self) {
+        crate::text_input::stopped(self);
         crate::input::cancel_keyboard_press(self);
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
@@ -449,6 +466,11 @@ impl Surface {
         self.resize_late.set(false);
         self.frame_clients.borrow_mut().clear();
         self.invalidate();
+    }
+
+    #[cfg(feature = "terminal")]
+    pub(crate) fn running(&self) -> bool {
+        self.engine.borrow().is_some()
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -493,8 +515,8 @@ impl Surface {
         self.views.get(id)
     }
 
-    /// Shows fatal app errors with `f` (development hosts).
-    #[cfg(feature = "dev")]
+    /// Reports fatal app errors to an embedding host.
+    #[cfg(any(feature = "dev", feature = "terminal"))]
     pub(crate) fn set_error_handler(&self, f: ErrorHandler) {
         *self.on_error.borrow_mut() = Some(f);
     }
@@ -611,6 +633,9 @@ impl Surface {
     }
 
     fn request_paint(&self) {
+        if let Some(wake) = &*self.terminal_wake.borrow() {
+            wake();
+        }
         if !self.invalid.replace(true) {
             crate::window::invalidate(self.hwnd());
         }
@@ -923,6 +948,7 @@ impl Surface {
 
 impl Drop for Surface {
     fn drop(&mut self) {
+        crate::text_input::disposed(self.key);
         let key = self.key;
         let _ = SURFACES.try_with(|s| s.borrow_mut().remove(&key));
     }

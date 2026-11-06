@@ -1,3 +1,5 @@
+> This branch removes the GPUI backend and embedding API. Historical GPUI-specific instructions below are retired; use AppKit, Direct2D or GTK as described in [native migration](./gpui.md).
+
 # Packaging and embedding
 
 Custom mount consumers must handle `MountItem::RetireListCell { id, request, roots }`: `roots` is the

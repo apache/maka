@@ -23,7 +23,6 @@ export const manifests = {
   root: 'Cargo.toml',
   termina: 'third-party/termina/Cargo.toml',
   nsh: 'third-party/nsh/Cargo.toml',
-  gpui: 'third-party/nsh/crates/gpui/Cargo.toml',
 };
 
 const bundledPackages = Object.values(
@@ -75,7 +74,7 @@ export const suites = {
       ...embeddedInputs,
       'plugins/agent/native/tests/support',
       ...distributionInputs,
-      'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
+      'products/maka/workbench/tests/fonts',
     ],
     affectedFilter: true,
   },
@@ -104,7 +103,7 @@ export const suites = {
       '--features',
       'desktop-tests',
       '--test',
-      'integration',
+      'native-desktop',
     ],
     filter: 'test(terminal::desktop_new_session)',
     extraInputs: embeddedInputs,
@@ -139,6 +138,8 @@ export const suites = {
       'nsh-js',
       'nsh-testing',
       'nsh-platform-tui',
+      'nsh-terminal',
+      'nsh-cli',
       'nsh-dev',
       'nsh-bundler',
       'nsh-platform-web',
@@ -160,6 +161,10 @@ export const suites = {
       '-p',
       'nsh-platform-tui',
       '-p',
+      'nsh-terminal',
+      '-p',
+      'nsh-cli',
+      '-p',
       'nsh-dev',
       '-p',
       'nsh-bundler',
@@ -168,24 +173,51 @@ export const suites = {
     ],
     extraInputs: ['third-party/nsh/crates/nsh-platform-web/web'],
   },
-  gpui: {
-    workspace: 'gpui',
-    packages: ['nsh-platform-gpui', 'nsh-gpui-terminal'],
+  pixels: {
+    workspace: 'root',
+    packages: ['maka-terminal-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-terminal-shell', '--test', 'native-pixels'],
+    extraInputs: embeddedInputs,
+  },
+  'linux-nsh': {
+    workspace: 'nsh',
+    packages: ['nsh-platform-linux'],
+    cargoArgs: ['--locked', '--manifest-path', manifests.nsh, '-p', 'nsh-platform-linux', '--lib'],
+  },
+  'macos-nsh': {
+    workspace: 'nsh',
+    packages: ['nsh-platform-macos'],
     cargoArgs: [
       '--locked',
       '--manifest-path',
-      manifests.gpui,
+      manifests.nsh,
       '-p',
-      'nsh-platform-gpui',
-      '-p',
-      'nsh-gpui-terminal',
-      '--no-default-features',
+      'nsh-platform-macos',
       '--features',
-      'nsh-platform-gpui/js,nsh-platform-gpui/shot',
+      'terminal',
       '--lib',
     ],
-    filter:
-      'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
+  },
+  'macos-surface': {
+    workspace: 'nsh',
+    packages: ['nsh-platform-macos'],
+    cargoArgs: [
+      '--locked',
+      '--manifest-path',
+      manifests.nsh,
+      '-p',
+      'nsh-platform-macos',
+      '--features',
+      'terminal',
+      '--test',
+      'terminal_native',
+    ],
+  },
+  'macos-desktop': {
+    workspace: 'root',
+    packages: ['maka-desktop-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    extraInputs: embeddedInputs,
   },
   'windows-desktop': {
     workspace: 'root',
@@ -202,6 +234,8 @@ export const suites = {
       manifests.nsh,
       '-p',
       'nsh-platform-windows',
+      '--features',
+      'terminal',
       '--lib',
     ],
     extraInputs: ['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs'],
@@ -297,11 +331,11 @@ export const workers = [
     compile: true,
   },
   {
-    id: 'gpui',
-    suites: ['gpui'],
+    id: 'linux-nsh',
+    suites: ['linux-nsh'],
     runner: 'ubuntu-latest',
-    workspace: 'gpui',
-    dependencies: 'gpui',
+    workspace: 'nsh',
+    dependencies: 'headless',
     javascript: false,
     compile: true,
   },
@@ -309,9 +343,17 @@ export const workers = [
     id: `native-${os}`,
     suites:
       os === 'windows'
-        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
+        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh', 'desktop', 'pixels']
         : os === 'macos'
-          ? ['native', 'macos-host']
+          ? [
+              'native',
+              'macos-host',
+              'macos-desktop',
+              'macos-nsh',
+              'macos-surface',
+              'desktop',
+              'pixels',
+            ]
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
