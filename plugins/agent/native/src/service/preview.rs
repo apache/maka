@@ -35,14 +35,18 @@ const PAGE_BYTES: usize = 48 * 1024;
 pub(super) struct Delivery {
     epoch: String,
     pending: Option<Cursor>,
-    step: Option<String>,
-    invocation: Option<String>,
+    step: Option<StepDelivery>,
+    empty: bool,
+}
+
+struct StepDelivery {
+    step_id: String,
+    invocation_id: String,
     revision: Option<u64>,
     offsets: HashMap<String, usize>,
     replaced: HashSet<String>,
     retired_inputs: HashSet<String>,
     closed: bool,
-    empty: bool,
 }
 
 struct Cursor {
@@ -57,12 +61,6 @@ impl Delivery {
             epoch: epoch.to_owned(),
             pending: None,
             step: None,
-            invocation: None,
-            revision: None,
-            offsets: HashMap::new(),
-            replaced: HashSet::new(),
-            retired_inputs: HashSet::new(),
-            closed: false,
             empty: false,
         }
     }
@@ -71,29 +69,30 @@ impl Delivery {
         let Some(cut) = cut else {
             self.pending = None;
             self.step = None;
-            self.invocation = None;
-            self.revision = None;
-            self.offsets.clear();
-            self.replaced.clear();
-            self.retired_inputs.clear();
-            self.closed = false;
             return;
         };
-        if self.step.as_deref() != Some(cut.binding.step_id.as_str()) {
+        if self
+            .step
+            .as_ref()
+            .is_some_and(|step| step.step_id != cut.binding.step_id)
+        {
             self.pending = None;
-            self.offsets.clear();
-            self.replaced.clear();
-            self.retired_inputs.clear();
-            self.closed = false;
-            self.revision = None;
-            self.step = Some(cut.binding.step_id.clone());
-            self.invocation = Some(cut.binding.invocation.invocation_id.clone());
+            self.step = None;
         }
         self.empty = false;
-        if self.closed || self.pending.is_some() || self.revision == Some(cut.revision) {
+        let step = self.step.get_or_insert_with(|| StepDelivery {
+            step_id: cut.binding.step_id.clone(),
+            invocation_id: cut.binding.invocation.invocation_id.clone(),
+            revision: None,
+            offsets: HashMap::new(),
+            replaced: HashSet::new(),
+            retired_inputs: HashSet::new(),
+            closed: false,
+        });
+        if step.closed || self.pending.is_some() || step.revision == Some(cut.revision) {
             return;
         }
-        self.revision = Some(cut.revision);
+        step.revision = Some(cut.revision);
         self.pending = Some(Cursor {
             cut,
             part: 0,
@@ -102,47 +101,47 @@ impl Delivery {
     }
 
     pub(super) fn committed(&mut self, events: &[StoreStreamEvent]) {
+        let Some(step) = self.step.as_mut() else {
+            return;
+        };
         for event in events {
             match &event.fact {
                 StreamFact::ModelPartCommitted {
                     step_id,
                     message_id,
                     ..
-                } if self.step.as_deref() == Some(step_id.as_str()) => {
-                    self.replaced.insert(message_id.clone());
-                    self.offsets.remove(message_id);
+                } if step.step_id == *step_id => {
+                    step.replaced.insert(message_id.clone());
+                    step.offsets.remove(message_id);
                 }
                 StreamFact::ToolInputReady {
                     step_id,
                     tool_call_id,
                     ..
-                } if self.step.as_deref() == Some(step_id.as_str()) => {
-                    self.retired_inputs.insert(tool_call_id.clone());
+                } if step.step_id == *step_id => {
+                    step.retired_inputs.insert(tool_call_id.clone());
                     if let Some(cursor) = &self.pending {
                         for part in &cursor.cut.parts {
                             if let CutPart::ToolInput(input) = part
                                 && input.id == *tool_call_id
                             {
-                                self.replaced.insert(input.message_id.clone());
-                                self.offsets.remove(&input.message_id);
+                                step.replaced.insert(input.message_id.clone());
+                                step.offsets.remove(&input.message_id);
                             }
                         }
                     }
                 }
-                StreamFact::StepEnded { step_id, .. }
-                    if self.step.as_deref() == Some(step_id.as_str()) =>
-                {
-                    self.closed = true;
+                StreamFact::StepEnded { step_id, .. } if step.step_id == *step_id => {
+                    step.closed = true;
                     self.pending = None;
-                    self.offsets.clear();
+                    step.offsets.clear();
                 }
                 StreamFact::InvocationEnded { .. }
-                    if self.invocation.as_deref()
-                        == Some(event.invocation.invocation_id.as_str()) =>
+                    if step.invocation_id == event.invocation.invocation_id =>
                 {
-                    self.closed = true;
+                    step.closed = true;
                     self.pending = None;
-                    self.offsets.clear();
+                    step.offsets.clear();
                 }
                 _ => {}
             }
@@ -157,7 +156,7 @@ impl Delivery {
     }
 
     pub(super) fn next(&mut self, after: u64) -> Result<Option<PreviewPage>, String> {
-        if self.step.is_none() {
+        let Some(step) = self.step.as_mut() else {
             if self.empty {
                 return Ok(None);
             }
@@ -165,7 +164,7 @@ impl Delivery {
             return Ok(Some(PreviewPage::Empty {
                 host_epoch: self.epoch.clone(),
             }));
-        }
+        };
         let Some(cursor) = self.pending.as_mut() else {
             return Ok(None);
         };
@@ -179,14 +178,14 @@ impl Delivery {
                 &cursor.cut.binding.step_id,
                 &cursor.cut.binding.invocation.invocation_id,
             );
-            let retired_input = matches!(part, CutPart::ToolInput(input) if self.retired_inputs.contains(&input.id));
-            if recorded || retired_input || self.replaced.contains(&piece.message_id) {
+            let retired_input = matches!(part, CutPart::ToolInput(input) if step.retired_inputs.contains(&input.id));
+            if recorded || retired_input || step.replaced.contains(&piece.message_id) {
                 cursor.part += 1;
                 continue;
             }
-            let offset = self.offsets.get(&piece.message_id).copied().unwrap_or(0);
+            let offset = step.offsets.get(&piece.message_id).copied().unwrap_or(0);
             // The writer only appends within one attempt. Empty bodies still publish identity.
-            if offset == body.len_bytes() && self.offsets.contains_key(&piece.message_id) {
+            if offset == body.len_bytes() && step.offsets.contains_key(&piece.message_id) {
                 cursor.part += 1;
                 continue;
             }
@@ -204,7 +203,7 @@ impl Delivery {
             };
             let mut piece = parts.remove(0);
             piece.text = text;
-            self.offsets.insert(piece.message_id.clone(), end);
+            step.offsets.insert(piece.message_id.clone(), end);
             if end == body.len_bytes() {
                 cursor.part += 1;
             }
@@ -345,6 +344,49 @@ fn body_piece(body: &TextBody, offset: usize, budget: usize) -> Result<(String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maka_agent_facts::model::{ModelEvent, assembly::AttemptWriter};
+
+    fn attempt(step_id: &str, invocation_id: &str) -> AttemptWriter {
+        use maka_agent_facts::{
+            context::ModelPurpose, event::Invocation, model::assembly::AttemptBinding,
+        };
+        AttemptWriter::new(
+            AttemptBinding {
+                invocation: Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: invocation_id.into(),
+                },
+                step_id: step_id.into(),
+                purpose: ModelPurpose::Main,
+            },
+            true,
+        )
+        .unwrap()
+    }
+
+    fn receipt(cut: &AttemptCut, sequence: u64, fact: StreamFact) -> StoreStreamEvent {
+        StoreStreamEvent {
+            sequence,
+            id: format!("receipt-{sequence}"),
+            invocation: cut.binding.invocation.clone(),
+            root_run_id: cut.binding.invocation.run_id.clone(),
+            recorded_at: UNIX_EPOCH,
+            fact,
+        }
+    }
+
+    fn drain(delivery: &mut Delivery, after: u64) -> Vec<PreviewPart> {
+        let mut parts = Vec::new();
+        while let Some(page) = delivery.next(after).unwrap() {
+            let PreviewPage::Cut { parts: next, .. } = page else {
+                panic!("missing cut")
+            };
+            parts.extend(next);
+        }
+        parts
+    }
 
     fn writer(text: &str, provider_id: &str) -> maka_agent_facts::model::assembly::AttemptWriter {
         text_writer(text, provider_id, maka_agent_facts::model::TextKind::Text)
@@ -355,28 +397,7 @@ mod tests {
         provider_id: &str,
         kind: maka_agent_facts::model::TextKind,
     ) -> maka_agent_facts::model::assembly::AttemptWriter {
-        use maka_agent_facts::{
-            context::ModelPurpose,
-            event::Invocation,
-            model::{
-                ModelEvent,
-                assembly::{AttemptBinding, AttemptWriter},
-            },
-        };
-        let mut writer = AttemptWriter::new(
-            AttemptBinding {
-                invocation: Invocation {
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    run_id: "run".into(),
-                    invocation_id: "invocation".into(),
-                },
-                step_id: "step".into(),
-                purpose: ModelPurpose::Main,
-            },
-            true,
-        )
-        .unwrap();
+        let mut writer = attempt("step", "invocation");
         writer
             .push(
                 ModelEvent::PartStarted {
@@ -568,6 +589,202 @@ mod tests {
             panic!("missing newer cut")
         };
         assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn late_part_receipt_after_last_page_prevents_old_message_from_reappearing() {
+        let mut writer = writer("old", "provider-part");
+        let cut = writer.snapshot();
+        let CutPart::Text { message_id, .. } = &cut.parts[0] else {
+            panic!("missing text")
+        };
+        let mut delivery = Delivery::new("epoch");
+        delivery.current(Some(cut.clone()));
+        let first = drain(&mut delivery, 4);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "old");
+
+        delivery.committed(&[receipt(
+            &cut,
+            5,
+            StreamFact::ModelPartCommitted {
+                step_id: "step".into(),
+                message_id: message_id.clone(),
+                ordinal: 0,
+            },
+        )]);
+        append(&mut writer, " obsolete tail");
+        for event in [
+            ModelEvent::PartFinished {
+                id: "provider-part".into(),
+                provider_options: None,
+            },
+            ModelEvent::PartStarted {
+                id: "fresh-part".into(),
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                provider_options: None,
+            },
+            ModelEvent::PartDelta {
+                id: "fresh-part".into(),
+                text: "fresh".into(),
+                provider_options: None,
+            },
+        ] {
+            writer.push(event, UNIX_EPOCH).unwrap();
+        }
+        delivery.current(Some(writer.snapshot()));
+        let remaining = drain(&mut delivery, 5);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].text, "fresh");
+        assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
+        assert_eq!(remaining[0].offset, 0);
+    }
+
+    #[test]
+    fn late_tool_input_receipt_after_last_page_retires_that_input_in_later_cuts() {
+        let mut writer = attempt("step", "invocation");
+        for event in [
+            ModelEvent::ToolInputStarted {
+                id: "call".into(),
+                name: "echo".into(),
+                provider_executed: false,
+            },
+            ModelEvent::ToolInputDelta {
+                id: "call".into(),
+                text: "{\"arg\":".into(),
+            },
+        ] {
+            writer.push(event, UNIX_EPOCH).unwrap();
+        }
+        writer.fenced(4);
+        let cut = writer.snapshot();
+        let mut delivery = Delivery::new("epoch");
+        delivery.current(Some(cut.clone()));
+        let first = drain(&mut delivery, 4);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "{\"arg\":");
+        assert!(matches!(&first[0].field, PreviewField::ToolInput { name, .. } if name == "echo"));
+
+        delivery.committed(&[receipt(
+            &cut,
+            5,
+            StreamFact::ToolInputReady {
+                step_id: "step".into(),
+                tool_call_id: "call".into(),
+                name: "echo".into(),
+                provider_executed: false,
+            },
+        )]);
+        for event in [
+            ModelEvent::ToolInputDelta {
+                id: "call".into(),
+                text: "1}".into(),
+            },
+            ModelEvent::ToolInputFinished { id: "call".into() },
+            ModelEvent::PartStarted {
+                id: "fresh-part".into(),
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                provider_options: None,
+            },
+            ModelEvent::PartDelta {
+                id: "fresh-part".into(),
+                text: "fresh".into(),
+                provider_options: None,
+            },
+        ] {
+            writer.push(event, UNIX_EPOCH).unwrap();
+        }
+        delivery.current(Some(writer.snapshot()));
+        let remaining = drain(&mut delivery, 5);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].text, "fresh");
+        assert_eq!(remaining[0].provider_part_id.as_deref(), Some("fresh-part"));
+        assert!(matches!(&remaining[0].field, PreviewField::Text { .. }));
+    }
+
+    #[test]
+    fn late_old_terminal_does_not_close_new_step_and_closed_step_does_not_reopen() {
+        for terminal in [
+            StreamFact::StepEnded {
+                step_id: "new-step".into(),
+                completed: true,
+                failed: false,
+                interrupted: vec![],
+            },
+            StreamFact::InvocationEnded {
+                failed: false,
+                interrupted: vec![],
+            },
+        ] {
+            let mut old = attempt("old-step", "old-invocation");
+            let mut current = attempt("new-step", "new-invocation");
+            let mut third = attempt("third-step", "third-invocation");
+            for (writer, text) in [
+                (&mut old, "old"),
+                (&mut current, "new"),
+                (&mut third, "third"),
+            ] {
+                for event in [
+                    ModelEvent::PartStarted {
+                        id: "provider-part".into(),
+                        text_kind: maka_agent_facts::model::TextKind::Text,
+                        provider_options: None,
+                    },
+                    ModelEvent::PartDelta {
+                        id: "provider-part".into(),
+                        text: text.into(),
+                        provider_options: None,
+                    },
+                ] {
+                    writer.push(event, UNIX_EPOCH).unwrap();
+                }
+                writer.fenced(4);
+            }
+            let old = old.snapshot();
+            let mut delivery = Delivery::new("epoch");
+            delivery.current(Some(old.clone()));
+            let first = drain(&mut delivery, 4);
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].text, "old");
+
+            let next = current.snapshot();
+            delivery.current(Some(next.clone()));
+            delivery.committed(&[
+                receipt(
+                    &old,
+                    5,
+                    StreamFact::StepEnded {
+                        step_id: "old-step".into(),
+                        completed: true,
+                        failed: false,
+                        interrupted: vec![],
+                    },
+                ),
+                receipt(
+                    &old,
+                    6,
+                    StreamFact::InvocationEnded {
+                        failed: false,
+                        interrupted: vec![],
+                    },
+                ),
+            ]);
+            let current_parts = drain(&mut delivery, 6);
+            assert_eq!(current_parts.len(), 1);
+            assert_eq!(current_parts[0].text, "new");
+            assert_eq!(current_parts[0].offset, 0);
+
+            delivery.committed(&[receipt(&next, 7, terminal)]);
+            append(&mut current, " obsolete tail");
+            delivery.current(Some(current.snapshot()));
+            assert!(delivery.next(7).unwrap().is_none());
+
+            delivery.current(Some(third.snapshot()));
+            let third_parts = drain(&mut delivery, 7);
+            assert_eq!(third_parts.len(), 1);
+            assert_eq!(third_parts[0].text, "third");
+            assert_eq!(third_parts[0].offset, 0);
+        }
     }
 
     #[test]
