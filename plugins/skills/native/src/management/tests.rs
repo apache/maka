@@ -211,6 +211,7 @@ async fn git_snapshot_install_and_whole_directory_update_use_physical_locations(
         std::fs::create_dir_all(&example).unwrap();
         std::fs::write(example.join("input.rs"), "fn main() {}\n").unwrap();
     }
+    std::fs::write(repository.join(".gitattributes"), "*.rs text eol=lf\n").unwrap();
     git(&repository, &["add", "."]);
     git(&repository, &["commit", "-m", "first"]);
     let root = Arc::new(
