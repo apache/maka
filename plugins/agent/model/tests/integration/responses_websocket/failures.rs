@@ -76,6 +76,12 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
             retry_started.send(()).unwrap();
             let mut pending = [0; 4096];
             while retry.read(&mut pending).await.unwrap() != 0 {}
+            let body = http_ok(&listener).await;
+            assert!(
+                body["input"]
+                    .to_string()
+                    .contains("after cancelled connect")
+            );
             // Cancellation of a retry must release its socket, not defer this
             // route or allow a later timer to reconnect behind the caller.
             let mut stalled = accept(&listener).await;
@@ -135,11 +141,12 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
         });
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let connecting_cancel = CancellationToken::new();
+        let connecting_lane = Conversation::default();
         let connecting = executor
             .stream_in_conversation(
                 request(&base, "cancel during retry"),
                 connecting_cancel.clone(),
-                Some(Conversation::default()),
+                Some(connecting_lane.clone()),
             )
             .await
             .unwrap();
@@ -149,6 +156,12 @@ async fn cancellation_and_bad_frames_do_not_replay_or_poison_other_lanes() {
             .cancel_and_wait()
             .await
             .expect("actual stream cleanup");
+        generate(
+            &executor,
+            &connecting_lane,
+            request(&base, "after cancelled connect"),
+        )
+        .await;
         let healthy_lane = Conversation::default();
         let cancel = CancellationToken::new();
         let mut stalled = executor

@@ -21,7 +21,6 @@ use super::body::RequestBody;
 use futures_util::FutureExt;
 use maka_agent_ports::model::Transport;
 use maka_agent_ports::model::{RetryTransportPhase, Socket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -45,11 +44,15 @@ pub use shared::Shared;
 pub struct ResponsesLane(Arc<Mutex<Lane>>);
 
 #[derive(Default)]
-struct Lane {
-    idle: Option<Idle>,
-    route: Option<u64>,
-    fallback: bool,
-    busy: bool,
+enum Lane {
+    #[default]
+    Fresh,
+    Primary {
+        route: u64,
+        idle: Option<Idle>,
+    },
+    Busy,
+    Fallback,
 }
 struct Idle {
     socket: Arc<dyn Socket>,
@@ -61,26 +64,22 @@ struct Idle {
 
 impl ResponsesLane {
     pub fn retry_transport_phase(&self) -> RetryTransportPhase {
-        if self.0.lock().unwrap().fallback {
-            RetryTransportPhase::Fallback
-        } else {
-            RetryTransportPhase::Primary
+        match &*self.0.lock().unwrap() {
+            Lane::Fallback => RetryTransportPhase::Fallback,
+            Lane::Fresh | Lane::Primary { .. } | Lane::Busy => RetryTransportPhase::Primary,
         }
     }
 
     pub fn restore_retry_transport_phase(&self, phase: RetryTransportPhase) -> Result<()> {
         let mut lane = self.0.lock().unwrap();
-        if lane.busy {
-            return Err(error("cannot restore an active Responses transport"));
-        }
-        match phase {
-            RetryTransportPhase::Primary if lane.fallback => {
+        match (&*lane, phase) {
+            (Lane::Busy, _) => Err(error("cannot restore an active Responses transport")),
+            (Lane::Fallback, RetryTransportPhase::Primary) => {
                 Err(error("cannot reset consumed Responses fallback transport"))
             }
-            RetryTransportPhase::Primary => Ok(()),
-            RetryTransportPhase::Fallback => {
-                lane.fallback = true;
-                lane.idle.take();
+            (_, RetryTransportPhase::Primary) => Ok(()),
+            (_, RetryTransportPhase::Fallback) => {
+                *lane = Lane::Fallback;
                 Ok(())
             }
         }
@@ -88,32 +87,76 @@ impl ResponsesLane {
 
     pub fn try_switch_fallback_transport(&self, transport: &Shared) -> bool {
         let mut lane = self.0.lock().unwrap();
-        if lane.busy || lane.fallback {
-            return false;
-        }
-        let Some(route) = lane.route else {
+        let Lane::Primary { route, .. } = &*lane else {
             return false;
         };
-        lane.fallback = true;
-        lane.idle.take();
-        transport.defer(route, Instant::now());
+        transport.defer(*route, Instant::now());
+        *lane = Lane::Fallback;
         true
     }
 
     pub fn response_id(&self) -> Option<String> {
-        let lane = self.0.lock().unwrap();
-        if lane.busy || lane.fallback {
-            return None;
+        match &*self.0.lock().unwrap() {
+            Lane::Primary {
+                idle: Some(idle), ..
+            } => idle.baseline.as_ref()?.response_id.clone(),
+            Lane::Fresh | Lane::Primary { idle: None, .. } | Lane::Busy | Lane::Fallback => None,
         }
-        lane.idle.as_ref()?.baseline.as_ref()?.response_id.clone()
     }
+
+    fn acquire(&self, route: u64) -> Option<(PrimaryLease, Option<Idle>)> {
+        let mut lane = self.0.lock().unwrap();
+        let idle = match &mut *lane {
+            Lane::Fresh => None,
+            Lane::Primary { idle, .. } => idle.take(),
+            Lane::Busy | Lane::Fallback => return None,
+        };
+        *lane = Lane::Busy;
+        Some((
+            PrimaryLease {
+                lane: Some(self.clone()),
+                route,
+            },
+            idle,
+        ))
+    }
+}
+
+struct PrimaryLease {
+    lane: Option<ResponsesLane>,
+    route: u64,
+}
+impl PrimaryLease {
+    fn complete(mut self, idle: Option<Idle>) {
+        let lane = self.lane.take().expect("active Responses lane lease");
+        *lane.0.lock().unwrap() = Lane::Primary {
+            route: self.route,
+            idle,
+        };
+    }
+
+    fn fallback(mut self) {
+        let lane = self.lane.take().expect("active Responses lane lease");
+        *lane.0.lock().unwrap() = Lane::Fallback;
+    }
+}
+impl Drop for PrimaryLease {
+    fn drop(&mut self) {
+        if let Some(lane) = self.lane.take() {
+            *lane.0.lock().unwrap() = Lane::Fallback;
+        }
+    }
+}
+
+struct Active {
+    connection: Idle,
+    lease: PrimaryLease,
 }
 
 pub struct Exchange {
     lane: ResponsesLane,
-    active: AsyncMutex<Option<Idle>>,
+    active: AsyncMutex<Option<Active>>,
     cancellation: CancellationToken,
-    owns_lane: AtomicBool,
     network: Arc<dyn Transport>,
     transport: Arc<Shared>,
 }
@@ -129,7 +172,6 @@ impl Exchange {
             lane,
             active: AsyncMutex::new(None),
             cancellation: cancellation.child_token(),
-            owns_lane: AtomicBool::new(false),
             network,
             transport,
         }
@@ -162,17 +204,10 @@ impl Exchange {
         if active.is_some() {
             return Err(error("Responses WebSocket request already active"));
         }
-        let mut idle = {
-            let mut lane = self.lane.0.lock().unwrap();
-            if lane.fallback || lane.busy {
-                // No caller may submit a shortened request without owning the
-                // matching baseline. Ordinary concurrent full requests use HTTP.
-                return Ok(Some(Prepared::new(body, None)?.full));
-            }
-            lane.busy = true;
-            lane.route = Some(route);
-            self.owns_lane.store(true, Ordering::Release);
-            lane.idle.take()
+        let Some((lease, mut idle)) = self.lane.acquire(route) else {
+            // No caller may submit a shortened request without owning the
+            // matching baseline. Ordinary concurrent full requests use HTTP.
+            return Ok(Some(Prepared::new(body, None)?.full));
         };
         // Reconstruct before rejecting an old socket: store:false state cannot
         // be recovered by carrying its response id to another connection.
@@ -189,10 +224,7 @@ impl Exchange {
         }
         let reuse = idle.is_some();
         if !reuse && self.transport.deferred(route, Instant::now()) {
-            let mut lane = self.lane.0.lock().unwrap();
-            lane.busy = false;
-            lane.fallback = true;
-            self.owns_lane.store(false, Ordering::Release);
+            lease.fallback();
             return Ok(Some(prepared.full));
         }
         let mut connection = match idle {
@@ -209,10 +241,7 @@ impl Exchange {
                     if !self.cancellation.is_cancelled() {
                         self.transport.defer(route, Instant::now());
                     }
-                    let mut lane = self.lane.0.lock().unwrap();
-                    lane.fallback = true;
-                    lane.busy = false;
-                    self.owns_lane.store(false, Ordering::Release);
+                    lease.fallback();
                     return Ok(Some(prepared.full));
                 }
             },
@@ -242,13 +271,13 @@ impl Exchange {
             }
         })?;
         connection.baseline = prepared.cache(&self.transport.cache);
-        *active = Some(connection);
+        *active = Some(Active { connection, lease });
         Ok(None)
     }
 
     pub async fn next(&self) -> Result<Option<String>> {
         let mut active = self.active.lock().await;
-        let Some(connection) = active.as_mut() else {
+        let Some(Active { connection, .. }) = active.as_mut() else {
             return Ok(None);
         };
         let result = tokio::select! {
@@ -259,52 +288,35 @@ impl Exchange {
         match result {
             Ok((text, terminal, reusable, event)) => {
                 if terminal {
-                    let mut idle = active.take();
-                    if let Some(connection) = idle.as_mut() {
-                        connection.baseline = connection
-                            .baseline
-                            .take()
-                            .and_then(|baseline| baseline.complete(&event["response"]));
-                    }
-                    let mut lane = self.lane.0.lock().unwrap();
-                    lane.busy = false;
-                    self.owns_lane.store(false, Ordering::Release);
-                    if reusable {
-                        lane.idle = idle;
-                    }
+                    let Active {
+                        mut connection,
+                        lease,
+                    } = active.take().expect("active Responses exchange");
+                    connection.baseline = connection
+                        .baseline
+                        .take()
+                        .and_then(|baseline| baseline.complete(&event["response"]));
+                    lease.complete(reusable.then_some(connection));
                 }
                 Ok(Some(text))
             }
             Err(error) => {
                 let reconnect = matches!(error, ReadError::Interrupted(_));
-                active.take();
-                let mut lane = self.lane.0.lock().unwrap();
+                let Active { lease, .. } = active.take().expect("active Responses exchange");
                 if !reconnect
                     && !matches!(error, ReadError::Cancelled)
                     && !self.cancellation.is_cancelled()
-                    && let Some(route) = lane.route
                 {
-                    self.transport.defer(route, Instant::now());
+                    self.transport.defer(lease.route, Instant::now());
                 }
-                lane.busy = false;
                 // A retry gets a fresh socket and full request. Only the caller
                 // can select fallback after exhausting its stream retry budget.
-                lane.fallback |= !reconnect;
-                self.owns_lane.store(false, Ordering::Release);
+                if reconnect {
+                    lease.complete(None);
+                } else {
+                    lease.fallback();
+                }
                 Err(error.into_error())
-            }
-        }
-    }
-}
-
-impl Drop for Exchange {
-    fn drop(&mut self) {
-        if self.owns_lane.load(Ordering::Acquire) {
-            let mut lane = self.lane.0.lock().unwrap();
-            if lane.busy {
-                lane.busy = false;
-                lane.fallback = true;
-                lane.idle.take();
             }
         }
     }
