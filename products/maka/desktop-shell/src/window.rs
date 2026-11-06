@@ -19,9 +19,10 @@
 
 //! The disposable workbench window and the process-owned Host connection.
 //!
-//! Closing releases the UI, not the admitted client. The tray reconstructs a
-//! window from the retained configuration; only Quit detaches, then exits.
-//! Host following continues with or without a window.
+//! With a tray, closing releases the UI, not the admitted client. The tray
+//! reconstructs a window from the retained configuration. Quit, or closing
+//! without an available tray, detaches before exiting. Host following
+//! continues with or without a window.
 
 use crate::{
     host::{self, Connection, Root},
@@ -108,6 +109,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         shell,
         Requests {
             mut exits,
+            mut close_ready,
             mut folders,
             mut text_sizes,
             mut notices,
@@ -178,6 +180,16 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         cx.spawn(async move |cx| {
             while exits.recv().await.is_some() {
                 cx.update(|cx| cx.quit());
+            }
+        })
+        .detach();
+        let closing = desktop.clone();
+        cx.spawn(async move |cx| {
+            while close_ready.recv().await.is_some() {
+                let window = closing.borrow().window;
+                if let Some(window) = window {
+                    let _ = window.update(cx, |_, window, cx| Desktop::close(&closing, window, cx));
+                }
             }
         })
         .detach();
@@ -347,17 +359,7 @@ fn open(
                 placement.save(window, cx);
                 cx.quit();
             }
-            _ => {
-                let mut state = desktop.borrow_mut();
-                if state.can_close() {
-                    placement.save(window, cx);
-                    state.window = None;
-                    state.active.send_replace(false);
-                    state.shell.release();
-                    drop(state);
-                    window.remove_window();
-                }
-            }
+            _ => Desktop::close(&desktop, window, cx),
         });
         app.load_with_config(config);
         let focus = view.read(cx).focus_handle(cx);
@@ -382,7 +384,7 @@ struct Desktop {
 }
 
 impl Desktop {
-    fn can_close(&self) -> bool {
+    fn has_tray(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
             self.tray.ready()
@@ -392,6 +394,28 @@ impl Desktop {
             let _ = &self.tray;
             true
         }
+    }
+
+    fn close(this: &Rc<RefCell<Self>>, window: &mut gpui::Window, cx: &mut App) {
+        let mut state = this.borrow_mut();
+        if state.quitting {
+            return;
+        }
+        if !state.has_tray() {
+            state.placement.save(window, cx);
+            drop(state);
+            cx.quit();
+            return;
+        }
+        if !state.shell.prepare_close() {
+            return;
+        }
+        state.placement.save(window, cx);
+        state.window = None;
+        state.active.send_replace(false);
+        state.shell.release();
+        drop(state);
+        window.remove_window();
     }
 
     fn show(this: &Rc<RefCell<Self>>, cx: &mut App) -> Result<(), String> {
