@@ -1671,16 +1671,21 @@ export class OnboardingWizard implements Component {
   }
 
   /** Runner hook: verify succeeded — advance to the models step with fresh
-   *  discovered models. Selection seeds from the picked provider's enabled set
-   *  on first entry (existing connections preserve it; new ones start empty);
-   *  a re-verify preserves the user's toggles, dropping ids no longer discovered. */
+   *  discovered models. On first entry a new OAuth connection selects every
+   *  discovered model in discovery order; other targets seed from the picked
+   *  provider's enabled set (existing connections preserve it; new API-key ones
+   *  start empty). A re-verify preserves the user's toggles, dropping ids no
+   *  longer discovered. */
   setModels(models: ModelInfo[]): void {
     if (this.phase !== 'key' && this.phase !== 'oauth') return;
     this.models = models;
     if (!this.modelsInitialized) {
-      this.selectedIds = new Set(
-        (this.picked?.enabledModelIds ?? []).filter((id) => models.some((m) => m.id === id)),
-      );
+      const picked = this.picked;
+      const seed =
+        picked?.target.kind === 'create' && picked.setupMethod === 'oauth'
+          ? models.map((m) => m.id)
+          : (picked?.enabledModelIds ?? []).filter((id) => models.some((m) => m.id === id));
+      this.selectedIds = new Set(seed);
       this.modelsInitialized = true;
     } else {
       for (const id of [...this.selectedIds]) {

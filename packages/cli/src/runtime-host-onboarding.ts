@@ -22,7 +22,6 @@ import {
   deriveConnectionSlug,
   deriveInteractiveOAuthConnectionSlug,
   offerableCatalogEntries,
-  providerFallbackModelIds,
   PROVIDER_REGISTRY,
 } from '@maka/core/llm-connections';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
@@ -579,7 +578,7 @@ export function projectProviders(
         setupMethod: 'oauth',
         target: { kind: 'create', providerType },
         suggestedSlug: deriveInteractiveOAuthConnectionSlug(providerType, existingSlugs),
-        enabledModelIds: [...providerFallbackModelIds(definition)],
+        enabledModelIds: [],
       });
     }
   }
