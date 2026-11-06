@@ -192,12 +192,13 @@ const DESKTOP_PROJECT_DIRECTORY = fileURLToPath(new URL('../apps/desktop', impor
  *
  * Copied through JSON rather than `structuredClone`: everything electron-builder reads
  * here has to survive serialization anyway, and the structured clone algorithm rejected
- * this object on Node 24 while accepting it on 26. `beforePack` is the one function in
- * the configuration; it is carried across by reference and never invoked by this test.
+ * this object on Node 24 while accepting it on 26. `beforePack` and `afterPack` are the
+ * functions in the configuration; they are carried across by reference and never invoked
+ * by this test.
  */
 function isolatedBuilderConfig() {
-  const { beforePack, ...rest } = resolveDesktopBuilderConfig({});
-  return { ...JSON.parse(JSON.stringify(rest)), beforePack };
+  const { beforePack, afterPack, ...rest } = resolveDesktopBuilderConfig({});
+  return { ...JSON.parse(JSON.stringify(rest)), beforePack, afterPack };
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   resolveDesktopBuildVersion,
   resolveRuntimeHostSetupPackage,
 } from '../../scripts/desktop-nightly.mjs';
+import { stampMacAppExecutableUuids } from '../../scripts/macos-executable-uuid.mjs';
 import { workspaceReleaseManifest } from '../../scripts/release-cli-file-policy.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
 
@@ -60,6 +61,16 @@ async function stageReleaseManifests({ packager }) {
   packager.config.files.push({ from: stage, to: 'node_modules/@maka' });
 }
 
+// Runs before signing, so the stamped executables are what gets signed. See
+// scripts/macos-executable-uuid.mjs for why Electron's own LC_UUID cannot ship.
+async function stampMacExecutableUuids({ electronPlatformName, appOutDir, packager }) {
+  if (electronPlatformName !== 'darwin') return;
+  await stampMacAppExecutableUuids(
+    join(appOutDir, `${packager.appInfo.productFilename}.app`),
+    packager.appInfo.id,
+  );
+}
+
 const rootManifest = readManifest('../../package.json');
 const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
   rootManifest,
@@ -73,6 +84,7 @@ const baseDesktopBuilderConfig = {
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
   beforePack: stageReleaseManifests,
+  afterPack: stampMacExecutableUuids,
   extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
   directories: {
     output: 'release',
