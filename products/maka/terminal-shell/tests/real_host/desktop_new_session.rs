@@ -2442,9 +2442,10 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     )
     .await;
     let before = desktop.control("Focus message composer").await;
-    let draft = (0..200)
+    let mut draft = (0..200)
         .map(|i| format!("Traceback line {i}: a long pasted diagnostic with paths and details\n"))
         .collect::<String>();
+    draft.push_str("请检查 /skill:review 这个问题");
     // TerminalPlatform::paste injects IME text, which strips control characters.
     // Native clipboard paste keeps the diagnostic's line breaks.
     desktop

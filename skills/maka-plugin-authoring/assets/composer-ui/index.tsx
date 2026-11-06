@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, inputAction, signal, Text, View } from 'nsh';
+import { effect, inputAction, keymap, signal, Text, View } from 'nsh';
 import type { InputRef, JSX } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import type { ComposerViewInput, UiActivation, UiEmbeddedViewProps } from '@maka-agent/plugin-sdk';
@@ -102,7 +102,11 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
               <Input
                 ref={(node) => {
                   editor.set(node);
-                  input.attach(node);
+                  input.attach({
+                    focus: () => node.focus(),
+                    bindKey: (key, action) =>
+                      keymap.bind(key, action, { when: 'always', within: node }),
+                  });
                 }}
                 value={session.draft()}
                 readonly={blocked()}

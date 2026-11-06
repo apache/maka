@@ -220,6 +220,8 @@ pub fn ui_set_description() -> nsh_core::element::description::SetDescription {
 
 fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 'static) -> Registry {
     let mut registry = Registry::ui_set("maka/host");
+    registry.register::<crate::composer_input::ComposerInput>();
+    registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();

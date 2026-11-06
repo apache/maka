@@ -323,12 +323,20 @@ impl Rv {
                 }
             });
         });
+        let editable = {
+            let rv = self.clone();
+            computed(move || {
+                rv.notified.get();
+                rv.props.editable.get();
+                rv.editable()
+            })
+        };
         let rv = self.clone();
         effect(move || {
-            if !rv.focused.get() {
+            if !rv.focused.get() || rv.composition.get().is_some() {
                 return;
             }
-            for spec in keys::key_table() {
+            for spec in keys::key_table(editable.get()) {
                 let rv = rv.clone();
                 let event = spec.event.clone();
                 on_key_with(
@@ -662,8 +670,7 @@ impl Rv {
         if let Some(held) = held {
             self.sink_edited(&held);
         }
-        self.composition
-            .set((composing && !text.is_empty()).then(|| text.to_owned()));
+        self.composition.set(composing.then(|| text.to_owned()));
     }
 
     /// A key the sink reports itself (soft keyboards: Backspace in an

@@ -185,7 +185,7 @@ export const suites = {
       '--lib',
     ],
     filter:
-      'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
+      'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=text_input::tests::shortcuts_wait_for_focus_even_without_queued_text) | test(=tests::windows) | test(kitty::tests::)',
   },
   'windows-desktop': {
     workspace: 'root',

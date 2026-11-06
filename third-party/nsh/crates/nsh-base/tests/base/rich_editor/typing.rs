@@ -340,6 +340,98 @@ fn backspace_at_a_paragraph_start_joins_into_the_previous() {
 // Composition.
 
 #[test]
+fn composition_leaves_candidate_keys_to_the_native_input_method() {
+    use nsh_core::{
+        MountItem, ViewKind,
+        keymap::{KeyMatch, Keystroke},
+    };
+    use std::time::Instant;
+
+    let (engine, batches) =
+        nsh_testing::start(EngineConfig::new(Root::new::<Harness>(|| HarnessProps {
+            session: Some(session(paragraphs(&["ab"]))),
+        })))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let sink = 'mounted: loop {
+        let batch = batches
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        for item in batch.items {
+            if let MountItem::Create {
+                id,
+                kind: ViewKind::Input,
+            } = item
+            {
+                break 'mounted id;
+            }
+        }
+    };
+    let control = engine.control();
+    control.dispatch_event(sink, EventKind::Focus, EventPayload::None);
+    let next_bindings = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let batch = batches
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            for item in batch.items {
+                if let MountItem::Keymap(table) = item {
+                    return table;
+                }
+            }
+        }
+    };
+    let enter = Keystroke::parse("enter", Os::MacOs).unwrap();
+    // Skip a possible initial table emitted before the input took focus.
+    loop {
+        if matches!(next_bindings().find(enter, true, false), KeyMatch::Fire(_)) {
+            break;
+        }
+    }
+    for preedit in ["", "に"] {
+        control.dispatch_event(
+            sink,
+            EventKind::CompositionChange,
+            EventPayload::Map(vec![
+                ("composing", PayloadValue::Bool(true)),
+                ("text", PayloadValue::Str(preedit.to_owned())),
+            ]),
+        );
+        // Enter, arrows and deletion must reach the native input method,
+        // including when it has started an empty preedit.
+        let table = if preedit.is_empty() {
+            Some(next_bindings())
+        } else {
+            None
+        };
+        if let Some(table) = table {
+            for key in ["enter", "left", "backspace", "escape"] {
+                assert!(
+                    !matches!(
+                        table.find(Keystroke::parse(key, Os::MacOs).unwrap(), true, false),
+                        KeyMatch::Fire(_)
+                    ),
+                    "editor intercepted IME key {key}"
+                );
+            }
+        }
+    }
+    control.dispatch_event(
+        sink,
+        EventKind::CompositionChange,
+        EventPayload::Map(vec![
+            ("composing", PayloadValue::Bool(false)),
+            ("text", PayloadValue::Str(String::new())),
+        ]),
+    );
+    assert!(matches!(
+        next_bindings().find(enter, true, false),
+        KeyMatch::Fire(_)
+    ));
+}
+
+#[test]
 fn composition_shows_its_text_without_changing_the_document() {
     let mut app = start(paragraphs(&["ab"]));
     focus(&mut app);

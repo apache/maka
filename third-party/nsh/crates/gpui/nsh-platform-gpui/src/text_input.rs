@@ -1056,8 +1056,8 @@ pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
     }
 }
 
-/// Keeps editing keys and their releases behind the text waiting for the
-/// next field. Character keys deliver their text through the input method.
+/// Keeps editing keys and shortcuts behind an unsettled focus transition
+/// or queued text. Character keys deliver text through the input method.
 pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
     let m = event.modifiers;
     let edits = matches!(
@@ -1079,12 +1079,13 @@ pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
     if (event.down && !(edits || chord)) || !armed(surface) {
         return false;
     }
+    let waiting_for_engine = behind(surface);
     FOCUS.with(|f| {
         let mut map = f.borrow_mut();
         let Some(focus) = map.get_mut(&surface.key()) else {
             return false;
         };
-        if focus.pending.is_empty() {
+        if focus.pending.is_empty() && !waiting_for_engine {
             return false;
         }
         if !event.down
@@ -2929,6 +2930,51 @@ mod blink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_wait_for_focus_even_without_queued_text() {
+        let surface = Surface::new(nsh_engine::Environment::default());
+        FOCUS.with(|focuses| {
+            focuses.borrow_mut().insert(
+                surface.key(),
+                Focus {
+                    armed: true,
+                    after: 1,
+                    ..Default::default()
+                },
+            );
+        });
+        let mut shortcut = KeyEvent {
+            vk: 0x55,
+            down: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        assert!(
+            hold_key(&surface, &shortcut),
+            "shortcut bypassed the pending focus acknowledgement"
+        );
+        shortcut.down = false;
+        assert!(
+            hold_key(&surface, &shortcut),
+            "the held shortcut lost its key release"
+        );
+        FOCUS.with(|focuses| focuses.borrow_mut().get_mut(&surface.key()).unwrap().after = 0);
+        engine_caught_up(&surface);
+        assert!(
+            !has_pending(&surface),
+            "the acknowledged focus did not replay its shortcuts"
+        );
+        shortcut.down = true;
+        assert!(
+            !hold_key(&surface, &shortcut),
+            "a settled focus kept delaying shortcuts"
+        );
+        surface_stopped(surface.key());
+    }
 
     #[test]
     fn alignment() {

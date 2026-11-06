@@ -22,7 +22,7 @@ import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpCo
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
 import { ContextMenu, Input, MenuItem, Popover } from 'nsh/base';
-import type { InputRef, JSX, ViewRef } from 'nsh';
+import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
@@ -55,20 +55,9 @@ import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHi
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
 import { createComposerPaste } from './composerPaste';
+import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
+import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
-
-// Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
-const skillTokens = () => [
-  {
-    pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
-    style: {
-      color: C.accent,
-      backgroundColor: `${C.accent}20`,
-      borderRadius: 4,
-    },
-    atomic: true,
-  },
-];
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
   const pendingAdd = signal(false);
@@ -77,7 +66,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     commands: props.commands,
     active: props.active,
   });
-  const predictionEditor = signal<{ owner: ComposerSession; node: InputRef } | null>(null);
+  const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
   const suggestedMessage = () => {
     const owner = props.session();
     if (
@@ -136,10 +125,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       text: suggestion.text,
     };
     const bindings = ['tab', 'right', 'enter'].map((key) =>
-      keymap.bind(key, () => acceptSuggestedMessage(offered), {
-        when: 'always',
-        within: editor.node,
-      }),
+      editor.node.bindKey(key, () => acceptSuggestedMessage(offered)),
     );
     return () => bindings.forEach((unbind) => unbind());
   });
@@ -279,6 +265,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  const toggleAttachments = () => {
+    const owner = props.session();
+    if (owner && owner.editable())
+      owner.attachments.open({ owner: owner.sessionId, value: !owner.attachments.picker() });
+    else if (pending()) pending()!.openPicker(!pending()!.picking());
+  };
   // A file drag over the editor leaves the conversation's own drop target.
   const draggingOverEditor = signal(false);
   const fileDragging = () =>
@@ -290,25 +282,33 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const node = cardRoot();
     if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
       return keymap.bind('ctrl+c', completion.clearDraft, {
-        when: 'always',
+        when: 'notEditing',
         within: node,
         fallback: true,
       });
   });
   effect(() => {
-    const stop = props.stopAction();
+    const owner = props.session();
+    const current = predictionEditor();
+    if (
+      owner &&
+      current?.owner === owner &&
+      props.active() &&
+      owner.editable() &&
+      owner.invocation() === null &&
+      owner.draft()
+    )
+      return current.node.bindKey('ctrl+c', completion.clearDraft, { fallback: true });
+  });
+  const escapeComposer = () => {
+    if (completion.composing()) return;
+    const suggestion = suggestedMessage();
+    if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
+    else props.stopAction()();
+  };
+  effect(() => {
     const node = cardRoot();
-    if (node)
-      return keymap.bind(
-        'escape',
-        () => {
-          if (completion.composing()) return;
-          const suggestion = suggestedMessage();
-          if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
-          else stop();
-        },
-        { when: 'always', within: node },
-      );
+    if (node) return keymap.bind('escape', escapeComposer, { when: 'notEditing', within: node });
   });
   const workspaceLabel = () => {
     const path = props.session()?.workspace() ?? pending()?.workspace();
@@ -570,13 +570,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             unbind = keymap.bind(
               'mod+u',
               () => {
-                const owner = props.session();
-                if (owner && owner.editable())
-                  owner.attachments.open({
-                    owner: owner.sessionId,
-                    value: !owner.attachments.picker(),
-                  });
-                else if (pending()) pending()!.openPicker(!pending()!.picking());
+                toggleAttachments();
               },
               { when: 'always', within: node },
             );
@@ -607,7 +601,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               const owner = session();
               const local = owner === null ? pending() : null;
               const path = signal('');
-              const editor = signal<InputRef | null>(null);
+              const editor = signal<ComposerEditor | null>(null);
               const selection = signal({ start: 0, end: 0 });
               const paste = local
                 ? createComposerPaste({
@@ -719,19 +713,18 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         maxHeight: compact() ? 64 : 144,
                       }}
                     >
-                      <Input
+                      <SkillInput
                         ref={(node) => {
                           editor.set(node);
                           props.attach(node);
+                          node.bindKey('mod+u', toggleAttachments);
                           completion.attach(owner?.sessionId ?? null, node);
                           predictionEditor.set(owner ? { owner, node } : null);
                         }}
+                        onEscape={escapeComposer}
                         testID="message"
                         accessibilityLabel={tr('Message composer')}
                         autoFocus={owner !== null || local !== null}
-                        multiline
-                        submitBehavior="submit"
-                        tokens={skillTokens()}
                         value={owner?.draft() ?? local?.draft() ?? ''}
                         readonly={owner ? !owner.editable() : !local || local.sending()}
                         onChange={
@@ -791,14 +784,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               : undefined
                         }
                         onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
-                        onCompositionChange={
-                          owner || local
-                            ? (event) => {
-                                if (owner || pending() === local)
-                                  completion.composition(owner, event);
-                              }
-                            : undefined
-                        }
                         onSubmit={
                           owner
                             ? (event) => {
@@ -828,7 +813,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             flexGrow: 1,
                             flexShrink: 1,
                             color: C.text,
-                            placeholderColor: C.muted,
                             ...bodyTextStyle,
                             ...(owner !== null && suggestedMessage() !== null
                               ? {

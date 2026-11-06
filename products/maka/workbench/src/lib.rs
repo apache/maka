@@ -23,6 +23,7 @@
 mod attachment_paths;
 pub mod bindings;
 mod clipboard;
+mod composer_input;
 pub mod host;
 pub mod reload;
 
@@ -125,5 +126,103 @@ mod tests {
         app.press("id:refresh").unwrap();
         app.press("role:button[skill-15]").unwrap();
         app.wait_for("text:/2:skill:skill-15/").unwrap();
+    }
+
+    fn skill_input_fixture() -> nsh_testing::Headless {
+        let mut registry = nsh_core::element::Registry::ui_set("maka/host");
+        registry.value("host", || Instance::new(CompletionHost));
+        registry.register::<crate::composer_input::ComposerInput>();
+        registry.class::<crate::composer_input::ComposerInputState>();
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/skill-input.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(640.0), px(480.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                renderer: Renderer::Native,
+                ..Environment::default()
+            },
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+        app.wait_for("label:Draft").unwrap();
+        app.wait_for("text:Editor ready").unwrap();
+        app
+    }
+
+    #[test]
+    fn skill_input_edits_and_copies_invocations_as_whole_nodes() {
+        let mut app = skill_input_fixture();
+        app.wait_for("text:Selection 19:19").unwrap();
+        app.type_text("label:Draft", "").unwrap();
+        for key in ["mod+right", "left", "left", "left"] {
+            app.press_key(key).unwrap();
+        }
+        app.wait_for("text:Selection 4:4").unwrap();
+        app.press_key("shift+right").unwrap();
+        app.wait_for("text:Selection 4:17").unwrap();
+        app.press_key("mod+c").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("/skill:review"));
+        app.press_key("backspace").unwrap();
+        app.wait_for(r#"text:Source "前😀  后""#).unwrap();
+        app.press_key("mod+z").unwrap();
+        app.wait_for(r#"text:Source "前😀 /skill:review 后""#)
+            .unwrap();
+        app.press_key("mod+a").unwrap();
+        app.press_key("mod+c").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"text:Submitted "前😀 /skill:review 后""#)
+            .unwrap();
+        app.press("label:Reset").unwrap();
+        app.wait_for(r#"text:Source """#).unwrap();
+        app.press_key("mod+z").unwrap();
+        assert!(app.shows("Source \"\""));
+        app.wait_for("text:Selection 0:0").unwrap();
+        app.press_key("tab").unwrap();
+        app.wait_for(r#"text:Source "/skill:fix ""#).unwrap();
+    }
+
+    #[test]
+    fn skill_input_paste_grows_the_viewport_and_message_selection_keeps_source() {
+        let mut app = skill_input_fixture();
+        app.type_text("label:Draft", "").unwrap();
+        app.press_key("mod+a").unwrap();
+        app.paste(
+            "label:Draft",
+            &nsh_core::PasteEvent::new(
+                "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n/skill:review",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            app.screen()
+                .span_style("id:draft-field >> text:one")
+                .unwrap()
+                .line_height,
+            px(24.0)
+        );
+        app.wait_for("text:Height 144").unwrap();
+        app.press_key("mod+a").unwrap();
+        app.press_key("mod+c").unwrap();
+        assert_eq!(
+            app.screen().clipboard(),
+            Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n/skill:review")
+        );
+        app.type_text("label:前😀 /skill:review 后", "").unwrap();
+        app.press_key("mod+a").unwrap();
+        app.press_key("mod+c").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));
+        app.press_key("mod+n").unwrap();
+        app.wait_for("text:App shortcut received").unwrap();
     }
 }

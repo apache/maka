@@ -1310,11 +1310,7 @@ fn sink(rv: Rv) -> impl IntoElement {
         .top(move || Length::from(at.get().y))
         .w(px(1.0))
         .h(px(SINK_HEIGHT))
-        .pointer_events(if is_terminal() {
-            PointerEvents::BoxNone
-        } else {
-            PointerEvents::None
-        })
+        .pointer_events(PointerEvents::BoxNone)
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)

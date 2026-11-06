@@ -44,6 +44,7 @@ import type { UiSubscription } from './workbench.js';
 
 export interface ComposerFocusHandle {
   focus(): void;
+  bindKey(key: string, action: () => void): () => void;
 }
 
 export interface ComposerCommand {
