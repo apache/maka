@@ -65,6 +65,7 @@ function fixture() {
       ['maka-agent-native', 'plugins/agent/native'],
       ['maka-computer-use', 'platform/computer-use', ['platform/code-runtime']],
       ['maka-skills-core', 'plugins/skills/core'],
+      ['maka-skills-native', 'plugins/skills/native', ['plugins/skills/core']],
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
       ['maka-terminal-shell', 'products/maka/terminal-shell'],
       [
@@ -502,6 +503,45 @@ test('native behavior verification selects nextest on macOS and Windows', () => 
   }
 });
 
+test('skill publication changes run the existing behavior tests on Windows', async () => {
+  for (const input of [
+    'plugins/skills/native/src/management.rs',
+    'plugins/skills/core/src/lib.rs',
+  ]) {
+    const plan = fixture()([input]);
+    assert(plan.suites['windows-skills'], input);
+    assert.deepEqual(
+      plan.workers
+        .filter((worker) => worker.suites.includes('windows-skills'))
+        .map((worker) => worker.runner),
+      ['windows-latest'],
+    );
+  }
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (executable, args) => {
+        calls.push({ executable, args });
+        return '';
+      },
+    },
+  );
+  await exec.prepare('windows-skills');
+  await exec.verify('windows-skills');
+  assert.deepEqual(calls, [
+    {
+      executable: 'cargo',
+      args: ['nextest', 'run', '--locked', '-p', 'maka-skills-native', '--lib', '--no-run'],
+    },
+    {
+      executable: 'cargo',
+      args: ['nextest', 'run', '--locked', '-p', 'maka-skills-native', '--lib', '-j', '1'],
+    },
+  ]);
+});
+
 test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PROGRAMFILES', async () => {
   const calls = [];
   const exec = executor(
@@ -606,7 +646,10 @@ process.stdout.write(JSON.stringify([
                     ...build,
                     ...shared,
                   ]);
-                  assert.equal(args.includes('-E'), false);
+                  assert.deepEqual(
+                    args.flatMap((arg, index) => (arg === '-E' ? [args[index + 1]] : [])),
+                    ['package(=maka-cli) | package(=maka-terminal-shell)', 'test(owned)'],
+                  );
                   assert.equal(value('--config-file'), configuration);
                   assert.equal(value('--profile'), 'custom');
                   return JSON.stringify({
@@ -616,8 +659,26 @@ process.stdout.write(JSON.stringify([
                       'build-script-out-dirs': { cli: cliOut, terminal: terminalOut },
                     },
                     'rust-suites': {
-                      cli: { 'package-name': 'maka-cli', 'package-id': 'cli' },
-                      terminal: { 'package-name': 'maka-terminal-shell', 'package-id': 'terminal' },
+                      cli: {
+                        'package-name': 'maka-cli',
+                        'package-id': 'cli',
+                        'binary-id': 'maka-cli::owned',
+                        testcases: { owned: { 'filter-match': { status: 'matches' } } },
+                      },
+                      terminal: {
+                        'package-name': 'maka-terminal-shell',
+                        'package-id': 'terminal',
+                        'binary-id': 'maka-terminal-shell',
+                        testcases: { owned: { 'filter-match': { status: 'matches' } } },
+                      },
+                      unrelated: {
+                        'package-name': 'unrelated',
+                        'package-id': 'unrelated',
+                        'binary-id': 'unrelated',
+                        testcases: {
+                          other: { 'filter-match': { status: 'mismatch', reason: 'expression' } },
+                        },
+                      },
                     },
                   });
                 }
@@ -628,7 +689,10 @@ process.stdout.write(JSON.stringify([
                     ...build,
                     ...shared,
                   ]);
-                  assert.equal(args.includes('-E'), false);
+                  assert.equal(
+                    value('-E'),
+                    'binary_id(=maka-cli::owned) | binary_id(=maka-terminal-shell)',
+                  );
                   const archive = value('--archive-file');
                   owned = dirname(archive);
                   const generated = readFileSync(value('--config-file'), 'utf8');
@@ -700,7 +764,10 @@ process.stdout.write(JSON.stringify([
               },
             },
           );
-          const replay = exec.verify('root', 'package(=maka-cli)', [...build, ...runtime]);
+          const replay = exec.verify('root', 'package(=maka-cli) | package(=maka-terminal-shell)', [
+            ...build,
+            ...runtime,
+          ]);
           if (failure === null) await replay;
           else await assert.rejects(replay, (error) => error === expectedFailure);
           assert.equal(
@@ -763,8 +830,18 @@ test('split archive staging releases only owned products on conflict or missing 
                   'build-script-out-dirs': paths,
                 },
                 'rust-suites': {
-                  cli: { 'package-name': 'maka-cli', 'package-id': 'cli' },
-                  terminal: { 'package-name': 'maka-terminal-shell', 'package-id': 'terminal' },
+                  cli: {
+                    'package-name': 'maka-cli',
+                    'package-id': 'cli',
+                    'binary-id': 'maka-cli',
+                    testcases: { selected: { 'filter-match': { status: 'matches' } } },
+                  },
+                  terminal: {
+                    'package-name': 'maka-terminal-shell',
+                    'package-id': 'terminal',
+                    'binary-id': 'maka-terminal-shell',
+                    testcases: { selected: { 'filter-match': { status: 'matches' } } },
+                  },
                 },
               });
             },

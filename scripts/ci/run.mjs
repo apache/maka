@@ -76,10 +76,12 @@ const buildFlags = new Set([
 ]);
 const sharedValues = new Set(['--color', '--config', '--user-config-file', '--tool-config-file']);
 const sharedFlags = new Set(['--no-pager', '-v', '--verbose', '--override-version-check']);
+const filterValues = new Set(['-E', '--filterset', '--filter-expr']);
 
 function rootArguments(extra) {
   const build = [],
-    runtime = [];
+    runtime = [],
+    filters = [];
   let configFile, profile;
   for (let index = 0; index < extra.length; index++) {
     const argument = extra[index];
@@ -87,7 +89,7 @@ function rootArguments(extra) {
       runtime.push(...extra.slice(index));
       break;
     }
-    const attached = /^-([pFZP])(.+)$/.exec(argument);
+    const attached = /^-([pFZPE])(.+)$/.exec(argument);
     const name = attached ? `-${attached[1]}` : argument.split('=', 1)[0];
     let value = attached
       ? attached[2].replace(/^=/, '')
@@ -98,6 +100,7 @@ function rootArguments(extra) {
     if (
       (buildValues.has(name) ||
         sharedValues.has(name) ||
+        filterValues.has(name) ||
         ['--config-file', '--profile', '-P'].includes(name)) &&
       value === undefined
     ) {
@@ -115,8 +118,9 @@ function rootArguments(extra) {
     )
       build.push(...values);
     if (!buildValues.has(name) && !buildFlags.has(name)) runtime.push(...values);
+    if (filterValues.has(name)) filters.push(...values);
   }
-  return { build, runtime, configFile, profile };
+  return { build, runtime, filters, configFile, profile };
 }
 
 function archiveConfiguration(config, listing, binaries, profile = 'ci', inherits) {
@@ -237,6 +241,7 @@ export function executor(
         'desktop',
         'gpui',
         'windows-desktop',
+        'windows-skills',
         'windows-nsh',
         'macos-host',
         'windows-shell',
@@ -315,7 +320,9 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (['desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
+    } else if (
+      ['desktop', 'gpui', 'windows-desktop', 'windows-skills', 'windows-nsh'].includes(id)
+    ) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);
@@ -370,7 +377,13 @@ export function executor(
       await nextest('root', false, filter, extra);
       return;
     }
-    const { build, runtime, configFile, profile = suites.root.profile } = rootArguments(extra);
+    const {
+      build,
+      runtime,
+      filters,
+      configFile,
+      profile = suites.root.profile,
+    } = rootArguments(extra);
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-run-'));
     try {
       const listing = JSON.parse(
@@ -380,6 +393,8 @@ export function executor(
             'list',
             ...suites.root.cargoArgs,
             ...build,
+            ...(filter === 'all()' ? [] : ['-E', filter]),
+            ...filters,
             '--config-file',
             resolve(root, configFile ?? '.config/nextest.toml'),
             '--profile',
@@ -390,12 +405,17 @@ export function executor(
           { capture: true },
         ),
       );
+      const binaries = Object.values(listing['rust-suites']).filter((suite) =>
+        Object.values(suite.testcases).some((entry) => entry['filter-match'].status === 'matches'),
+      );
+      const archiveFilter =
+        binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ') || 'none()';
       const config = join(temporary, 'nextest.toml');
       const archiveProfile = basename(temporary);
       const generated = archiveConfiguration(
         readFileSync(resolve(root, configFile ?? '.config/nextest.toml'), 'utf8'),
         listing,
-        Object.values(listing['rust-suites']),
+        binaries,
         archiveProfile,
         profile,
       );
@@ -407,6 +427,8 @@ export function executor(
           'archive',
           ...suites.root.cargoArgs,
           ...build,
+          '-E',
+          archiveFilter,
           '--profile',
           archiveProfile,
           '--config-file',
