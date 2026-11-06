@@ -1456,6 +1456,7 @@ export async function createExecutionRuntimeHostComposition(
           builtinTools,
           hostTools,
           resolveToolCeiling: (sessionId) => personalAssistant.toolCeiling(sessionId),
+          filterSessionTools: (sessionId, tools) => personalAssistant.filterTools(sessionId, tools),
           resolveRootTools: async (sessionId) => {
             await assertAssistantSessionEnabled(sessionId);
             return [
@@ -1510,7 +1511,8 @@ export async function createExecutionRuntimeHostComposition(
             );
           },
         }),
-        ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
+        ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
+          false || !personalAssistant.admitsMemoryTriggers(backendContext.sessionId)
           ? {}
           : { memoryExtraction }),
         artifacts: openedArtifactStore,
@@ -1693,6 +1695,7 @@ export async function createExecutionRuntimeHostComposition(
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: surface.hostTools,
+          filterTools: (tools) => personalAssistant.filterTools(sessionId, tools),
           ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
           goalTools: requireGoal(goal).tools,
           ...(surface.parentAgentTools ? { parentAgentTools: surface.parentAgentTools } : {}),

@@ -65,3 +65,20 @@ export const BOT_DELEGATION_TOOLS = new Set(
       name.startsWith('Memory'),
   ),
 );
+/** Assistant tools visible to the exploration session: read-only Memory and Matters, DiscoveryContext, and DiscoveryDraft for its result file. */
+export const DISCOVERY_TOOLS = new Set([
+  'DiscoveryContext',
+  'DiscoveryDraft',
+  'MemoryStatus',
+  'MemorySources',
+  'MemoryRange',
+  'MemoryHistory',
+  'MemoryExtract',
+  'MemorySourceQuery',
+  'MemoryOriginal',
+  'MemoryIndexList',
+  'MemoryIndexRead',
+  'MemoryIndexContent',
+  'MemoryIndexLinks',
+  'MatterOverview',
+]);

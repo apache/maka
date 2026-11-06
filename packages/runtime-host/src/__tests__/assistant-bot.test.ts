@@ -35,6 +35,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { BotController } from '../assistant/bot/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
 import { DISCOVERY_TASK } from '../assistant/index-initiative/prompt.js';
+import { DISCOVERY_TOOLS } from '../assistant/bot/capabilities.js';
 import { MESSAGE_OPERATION_SPECS } from '../protocol/message.js';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
@@ -44,6 +45,8 @@ import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
 } from '@maka/runtime/session-event-runtime-mapper';
+import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
+import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 
 async function until(fn: () => unknown | Promise<unknown>, timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -670,23 +673,63 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   t.after(f.close);
   let reported = false,
     processed = false;
-  f.runner(async ({ prompt, invoke }) => {
+  f.runner(async ({ id, prompt, invoke }) => {
     if (prompt.includes('Runtime heartbeat')) {
       if (prompt.includes('Phase: discovery')) {
         assert.ok(prompt.includes(DISCOVERY_TASK));
-        await writeFile(
-          /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1],
-          JSON.stringify({
-            notes: [
-              {
-                topicId: 'calendar',
-                title: '日程',
-                text: '日程冲突，需要判断。',
-                sources: ['日历'],
-              },
-            ],
-          }),
-        );
+        assert.equal(f.service.toolCeiling(id), undefined);
+        assert.equal(f.service.admitsMemoryTriggers(id), false);
+        assert.equal(f.service.admitsMemoryTriggers('owner'), true);
+        const unused = () => Promise.reject(Error('not used'));
+        const foreign = [
+          { name: 'FeishuSearch', categoryHint: 'read' },
+          { name: 'FeishuSend', categoryHint: 'network_send' },
+          { name: 'FeishuUntyped' },
+        ] as any[];
+        // Production composition: built-in tools plus the root/plugin tools, then the session filter.
+        const compose = (filtered: boolean) =>
+          createInteractiveRunComposer({
+            runtimePolicy: { revision: 0, policy: createDefaultRuntimePolicy() },
+            skills: {} as any,
+            memory: {} as any,
+            sessionTodo: {} as any,
+            builtinTools: {
+              shellRuns: { runForegroundBash: unused, runBackgroundBash: unused },
+              backgroundTasks: { stopBackgroundTask: unused },
+              ptyControls: { writeStdin: unused },
+            },
+            hostTools: [...f.service.filterTools(id, f.service.tools), ...foreign],
+            ...(filtered ? { filterTools: (tools) => f.service.filterTools(id, tools) } : {}),
+          }).tools.map((tool) => tool.name);
+        const unfiltered = compose(false);
+        for (const name of ['Bash', 'Edit', 'Write', 'FeishuSend', 'FeishuUntyped'])
+          assert.ok(unfiltered.includes(name), name);
+        const names = compose(true);
+        for (const name of ['Bash', 'Edit', 'Write', 'FeishuSend', 'FeishuUntyped'])
+          assert.ok(!names.includes(name), name);
+        for (const name of [
+          'Read',
+          'Grep',
+          'Glob',
+          'FeishuSearch',
+          'DiscoveryDraft',
+          ...DISCOVERY_TOOLS,
+        ])
+          assert.ok(names.includes(name), name);
+        const native = new Set(f.service.tools.map((tool) => tool.name));
+        assert.deepEqual(new Set(names.filter((name) => native.has(name))), DISCOVERY_TOOLS);
+        // Without Write, the scoped draft tool is the only way to produce the result file.
+        const draft = await invoke('DiscoveryDraft', {
+          notes: [
+            {
+              topicId: 'calendar',
+              title: '日程',
+              text: '日程冲突，需要判断。',
+              sources: ['日历'],
+            },
+          ],
+        });
+        assert.equal(draft.path, /完成后把增量操作写入 (.+)，格式：/.exec(prompt)![1]);
         return;
       }
       await writeFile(
@@ -712,6 +755,7 @@ test('independent discovery retains the exact prompt and reports through Inbox, 
   });
   await f.service.call('assistant.control', { action: 'check' });
   await until(() => reported && processed);
+  await assert.rejects(f.invoke('DiscoveryDraft', { notes: [] }), /No exploration draft/);
   assert.equal(f.visible.length, 1);
   assert.equal(f.visible[0].text, '明天两个安排冲突，要一起调整吗？');
   assert.equal(
