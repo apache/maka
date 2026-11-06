@@ -27,7 +27,7 @@ Maka provides a terminal workbench and a native desktop shell. A Runtime Host ow
 
 ## Run from source
 
-Install Rust stable, Node.js 26, npm 12.2.1 and [just](https://github.com/casey/just). Native Computer Use additionally needs Xcode Command Line Tools on macOS or the X11 development libraries on Linux.
+Install Rust stable, Node.js 26, npm 12.2.1 and [just](https://github.com/casey/just). On macOS, the build compiles GPUI's Metal shaders, so it also needs Xcode and its Metal Toolchain: open Xcode once, select it with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, then run `xcodebuild -downloadComponent MetalToolchain`. Xcode Command Line Tools alone do not include the `metal` compiler. Native Computer Use additionally needs the X11 development libraries on Linux.
 
 ```sh
 git clone https://github.com/apache/maka.git
