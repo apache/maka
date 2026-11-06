@@ -582,6 +582,9 @@ mod tests {
                     ordinal: 0,
                 },
             )]);
+            if committed_before_last_page {
+                assert!(drain(&mut delivery, 5).is_empty());
+            }
             append(&mut writer, " obsolete tail");
             for event in [
                 ModelEvent::PartFinished {
