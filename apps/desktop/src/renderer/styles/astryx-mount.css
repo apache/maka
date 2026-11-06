@@ -71,6 +71,19 @@
   max-height: 80vh;
 }
 
+/* Astryx positions the close control at inline-end inside its full-viewport
+   dialog. Native Windows caption buttons paint above that dialog. Reuse the
+   same measured right-hand safe area as the shell titlebar, rather than a
+   platform-specific caption width. RTL puts the close control on the left,
+   where there is no Windows caption strip to avoid. The zero-width fallback
+   preserves the existing spacing on platforms without a right-hand overlay.
+   Astryx's first container button is the close action, before gallery arrows. */
+.astryx-lightbox > div > button:first-child:dir(ltr) {
+  inset-inline-end: calc(
+    var(--spacing-3) + var(--maka-titlebar-overlay-right-width, 0px)
+  );
+}
+
 /* LayoutFooter owns padding but deliberately has no action layout. Give only
    direct button groups a shared gap; wrapped HStacks keep their own sizing and
    alignment semantics. */
