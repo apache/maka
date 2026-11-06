@@ -19,96 +19,244 @@
 
 /**
  * CommonMark closes `**` only if the character before it is not punctuation, or the one
- * after it is whitespace or punctuation. Chinese is written without spaces, so
- * `**回升能否守住：**如果…` never closes and the asterisks show as text. Where a pair would
- * fail for that reason, the punctuation at the edge of the bold text moves outside the
- * markers (`**回升能否守住**：如果…`): the visible text is the same and the pair closes.
+ * after it is whitespace or punctuation (and mirrored for opening). Chinese is written
+ * without spaces, so `**回升能否守住：**如果…` never closes and its asterisks show as text.
  *
- * Only a `**…**` pair inside one line of a plain-text paragraph is touched; a paragraph
- * that has code, a link, a URL, HTML or an escape is left entirely as written, as is
- * anything already correct.
+ * Where a `**…**` pair fails for that reason, the punctuation at the edge of the bold text
+ * moves outside the markers (`**回升能否守住**：如果…`): the visible text is the same and
+ * the pair closes. A balanced wrapper that surrounds the bold text moves out as a pair
+ * (`他说**“不行”**然后` → `他说“**不行**”然后`), so nothing is half bold.
+ *
+ * This is a text pass, not a parser, so it only rewrites what it can recognise as plain
+ * prose and leaves every other case exactly as written: fenced and indented code, code
+ * spans (including ones that run over lines), escapes, link destinations, reference
+ * definitions, autolinks, raw URLs and HTML tags. A pair it cannot move without splitting
+ * bold text (`**营收（同比 +12%）**增长`) is left as written too.
  */
-const EDGE = /[\p{P}\p{S}]/u;
-const MOVABLE = (char: string) => EDGE.test(char) && char !== '*' && char !== '`' && char !== '\\';
-const BLANK = /\s/u;
-const closesOn = (next: string | undefined) =>
-  next === undefined || BLANK.test(next) || EDGE.test(next);
-const opensAfter = (previous: string | undefined) =>
-  previous === undefined || BLANK.test(previous) || EDGE.test(previous);
 
-function fixPairs(text: string): string {
-  return text.replace(/\*\*([^*\n]+?)\*\*/gu, (whole, inner: string, offset: number) => {
-    const before = [...text.slice(0, offset)].at(-1);
-    const after = [...text.slice(offset + whole.length)][0];
-    const chars = [...inner];
-    let leading = '';
-    let trailing = '';
-    // Closing: punctuation inside the end marker while a letter or character follows it.
-    if (!closesOn(after))
-      while (chars.length > 1 && MOVABLE(chars.at(-1)!)) trailing = chars.pop()! + trailing;
-    // Opening: punctuation inside the start marker while a letter or character precedes it.
-    if (!opensAfter(before))
-      while (chars.length > 1 && MOVABLE(chars[0])) leading += chars.shift()!;
-    if (!leading && !trailing) return whole;
-    // Nothing left to be bold: leave the text as written.
-    if (chars.every((char) => MOVABLE(char) || BLANK.test(char))) return whole;
-    return `${leading}**${chars.join('')}**${trailing}`;
-  });
+/** Punctuation that ends a clause or label and is safe to move out of the bold text. */
+const PEEL = new Set(['：', ':', '，', ',', '。', '.', '；', ';', '、', '！', '!', '？', '?']);
+const OPENERS = '“‘《【「『（([〈«{';
+const CLOSERS = '”’》】」』）)]〉»}';
+const isPunctuation = (char: string) => /[\p{P}\p{S}]/u.test(char);
+const isBlank = (char: string) => /\s/u.test(char);
+const closesOn = (next: string | undefined) =>
+  next === undefined || isBlank(next) || isPunctuation(next);
+const opensAfter = (previous: string | undefined) =>
+  previous === undefined || isBlank(previous) || isPunctuation(previous);
+const wraps = (open: string, close: string) =>
+  OPENERS.includes(open) && OPENERS.indexOf(open) === CLOSERS.indexOf(close);
+
+type Range = readonly [number, number];
+
+/** The parts of a paragraph that are not plain prose: they are never read or rewritten. */
+function protectedRanges(text: string): Range[] {
+  const found: Range[] = [];
+  // Reference definitions are whole lines.
+  for (const match of text.matchAll(/^ {0,3}\[[^\]\n]+\]:.*$/gmu))
+    found.push([match.index, match.index + match[0].length]);
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\\') {
+      found.push([index, Math.min(index + 2, text.length)]);
+      index += 2;
+    } else if (char === '`') {
+      let end = index;
+      while (text[end] === '`') end += 1;
+      const length = end - index;
+      // A span closes at the next run of exactly the same length, even over lines.
+      let close = -1;
+      for (let at = end; at < text.length; ) {
+        if (text[at] !== '`') {
+          at += 1;
+          continue;
+        }
+        let stop = at;
+        while (text[stop] === '`') stop += 1;
+        if (stop - at === length) {
+          close = stop;
+          break;
+        }
+        at = stop;
+      }
+      if (close === -1) {
+        found.push([index, end]);
+        index = end;
+      } else {
+        found.push([index, close]);
+        index = close;
+      }
+    } else if (char === '<') {
+      const tag =
+        /^<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[^\s@<>]+@[^\s<>]+|\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?|!--[\s\S]*?--)>/u.exec(
+          text.slice(index),
+        );
+      if (tag) {
+        found.push([index, index + tag[0].length]);
+        index += tag[0].length;
+      } else index += 1;
+    } else if (char === ']' && text[index + 1] === '(') {
+      // A link or image destination, with balanced parentheses.
+      let depth = 0;
+      let end = index + 1;
+      for (; end < text.length && text[end] !== '\n'; end += 1) {
+        if (text[end] === '(') depth += 1;
+        else if (text[end] === ')' && --depth === 0) break;
+      }
+      found.push([index + 1, Math.min(end + 1, text.length)]);
+      index = Math.min(end + 1, text.length);
+    } else {
+      const url = /^(?:https?:\/\/|www\.)[^\s<]*/iu.exec(text.slice(index));
+      if (url) {
+        found.push([index, index + url[0].length]);
+        index += url[0].length;
+      } else index += 1;
+    }
+  }
+  return found;
 }
 
-/**
- * Whether the text of a paragraph can be rewritten without reading Markdown structure:
- * no code span (a span can run over several lines), no link or image, autolink, raw URL,
- * HTML or reference-style construct, and no escape. Anything else is left exactly as the
- * parser would see it.
- */
-const PLAIN_PARAGRAPH = /^[^`<>\\\[\]]*$/u;
-const hasAddress = (text: string) => /:\/\/|www\./iu.test(text);
-const indentedCode = (line: string) => /^(?: {4,}|\t)/u.test(line);
+const inside = (ranges: readonly Range[], at: number) =>
+  ranges.some(([start, end]) => at >= start && at < end);
 
-/** `text` with bold pairs that CommonMark would leave open made to close, in plain paragraphs only. */
+type Edit = { start: number; end: number; text: string };
+
+/** The rewritten `**body**` for one pair, or null when it should stay as written. */
+function repair(paragraph: string, open: number, close: number, ranges: readonly Range[]) {
+  const before = [...paragraph.slice(0, open)].at(-1);
+  const after = [...paragraph.slice(close + 2)][0];
+  let chars = [...paragraph.slice(open + 2, close)];
+  if (chars.length === 0 || isBlank(chars[0]) || isBlank(chars.at(-1)!)) return null;
+  const blockedClose = isPunctuation(chars.at(-1)!) && !closesOn(after);
+  const blockedOpen = isPunctuation(chars[0]) && !opensAfter(before);
+  if (!blockedClose && !blockedOpen) return null;
+  let leading = '';
+  let trailing = '';
+  // A balanced wrapper around the whole bold text moves out as a pair.
+  if (chars.length > 2 && wraps(chars[0], chars.at(-1)!)) {
+    leading = chars.shift()!;
+    trailing = chars.pop()!;
+  } else if (blockedOpen) {
+    // An opening quote or bracket that does not wrap the text cannot move alone.
+    return null;
+  }
+  // Clause punctuation left at the end still blocks the closing marker.
+  const next = trailing || after;
+  if (isPunctuation(chars.at(-1)!) && !closesOn(next)) {
+    let peeled = '';
+    while (chars.length > 1 && PEEL.has(chars.at(-1)!)) peeled = chars.pop()! + peeled;
+    if (!peeled || isPunctuation(chars.at(-1)!)) return null;
+    // Those characters must be plain prose, not part of an escape or a code span.
+    const start = close - peeled.length;
+    if (inside(ranges, start) || inside(ranges, close - 1)) return null;
+    trailing = peeled + trailing;
+  }
+  if (chars.every((char) => isPunctuation(char) || isBlank(char))) return null;
+  // The pair must now be able to open and to close.
+  if (!opensAfter(leading ? undefined : before) && isPunctuation(chars[0])) return null;
+  return `${leading}**${chars.join('')}**${trailing}`;
+}
+
+/** One paragraph (no blank line, no fence): pair its `**` runs on each line and repair them. */
+function fixParagraph(paragraph: string): string {
+  const ranges = protectedRanges(paragraph);
+  const edits: Edit[] = [];
+  let pending: number | null = null;
+  for (let index = 0; index < paragraph.length; ) {
+    if (paragraph[index] === '\n') {
+      pending = null;
+      index += 1;
+      continue;
+    }
+    if (paragraph[index] !== '*') {
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (paragraph[end] === '*') end += 1;
+    const length = end - index;
+    const at = index;
+    index = end;
+    if (inside(ranges, at)) continue;
+    // Only a plain `**`; longer or shorter runs are left alone and end any open pair.
+    if (length !== 2) {
+      pending = null;
+      continue;
+    }
+    const next = paragraph[at + 2];
+    const previous = at > 0 ? paragraph[at - 1] : undefined;
+    const canClose = previous !== undefined && !isBlank(previous);
+    const canOpen = next !== undefined && next !== '\n' && !isBlank(next);
+    if (canClose && pending !== null) {
+      const text = repair(paragraph, pending, at, ranges);
+      if (text !== null) edits.push({ start: pending, end: at + 2, text });
+      pending = null;
+    } else if (canOpen) pending = at;
+  }
+  let result = paragraph;
+  for (const edit of edits.reverse())
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  return result;
+}
+
+/** Strips the container prefixes (`>`, list markers) a fence line may sit behind. */
+const FENCE_PREFIX = String.raw`(?:[ \t]*>)*[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?`;
+const FENCE_OPEN = new RegExp(`^${FENCE_PREFIX}(\`{3,}|~{3,})(.*)$`, 'u');
+
+/**
+ * `text` with bold pairs that CommonMark would leave open made to close. Fenced code is
+ * skipped, as is any line indented as code; the rest is rewritten paragraph by paragraph.
+ */
 export function closeCjkEmphasis(text: string): string {
   if (!text.includes('**')) return text;
   const lines = text.split('\n');
   const out: string[] = [];
-  let fenced: string | null = null;
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    const fence = /^\s{0,3}(`{3,}|~{3,})/u.exec(line);
-    if (fenced !== null) {
-      if (fence && fence[1][0] === fenced[0] && fence[1].length >= fenced.length) fenced = null;
+  let fence: string | null = null;
+  let paragraph: string[] = [];
+  let previousBlank = true;
+  const flush = () => {
+    if (paragraph.length) out.push(...fixParagraph(paragraph.join('\n')).split('\n'));
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (fence !== null) {
+      const closing = new RegExp(
+        `^${FENCE_PREFIX}(\`{${fence.length},}|~{${fence.length},})[ \\t]*$`,
+        'u',
+      ).exec(line);
+      if (closing && closing[1][0] === fence[0]) fence = null;
       out.push(line);
-      index += 1;
+      previousBlank = false;
       continue;
     }
-    if (fence) {
-      fenced = fence[1];
+    const opening = FENCE_OPEN.exec(line);
+    // A backtick fence's info string cannot contain a backtick: that is an inline span.
+    if (opening && !(opening[1][0] === '`' && opening[2].includes('`'))) {
+      flush();
+      fence = opening[1];
       out.push(line);
-      index += 1;
+      previousBlank = false;
       continue;
     }
     if (line.trim() === '') {
+      flush();
       out.push(line);
-      index += 1;
+      previousBlank = true;
       continue;
     }
-    // One paragraph: the lines up to the next blank line or fence.
-    let end = index;
-    while (
-      end < lines.length &&
-      lines[end].trim() !== '' &&
-      !/^\s{0,3}(`{3,}|~{3,})/u.test(lines[end])
-    )
-      end += 1;
-    const block = lines.slice(index, end);
-    const joined = block.join('\n');
-    const safe =
-      PLAIN_PARAGRAPH.test(joined) &&
-      !hasAddress(joined) &&
-      !block.some((row) => indentedCode(row));
-    for (const row of block) out.push(safe ? fixPairs(row) : row);
-    index = end;
+    // Four spaces after a blank line is code unless it starts a (nested) list item.
+    const indentedCode =
+      previousBlank && /^(?: {4,}|\t)/u.test(line) && !/^\s*(?:[-*+]|\d+[.)])\s/u.test(line);
+    if (indentedCode) {
+      flush();
+      out.push(line);
+      previousBlank = false;
+      continue;
+    }
+    paragraph.push(line);
+    previousBlank = false;
   }
+  flush();
   return out.join('\n');
 }
