@@ -35,7 +35,7 @@ pub(super) struct Registry {
     activity: Arc<RwLock<()>>,
     state: Arc<Mutex<Runs>>,
     sessions: MapMutex<BTreeMap<String, Weak<Gate>>>,
-    checkpoints: Arc<MapMutex<BTreeMap<String, PathBuf>>>,
+    checkpoints: Arc<MapMutex<BTreeMap<String, Vec<PathBuf>>>>,
 }
 
 impl Default for Registry {
@@ -58,7 +58,7 @@ pub(super) fn overlaps(a: &Path, b: &Path) -> bool {
 }
 
 pub(super) struct Checkpoint {
-    checkpoints: Arc<MapMutex<BTreeMap<String, PathBuf>>>,
+    checkpoints: Arc<MapMutex<BTreeMap<String, Vec<PathBuf>>>>,
     session: String,
 }
 impl Drop for Checkpoint {
@@ -77,24 +77,33 @@ impl Registry {
             .map(|(id, _)| id.clone())
             .collect()
     }
+    pub(super) fn has_checkpoints(&self) -> bool {
+        !self.checkpoints.lock().unwrap().is_empty()
+    }
     pub(super) fn checkpointed(&self, session: &str) -> bool {
         self.checkpoints.lock().unwrap().contains_key(session)
     }
     pub(super) fn workspace_available(&self, session: &str, path: &Path) -> bool {
-        self.checkpoints
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(id, active)| id != session && !overlaps(path, active))
+        self.checkpoints.lock().unwrap().iter().all(|(id, active)| {
+            id != session && active.iter().all(|reserved| !overlaps(path, reserved))
+        })
     }
-    pub(super) fn checkpoint(&self, session: &str, path: PathBuf) -> Result<Checkpoint, String> {
+    pub(super) fn checkpoint(
+        &self,
+        session: &str,
+        paths: Vec<PathBuf>,
+    ) -> Result<Checkpoint, String> {
         let mut checkpoints = self.checkpoints.lock().unwrap();
         if checkpoints.contains_key(session)
-            || checkpoints.values().any(|active| overlaps(&path, active))
+            || checkpoints.values().any(|active| {
+                active
+                    .iter()
+                    .any(|reserved| paths.iter().any(|path| overlaps(path, reserved)))
+            })
         {
             return Err("agent_checkpoint_busy".into());
         }
-        checkpoints.insert(session.to_owned(), path);
+        checkpoints.insert(session.to_owned(), paths);
         Ok(Checkpoint {
             checkpoints: self.checkpoints.clone(),
             session: session.to_owned(),

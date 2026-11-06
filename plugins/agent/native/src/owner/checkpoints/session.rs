@@ -86,7 +86,9 @@ impl Owner {
                         .map(|value| response(value, None))
                         .map_err(failure);
                 };
-                let (admission, session) = owner.checkpoint_admission(&capture.session_id).await?;
+                let (admission, session) = owner
+                    .checkpoint_admission(&capture.session_id, None)
+                    .await?;
                 if owner.behavior.is_some()
                     || session.configuration.parent_session_id.is_some()
                     || session
@@ -94,6 +96,16 @@ impl Owner {
                         .backend
                         .as_ref()
                         .is_some_and(|v| !matches!(v, BackendPreference::Model { .. }))
+                    || owner.graph_selected(&session.id).await?
+                    || owner
+                        .store
+                        .session(&session.id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .session_manager(&session.id)
+                        .await
+                        .map_err(|_| "agent_session_unavailable")?
+                        .is_some()
                 {
                     return Err("agent_checkpoint_unsupported_session".into());
                 }

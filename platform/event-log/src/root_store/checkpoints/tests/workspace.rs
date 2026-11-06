@@ -229,14 +229,73 @@ async fn restore_fixture(
         .attach_workspace("fixture", &json!({"path":source}))
         .await
         .unwrap();
-    store
-        .update_session_metadata("source", 1, move |value: &mut serde_json::Value| {
-            value["workspace"] = serde_json::to_value(binding)?;
-            value["boundary_revision"] = json!(1);
-            Ok(())
-        })
+    assert!(matches!(
+        store
+            .update_session_metadata("source", 1, move |value: &mut serde_json::Value| {
+                value["workspace"] = serde_json::to_value(binding)?;
+                value["boundary_revision"] = json!(1);
+                Ok(())
+            })
+            .await
+            .unwrap(),
+        crate::sessions::SessionMutation::Committed(_)
+    ));
+    {
+        use maka_agent_facts::{
+            event::{
+                EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+            },
+            input::{DeliveredMessage, MessageInput},
+            message::{MessageDisposition, Placement, RootSourceMessage},
+        };
+        let log = handle.session.scoped().await.unwrap();
+        let content: MessageInput = "initial message".to_owned().into();
+        let message = RootSourceMessage {
+            message: DeliveredMessage {
+                origin: None,
+                message_id: "msg-read-1".into(),
+                content: content.clone(),
+                submitted_content_digest: content.content_digest().unwrap(),
+            },
+            unprepared_content: content.clone(),
+            submitted_placement: Placement::CurrentTurn,
+            disposition: MessageDisposition::TurnStarted,
+            submitted_intent: None,
+        };
+        let invocation = Invocation {
+            session_id: "source".into(),
+            turn_id: "turn-1".into(),
+            run_id: "run-1".into(),
+            invocation_id: "inv-1".into(),
+        };
+        log.append(
+            &EventWrite::plain(RuntimeEvent::new(
+                invocation.clone(),
+                Fact::InvocationOpened {
+                    configuration: None,
+                    input: InvocationInput::Message {
+                        content,
+                        source_messages: vec![message],
+                        request_fingerprint: None,
+                    },
+                },
+            ))
+            .unwrap(),
+        )
         .await
         .unwrap();
+        log.append(
+            &EventWrite::plain(RuntimeEvent::new(
+                invocation,
+                Fact::InvocationEnded {
+                    outcome: InvocationOutcome::Completed,
+                },
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    }
     publish.confirmed_subtree_digest = store.preview_bundle("source").await.unwrap().subtree_digest;
     publish.workspace = Some(WorkspaceCapture {
         root: source,
@@ -266,6 +325,20 @@ async fn restore_fixture(
     let configuration = json!({"title":"restored","workspace":binding,"boundary_revision":2});
     (store, handle, publish, operation, prepared, configuration)
 }
+async fn commit_restore(
+    handle: &HistoryCheckpoints,
+    operation: crate::checkpoints::RestoreOperation,
+    configuration: &serde_json::Value,
+    now: u64,
+) -> Result<crate::checkpoints::RestoredSession, StoreError> {
+    let configuration = configuration.clone();
+    handle
+        .commit_workspace_restore(operation, now, move |value: &mut serde_json::Value| {
+            *value = configuration.clone();
+            Ok(())
+        })
+        .await
+}
 #[tokio::test]
 async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_changes() {
     let directory = tempfile::tempdir().unwrap();
@@ -290,8 +363,7 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
     log.connection.run(|db|Box::pin(async move {sqlx::raw_sql("CREATE TRIGGER reject_restore BEFORE UPDATE ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'reject receipt'); END;").execute(db).await?;Ok(())})).await.unwrap();
     drop(log);
     assert!(
-        handle
-            .commit_workspace_restore(operation.clone(), configuration.clone(), 2)
+        commit_restore(&handle, operation.clone(), &configuration, 2)
             .await
             .is_err()
     );
@@ -315,14 +387,12 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
         .await
         .unwrap();
     drop(log);
-    let committed = handle
-        .commit_workspace_restore(operation.clone(), configuration.clone(), 3)
+    let committed = commit_restore(&handle, operation.clone(), &configuration, 3)
         .await
         .unwrap();
     assert_eq!(committed.prepared, prepared);
     assert_eq!(
-        handle
-            .commit_workspace_restore(operation.clone(), configuration, 3)
+        commit_restore(&handle, operation.clone(), &configuration, 3)
             .await
             .unwrap(),
         committed
@@ -451,8 +521,7 @@ async fn restore_rejects_head_race_and_changed_destination_without_rebinding() {
             .unwrap()
             .unwrap();
         assert!(
-            handle
-                .commit_workspace_restore(operation.clone(), configuration, 2)
+            commit_restore(&handle, operation.clone(), &configuration, 2)
                 .await
                 .is_err(),
             "accepted {race} race"
@@ -537,8 +606,7 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
         .unwrap();
     let configuration = json!({"workspace":binding,"boundary_revision":2});
     assert!(
-        handle
-            .commit_workspace_restore(operation, configuration, 2)
+        commit_restore(&handle, operation, &configuration, 2)
             .await
             .is_err()
     );
@@ -549,7 +617,14 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
 async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtures() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("project");
-    for child in [".git/info", "target", ".venv", "nested", "fixtures"] {
+    for child in [
+        ".git/info",
+        ".github/workflows",
+        "target",
+        ".venv",
+        "nested",
+        "fixtures",
+    ] {
         std::fs::create_dir_all(source.join(child)).unwrap();
     }
     std::fs::write(
@@ -566,6 +641,9 @@ async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtu
         "local-only",
         "nested/ignored",
         ".env",
+        ".env.local",
+        ".env.example",
+        ".github/workflows/ci.yml",
         "fixtures/test.pem",
         "fixtures/test.key",
         "keep.log",
@@ -596,6 +674,8 @@ async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtu
         .map(|entry| entry["path"].as_str().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
     for retained in [
+        ".env.example",
+        ".github/workflows/ci.yml",
         "fixtures/test.pem",
         "fixtures/test.key",
         "keep.log",
@@ -610,6 +690,7 @@ async fn workspace_ignores_build_outputs_and_secrets_but_keeps_certificate_fixtu
         "local-only",
         "nested/ignored",
         ".env",
+        ".env.local",
         ".git",
     ] {
         assert!(!paths.contains(omitted), "unexpected {omitted}: {paths:?}");
@@ -657,8 +738,7 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
             .unwrap(),
     )
     .unwrap();
-    handle
-        .commit_workspace_restore(request, configuration.clone(), 3)
+    commit_restore(&handle, request, &configuration, 3)
         .await
         .unwrap();
     let mut again = original;
@@ -669,16 +749,76 @@ async fn restore_allows_metadata_changes_and_repeated_restore_of_the_same_histor
         .await
         .unwrap();
     assert_ne!(prepared.path, second.path);
-    configuration["workspace"] = serde_json::to_value(
-        store
-            .attach_workspace("fixture", &json!({"path":second.path}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    handle
-        .commit_workspace_restore(again, configuration, 4)
+    // Non-history mutations (read marker + metadata update) between prepare and commit
+    // must be preserved rather than rejected or overwritten.
+    store
+        .set_session_read_marker::<serde_json::Value>("source", "msg-read-1")
         .await
         .unwrap();
+    let live = store
+        .get_session::<serde_json::Value>("source")
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .update_session_metadata("source", live.revision, |value: &mut serde_json::Value| {
+            value["title"] = json!("renamed between prepare and commit");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let new_binding = store
+        .attach_workspace("fixture", &json!({"path":second.path}))
+        .await
+        .unwrap();
+    let restored = handle
+        .commit_workspace_restore(again, 4, move |value: &mut serde_json::Value| {
+            value["workspace"] = serde_json::to_value(new_binding)?;
+            value["boundary_revision"] = json!(3);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let after = store
+        .get_session::<serde_json::Value>("source")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.revision, restored.session_revision);
+    assert_eq!(
+        after.read_state.last_read_message_id.as_deref(),
+        Some("msg-read-1")
+    );
+    assert_eq!(
+        after.configuration["title"],
+        "renamed between prepare and commit"
+    );
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn case_colliding_paths_fail_before_publishing_a_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("project");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("Readme.md"), "upper").unwrap();
+    let probe = source.join("readme.md");
+    std::fs::write(&probe, "lower").unwrap();
+    if std::fs::read_to_string(source.join("Readme.md")).unwrap() == "lower" {
+        // Case-insensitive host filesystem cannot create colliding siblings in the first place.
+        return;
+    }
+    let (store, handle, mut request) = fixture(dir.path()).await;
+    request.workspace = Some(WorkspaceCapture {
+        root: source,
+        identity: "workspace-id".into(),
+        consistency: WorkspaceConsistency::CallerConfirmedQuiescent,
+    });
+    let outcome = handle.publish(request).await;
+    assert!(
+        outcome.is_err(),
+        "expected case-collision failure: {outcome:?}"
+    );
+    assert!(handle.read_head().await.unwrap().is_none());
     store.close().await.unwrap();
 }

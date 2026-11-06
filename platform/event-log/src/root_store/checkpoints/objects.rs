@@ -48,6 +48,11 @@ impl Objects {
         Ok(Self { owner, directory })
     }
     pub(super) fn existing(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
+        if !cfg!(unix) {
+            return Err(invalid(
+                "history checkpoint file durability is not supported on this platform",
+            ));
+        }
         let directory = owner.canonical_path().join("history-checkpoints");
         let objects = Self { owner, directory };
         objects.validate()?;
@@ -89,6 +94,37 @@ impl Objects {
         }
         self.validate()?;
         Ok(self.directory.join("objects").join(&reference.digest))
+    }
+    pub(super) fn has(&self, reference: &ObjectRef) -> Result<bool, StoreError> {
+        let path = self.path(reference)?;
+        match open_regular(&path) {
+            Ok(mut file) => {
+                if measure(&mut file)? != *reference {
+                    return Err(invalid("checkpoint object digest or size differs"));
+                }
+                Ok(true)
+            }
+            Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    pub(super) fn link_staged(&self, path: &Path, reference: &ObjectRef) -> Result<(), StoreError> {
+        let destination = self.path(reference)?;
+        match fs::hard_link(path, destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.read(reference)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        self.owner.validate_current()?;
+        Ok(())
+    }
+    pub(super) fn sync_objects(&self) -> Result<(), StoreError> {
+        self.validate()?;
+        File::open(self.directory.join("objects"))?.sync_all()?;
+        self.owner.validate_current()?;
+        Ok(())
     }
     pub(super) fn read(&self, reference: &ObjectRef) -> Result<File, StoreError> {
         let path = self.path(reference)?;

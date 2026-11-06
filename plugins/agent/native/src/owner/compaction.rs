@@ -58,7 +58,17 @@ impl Owner {
         &self,
         input: SetCompactionPrompt,
     ) -> Result<MetadataResult, String> {
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::Closed,
@@ -104,7 +114,7 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<CompactResult, String> {
         let mut runs = self.runs.lock().await;
-        let session = self.session(&input.session_id).await?;
+        let session = self.mutable_session(&input.session_id).await?;
         let identity = self.operation_id(operation);
         let invocation = Invocation {
             session_id: input.session_id.clone(),

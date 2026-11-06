@@ -173,7 +173,7 @@ struct Control {
 }
 #[derive(Default)]
 struct Runs {
-    checkpoints: Arc<std::sync::Mutex<BTreeMap<String, std::path::PathBuf>>>,
+    checkpoints: Arc<std::sync::Mutex<BTreeMap<String, Vec<std::path::PathBuf>>>>,
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, CancellationToken>,
@@ -737,16 +737,22 @@ impl Owner {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
-        if self.runs.checkpointed(id) {
-            return Err("agent_checkpoint_busy".into());
-        }
         let session = self
             .store
             .get_session::<StoredSessionConfiguration>(id)
             .await
             .map_err(|_| "agent_store_unavailable".to_owned())?
             .ok_or("agent_session_unavailable")?;
-        let session = resolve_session(session)?;
+        resolve_session(session)
+    }
+    pub(in crate::owner) async fn mutable_session(
+        &self,
+        id: &str,
+    ) -> Result<SessionRecord<ResolvedConfiguration>, String> {
+        if self.runs.checkpointed(id) {
+            return Err("agent_checkpoint_busy".into());
+        }
+        let session = self.session(id).await?;
         if !self.runs.workspace_available(
             id,
             std::path::Path::new(&session.configuration.workspace.path),
@@ -1279,7 +1285,7 @@ impl Owner {
                 .as_ref()
                 .map(|parked| parked.checkpoint.invocation.clone())
         });
-        let session = self.session(&id).await?;
+        let session = self.mutable_session(&id).await?;
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
@@ -1472,7 +1478,7 @@ impl Owner {
                             .map_err(|_| "agent_execution_unavailable")?
                             .map(|parked| parked.checkpoint.invocation),
                     };
-                    let current = self.session(&id).await?;
+                    let current = self.mutable_session(&id).await?;
                     if current.configuration != session.configuration || current.archived {
                         return Err("agent_session_configuration_changed".into());
                     }
@@ -1705,6 +1711,7 @@ impl Owner {
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
+            || self.runs.has_checkpoints()
             || !self.workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()

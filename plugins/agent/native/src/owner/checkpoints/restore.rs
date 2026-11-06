@@ -82,26 +82,7 @@ impl Owner {
                 if !input.accept_external_writers_risk {
                     return Err("agent_checkpoint_external_writers_not_fenced".into());
                 }
-                let (admission, session) = owner
-                    .checkpoint_admission(&input.checkpoint.session_id)
-                    .await?;
-                if owner.behavior.is_some()
-                    || session.archived
-                    || session.configuration.parent_session_id.is_some()
-                    || !matches!(input.backend, BackendPreference::Model { .. })
-                    || session
-                        .configuration
-                        .backend
-                        .as_ref()
-                        .is_some_and(|v| !matches!(v, BackendPreference::Model { .. }))
-                    || owner
-                        .goals
-                        .repository
-                        .read(&session.id)
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .is_some()
-                {
+                if !matches!(input.backend, BackendPreference::Model { .. }) {
                     return Err("agent_checkpoint_unsupported_session".into());
                 }
                 if !owner.backend_available(&input.backend).await? {
@@ -111,16 +92,50 @@ impl Owner {
                 let parent = workspace::observed(
                     owner.workspace_roots.clone(),
                     &input.parent,
-                    None,
+                    owner.home.as_deref(),
                     root.canonical_path().to_owned(),
                 )
                 .await?
                 .ok_or("agent_directory_unavailable")?;
                 let path = std::path::PathBuf::from(parent.path);
-                if path.starts_with(root.control_directory())
+                let control_dir = std::fs::canonicalize(root.control_directory())
+                    .unwrap_or_else(|_| root.control_directory().to_owned());
+                if path.starts_with(&control_dir)
+                    || path.starts_with(root.control_directory())
                     || path.starts_with(&owner.managed_worktrees)
                 {
                     return Err("agent_directory_unavailable".into());
+                }
+                let (admission, session) = owner
+                    .checkpoint_admission(&input.checkpoint.session_id, Some(&path))
+                    .await?;
+                if owner.behavior.is_some()
+                    || session.archived
+                    || session.configuration.parent_session_id.is_some()
+                    || session
+                        .configuration
+                        .backend
+                        .as_ref()
+                        .is_some_and(|v| !matches!(v, BackendPreference::Model { .. }))
+                    || owner.graph_selected(&session.id).await?
+                    || owner
+                        .store
+                        .session(&session.id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .session_manager(&session.id)
+                        .await
+                        .map_err(|_| "agent_session_unavailable")?
+                        .is_some()
+                    || owner
+                        .goals
+                        .repository
+                        .read(&session.id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .is_some()
+                {
+                    return Err("agent_checkpoint_unsupported_session".into());
                 }
                 let request = storage::RestoreOperation {
                     operation: operation.operation,
@@ -134,16 +149,18 @@ impl Owner {
                     .await
                     .map_err(failure)?;
                 let root = owner.store.owned_root().map_err(failure)?;
+                let control_dir = std::fs::canonicalize(root.control_directory())
+                    .unwrap_or_else(|_| root.control_directory().to_owned());
                 let selected = workspace::initialize(
                     &owner.workspace_roots,
                     prepared
                         .path
                         .to_str()
                         .ok_or("agent_directory_unavailable")?,
-                    None,
+                    owner.home.as_deref(),
                     &owner.managed_worktrees,
                     root.canonical_path(),
-                    root.control_directory(),
+                    &control_dir,
                 )
                 .await?
                 .ok_or("agent_workspace_unavailable")?;
@@ -152,27 +169,27 @@ impl Owner {
                     .attach_workspace(&owner.prefix, &selected)
                     .await
                     .map_err(failure)?;
-                let mut configuration = owner
-                    .store
-                    .get_session::<StoredSessionConfiguration>(&session.id)
-                    .await
-                    .map_err(failure)?
-                    .ok_or("agent_session_unavailable")?
-                    .configuration;
-                configuration.workspace = binding;
-                configuration.permissions = input.permissions;
-                configuration.backend = Some(input.backend);
-                configuration.boundary_revision = session
-                    .configuration
-                    .boundary_revision
-                    .checked_add(1)
-                    .filter(|v| *v <= 9_007_199_254_740_991)
-                    .ok_or("agent_permission_revision_exhausted")?;
+                let permissions = input.permissions;
+                let backend = input.backend;
                 let result = repository
                     .commit_workspace_restore(
                         request,
-                        serde_json::to_value(configuration).map_err(|e| e.to_string())?,
                         now(),
+                        move |configuration: &mut StoredSessionConfiguration| {
+                            configuration.workspace = binding.clone();
+                            configuration.permissions = permissions.clone();
+                            configuration.backend = Some(backend.clone());
+                            configuration.boundary_revision = configuration
+                                .boundary_revision
+                                .checked_add(1)
+                                .filter(|v| *v <= 9_007_199_254_740_991)
+                                .ok_or_else(|| {
+                                    StoreError::InvalidTransition(
+                                        "permission boundary revision exhausted".into(),
+                                    )
+                                })?;
+                            Ok(())
+                        },
                     )
                     .await
                     .map(restored)

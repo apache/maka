@@ -23,8 +23,8 @@
 
 Transcript 行分别暴露 `position` 和 `order`：前者定位规范原文，后者按原生 assistant 消息真正开始的位置排序，即使消息结束记录晚于工具调用。历史分页、导航与复制历史按显示顺序使用索引，原文读取和 fence 仍保留规范来源。原生消息正文按 invocation／message 专用索引重建，不逐条重扫此前所有工具输出。
 
-仅历史 checkpoint 使用 `RootStore::history_checkpoints` 和
-[`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与版本化 Manifest
+Checkpoint 使用 `RootStore::history_checkpoints` 和
+[`checkpoints`](src/checkpoints.rs) 中的类型。原生 Bundle 与 Manifest
 先验证并持久保存在私有 Root 内，再创建或条件更新独立的 checkpoint Head。
 Head 与发布回执在 Session 所在分区的同一事务提交；Host 操作日志可能位于
 另一分区，响应结果未知时必须先查询原发布回执。实时 Session revision 和
@@ -118,4 +118,4 @@ Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每�
 启动恢复读取全部未决执行状态，不另设条数或字节配额，已完成历史仍不参与扫描。工具结果 payload 与冻结请求配置不设应用层存储大小上限，数据库迁移保留已有内容和配置引用。
 
 
-Workspace 存档采用版本化清单和不可变文件对象；`caller_confirmed_quiescent` / `unverified` 声明与字节完整性分开，不能宣称已经隔离外部写入。同 Root 目录恢复要求实时历史未推进，在新目录物化，并原子提交绑定与原回执；不推进 checkpoint Head、不自动执行。文件策略、明确风险提示、故障恢复和范围见 [Agent API](../../plugins/agent/api/README.zh-CN.md)。
+Workspace 存档采用路径清单和不可变文件对象；`caller_confirmed_quiescent` / `unverified` 声明与字节完整性分开，不能宣称已经隔离外部写入。同 Root 目录恢复要求实时历史未推进，在新目录物化，并原子提交绑定与原回执；不推进 checkpoint Head、不自动执行。文件策略、明确风险提示、故障恢复和范围见 [Agent API](../../plugins/agent/api/README.zh-CN.md)。

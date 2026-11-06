@@ -26,6 +26,7 @@ use serde_json::Value;
 use sqlx::SqliteConnection;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RequestIdentity {
     scope: Scope,
     session: String,
@@ -94,12 +95,20 @@ impl Commit {
         {
             return Err(invalid("checkpoint restore head moved"));
         }
+        let archived: bool = sqlx::query_scalar("SELECT archived FROM session_control WHERE id=?")
+            .bind(&self.request.session)
+            .fetch_optional(&mut *db)
+            .await?
+            .ok_or(StoreError::SessionNotFound)?;
+        if archived {
+            return Err(invalid("archived Session cannot be restored"));
+        }
         let inventory = crate::bundle::Inventory {
             root_session_id: self.request.session.clone(),
             subtree_digest: String::new(),
             sessions: vec![crate::bundle::Session {
                 id: self.request.session.clone(),
-                revision: self.prepared.source_revision,
+                revision: 0,
             }],
         };
         crate::bundle::require_idle(db, &inventory).await?;
@@ -193,7 +202,7 @@ impl HistoryCheckpoints {
             let directory = cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority())?;
             if directory_identity(&directory)? != request.operation.parent_identity { return Err(invalid("restore parent directory changed")); }
             if parent.starts_with(objects.owner.canonical_path()) { return Err(invalid("restore destination overlaps private Root")); }
-            let prepared = PreparedRestore { head: checkout.head, source_revision: current.revision, history_cut, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
+            let prepared = PreparedRestore { head: checkout.head, history_cut, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
             let key = request.key()?;
             let encoded = serde_json::to_string(&request)?;
             let data = serde_json::to_string(&prepared)?;
@@ -208,7 +217,6 @@ impl HistoryCheckpoints {
             let identity = directory_identity(&destination)?;
             workspace::materialize_in(&objects, &prepared.workspace, &destination)?;
             directory.open(".")?.sync_all()?;
-            verify_destination(&objects, &prepared, &request.operation, &identity)?;
             let key = request.key()?;
             let identity = serde_json::to_string(&identity)?;
             // A claim alone never proves we created the directory. Publish its
@@ -223,16 +231,21 @@ impl HistoryCheckpoints {
     }
     /// Configuration and the original restore receipt commit atomically. This
     /// rebinding never rewinds history or starts an invocation.
-    pub async fn commit_workspace_restore(
+    pub async fn commit_workspace_restore<T, F>(
         &self,
         operation: RestoreOperation,
-        configuration: Value,
         now: u64,
-    ) -> Result<RestoredSession, StoreError> {
+        mut update: F,
+    ) -> Result<RestoredSession, StoreError>
+    where
+        T: Serialize + serde::de::DeserializeOwned + Clone + PartialEq + Send + 'static,
+        F: FnMut(&mut T) -> Result<(), StoreError> + Send + 'static,
+    {
         crate::sessions::validate_time(now)?;
         let request = self.restore_identity(operation);
         let log = self.session.exclusive_metadata(true).await?;
         let gates = self.session.gates.clone();
+        let session_store = self.session.clone();
         let control = self
             .session
             .control
@@ -247,40 +260,56 @@ impl HistoryCheckpoints {
             }
             let directory_identity = preparation.directory_identity()?.clone();
             let prepared = preparation.prepared;
-            let reference = crate::workspace_bindings::attached(&configuration)?
-                .ok_or_else(|| invalid("restore workspace binding missing"))?;
-            let pin = gates.read([gates::Key::Binding(reference.id)]).await?;
             verify_destination(&objects, &prepared, &request.operation, &directory_identity)?;
-            let binding = control
-                .workspace_binding::<Value>(reference.id)
-                .await?
-                .ok_or_else(|| invalid("restore binding missing"))?;
-            if binding.workspace.get("path").and_then(Value::as_str) != prepared.path.to_str() {
-                return Err(invalid("restore binding differs from prepared workspace"));
-            }
-            let key = request.key()?;
-            let result = log
-                .mutate_session_metadata::<Value, _>(
-                    &request.session,
-                    prepared.source_revision,
-                    true,
-                    Some(now),
-                    Some(control),
-                    Some(Commit {
-                        key,
-                        request: request.clone(),
-                        prepared: prepared.clone(),
-                        directory_identity,
-                    }),
-                    move |value| {
-                        *value = configuration;
-                        Ok(())
-                    },
-                )
-                .await?;
-            drop(pin);
-            if !matches!(result, crate::sessions::SessionMutation::Committed(_)) {
-                return Err(invalid("live Session advanced beyond checkpoint"));
+            loop {
+                let record = log
+                    .get_session::<T>(&request.session)
+                    .await?
+                    .ok_or(StoreError::SessionNotFound)?;
+                let mut normalized = serde_json::to_value(&record.configuration)?;
+                crate::workspace_bindings::normalize(
+                    &mut normalized,
+                    record.workspace_binding.as_ref(),
+                )?;
+                let mut candidate: T = serde_json::from_value(normalized)?;
+                update(&mut candidate)?;
+                let encoded = serde_json::to_value(&candidate)?;
+                let reference = crate::workspace_bindings::attached(&encoded)?
+                    .ok_or_else(|| invalid("restore workspace binding missing"))?;
+                let pin = gates.read([gates::Key::Binding(reference.id)]).await?;
+                let binding = control
+                    .workspace_binding::<Value>(reference.id)
+                    .await?
+                    .ok_or_else(|| invalid("restore binding missing"))?;
+                if binding.workspace.get("path").and_then(Value::as_str) != prepared.path.to_str() {
+                    return Err(invalid("restore binding differs from prepared workspace"));
+                }
+                let control_dependency = session_store.control_dependency()?;
+                let key = request.key()?;
+                let result = log
+                    .scoped(Arc::new((pin, control_dependency)))
+                    .mutate_session_metadata::<T, _>(
+                        &request.session,
+                        record.revision,
+                        true,
+                        Some(now),
+                        Some(control.clone()),
+                        Some(Commit {
+                            key,
+                            request: request.clone(),
+                            prepared: prepared.clone(),
+                            directory_identity: directory_identity.clone(),
+                        }),
+                        move |value| {
+                            *value = candidate;
+                            Ok(())
+                        },
+                    )
+                    .await?;
+                match result {
+                    crate::sessions::SessionMutation::Committed(_) => break,
+                    crate::sessions::SessionMutation::RevisionConflict { .. } => continue,
+                }
             }
             prior(&log, &request)
                 .await?
@@ -324,6 +353,7 @@ fn verify_destination(
     fn paths(
         dir: &Dir,
         prefix: &str,
+        expected: &std::collections::BTreeSet<String>,
         result: &mut std::collections::BTreeSet<String>,
     ) -> Result<(), StoreError> {
         for entry in dir.entries()? {
@@ -340,18 +370,18 @@ fn verify_destination(
             } else {
                 format!("{prefix}/{name}")
             };
-            if result.len() >= 20_000 || path.split('/').count() > 65 {
-                return Err(invalid("restored workspace bounds exceeded"));
+            if !expected.contains(&path) {
+                return Err(invalid("restored workspace inventory changed"));
             }
             result.insert(path.clone());
             if entry.file_type()?.is_dir() {
-                paths(&dir.open_dir_nofollow(&name)?, &path, result)?;
+                paths(&dir.open_dir_nofollow(&name)?, &path, expected, result)?;
             }
         }
         Ok(())
     }
     let mut actual = std::collections::BTreeSet::new();
-    paths(&root, "", &mut actual)?;
+    paths(&root, "", &expected, &mut actual)?;
     if actual != expected {
         return Err(invalid("restored workspace inventory changed"));
     }

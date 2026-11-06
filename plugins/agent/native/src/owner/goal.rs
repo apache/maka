@@ -277,6 +277,15 @@ impl Owner {
         if runs.busy(session) {
             return Ok(false);
         }
+        if self.runs.has_checkpoints() {
+            let current = self.session(session).await?;
+            if !self.runs.workspace_available(
+                session,
+                std::path::Path::new(&current.configuration.workspace.path),
+            ) {
+                return Ok(false);
+            }
+        }
         if !self
             .store
             .session(session)
@@ -315,7 +324,7 @@ impl Owner {
             }
         };
         let admission = self.goals.admissions.ordered(session).await;
-        self.session(session).await?;
+        self.mutable_session(session).await?;
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());

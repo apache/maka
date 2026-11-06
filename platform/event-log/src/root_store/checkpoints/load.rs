@@ -25,6 +25,91 @@ use sqlx::Connection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+const INSPECTION_CACHE_CAPACITY: usize = 8;
+
+struct CachedInspection {
+    key: String,
+    log: Arc<EventLog>,
+    through: u64,
+    session_ids: Vec<String>,
+}
+
+enum CacheInsert {
+    Cached {
+        active: Arc<CachedInspection>,
+        retired: Option<Arc<EventLog>>,
+    },
+    Uncached(Arc<CachedInspection>),
+}
+
+#[derive(Default)]
+pub(in crate::root_store) struct Inspections {
+    entries: std::sync::Mutex<Vec<Arc<CachedInspection>>>,
+}
+
+impl Inspections {
+    pub(in crate::root_store) fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn get(&self, key: &str) -> Option<Arc<CachedInspection>> {
+        let mut entries = self.entries.lock().unwrap();
+        let position = entries.iter().position(|entry| entry.key == key)?;
+        let entry = entries.remove(position);
+        entries.push(entry.clone());
+        Some(entry)
+    }
+
+    fn insert(&self, candidate: Arc<CachedInspection>) -> CacheInsert {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(position) = entries.iter().position(|entry| entry.key == candidate.key) {
+            let existing = entries.remove(position);
+            entries.push(existing.clone());
+            let duplicate = Arc::try_unwrap(candidate)
+                .unwrap_or_else(|_| unreachable!("fresh candidate has one owner"))
+                .log;
+            return CacheInsert::Cached {
+                active: existing,
+                retired: Some(duplicate),
+            };
+        }
+        if entries.len() >= INSPECTION_CACHE_CAPACITY {
+            let Some(idle) = entries
+                .iter()
+                .position(|entry| Arc::strong_count(entry) == 1)
+            else {
+                return CacheInsert::Uncached(candidate);
+            };
+            let evicted = Arc::try_unwrap(entries.remove(idle))
+                .unwrap_or_else(|_| unreachable!("idle entry checked under lock"))
+                .log;
+            entries.push(candidate.clone());
+            return CacheInsert::Cached {
+                active: candidate,
+                retired: Some(evicted),
+            };
+        }
+        entries.push(candidate.clone());
+        CacheInsert::Cached {
+            active: candidate,
+            retired: None,
+        }
+    }
+
+    pub(in crate::root_store) fn request_shutdown(&self) {
+        for entry in self.entries.lock().unwrap().iter() {
+            entry.log.request_shutdown();
+        }
+    }
+
+    pub(in crate::root_store) fn take_all(&self) -> Vec<Arc<EventLog>> {
+        std::mem::take(&mut *self.entries.lock().unwrap())
+            .into_iter()
+            .map(|entry| entry.log.clone())
+            .collect()
+    }
+}
+
 impl HistoryCheckpoints {
     fn load_request(&self, load: LoadOperation) -> Result<LoadRequest, StoreError> {
         let request = LoadRequest {
@@ -49,7 +134,7 @@ impl HistoryCheckpoints {
                     return Err(invalid("checkpoint load identity conflict"));
                 }
                 return match loaded.state {
-                    LoadState::Preparing => resume(&log, &objects, &request, loaded).await,
+                    LoadState::Preparing => resume(&log, &objects, &request, loaded, None).await,
                     _ => Ok(loaded),
                 };
             }
@@ -65,7 +150,7 @@ impl HistoryCheckpoints {
             // Recheck Head at the claim's linearization point.
             let loaded = claim(&log, request.clone(), selected.head).await?;
             boundary("load_prepared");
-            resume(&log, &objects, &request, loaded).await
+            resume(&log, &objects, &request, loaded, Some(selected.manifest)).await
         })
         .await
     }
@@ -190,11 +275,34 @@ impl HistoryCheckpoints {
         let key = load_key(&self.scope, self.session.id(), operation)?;
         let log = self.session.scoped().await?;
         let gates = self.session.gates.clone();
+        let work = self.session.control_dependency()?;
+        let pin = gates
+            .read([gates::Key::CheckpointLoad(key.clone())])
+            .await?;
+        if let Some(entry) = self.inspections.get(&key) {
+            log.owned_root()?.validate_current()?;
+            if !entry.session_ids.contains(&session) {
+                return Err(StoreError::SessionNotFound);
+            }
+            let scoped = Arc::new(entry.log.scoped(Arc::new((log, work, pin, entry.clone()))));
+            return action(scoped, entry.through).await;
+        }
+        drop((work, pin));
+        let inspections = self.inspections.clone();
+        let session_store = self.session.clone();
         read_worker(log, gates.clone(), move |log, objects| async move {
-            let _pin = gates
+            let pin = gates
                 .read([gates::Key::CheckpointLoad(key.clone())])
                 .await?;
-            let (request, loaded) = read(&log, key)
+            if let Some(entry) = inspections.get(&key) {
+                if !entry.session_ids.contains(&session) {
+                    return Err(StoreError::SessionNotFound);
+                }
+                let work = session_store.control_dependency()?;
+                let scoped = Arc::new(entry.log.scoped(Arc::new((log, work, pin, entry.clone()))));
+                return action(scoped, entry.through).await;
+            }
+            let (request, loaded) = read(&log, key.clone())
                 .await?
                 .ok_or_else(|| invalid("checkpoint inspection missing"))?;
             let LoadState::Ready {
@@ -213,7 +321,7 @@ impl HistoryCheckpoints {
             let target = Arc::new(
                 EventLog::open_checkpoint_inspection(&path, objects.owner.clone(), through).await?,
             );
-            let result = async {
+            let verified = async {
                 let receipt = target
                     .bundle_import_receipt(transfer_digest, &request.binding()?)
                     .await?
@@ -223,10 +331,38 @@ impl HistoryCheckpoints {
                 {
                     return Err(invalid("checkpoint inspection inventory differs"));
                 }
-                action(target.clone(), through).await
+                Ok(())
             }
             .await;
-            close(target, result).await
+            if let Err(error) = verified {
+                return close(target, Err(error)).await;
+            }
+            let candidate = Arc::new(CachedInspection {
+                key,
+                log: target,
+                through,
+                session_ids: session_ids.clone(),
+            });
+            match inspections.insert(candidate) {
+                CacheInsert::Cached { active, retired } => {
+                    if let Some(retired) = retired {
+                        close(retired, Ok(())).await?;
+                    }
+                    let work = session_store.control_dependency()?;
+                    let scoped = Arc::new(active.log.scoped(Arc::new((
+                        log,
+                        work,
+                        pin,
+                        active.clone(),
+                    ))));
+                    action(scoped, active.through).await
+                }
+                CacheInsert::Uncached(entry) => {
+                    let scoped = Arc::new(entry.log.scoped(Arc::new((log, pin))));
+                    let result = action(scoped, entry.through).await;
+                    close(entry.log.clone(), result).await
+                }
+            }
         })
         .await
     }
@@ -257,13 +393,20 @@ impl RootStore {
                         let (request, loaded) = read(&log, key)
                             .await?
                             .ok_or_else(|| invalid("checkpoint load disappeared"))?;
-                        if let Err(error) = resume(&log, &objects, &request, loaded.clone()).await {
+                        if let Err(error) =
+                            resume(&log, &objects, &request, loaded.clone(), None).await
+                        {
                             // Missing/corrupt material does not authorize recapture or block normal startup.
                             // SQL/IO uncertainty keeps Preparing for a later original-material retry.
-                            if matches!(
-                                error,
-                                StoreError::InvalidTransition(_) | StoreError::SessionConflict
-                            ) {
+                            let permanently_unavailable = match &error {
+                                StoreError::InvalidTransition(_)
+                                | StoreError::SessionConflict
+                                | StoreError::EventConflict
+                                | StoreError::ArtifactConflict => true,
+                                StoreError::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
+                                _ => false,
+                            };
+                            if permanently_unavailable {
                                 write(
                                     &log,
                                     &request,
@@ -296,7 +439,7 @@ async fn read(
         row.map(|(request, result)| Ok((serde_json::from_str(&request)?, serde_json::from_str(&result)?))).transpose()
     })).await
 }
-async fn claim(
+pub(super) async fn claim(
     log: &EventLog,
     request: LoadRequest,
     head: Head,
@@ -360,18 +503,6 @@ async fn write(
         .await
 }
 
-async fn destination(
-    objects: &Objects,
-    request: &LoadRequest,
-    create: bool,
-) -> Result<Arc<EventLog>, StoreError> {
-    // Only this private module can open the inspection database. No live routes,
-    // execution configuration, recovery scheduler or EventLog handle are exported.
-    let path = objects.inspection(&request.key()?, create)?;
-    Ok(Arc::new(
-        EventLog::open_owned(&path, Some(objects.owner.clone()), OpenPurpose::Execution).await?,
-    ))
-}
 async fn close<T>(target: Arc<EventLog>, result: Result<T, StoreError>) -> Result<T, StoreError> {
     if let Err(error) = target.shutdown().await {
         // Keep the physical worker, Root custody and per-inspection gate until SQL ends.
@@ -433,18 +564,33 @@ async fn resume(
     objects: &Objects,
     request: &LoadRequest,
     loaded: LoadedCheckpoint,
+    verified_manifest: Option<Manifest>,
 ) -> Result<LoadedCheckpoint, StoreError> {
-    let source = manifest(objects, request, &loaded)?;
+    let source = match verified_manifest {
+        Some(source) => source,
+        None => {
+            let source = manifest(objects, request, &loaded)?;
+            if let Some(snapshot) = source.workspace() {
+                super::workspace::verify(objects, snapshot)?;
+            }
+            source
+        }
+    };
     let workspace = source.workspace().cloned();
-    if let Some(snapshot) = &workspace {
-        super::workspace::verify(objects, snapshot)?;
-    }
     let Manifest {
         inventory,
         transfer_digest,
         ..
     } = &source;
-    let target = destination(objects, request, true).await?;
+    let inspection_path = objects.inspection(&request.key()?, true)?;
+    let target = Arc::new(
+        EventLog::open_owned(
+            &inspection_path,
+            Some(objects.owner.clone()),
+            OpenPurpose::Execution,
+        )
+        .await?,
+    );
     let result = async {
         if target.bundle_import_receipt(transfer_digest, &request.binding()?).await?.is_none() {
             // An unclaimed nonempty database is never adopted or overwritten.
@@ -485,6 +631,13 @@ async fn resume(
         })
     }.await;
     let state = close(target, result).await?;
+    std::fs::File::open(&inspection_path)?.sync_all()?;
+    std::fs::File::open(
+        inspection_path
+            .parent()
+            .ok_or_else(|| invalid("inspection directory missing"))?,
+    )?
+    .sync_all()?;
     boundary("load_imported");
     let value = write(log, request, LoadedCheckpoint { state, ..loaded }).await?;
     boundary("load_recorded");

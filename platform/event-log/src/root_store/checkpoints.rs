@@ -27,7 +27,7 @@ use crate::checkpoints::{
 };
 use std::future::Future;
 mod journal;
-mod load;
+pub(in crate::root_store) mod load;
 mod objects;
 pub(crate) mod restore;
 mod workspace;
@@ -37,6 +37,7 @@ use objects::Objects;
 pub struct HistoryCheckpoints {
     session: SessionStore,
     scope: Scope,
+    inspections: Arc<load::Inspections>,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,7 @@ impl RootStore {
         Ok(HistoryCheckpoints {
             session: self.session(session).await?,
             scope,
+            inspections: self.inspections.clone(),
         })
     }
 

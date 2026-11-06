@@ -21,8 +21,8 @@
 
 [简体中文](README.zh-CN.md)
 
-History-only checkpoints use `RootStore::history_checkpoints` and the types in
-[`checkpoints`](src/checkpoints.rs). A native Bundle and versioned manifest are
+Checkpoints use `RootStore::history_checkpoints` and the types in
+[`checkpoints`](src/checkpoints.rs). A native Bundle and manifest are
 verified and durably stored under the private Root before a separate checkpoint
 Head is created or conditionally advanced. Head and publication receipt commit
 in the Session's partition transaction; the Host operation journal can be in a
@@ -124,7 +124,7 @@ Integration scenarios share `cargo test -p maka-event-log --test integration`; f
 Startup recovery reads all unresolved execution authority without a separate item or byte quota; completed history stays excluded. Tool-result payloads and frozen request compositions have no application-level storage size cap. The schema migration preserves existing payloads and composition references.
 
 
-Workspace snapshots use a versioned inventory plus immutable file objects. Their
+Workspace snapshots use a path inventory plus immutable file objects. Their
 `caller_confirmed_quiescent` / `unverified` declaration is independent of byte
 integrity and never claims external-writer fencing. Same-Root workspace restore
 requires unchanged live history, materializes a new directory, and commits the

@@ -327,3 +327,94 @@ async fn inspection_reads_share_admission_and_do_not_take_a_writer_lease() {
     drop(lease);
     store.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn stream_loaded_artifact_handles_multichunk_payloads_and_missing_material_settles_unavailable()
+ {
+    use maka_agent_facts::artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest};
+    let dir = tempfile::tempdir().unwrap();
+    let (store, handle, mut publish) = fixture(dir.path()).await;
+    let payload: Vec<u8> = (0..(96 * 1024)).map(|index| (index % 251) as u8).collect();
+    let log = handle.session.scoped().await.unwrap();
+    log.commit_artifact(
+        Artifact {
+            id: "report-bin".into(),
+            session_id: "source".into(),
+            turn_id: "turn-1".into(),
+            created_at: 1,
+            name: "report.bin".into(),
+            kind: ArtifactKind::File,
+            size_bytes: payload.len() as u64,
+            mime_type: Some("application/octet-stream".into()),
+            source: ArtifactSource::UserUpload,
+            summary: Some(content_digest(&payload)),
+        },
+        payload.clone(),
+    )
+    .await
+    .unwrap();
+    drop(log);
+    publish.confirmed_subtree_digest = store.preview_bundle("source").await.unwrap().subtree_digest;
+    let head = published(&handle.publish(publish.clone()).await.unwrap());
+    let input = request(head.revision);
+    handle.load_exact(input.clone()).await.unwrap();
+    let mut chunks = Vec::new();
+    let mut reconstructed = Vec::new();
+    handle
+        .stream_loaded_artifact(
+            input.operation,
+            "source".into(),
+            "report-bin".into(),
+            0,
+            move |item| {
+                let (_, offset, chunk) = item.expect("artifact must exist");
+                assert_eq!(offset, reconstructed.len() as u64);
+                chunks.push(chunk.bytes.len());
+                reconstructed.extend_from_slice(&chunk.bytes);
+                let done = reconstructed.len() as u64 == chunk.total_bytes;
+                if done {
+                    assert_eq!(chunks, vec![32 * 1024, 32 * 1024, 32 * 1024]);
+                    assert_eq!(reconstructed, payload);
+                }
+                async { Ok(()) }
+            },
+        )
+        .await
+        .unwrap();
+
+    // Missing immutable material during Preparing recovery settles to LoadState::Unavailable.
+    let mut missing_op = input.clone();
+    missing_op.operation = Uuid::new_v4();
+    let missing_req = LoadRequest {
+        scope: scope(),
+        session_id: "source".into(),
+        load: missing_op.clone(),
+    };
+    let log = handle.session.scoped().await.unwrap();
+    super::super::load::claim(&log, missing_req, head.clone())
+        .await
+        .unwrap();
+    drop(log);
+    let objects = Objects::open(store.owned_root().unwrap()).unwrap();
+    let manifest = objects.manifest(&head.manifest).unwrap();
+    std::fs::remove_file(
+        dir.path()
+            .join("root/history-checkpoints/objects")
+            .join(&manifest.bundle().digest),
+    )
+    .unwrap();
+    drop(objects);
+    store.close().await.unwrap();
+    let store = RootStore::open(owner(dir.path())).await.unwrap();
+    let handle = store.history_checkpoints("source", scope()).await.unwrap();
+    assert_eq!(
+        handle
+            .load_receipt(missing_op)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        LoadState::Unavailable
+    );
+    store.close().await.unwrap();
+}

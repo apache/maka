@@ -41,7 +41,7 @@ pub struct WorkspaceCapture {
 pub struct WorkspaceSnapshot {
     pub identity: String,
     pub consistency: WorkspaceConsistency,
-    /// Versioned path inventory; file bodies are separately verified immutable objects.
+    /// Path inventory; file bodies are separately verified immutable objects.
     pub inventory: ObjectRef,
 }
 

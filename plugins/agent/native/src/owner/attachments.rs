@@ -62,7 +62,7 @@ impl Owner {
                         reason: AttachmentRejection::Closed,
                     });
                 }
-                if owner.session(&input.session_id).await?.archived {
+                if owner.mutable_session(&input.session_id).await?.archived {
                     return Ok(AttachmentUploadResult::Rejected {
                         reason: AttachmentRejection::Archived,
                     });

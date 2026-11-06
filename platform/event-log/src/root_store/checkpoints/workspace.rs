@@ -118,6 +118,7 @@ fn scan(dir: &Dir, root: &Path) -> Result<BTreeMap<String, String>, StoreError> 
         })
         .build();
     let mut output = BTreeMap::new();
+    let mut folded = BTreeSet::new();
     for entry in walk {
         let entry =
             entry.map_err(|error| invalid(format!("checkpoint workspace scan: {error}")))?;
@@ -136,6 +137,9 @@ fn scan(dir: &Dir, root: &Path) -> Result<BTreeMap<String, String>, StoreError> 
             .to_str()
             .ok_or_else(|| invalid("non-UTF8 checkpoint workspace path"))?;
         relative(path)?;
+        if !folded.insert(path.to_lowercase()) {
+            return Err(invalid("checkpoint workspace path collision"));
+        }
         let (parent, name) = parent(dir, path)?;
         let metadata = parent.symlink_metadata(&name)?;
         if !metadata.is_dir() && !metadata.is_file() {
@@ -182,6 +186,7 @@ pub(super) fn capture(
         }
     });
     let mut entries = Vec::new();
+    let mut linked = false;
     for (path, expected) in &before {
         objects.owner.validate_current()?;
         let (parent, name) = parent(&dir, path)?;
@@ -204,31 +209,90 @@ pub(super) fn capture(
         if !file.metadata()?.is_file() || stamp(&file.metadata()?)? != *expected {
             return Err(invalid("checkpoint workspace file changed"));
         }
-        let mut staged = objects.create(request, "workspace-file")?;
-        let mut copied = 0u64;
+        use sha2::{Digest, Sha256};
         let mut buffer = [0u8; 65536];
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
+        let object = if metadata.len() <= buffer.len() as u64 {
+            let mut copied = 0usize;
+            loop {
+                let n = file.read(&mut buffer[copied..])?;
+                if n == 0 {
+                    break;
+                }
+                copied += n;
+                if copied as u64 > metadata.len() || copied == buffer.len() {
+                    if copied as u64 > metadata.len() {
+                        return Err(invalid("checkpoint workspace size limit or source change"));
+                    }
+                    break;
+                }
             }
-            copied += n as u64;
-            if copied > metadata.len() {
-                return Err(invalid("checkpoint workspace size limit or source change"));
+            let extra = if copied == buffer.len() {
+                let mut probe = [0u8; 1];
+                file.read(&mut probe)?
+            } else {
+                0
+            };
+            if extra != 0
+                || copied as u64 != metadata.len()
+                || stamp(&file.metadata()?)? != *expected
+                || stamp(&parent.symlink_metadata(&name)?)? != *expected
+            {
+                return Err(invalid("checkpoint workspace changed during capture"));
             }
-            staged.write_all(&buffer[..n])?;
-        }
-        if copied != metadata.len()
-            || stamp(&file.metadata()?)? != *expected
-            || stamp(&parent.symlink_metadata(&name)?)? != *expected
-        {
-            return Err(invalid("checkpoint workspace changed during capture"));
-        }
-        staged.sync_all()?;
-        drop(staged);
-        let staging = objects.staging(request, "workspace-file")?;
-        let object = objects.publish(&staging)?;
-        std::fs::remove_file(staging)?;
+            let object = ObjectRef {
+                digest: hex::encode(Sha256::digest(&buffer[..copied])),
+                bytes: copied as u64,
+            };
+            if !objects.has(&object)? {
+                let mut staged = objects.create(request, "workspace-file")?;
+                staged.write_all(&buffer[..copied])?;
+                staged.sync_all()?;
+                drop(staged);
+                let staging = objects.staging(request, "workspace-file")?;
+                objects.link_staged(&staging, &object)?;
+                std::fs::remove_file(staging)?;
+                linked = true;
+            }
+            object
+        } else {
+            let mut staged = objects.create(request, "workspace-file")?;
+            let mut hash = Sha256::new();
+            let mut copied = 0u64;
+            loop {
+                let n = file.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                copied += n as u64;
+                if copied > metadata.len() {
+                    return Err(invalid("checkpoint workspace size limit or source change"));
+                }
+                hash.update(&buffer[..n]);
+                staged.write_all(&buffer[..n])?;
+            }
+            if copied != metadata.len()
+                || stamp(&file.metadata()?)? != *expected
+                || stamp(&parent.symlink_metadata(&name)?)? != *expected
+            {
+                return Err(invalid("checkpoint workspace changed during capture"));
+            }
+            let object = ObjectRef {
+                digest: hex::encode(hash.finalize()),
+                bytes: copied,
+            };
+            let staging = objects.staging(request, "workspace-file")?;
+            if objects.has(&object)? {
+                drop(staged);
+                std::fs::remove_file(staging)?;
+            } else {
+                staged.sync_all()?;
+                drop(staged);
+                objects.link_staged(&staging, &object)?;
+                std::fs::remove_file(staging)?;
+                linked = true;
+            }
+            object
+        };
         #[cfg(unix)]
         let executable = {
             use cap_std::fs::MetadataExt;
@@ -249,6 +313,9 @@ pub(super) fn capture(
         || before_root != stamp(&named.dir_metadata()?)?
     {
         return Err(invalid("checkpoint workspace changed during capture"));
+    }
+    if linked {
+        objects.sync_objects()?;
     }
     let encoded = serde_json::to_vec(&Inventory { entries })?;
     let mut file = objects.create(request, "workspace")?;

@@ -83,6 +83,10 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 | `checkpointReceipt` | Query | 原 Host 操作观测及领域发布回执 |
 | `historyCheckpointHead` | Query | 当前 checkpoint Head，或 null |
 | `readHistoryCheckpoint` | Subscription | 指定 retained revision 的原生历史包 |
+| `loadHistoryCheckpoint` | Mutation | 隔离只读检查区状态及导入的成员 Session ID |
+| `historyCheckpointLoadReceipt` | Query | 原 Host 操作观测及领域加载回执 |
+| `restoreSessionCheckpoint` | Mutation | 同 Root 重新绑定后的 Session 及恢复目录路径 |
+| `sessionCheckpointRestoreReceipt` | Query | 原 Host 操作观测及领域恢复回执 |
 
 先预览，再携带 `confirmedSubtreeDigest` 和显式 `expectedRevision` 发布；只有创建第一个 Head 时预期为 null。摘要确认成员集合，不固定此前的内容 revision；Manifest 记录实际一致捕获的切点。繁忙源直接失败，不进入等待队列。日常消息不推进 checkpoint Head。发布经过普通 Host mutation 的准备与确认，确认前保存原 `RecoveryRef` **及原始输入**。结果未知时查询原操作，不换 ID 重发。CAS 冲突对原操作是终态，修改期望需要新操作。
 
@@ -108,7 +112,7 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 | `loadedHistoryCheckpointArtifacts` | `offset` | 最多 32 条 Artifact 元数据及 `nextOffset` |
 | `loadedHistoryCheckpointArtifact` | `artifactId`、字节 `offset` | 订阅：连续返回元数据及最多 32 KiB 的 Base64 块；不存在返回 null |
 
-使用返回的历史游标和 Artifact 偏移分页，无需把整个 checkpoint 放入内存。检查副本独立于后续 Head 变化保留。目前检查数据库和不可变对象没有删除/GC API；不断发起**新**加载会增加磁盘占用，原操作重试复用原目标。这些方法与发布使用相同的管理授权和 namespace；定位信息本身不授予访问权。
+使用返回的历史游标和 Artifact 偏移分页，无需把整个 checkpoint 放入内存。每个 Artifact 订阅在完整传输期间只使用一条只读数据库连接，具备背压与取消排空；调用方须确认订阅完成及清理结果。检查区读取不申请写租约、不执行迁移、不同步目录，可并发读取。检查副本独立于后续 Head 变化保留。目前检查数据库和不可变对象没有删除/GC API；不断发起**新**加载会增加磁盘占用，原操作重试复用原目标。这些方法与发布使用相同的管理授权和 namespace；定位信息本身不授予访问权。
 
 ### Workspace 发布与本地继续执行
 
@@ -120,9 +124,7 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 
 API 和私有 JSON 仍是开发中契约：不保留旧发布端点、Manifest 双轨或缺失 Workspace 字段的隐式兼容。旧形状的开发 checkpoint 数据需要显式离线迁移或重新生成。
 
-`loadHistoryCheckpoint` 只验证 Workspace 对象并返回一致性元数据，不复制 Workspace。历史及 Artifact 列表按游标分页；`loadedHistoryCheckpointArtifact` 是订阅，从指定 offset 连续传输最多 32 KiB 的块，完整传输只打开一次只读数据库连接。读取不申请写租约、不执行迁移、不同步目录，可并发读取；调用方仍须确认订阅完成及清理结果。
-
-`restoreSessionCheckpoint` 输入为 `{ checkpoint: { sessionId, revision }, parent: "/absolute/allowed/directory", permissions, backend, acceptExternalWritersRisk: true }`。输入为获准根内的绝对路径，目录物理身份由 Host 获取并重新验证。Host 在父目录中新建 `maka-restored-…` 子目录，不覆盖原项目。首版仅支持**同 Root、事件历史仍与存档点相同**的普通 native Session；已读、改名、置顶、之前的恢复不会使未变化的历史失效，当前元数据 revision 仅用于提交 CAS。历史已推进、Head 已移动、WorkHub、子 Session、Goal 状态和 executor backend 都拒绝。显式选择目标模型与权限，撤销旧授权；unverified 不会因恢复变成可信。
+`restoreSessionCheckpoint` 输入为 `{ checkpoint: { sessionId, revision }, parent: "/absolute/allowed/directory", permissions, backend, acceptExternalWritersRisk: true }`。输入为获准根内的绝对路径或 `~` 前缀路径，目录物理身份由 Host 获取并重新验证。Host 在父目录中新建 `maka-restored-…` 子目录，不覆盖原项目。首版仅支持**同 Root、事件历史仍与存档点相同**的普通 native Session；已读、改名、置顶、之前的恢复不会使未变化的历史失效，当前元数据 revision 仅用于提交 CAS。历史已推进、Head 已移动、WorkHub、子 Session、Goal 状态和 executor backend 都拒绝。显式选择目标模型与权限，撤销旧授权；unverified 不会因恢复变成可信。
 
 恢复在同一事务提交目录绑定与原操作回执，保留 Session ID 和 checkpoint Head，下一次发布仍以原 Head revision 做 CAS。不会回滚新历史，也不重建已丢失的 Root；加载/重新绑定不会自动调用模型或工具，显式发送下一条普通消息后才从新目录执行。跨 Root/Host 权威交接、任意历史回滚、完整辅助状态迁移和轮次中间恢复不在本次范围。
 

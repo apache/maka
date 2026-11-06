@@ -31,15 +31,44 @@ use maka_plugin_core::operation::RecoveryRef;
 use tokio::io::AsyncReadExt;
 
 pub(super) struct CheckpointAdmission {
+    _workspace: runs::Checkpoint,
     _session: runs::Ordered,
     _goal: runs::Ordered,
-    _workspace: runs::Checkpoint,
+    _wake: WakeAfterCheckpoint,
+}
+
+struct WakeAfterCheckpoint(std::sync::Weak<Owner>);
+
+impl Drop for WakeAfterCheckpoint {
+    fn drop(&mut self) {
+        if let Some(owner) = self.0.upgrade() {
+            owner.wake_after_checkpoint();
+        }
+    }
 }
 
 impl Owner {
+    fn wake_after_checkpoint(self: &Arc<Self>) {
+        if self.stop.is_cancelled() || self.workers.is_closed() {
+            return;
+        }
+        self.goals.execution_changed();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let owner = self.clone();
+            self.workers.spawn(async move {
+                if owner.stop.is_cancelled() {
+                    return;
+                }
+                owner.schedule().await;
+                let _ = owner.schedule_activations(now()).await;
+            });
+        }
+    }
+
     pub(super) async fn checkpoint_admission(
         self: &Arc<Self>,
         id: &str,
+        extra_path: Option<&std::path::Path>,
     ) -> Result<(CheckpointAdmission, SessionRecord<ResolvedConfiguration>), String> {
         let goal = self
             .goals
@@ -50,22 +79,57 @@ impl Owner {
             .runs
             .try_ordered(id)
             .map_err(|_| "agent_checkpoint_busy")?;
-        let runs = self.runs.state().await;
-        if runs.closing || runs.busy(id) || runs.retained_cleanup.contains(id) {
+        let session = self.session(id).await?;
+        let mut paths = vec![std::path::PathBuf::from(
+            &session.configuration.workspace.path,
+        )];
+        if let Some(extra) = extra_path {
+            let extra = extra.to_path_buf();
+            if !paths.contains(&extra) {
+                paths.push(extra);
+            }
+        }
+        let workspace = self.runs.checkpoint(id, paths.clone())?;
+        let admission = CheckpointAdmission {
+            _workspace: workspace,
+            _session: ordered,
+            _goal: goal,
+            _wake: WakeAfterCheckpoint(Arc::downgrade(self)),
+        };
+        let mut active = {
+            let runs = self.runs.state().await;
+            if runs.closing
+                || self.stop.is_cancelled()
+                || runs.controls.contains_key(id)
+                || runs.preparing.contains_key(id)
+                || runs.retained_cleanup.contains(id)
+            {
+                return Err("agent_checkpoint_busy".into());
+            }
+            runs.controls
+                .keys()
+                .chain(runs.preparing.keys())
+                .chain(runs.retained_cleanup.iter())
+                .cloned()
+                .chain(self.runs.ordered_sessions())
+                .chain(self.goals.admissions.ordered_sessions())
+                .filter(|active| active != id)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if self.has_parked_invocation(id).await?
+            || !self
+                .store
+                .session(id)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .message_queue(id)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .entries
+                .is_empty()
+        {
             return Err("agent_checkpoint_busy".into());
         }
-        let session = self.session(id).await?;
-        let path = std::path::PathBuf::from(&session.configuration.workspace.path);
-        let mut active = runs
-            .controls
-            .keys()
-            .chain(runs.preparing.keys())
-            .chain(runs.retained_cleanup.iter())
-            .cloned()
-            .chain(self.runs.ordered_sessions())
-            .chain(self.goals.admissions.ordered_sessions())
-            .filter(|active| active != id)
-            .collect::<std::collections::BTreeSet<_>>();
         let mut after = None;
         loop {
             let pending = self
@@ -79,35 +143,41 @@ impl Owner {
             after = pending.last().cloned();
             active.extend(pending.into_iter().filter(|active| active != id));
         }
+        active.extend(
+            self.store
+                .ready_native_approval_sessions()
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .into_iter()
+                .filter(|active| self.owns(active) && active != id),
+        );
+        active.extend(
+            self.store
+                .due_model_retry_sessions(i64::MAX as u64)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+                .into_iter()
+                .filter(|active| self.owns(active) && active != id),
+        );
         for active in active {
-            // Existing checkpoint reservations are compared atomically below.
             if self.runs.checkpointed(&active) {
                 continue;
             }
-            let other = resolve_session(
-                self.store
-                    .get_session::<StoredSessionConfiguration>(&active)
-                    .await
-                    .map_err(|_| "agent_store_unavailable")?
-                    .ok_or("agent_session_unavailable")?,
-            )?;
-            if runs::overlaps(
-                &path,
-                std::path::Path::new(&other.configuration.workspace.path),
-            ) {
+            let Some(other) = self
+                .store
+                .get_session::<StoredSessionConfiguration>(&active)
+                .await
+                .map_err(|_| "agent_store_unavailable")?
+            else {
+                continue;
+            };
+            let other = resolve_session(other)?;
+            let other_path = std::path::Path::new(&other.configuration.workspace.path);
+            if paths.iter().any(|path| runs::overlaps(path, other_path)) {
                 return Err("agent_checkpoint_busy".into());
             }
         }
-        let workspace = self.runs.checkpoint(id, path)?;
-        drop(runs);
-        Ok((
-            CheckpointAdmission {
-                _session: ordered,
-                _goal: goal,
-                _workspace: workspace,
-            },
-            session,
-        ))
+        Ok((admission, session))
     }
 }
 
@@ -255,7 +325,10 @@ impl Owner {
 }
 
 fn management(scope: &Scope) -> Result<(), String> {
-    if scope.identity.agent().is_some() {
+    if !matches!(
+        scope.identity,
+        maka_capabilities::call::Identity::Remote { .. }
+    ) {
         return Err("agent_history_checkpoint_user_action_required".into());
     }
     Ok(())

@@ -139,13 +139,20 @@ impl StagedBundle {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
         let mut rows = sqlx::query_scalar::<_, i64>(
-            "SELECT DISTINCT CAST(json_extract(record_json,'$.sequence') AS INTEGER) AS sequence
-             FROM frames WHERE
-             (json_extract(record_json,'$.kind')='member' AND json_extract(record_json,'$.session')=?1)
-             OR (json_extract(record_json,'$.kind')='event' AND
-                 json_extract(json_extract(record_json,'$.json'),'$.invocation.session_id')=?1)
-             ORDER BY sequence"
-        ).bind(session).fetch(&mut self.database);
+            "SELECT sequence FROM (
+                SELECT CAST(json_extract(record_json,'$.sequence') AS INTEGER) AS sequence
+                FROM frames
+                WHERE kind='member' AND json_extract(record_json,'$.session')=?1
+                UNION
+                SELECT source_sequence AS sequence
+                FROM frames
+                WHERE kind='event'
+                  AND json_extract(json_extract(record_json,'$.json'),'$.invocation.session_id')=?1
+            )
+            ORDER BY sequence",
+        )
+        .bind(session)
+        .fetch(&mut self.database);
         while let Some(sequence) = rows.try_next().await? {
             hash.update(crate::sequence_number(sequence)?.to_le_bytes());
         }
