@@ -24,8 +24,9 @@
  * fail for that reason, the punctuation at the edge of the bold text moves outside the
  * markers (`**回升能否守住**：如果…`): the visible text is the same and the pair closes.
  *
- * Only a `**…**` pair inside one line of ordinary text is touched; fenced code, inline
- * code and anything already written correctly are left as they are.
+ * Only a `**…**` pair inside one line of a plain-text paragraph is touched; a paragraph
+ * that has code, a link, a URL, HTML or an escape is left entirely as written, as is
+ * anything already correct.
  */
 const EDGE = /[\p{P}\p{S}]/u;
 const MOVABLE = (char: string) => EDGE.test(char) && char !== '*' && char !== '`' && char !== '\\';
@@ -55,27 +56,59 @@ function fixPairs(text: string): string {
   });
 }
 
-/** `text` with bold pairs that CommonMark would leave open made to close, outside code. */
+/**
+ * Whether the text of a paragraph can be rewritten without reading Markdown structure:
+ * no code span (a span can run over several lines), no link or image, autolink, raw URL,
+ * HTML or reference-style construct, and no escape. Anything else is left exactly as the
+ * parser would see it.
+ */
+const PLAIN_PARAGRAPH = /^[^`<>\\\[\]]*$/u;
+const hasAddress = (text: string) => /:\/\/|www\./iu.test(text);
+const indentedCode = (line: string) => /^(?: {4,}|\t)/u.test(line);
+
+/** `text` with bold pairs that CommonMark would leave open made to close, in plain paragraphs only. */
 export function closeCjkEmphasis(text: string): string {
   if (!text.includes('**')) return text;
+  const lines = text.split('\n');
+  const out: string[] = [];
   let fenced: string | null = null;
-  return text
-    .split('\n')
-    .map((line) => {
-      const fence = /^\s{0,3}(`{3,}|~{3,})/u.exec(line);
-      if (fenced !== null) {
-        if (fence && fence[1][0] === fenced[0] && fence[1].length >= fenced.length) fenced = null;
-        return line;
-      }
-      if (fence) {
-        fenced = fence[1];
-        return line;
-      }
-      // Inline code spans stay as written; the text between them is fixed.
-      return line
-        .split(/(`+[^`]*`+)/u)
-        .map((part, index) => (index % 2 === 1 ? part : fixPairs(part)))
-        .join('');
-    })
-    .join('\n');
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const fence = /^\s{0,3}(`{3,}|~{3,})/u.exec(line);
+    if (fenced !== null) {
+      if (fence && fence[1][0] === fenced[0] && fence[1].length >= fenced.length) fenced = null;
+      out.push(line);
+      index += 1;
+      continue;
+    }
+    if (fence) {
+      fenced = fence[1];
+      out.push(line);
+      index += 1;
+      continue;
+    }
+    if (line.trim() === '') {
+      out.push(line);
+      index += 1;
+      continue;
+    }
+    // One paragraph: the lines up to the next blank line or fence.
+    let end = index;
+    while (
+      end < lines.length &&
+      lines[end].trim() !== '' &&
+      !/^\s{0,3}(`{3,}|~{3,})/u.test(lines[end])
+    )
+      end += 1;
+    const block = lines.slice(index, end);
+    const joined = block.join('\n');
+    const safe =
+      PLAIN_PARAGRAPH.test(joined) &&
+      !hasAddress(joined) &&
+      !block.some((row) => indentedCode(row));
+    for (const row of block) out.push(safe ? fixPairs(row) : row);
+    index = end;
+  }
+  return out.join('\n');
 }

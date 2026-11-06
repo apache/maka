@@ -48,15 +48,43 @@ test('text that already works is left exactly as written', () => {
     assert.equal(closeCjkEmphasis(text), text, text);
 });
 
-test('code is never touched', () => {
+test('a paragraph with code is left entirely as written', () => {
   const fenced = '```md\n**回升能否守住：**如果\n```\n**回升：**如果';
   assert.equal(closeCjkEmphasis(fenced), '```md\n**回升能否守住：**如果\n```\n**回升**：如果');
   assert.equal(
     closeCjkEmphasis('`**回升：**如果` 与 **回升：**如果'),
-    '`**回升：**如果` 与 **回升**：如果',
+    '`**回升：**如果` 与 **回升：**如果',
   );
   const tilde = '~~~\n**甲：**乙\n~~~';
   assert.equal(closeCjkEmphasis(tilde), tilde);
+  // A code span that runs over lines, and one closed by a longer run of backticks.
+  const multiline = '`line one\n**原文：**继续\nline three`';
+  assert.equal(closeCjkEmphasis(multiline), multiline);
+  const double = '``a`**原文：**继续``';
+  assert.equal(closeCjkEmphasis(double), double);
+  // Indented code.
+  const indented = '    **原文：**继续';
+  assert.equal(closeCjkEmphasis(indented), indented);
+});
+
+test('links, URLs, HTML and escapes are never rewritten', () => {
+  for (const text of [
+    '[查看](https://example.test/**path:**next)',
+    '见 https://example.test/**path:**next 这里',
+    '<https://example.test/**a:**b>',
+    '**甲：**乙 <b>丙</b>',
+    '**甲：**乙 \\* 丙',
+    '![图](a.png) **甲：**乙',
+    '[ref]: https://example.test/**x:**y',
+  ])
+    assert.equal(closeCjkEmphasis(text), text, text);
+});
+
+test('a plain paragraph beside a code paragraph is still fixed', () => {
+  assert.equal(
+    closeCjkEmphasis('**甲：**乙\n\n`代码` **丙：**丁'),
+    '**甲**：乙\n\n`代码` **丙：**丁',
+  );
 });
 
 test('bold made only of punctuation or spaces is not rewritten', () => {
