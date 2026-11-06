@@ -31,7 +31,6 @@ pub(in super::super) struct Lease {
     pub cancellation: CancellationToken,
     caller: Caller,
     handle: ShellHandle,
-    next_sequence: u64,
     replay: Option<(Control, ControlReceipt)>,
 }
 struct Release {
@@ -136,7 +135,6 @@ impl Processes {
                 cancellation: cancellation.clone(),
                 caller,
                 handle: handle.clone(),
-                next_sequence: 1,
                 replay: None,
             });
         }
@@ -248,7 +246,11 @@ impl Processes {
                     ))
                 };
             }
-            if input.sequence != lease.next_sequence {
+            let next_sequence = lease
+                .replay
+                .as_ref()
+                .map_or(1, |(previous, _)| previous.sequence + 1);
+            if input.sequence != next_sequence {
                 return Err(failed("Controller sequence is out of order"));
             }
             let data = if input.actions.is_empty() {
@@ -283,8 +285,6 @@ impl Processes {
                     lease.replay = Some((input.clone(), receipt.clone()));
                     if input.sequence == MAX_SEQUENCE {
                         lease.cancellation.cancel();
-                    } else {
-                        lease.next_sequence += 1;
                     }
                 }
                 Ok(receipt)
