@@ -73,24 +73,28 @@ async fn a_rejected_send_preserves_its_snapshot_and_the_next_draft() {
     view.handle_event(Event::Paste("next draft".into()));
     support::tick(&mut view);
     gate.release();
-    wait_view(&mut view, |screen| screen.contains("1 to review")).await;
-    support::click_button(&mut view, "Messages").await;
-    // Check the composer only once the send has settled.
-    let screen = wait_view_state(&mut view, |view, screen| {
+    wait_view_state(&mut view, |view, _| {
         view.accessibility_snapshot()
             .iter()
-            .any(|node| node.label == sent)
+            .any(|node| node.label.contains("1 to review"))
+    })
+    .await;
+    support::click_button(&mut view, "Messages").await;
+    // Check the composer only once the send has settled.
+    wait_view_state(&mut view, |view, screen| {
+        let nodes = view.accessibility_snapshot();
+        nodes.iter().any(|node| node.label == sent)
             && screen.contains("next draft")
-            && screen.contains("Retry")
-            && view
-                .accessibility_snapshot()
+            && nodes
+                .iter()
+                .any(|node| node.label == "Retry message" && !node.state.disabled)
+            && nodes
                 .iter()
                 .any(|node| node.label == "Send message" && !node.state.disabled)
     })
     .await;
     support::wait_draft(&client, &fixture.session, "next draft").await;
     // The Host refused the send itself; the typing did not cancel it.
-    assert!(screen.contains("Retry"));
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
     drop(view);
     bindings.close().await.unwrap();
@@ -143,7 +147,7 @@ async fn native_send_requires_workspace_mcp_trust_before_model_dispatch() {
     // Removing the untrusted configuration permits retry of the exact held message.
     std::fs::remove_file(config).unwrap();
     support::click_button(&mut view, "Messages").await;
-    wait_view(&mut view, |screen| screen.contains("TRUST_GATED_MESSAGE")).await;
+    wait_enabled_node(&mut view, "TRUST_GATED_MESSAGE").await;
     support::click_button(&mut view, "Retry message").await;
     let mut request = fixture.next_request().await;
     assert!(
