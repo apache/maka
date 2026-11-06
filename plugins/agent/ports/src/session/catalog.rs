@@ -31,14 +31,8 @@ pub struct List {
 }
 impl List {
     pub fn validate(&self) -> Result<(), maka_capabilities::authorization::CommandError> {
-        if self
-            .revision
-            .as_ref()
-            .is_some_and(|value| value.is_empty() || value.len() > 128)
-            || self
-                .cursor
-                .as_ref()
-                .is_some_and(|value| value.is_empty() || value.len() > 128)
+        if self.revision.as_ref().is_some_and(|value| value.is_empty())
+            || self.cursor.as_ref().is_some_and(|value| value.is_empty())
             || (self.cursor.is_some() && self.revision.is_none())
         {
             return Err(maka_capabilities::authorization::CommandError::Invalid(
