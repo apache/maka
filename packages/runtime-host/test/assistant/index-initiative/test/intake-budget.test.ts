@@ -24,7 +24,8 @@ import { intakeFixture } from './intake-fixture.js';
 
 const pending = (f: any) =>
   Number(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get().n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      .n,
   );
 
 test('selected model budget packs full serialized input and reacts to a smaller model', async (t) => {
@@ -83,7 +84,7 @@ test('oversized original is preserved and all Unicode fragments survive restart 
   f.advance();
   await f.q.intake.judge();
   assert.equal(seen.length, 1);
-  const original = f.q.store.db
+  const original = f.q.intakeStore.db
     .prepare("SELECT payload FROM intake_events WHERE status='pending'")
     .get();
   assert.equal(JSON.parse(String(original?.payload)).content, text);

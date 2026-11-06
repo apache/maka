@@ -19,7 +19,6 @@
 
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { wakeInput, DISCOVERY_TASK, JUDGEMENT_TASK, NOTEBOOK_RULES } from './prompt.js';
@@ -28,19 +27,19 @@ import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { DiscoveryCoordinator, RECOVERY_ATTEMPT_LIMIT, RECOVERY_LIMIT_MS } from './coordination.js';
+import { DiscoveryRunner, DiscoveryExecutionEnded, type DiscoveryJob } from './runner.js';
 
 export class InitiativeController {
   readonly notebook: Notebook;
-  readonly coordinator: DiscoveryCoordinator;
+  readonly runner: DiscoveryRunner;
   abort = new AbortController();
   timer: any;
   heartbeat: any;
   owned = false;
-  running?: Promise<void>;
+  get running() {
+    return this.runner.running('broad');
+  }
   private activeAgent?: any;
-  private recovering = false;
-  private permit?: string;
   ticking?: Promise<void>;
   enabling = false;
   private bindingResolution?: Promise<void>;
@@ -59,10 +58,58 @@ export class InitiativeController {
   ) {
     const path = join(store.directory, 'notebook.sqlite');
     this.notebook = new Notebook(path);
-    this.coordinator = new DiscoveryCoordinator(store, () => this.notebook.sequence());
-    this.recovering = this.owesHost();
-    this.coordinator.recoveryLanes.broad = () => this.recovering;
-    this.coordinator.recoveryState.broad = () => this.store.get()?.recovery;
+    this.runner = new DiscoveryRunner(store, () => this.notebook.sequence());
+    this.runner.register('broad', {
+      store,
+      ready: () => this.ready(),
+      request: async () => {
+        const state = store.get();
+        return (
+          !!state &&
+          !!(state.enabled || state.checkRequested) &&
+          !state.active &&
+          state.nextAt <= Date.now()
+        );
+      },
+      prepare: (job) => this.prepareRun(job),
+      recovery: () => this.recoverSubmission(),
+      reattach: () =>
+        store.update((state) => {
+          const job = this.runner.job('broad')!;
+          state.active ??= {
+            id: job.id,
+            startedAt: job.startedAt,
+            phase: state.pendingDraft?.phase ?? 'discovery',
+          };
+          delete state.recovery;
+        }),
+      defer: (cancelled) => {
+        const state = store.get();
+        if (state?.active) store.retry(state.active.id);
+        if (state?.pendingDraft && (cancelled || !state.pendingDraft.submission?.input))
+          store.update((s) => {
+            delete s.pendingDraft.submission;
+          });
+        store.recover();
+      },
+      unfinished: () => {
+        const state = store.get();
+        return !!(
+          state?.active ||
+          state?.pendingDraft ||
+          state?.pendingJudgement ||
+          state?.candidateReport
+        );
+      },
+      run: (agent) => this.run(agent, store.get()),
+      error: (error) =>
+        store.update((state) => {
+          if (state && !state.active) {
+            state.lastError = String(error);
+            state.nextAt = Date.now() + 30000;
+          }
+        }),
+    });
     chmodSync(path, 0o600);
   }
   refreshNotebook(state = this.store.get()) {
@@ -139,9 +186,7 @@ export class InitiativeController {
       if (owned && !this.owned) {
         // A durable Root may resume before our first tick, including while scheduling is paused.
         this.store.recover(true);
-        this.recovering = this.owesHost();
       }
-      if (owned) this.coordinator.recover();
       if (!owned && this.owned) this.abort.abort(Error('Initiative ownership lost'));
       this.owned = owned;
     };
@@ -183,55 +228,34 @@ export class InitiativeController {
     );
   }
   tick(): Promise<void> {
-    if (this.ticking || this.running || !this.owned || this.abort.signal.aborted)
-      return this.ticking ?? Promise.resolve();
-    this.ticking = this.dispatch()
-      .catch((error) => {
-        try {
-          this.store.update((s) => {
-            if ((s?.enabled || s?.checkRequested) && !s.active) {
-              s.lastError = String(error);
-              s.nextAt = Date.now() + 30000;
-            }
-          });
-        } catch {
-          /* Lease lost. */
-        }
-      })
+    if (!this.owned || this.abort.signal.aborted) return Promise.resolve();
+    this.ticking = this.runner
+      .tick()
+      .catch(() => {})
       .finally(() => {
         this.ticking = undefined;
       });
     return this.ticking;
   }
-  private async restoreExecution() {
+  dispatch() {
+    return this.runner.tick();
+  }
+  private async recoverSubmission() {
     const state = this.store.get();
     const pending = state?.pendingDraft;
     const sessionId =
       pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
-    const abandon = () => {
-      // The retry is the same cycle, not a new investigation of the same conversation.
-      const id = this.store.get()?.active?.id;
-      if (id) this.store.retry(id);
-      this.store.update((s) => {
-        delete s.recovery;
-      });
-      this.store.recover(); // Positive absence keeps the existing cadence; it does not replay a check.
-      this.recovering = false;
-      if (this.permit) this.coordinator.release(this.permit, 'interrupted');
-      this.permit = undefined;
-      this.coordinator.recover();
-    };
-    if (!pending || !sessionId) return abandon();
+    if (!pending || !sessionId) return;
     const sessions = await this.asOwner(state, () => this.ctx.sessionQuery.list());
     if (!sessions.some((session: any) => session.id === sessionId)) {
       this.store.update((s) => {
         delete s.pendingDraft.submission;
       });
-      return abandon();
+      return;
     }
     const agent = await this.asOwner(state, () => this.ctx.agents.resume({ sessionId }));
     const snapshot = await agent.snapshot();
-    if (snapshot.root?.kind === 'reserved') return;
+    if (snapshot.root?.kind === 'reserved') throw Error('Discovery Host is still recovering');
     let submission = pending.submission;
     if (!submission) {
       // Pre-upgrade wakes did not persist their message ID. Match the canonical user
@@ -249,7 +273,7 @@ export class InitiativeController {
             m.text.includes(`\nPhase: ${pending.phase}\n`) &&
             m.text.includes(`完成后把增量操作写入 ${join(directory, 'operations.json')}，格式`),
         );
-      if (!message) return abandon();
+      if (!message) return;
       let revision = -1; // Missing old feedback snapshots must be repaired, never assumed current.
       try {
         const seed = readFileSync(join(directory, 'notebook.md'), 'utf8');
@@ -260,122 +284,28 @@ export class InitiativeController {
       }
       submission = { messageId: message.id, sessionId, input: message.text, revision };
     }
-    const execution = await agent.messageExecution(submission.messageId);
     this.ready();
-    if (!execution) {
-      // An answer that never comes must not withhold the shared slot from both lanes.
-      return this.deferRecovery('the Host did not resolve this submission');
-    }
-    if (execution.state === 'not_admitted' || execution.state === 'cancelled') {
-      if (execution.state === 'cancelled')
-        this.store.update((s) => {
-          delete s.pendingDraft.submission;
-        });
-      return abandon();
-    }
-    if (!['owned', 'pending', 'inbox'].includes(execution.state))
-      return this.deferRecovery('the Host returned an unusable admission state');
-    const permit = this.permit ?? this.coordinator.acquire('broad');
-    if (!permit) return;
-    this.coordinator.assertActive(permit);
-    const current = this.store.update((s) => {
-      if (s.pendingDraft?.id !== pending.id) throw Error('Heartbeat ownership changed');
-      s.active ??= { id: pending.id, startedAt: Date.now(), phase: pending.phase };
-      s.pendingDraft.submission = submission;
-      delete s.recovery;
-    });
-    this.recovering = false;
-    this.launch(agent, current, permit);
-  }
-  /** An unfinished cycle whose admission the Host has not resolved. A recovery that was
-   * already given up keeps its saved submission without withholding the shared slot. */
-  private owesHost() {
-    const s = this.store.get();
-    return !s?.recovery?.exceededAt && !!(s?.active || s?.pendingDraft?.submission);
-  }
-  /** Count one unresolved admission. Past the bound the lane stops withholding the slot,
-   * keeps the saved submission, and reports the degradation instead of guessing. */
-  private deferRecovery(reason: string) {
-    const recovery = this.store.update((s) => {
-      const now = Date.now();
-      const before = s.recovery;
-      const since = before?.since ?? now;
-      const attempts = (before?.attempts ?? 0) + 1;
-      const exceeded =
-        !!before?.exceededAt ||
-        now - since >= RECOVERY_LIMIT_MS ||
-        attempts >= RECOVERY_ATTEMPT_LIMIT;
-      s.recovery = exceeded
-        ? { since, attempts, exceededAt: before?.exceededAt ?? now, reason }
-        : { since, attempts };
-      return s.recovery;
-    });
-    if (!recovery.exceededAt) return;
     this.store.update((s) => {
-      s.active = null;
-      s.lastError = `Discovery wake is not confirmed yet: ${reason}`;
-      // Keep the failed cadence: the next scheduled check reattaches the saved submission
-      // instead of submitting it again.
-      s.nextAt = Date.now() + s.intervalMs;
+      s.pendingDraft.submission = submission;
     });
-    this.recovering = false;
-    if (this.permit) this.coordinator.release(this.permit, 'interrupted');
-    this.permit = undefined;
-    this.coordinator.recover();
+    return { agent, messageId: submission.messageId };
   }
-  private launch(agent: any, current: any, permit: string) {
-    this.permit = permit;
-    this.running = this.run(agent, current).finally(() => {
-      this.running = undefined;
-      const state = this.store.get();
-      this.recovering = this.owesHost();
-      // Unknown or interrupted execution still owns the original memory interval.
-      if (this.recovering) return;
-      this.permit = undefined;
-      this.coordinator.release(
-        permit,
-        state?.lastRun?.id === current.active.id && state.lastRun.outcome !== 'error'
-          ? 'completed'
-          : 'interrupted',
-      );
-    });
-  }
-  async dispatch() {
-    if (this.running) return;
-    if (this.recovering) {
-      await this.restoreExecution();
-      if (this.recovering || this.running) return;
-    }
-    const s = this.store.get();
-    if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) {
-      this.coordinator.withdraw('broad');
+  private async prepareRun(job: DiscoveryJob) {
+    const state = this.store.get();
+    const agent = await this.worker(
+      state,
+      state.pendingDraft?.phase ??
+        (state.pendingJudgement || state.candidateReport ? 'judgement' : 'discovery'),
+    );
+    const snapshot = await agent.snapshot();
+    if (
+      snapshot.root?.kind === 'reserved' ||
+      snapshot?.agent?.status === 'running' ||
+      awaitingUser(snapshot)
+    )
       return;
-    }
-    const permit = this.coordinator.acquire('broad');
-    if (!permit) return;
-    let admitted = false;
-    try {
-      const agent = await this.worker(
-        s,
-        s.pendingDraft?.phase ??
-          (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
-      );
-      const snapshot = await agent.snapshot();
-      if (
-        snapshot.root?.kind === 'reserved' ||
-        snapshot?.agent?.status === 'running' ||
-        awaitingUser(snapshot)
-      )
-        return;
-      this.ready();
-      this.coordinator.assertActive(permit);
-      const current = this.store.claim();
-      if (!current?.active) return;
-      admitted = true;
-      this.launch(agent, current, permit);
-    } finally {
-      if (!admitted) this.coordinator.release(permit);
-    }
+    this.ready();
+    return this.store.claim(job.id, job.startedAt)?.active ? agent : undefined;
   }
   private async worker(s: any, phase: 'discovery' | 'judgement') {
     return this.asOwner(s, async () => {
@@ -447,7 +377,7 @@ export class InitiativeController {
       let submission = this.store.get().pendingDraft.submission;
       if (!submission) {
         mkdirSync(directory, { recursive: true, mode: 0o700 });
-        writeFileSync(viewPath, this.notebook.seed(this.coordinator.previous()), { mode: 0o600 });
+        writeFileSync(viewPath, this.notebook.seed(this.runner.previous()), { mode: 0o600 });
         let input = wakeInput({
           role,
           now: new Date().toISOString(),
@@ -471,51 +401,18 @@ export class InitiativeController {
           s.pendingDraft.submission = submission;
         });
       }
-      let execution = await agent.messageExecution(submission.messageId);
-      if (!execution) throw Error('Heartbeat admission is not yet known');
-      if (execution.state === 'not_admitted') {
-        const admitted = await agent.followup(submission.input, {
-          messageId: submission.messageId,
-        });
-        if (!['turn_started', 'followup'].includes(admitted?.disposition))
-          throw Error('Host rejected proactive wake');
-      }
-      for (;;) {
-        this.ready();
-        execution = await agent.messageExecution(submission.messageId);
-        if (execution?.state === 'owned') break;
-        if (execution?.state === 'cancelled') {
+      try {
+        await this.runner.execute('broad', agent, submission, this.abort.signal);
+      } catch (error) {
+        if (error instanceof DiscoveryExecutionEnded)
           this.store.update((s) => {
             delete s.pendingDraft.submission;
           });
-          throw Error('Heartbeat wake was cancelled');
-        }
-        await delay(25, undefined, { signal: this.abort.signal });
+        throw error;
       }
-      for (;;) {
-        let failure: unknown;
-        try {
-          await agent.whenIdle(this.abort.signal);
-        } catch (error) {
-          failure = error;
-        }
-        this.ready();
-        const snapshot = await agent.snapshot();
-        if (awaitingUser(snapshot)) {
-          if (failure) throw failure;
-          await delay(1000, undefined, { signal: this.abort.signal });
-          continue;
-        }
-        const terminalFailure = ['failed', 'aborted', 'blocked'].includes(snapshot?.agent?.status);
-        if (failure && !terminalFailure) throw failure;
-        this.store.update((s) => {
-          delete s.pendingDraft.submission;
-        });
-        if (failure) throw failure;
-        if (terminalFailure)
-          throw Error(`Heartbeat ended with ${snapshot.agent.status}; inspect before resuming`);
-        break;
-      }
+      this.store.update((s) => {
+        delete s.pendingDraft.submission;
+      });
       if (submission.version)
         this.store.update((s) => {
           (s.promptVersions ??= {})[role] = submission.version;
@@ -656,7 +553,7 @@ export class InitiativeController {
     if (!old || old.sessionId !== call.sessionId)
       throw Error('Only the assistant conversation controls heartbeats');
     const s = this.store.control(action);
-    if (action === 'pause') this.coordinator.withdraw('broad');
+    if (action === 'pause') this.runner.withdraw('broad');
     if (action !== 'pause') void this.tick();
     return s;
   }
@@ -674,7 +571,7 @@ export class InitiativeController {
       failure = error;
     }
     this.abort.abort(Error('Initiative service stopped'));
-    await Promise.allSettled([this.ticking, this.running].filter(Boolean));
+    await Promise.allSettled([this.runner.dispatching, this.running].filter(Boolean));
     if (this.owned) this.store.release();
     if (failure) throw failure;
   }

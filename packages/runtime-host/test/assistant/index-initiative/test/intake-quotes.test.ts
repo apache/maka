@@ -56,7 +56,7 @@ test('Maka intake screens quote comments and can wake without a body or activity
   await f.q.running;
   assert.equal(f.counts().workerCalls, 1);
   await f.q.intake.collect();
-  assert.equal(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 1);
+  assert.equal(f.q.intakeStore.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 1);
 });
 
 test('Maka intake keeps display text and every quote comment without replaying baselined history', async (t) => {
@@ -81,7 +81,7 @@ test('Maka intake keeps display text and every quote comment without replaying b
   });
   revision++;
   await f.q.intake.collect();
-  const rows = f.q.store.db.prepare('SELECT payload FROM intake_events').all();
+  const rows = f.q.intakeStore.db.prepare('SELECT payload FROM intake_events').all();
   assert.equal(rows.length, 1);
   assert.equal(
     JSON.parse(String(rows[0].payload)).content,
@@ -111,13 +111,15 @@ test('an empty frame advances the receipt and is reconsidered when its comment c
   await f.q.intake.collect();
   assert.equal(reads, 1, 'an unchanged empty frame must not repeatedly reread the whole history');
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE source='maka'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE source='maka'").get()?.n,
     0,
   );
   message.quotes[0].comment = 'New feedback';
   await f.q.intake.collect();
   assert.equal(reads, 2, 'a revised message is read again');
-  const rows = f.q.store.db.prepare("SELECT payload FROM intake_events WHERE source='maka'").all();
+  const rows = f.q.intakeStore.db
+    .prepare("SELECT payload FROM intake_events WHERE source='maka'")
+    .all();
   assert.equal(rows.length, 1);
   assert.equal(JSON.parse(String(rows[0].payload)).content, 'New feedback');
 });

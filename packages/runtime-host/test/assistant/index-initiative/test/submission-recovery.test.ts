@@ -77,7 +77,7 @@ function fixture() {
     store.lease();
     store.recover(true);
     controller = new InitiativeController(ctx, store, {});
-    controller.coordinator.recover();
+    controller.runner.migrate();
   };
   open();
   store!.bind({ sessionId: 'owner', cwd: directory });
@@ -107,7 +107,8 @@ function fixture() {
     },
     async run() {
       store.control('check');
-      await controller.run(agent, store.claim());
+      await controller.dispatch();
+      await controller.running;
     },
     async restore() {
       await controller.dispatch();
@@ -298,7 +299,7 @@ for (const accepted of [false, true]) {
       f.agent.messageExecution = async () => undefined as any;
       await f.restore();
       assert.equal(f.store.get().active.id, original);
-      assert.equal(f.controller.coordinator.acquire('quick'), undefined);
+      assert.equal(f.controller.runner.status().running?.lane, 'broad');
       assert.equal(f.prompts.length, Number(accepted));
       f.agent.messageExecution = query;
       await f.restore();
@@ -307,9 +308,7 @@ for (const accepted of [false, true]) {
       assert.equal(f.prompts.length, Number(accepted), 'never resubmit while reconciling');
       assert.equal(f.posted.length, Number(accepted));
       assert.ok(f.store.get().nextAt > Date.now());
-      const quick = f.controller.coordinator.acquire('quick');
-      assert.ok(quick);
-      f.controller.coordinator.release(quick);
+      assert.equal(f.controller.runner.status().running, null);
     } finally {
       f.close();
     }

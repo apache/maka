@@ -24,7 +24,8 @@ import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
-import { DiscoveryCoordinator } from '../../../../src/assistant/index-initiative/coordination.js';
+import { DiscoveryRunner } from '../../../../src/assistant/index-initiative/runner.js';
+import { laneFixture } from './runner-fixture.js';
 import { Notebook } from '../../../../src/assistant/index-initiative/notebook.js';
 import { fixture, until } from './fixture.js';
 import { intakeFixture } from './intake-fixture.js';
@@ -35,14 +36,14 @@ function setup(t: any) {
   store.lease();
   store.bind({ sessionId: 'owner', cwd: root });
   const book = new Notebook(join(root, 'notebook.sqlite'));
-  const coordinator = new DiscoveryCoordinator(store, () => book.sequence());
+  const runner = new DiscoveryRunner(store, () => book.sequence());
   t.after(() => {
     book.close();
     store.release();
     store.close();
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  return { root, store, book, coordinator };
+  return { root, store, book, runner };
 }
 const note = {
   topicId: 'export',
@@ -58,83 +59,83 @@ async function output(prompt: string, draft: any = {}) {
   await writeFile(path, JSON.stringify(draft));
 }
 
-test('queued lanes are durable and fair; repeated ticks cannot jump a waiting investigation', (t) => {
-  const { coordinator } = setup(t);
-  const broad = coordinator.acquire('broad')!;
-  assert.ok(broad);
-  for (let i = 0; i < 20; i++) assert.equal(coordinator.acquire('quick'), undefined);
-  assert.equal(coordinator.status().waiting.length, 1);
-  coordinator.release(broad, 'completed');
-  assert.equal(coordinator.acquire('broad'), undefined);
-  const quick = coordinator.acquire('quick')!;
-  assert.ok(quick);
-  coordinator.release(broad, 'completed'); // stale completion cannot release quick
-  assert.equal(coordinator.status().running?.lane, 'quick');
-  coordinator.release(quick, 'completed');
-  const next = coordinator.acquire('broad');
-  assert.ok(next);
-  coordinator.release(next!);
+test('coalesced requests keep FIFO order and completed memory intervals', async (t) => {
+  const { store, book, runner } = setup(t);
+  const quickStore = store.scope('quick');
+  quickStore.bind({ sessionId: 'owner', cwd: store.directory });
+  const broad = laneFixture(runner, store, 'broad');
+  const quick = laneFixture(runner, quickStore, 'quick');
+  book.appendNote({ ...note, text: 'old' }, 'old');
+  await broad.start();
+  quick.request();
+  for (let i = 0; i < 20; i++) await runner.tick();
+  assert.equal(quick.calls(), 0);
+  assert.equal(runner.status().waiting.length, 1);
+  book.appendNote(note, 'broad-note');
+  await broad.finish();
+  broad.request();
+  await runner.tick();
+  assert.equal(runner.status().running?.lane, 'quick');
+  assert.equal(broad.calls(), 1);
+  book.appendNote(note, 'quick-note');
+  await quick.finish();
+  const previous = runner.previous()!;
+  book.appendNote(note, 'later');
+  assert.deepEqual(
+    book.readMemory(previous.memory).items.map((x: any) => x.id),
+    ['quick-note'],
+  );
+  assert.equal(previous.outcome, 'completed');
+  await runner.tick();
+  assert.equal(broad.calls(), 2);
+  await broad.finish();
 });
 
-test('restart preserves the waiting lane, fences the old owner and records partial memory', (t) => {
-  const { root, store, book, coordinator } = setup(t);
-  const old = coordinator.acquire('broad')!;
-  book.appendNote(note, 'partial');
-  coordinator.acquire('quick');
+test('legacy state migrates atomically to jobs, preserves queue order and is not imported twice', (t) => {
+  const { root, store, runner } = setup(t);
+  const quickStore = store.scope('quick');
+  quickStore.bind({ sessionId: 'owner', cwd: root });
+  store.update((s) => {
+    s.active = { id: 'existing', startedAt: 1 };
+    s.pendingDraft = { id: 'existing', submission: { messageId: 'accepted', input: 'fixed' } };
+  });
+  quickStore.update((s) => {
+    s.pending = { id: 'retry', executionCompleted: true, reports: [] };
+  });
+  store.db.exec(
+    "CREATE TABLE discovery_waiters(seq INTEGER PRIMARY KEY, lane TEXT, queued_at INTEGER); INSERT INTO discovery_waiters VALUES(1,'quick',10),(2,'broad',20)",
+  );
+  laneFixture(runner, store, 'broad');
+  laneFixture(runner, quickStore, 'quick');
+  runner.migrate();
+  runner.migrate();
+  assert.equal(runner.job('broad')?.id, 'existing');
+  assert.equal(runner.job('broad')?.state, 'recovering');
+  assert.equal(runner.job('quick')?.state, 'retry_wait');
+  assert.equal(store.get().pendingDraft.submission.input, 'fixed');
+  assert.equal(store.configuration().active, undefined);
+  assert.equal(quickStore.configuration().pending, undefined);
+  assert.deepEqual(
+    runner.status().waiting.map((x) => x.lane),
+    ['quick', 'broad'],
+  );
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM discovery_jobs').get()?.n, 2);
   store.release();
   const successor = new InitiativeStore(root, 'successor');
   try {
     assert.equal(successor.lease(), true);
-    const next = new DiscoveryCoordinator(successor, () => book.sequence());
-    next.recover();
-    assert.equal(next.previous().outcome, 'interrupted');
-    assert.equal(book.readMemory(next.previous().memory).items[0].id, 'partial');
-    assert.equal(next.acquire('broad'), undefined);
-    const permit = next.acquire('quick')!;
-    assert.ok(permit);
-    coordinator.release(old, 'completed');
-    assert.throws(() => coordinator.assertActive(old), /ownership changed/);
-    assert.equal(next.status().running?.lane, 'quick');
-    next.release(permit, 'completed');
+    assert.throws(
+      () =>
+        store.update((s) => {
+          s.active = null;
+        }),
+      /ownership changed/,
+    );
+    assert.equal(runner.job('broad')?.id, 'existing');
   } finally {
     successor.release();
     successor.close();
   }
-});
-
-test('a completion fenced by temporary lease expiry is released after the same owner renews', (t) => {
-  const { store, coordinator } = setup(t);
-  const broad = coordinator.acquire('broad')!;
-  coordinator.acquire('quick');
-  store.db.exec('UPDATE lease SET until_at=0');
-  coordinator.release(broad, 'completed');
-  assert.equal(coordinator.status().running?.lane, 'broad');
-  assert.equal(coordinator.previous(), null, 'expired owners cannot write a completion');
-  assert.throws(() => coordinator.acquire('quick'), /ownership changed/);
-  assert.equal(store.lease(), true);
-  coordinator.recover();
-  assert.equal(coordinator.status().running, null);
-  assert.equal(coordinator.previous().outcome, 'completed');
-  const quick = coordinator.acquire('quick');
-  assert.ok(quick);
-  coordinator.release(quick!);
-});
-
-test('memory handoff reads only the completed interval and keeps live feedback revision', (t) => {
-  const { book, coordinator } = setup(t);
-  book.appendNote({ ...note, text: 'old' }, 'old');
-  const permit = coordinator.acquire('quick')!;
-  book.appendNote(note, 'new');
-  coordinator.release(permit, 'completed');
-  const previous = coordinator.previous();
-  book.appendNote({ ...note, text: 'later' }, 'later');
-  const page: any = book.readMemory(previous.memory);
-  assert.deepEqual(
-    page.items.map((x: any) => x.id),
-    ['new'],
-  );
-  assert.equal(page.nextCursor, null);
-  assert.throws(() => book.readMemory({ view: 'catalog', afterSequence: 0 }), /only for history/);
 });
 
 test('broad exploration and judgement finish before quick investigation; committed memory reaches its request', async () => {
@@ -182,8 +183,9 @@ test('broad exploration and judgement finish before quick investigation; committ
 test('screening continues while broad is running; queued hints coalesce and later arrivals wait fairly', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  const c = f.parent.coordinator;
-  const broad = c.acquire('broad')!;
+  const c = f.parent.runner;
+  const broad = laneFixture(c, f.parent.store, 'broad');
+  await broad.start();
   await f.q.intake.collect();
   for (const id of ['one', 'two']) {
     f.add(id);
@@ -195,10 +197,11 @@ test('screening continues while broad is running; queued hints coalesce and late
   assert.equal(f.counts().workerCalls, 0);
   assert.equal(c.status().waiting.length, 1);
   assert.equal((await f.q.intake.next())?.ids.length, 2);
-  c.release(broad, 'completed');
+  await broad.finish();
   const idle = f.agent.whenIdle;
   f.agent.whenIdle = async () => {
-    assert.equal(c.acquire('broad'), undefined);
+    broad.request();
+    assert.equal(c.status().running?.lane, 'quick');
     f.add('during');
     await f.q.intake.collect();
     f.advance();
@@ -210,9 +213,8 @@ test('screening continues while broad is running; queued hints coalesce and late
   assert.equal((await f.q.intake.next())?.ids.length, 1);
   await f.q.dispatch();
   assert.equal(f.counts().workerCalls, 1, 'queued broad is served before another quick wake');
-  const secondBroad = c.acquire('broad')!;
-  assert.ok(secondBroad);
-  c.release(secondBroad, 'completed');
+  assert.equal(c.status().running?.lane, 'broad');
+  await broad.finish();
   f.agent.whenIdle = idle;
   await f.q.dispatch();
   await f.q.running;
@@ -223,8 +225,9 @@ test('screening continues while broad is running; queued hints coalesce and late
 test('pausing a waiting quick lane removes only its request and retains unread hints', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
-  const c = f.parent.coordinator;
-  const broad = c.acquire('broad')!;
+  const c = f.parent.runner;
+  const broad = laneFixture(c, f.parent.store, 'broad');
+  await broad.start();
   await f.q.intake.collect();
   f.add('pending');
   await f.q.intake.collect();
@@ -236,12 +239,14 @@ test('pausing a waiting quick lane removes only its request and retains unread h
   assert.equal(c.waiting('quick'), false);
   assert.equal(c.status().running?.lane, 'broad');
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) AS n FROM intake_wakes WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db
+      .prepare("SELECT COUNT(*) AS n FROM intake_wakes WHERE status='pending'")
+      .get()?.n,
     1,
   );
   await f.q.control({ action: 'enable' });
   assert.equal((await f.q.intake.next())?.ids.length, 1);
-  c.release(broad);
+  await broad.finish();
 });
 
 test('a failed quick investigation releases capacity without consuming its pending event window', async (t) => {
@@ -256,48 +261,31 @@ test('a failed quick investigation releases capacity without consuming its pendi
   await f.q.dispatch();
   await f.q.running;
   assert.match(f.q.state().lastError, /fixture interruption/);
-  assert.equal(f.parent.coordinator.status().running, null);
-  assert.equal(f.parent.coordinator.previous().outcome, 'interrupted');
+  assert.equal(f.parent.runner.status().running, null);
+  assert.equal(f.parent.runner.previous().outcome, 'interrupted');
   assert.equal((await f.q.intake.next())?.ids.length, 1);
-  const permit = f.parent.coordinator.acquire('broad');
-  assert.ok(permit);
-  f.parent.coordinator.release(permit!);
+  const broad = laneFixture(f.parent.runner, f.parent.store, 'broad');
+  await broad.start();
+  assert.equal(broad.calls(), 1);
+  await broad.finish();
 });
 
-for (const lane of ['broad', 'quick'] as const) {
-  test(`recovered ${lane} reservation preserves its full memory interval and fences the former owner`, (t) => {
-    const { root, store, book, coordinator } = setup(t);
-    const other = lane === 'broad' ? 'quick' : 'broad';
-    const old = coordinator.acquire(lane)!;
-    book.appendNote(note, 'before-recovery');
-    coordinator.acquire(other);
-    store.release();
-    const successor = new InitiativeStore(root, 'successor');
-    try {
-      successor.lease();
-      const next = new DiscoveryCoordinator(successor, () => book.sequence());
-      next.recoveryLanes[lane] = () => true;
-      next.recover();
-      assert.equal(next.status().running?.lane, lane);
-      assert.equal(next.acquire(other), undefined);
-      const permit = next.acquire(lane)!;
-      assert.ok(permit);
-      assert.notEqual(permit, old);
-      coordinator.release(old, 'interrupted');
-      book.appendNote({ ...note, text: 'after' }, 'after-recovery');
-      next.release(permit, 'completed');
-      const entries: any = book.readMemory(next.previous().memory);
-      assert.deepEqual(
-        entries.items.map((entry: any) => entry.id),
-        ['before-recovery', 'after-recovery'],
-      );
-      next.recoveryLanes[lane] = () => false;
-      const otherPermit = next.acquire(other)!;
-      assert.ok(otherPermit);
-      next.release(otherPermit);
-    } finally {
-      successor.release();
-      successor.close();
-    }
+test('ambiguous overlapping legacy executions block migration without discarding either identity', async (t) => {
+  const { store, runner } = setup(t);
+  const quick = store.scope('quick');
+  quick.bind({ sessionId: 'owner', cwd: store.directory });
+  store.update((s) => {
+    s.active = { id: 'broad-before-upgrade' };
   });
-}
+  quick.update((s) => {
+    s.active = { id: 'quick-before-upgrade' };
+  });
+  laneFixture(runner, store, 'broad');
+  laneFixture(runner, quick, 'quick');
+  await assert.rejects(runner.tick(), /Multiple legacy investigations/);
+  assert.equal(store.get().active.id, 'broad-before-upgrade');
+  assert.equal(quick.get().active.id, 'quick-before-upgrade');
+  assert.equal(store.configuration().runnerSchema, undefined);
+  assert.equal(runner.job('broad'), undefined, 'the entire migration rolls back');
+  assert.match(runner.status().migrationError!, /require reconciliation/);
+});

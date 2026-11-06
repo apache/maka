@@ -56,7 +56,8 @@ test('busy threads cannot hide another thread or their own newest reply; every o
     f.advance();
   }
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     402,
   );
   assert.ok(calls > 1);
@@ -82,14 +83,16 @@ test('a failed group backs off while other groups continue and retries survive r
   };
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     2,
   );
   f.advance(31000);
   f.ctx.llm.generate = async (input: any) => response(input);
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     10,
   );
 });
@@ -267,11 +270,12 @@ test('screening packs all short messages without repeating opaque receipt and lo
   await f.q.intake.judge();
   assert.equal(calls, 1);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     301,
   );
   assert.match(
-    String(f.q.store.db.prepare('SELECT payload FROM intake_events LIMIT 1').get()?.payload),
+    String(f.q.intakeStore.db.prepare('SELECT payload FROM intake_events LIMIT 1').get()?.payload),
     /opaque-routing/,
   );
 });

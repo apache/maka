@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
-import { DiscoveryCoordinator } from '../../../../src/assistant/index-initiative/coordination.js';
+import { DiscoveryRunner } from '../../../../src/assistant/index-initiative/runner.js';
 
 export async function intakeFixture() {
   const root = await mkdtemp(join(tmpdir(), 'maka-intake-'));
@@ -70,9 +70,10 @@ export async function intakeFixture() {
   parentStore.lease();
   parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
-    coordinator: new DiscoveryCoordinator(parentStore, () => 0),
+    runner: new DiscoveryRunner(parentStore, () => 0),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
+    notebook: { continuation: () => [] },
     refreshNotebook: () => {},
     store: parentStore,
     asOwner: (_: any, fn: any) => fn(),

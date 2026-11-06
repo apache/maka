@@ -43,9 +43,7 @@ test('a prepared submission without Host admission grants no memory write identi
   // Reconciliation clears uncertainty without ignoring the configured retry deadline.
   await f.q.dispatch();
   assert.equal(f.counts().workerCalls, 0);
-  const broad = f.parent.coordinator.acquire('broad');
-  assert.ok(broad);
-  f.parent.coordinator.release(broad);
+  assert.equal(f.parent.runner.status().running, null);
 });
 
 test('an investigation awaiting user input keeps its slot and write identity', async (t) => {
@@ -71,9 +69,11 @@ test('an investigation awaiting user input keeps its slot and write identity', a
   await blocked;
   assert.ok(f.q.running);
   assert.equal(f.q.execution('worker', true), f.q.state().active.id);
-  assert.equal(f.parent.coordinator.status().running?.lane, 'quick');
-  assert.equal(f.parent.coordinator.acquire('broad'), undefined);
-  f.parent.coordinator.withdraw('broad');
+  assert.equal(f.parent.runner.status().running?.lane, 'quick');
+  f.parent.runner.request('broad');
+  await f.q.dispatch();
+  assert.equal(f.parent.runner.waiting('broad'), true);
+  f.parent.runner.withdraw('broad');
   // Only this observer is aborted; user-input handling itself remains the Host's job.
   f.q.abort.abort(Error('Test finished at user-input boundary'));
   await f.q.running;

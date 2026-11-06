@@ -90,7 +90,8 @@ const until = async (check: () => boolean) => {
 };
 
 const delivered = (f: any) =>
-  f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n;
+  f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+    ?.n;
 
 test('an unadmitted wake keeps its recorded body across restart: one investigation and no payload conflict', async (t) => {
   const f = await intakeFixture();

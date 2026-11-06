@@ -22,7 +22,7 @@ import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { QuickDiscoveryController } from './quick.js';
+import type { InitiativeStore } from './store.js';
 import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
 import { intakeChunkEnd } from './intake-chunks.js';
 
@@ -102,6 +102,20 @@ const mergeHint = (
   return hints;
 };
 
+/** Intake owns receipts, not discovery execution or its controller. */
+export interface IntakeSink {
+  store: InitiativeStore;
+  ctx: any;
+  abort: AbortController;
+  readonly owned: boolean;
+  now(): number;
+  state(): any;
+  update(change: (state: any) => void): void;
+  ready(): void;
+  asOwner<T>(state: any, fn: () => T, signal?: AbortSignal): T;
+  requestWake(): Promise<void>;
+}
+
 /** Durable source receipt -> lightweight wake hint -> ordinary global discovery.
  * Receipt/screening positions never claim that a user matter has been investigated. */
 export class EventIntake {
@@ -111,9 +125,9 @@ export class EventIntake {
   private receiptWake?: ReturnType<typeof setTimeout>;
   private unavailable = new Map<string, number>();
   private hintRetryAt = new Map<string, number>();
-  constructor(readonly quick: QuickDiscoveryController) {
-    chmodSync(join(quick.store.directory, 'initiative.sqlite'), 0o600);
-    quick.store.db.exec(`CREATE TABLE IF NOT EXISTS intake_sources(id TEXT PRIMARY KEY,scope TEXT,cursor TEXT,error TEXT);
+  constructor(readonly sink: IntakeSink) {
+    chmodSync(join(sink.store.directory, 'initiative.sqlite'), 0o600);
+    sink.store.db.exec(`CREATE TABLE IF NOT EXISTS intake_sources(id TEXT PRIMARY KEY,scope TEXT,cursor TEXT,error TEXT);
       CREATE TABLE IF NOT EXISTS intake_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,source TEXT,at INTEGER,payload TEXT,status TEXT DEFAULT 'pending',reason TEXT,retry_at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS intake_long_events(id TEXT PRIMARY KEY,offset INTEGER NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS intake_meta(key TEXT PRIMARY KEY,value TEXT);
@@ -121,7 +135,7 @@ export class EventIntake {
       CREATE INDEX IF NOT EXISTS intake_group ON intake_events(source,json_extract(payload,'$.group'),status,seq);
       CREATE TABLE IF NOT EXISTS intake_groups(id TEXT PRIMARY KEY,checked INTEGER NOT NULL,retry_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS intake_wakes(id TEXT PRIMARY KEY,at INTEGER NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending');`);
-    quick.store.transaction(() => {
+    sink.store.transaction(() => {
       if (
         !this.db
           .prepare('PRAGMA table_info(intake_wakes)')
@@ -142,7 +156,7 @@ export class EventIntake {
     // receipt states are unchanged. Screening no longer builds a second history index.
   }
   private get db() {
-    return this.quick.store.db;
+    return this.sink.store.db;
   }
   private meta(key: string) {
     const r = this.db.prepare('SELECT value FROM intake_meta WHERE key=?').get(key);
@@ -156,8 +170,8 @@ export class EventIntake {
       .run(key, JSON.stringify(value));
   }
   private ready() {
-    this.quick.ready();
-    if (!this.quick.state()?.intakeEnabled || !this.quick.state()?.enabled)
+    this.sink.ready();
+    if (!this.sink.state()?.intakeEnabled || !this.sink.state()?.enabled)
       throw Error('Event intake disabled');
   }
   /** Reading the journal is not intake. A paused quick discovery still owns its lease
@@ -165,27 +179,27 @@ export class EventIntake {
    * Guarding reads with `enabled` made a paused check fail before activation and
    * report "Event intake disabled" for a state where intake was in fact on. */
   private readyForRead() {
-    this.quick.ready();
-    if (!this.quick.state()?.intakeEnabled) throw Error('Event intake disabled');
+    this.sink.ready();
+    if (!this.sink.state()?.intakeEnabled) throw Error('Event intake disabled');
   }
   private transaction<T>(fn: () => T, requireIntake = true): T {
-    return this.quick.store.transaction(() => {
+    return this.sink.store.transaction(() => {
       // Fence inside BEGIN IMMEDIATE so takeover cannot race the following writes.
       if (requireIntake) this.ready();
-      else this.quick.ready();
+      else this.sink.ready();
       return fn();
     });
   }
   tick() {
     if (
-      !this.quick.owned ||
-      this.quick.abort.signal.aborted ||
-      !this.quick.state()?.enabled ||
-      !this.quick.state()?.intakeEnabled
+      !this.sink.owned ||
+      this.sink.abort.signal.aborted ||
+      !this.sink.state()?.enabled ||
+      !this.sink.state()?.intakeEnabled
     )
       return Promise.resolve();
-    if (!this.collecting && this.quick.now() - this.lastPoll >= 5000) {
-      this.lastPoll = this.quick.now();
+    if (!this.collecting && this.sink.now() - this.lastPoll >= 5000) {
+      this.lastPoll = this.sink.now();
       this.collecting = this.collect()
         .catch((e) => this.error(e))
         .finally(() => {
@@ -195,7 +209,7 @@ export class EventIntake {
     if (!this.judging) {
       this.judging = this.judge()
         .then((investigate) => {
-          if (investigate) void this.quick.tick();
+          if (investigate) void this.sink.requestWake();
         })
         .catch((e) => {
           this.error(e);
@@ -207,8 +221,8 @@ export class EventIntake {
     return Promise.all([this.collecting, this.judging]).then(() => {});
   }
   private error(error: unknown) {
-    if (this.quick.abort.signal.aborted) return;
-    this.quick.store.update((s) => {
+    if (this.sink.abort.signal.aborted) return;
+    this.sink.update((s) => {
       s.intakeError = String(error);
     });
   }
@@ -222,7 +236,7 @@ export class EventIntake {
           .run(
             id,
             source,
-            this.quick.now(),
+            this.sink.now(),
             JSON.stringify({ ...item, source, id, content: String(item.content) }),
           );
         if (inserted.changes) received = true;
@@ -237,15 +251,15 @@ export class EventIntake {
     if (received && !this.receiptWake) {
       this.receiptWake = setTimeout(() => {
         this.receiptWake = undefined;
-        void this.quick.tick();
+        void this.sink.requestWake();
       }, 1500);
       this.receiptWake.unref?.();
     }
   }
   async collect() {
-    const q = this.quick,
+    const q = this.sink,
       s = q.state();
-    await q.parent.asOwner(
+    await q.asOwner(
       s,
       async () => {
         const sources = q.ctx.sources.list();
@@ -288,7 +302,7 @@ export class EventIntake {
         value = hash(error);
       if (this.meta(key) === value) return;
       if (
-        this.quick.ctx.bot.post(this.quick.state().sessionId, {
+        this.sink.ctx.bot.post(this.sink.state().sessionId, {
           id: 'intake-source:' + source + ':' + value,
           type: 'system_event',
           source: 'event-intake',
@@ -303,7 +317,7 @@ export class EventIntake {
     }, false);
   }
   private async collectMaka() {
-    const q = this.quick,
+    const q = this.sink,
       visible = await q.ctx.sessionQuery.list(),
       state = q.state();
     const hidden = new Set(
@@ -363,7 +377,7 @@ export class EventIntake {
     this.transaction(() => this.save('maka', previous));
   }
   private groups(status: string) {
-    const now = this.quick.now();
+    const now = this.sink.now();
     return this.db
       .prepare(
         `SELECT source,json_extract(payload,'$.group') topic,MIN(seq) first FROM intake_events
@@ -407,7 +421,7 @@ export class EventIntake {
             `SELECT * FROM intake_events WHERE status=? AND retry_at<=? AND source=?
         AND json_extract(payload,'$.group')=? ORDER BY seq ${order} LIMIT 128`,
           )
-          .all('pending', this.quick.now(), group.source, group.topic);
+          .all('pending', this.sink.now(), group.source, group.topic);
       // Oldest and newest edges both make progress; a long chat cannot hide a fresh reply.
       const oldest = read('ASC'),
         newest = read('DESC'),
@@ -467,7 +481,7 @@ export class EventIntake {
         groups.set(key, { source: event.source, group: event.group, records: [] });
       groups.get(key).records.push(eventText(event));
     });
-    return { now: new Date(this.quick.now()).toISOString(), events: [...groups.values()] };
+    return { now: new Date(this.sink.now()).toISOString(), events: [...groups.values()] };
   }
   private longProgress(id: string) {
     return this.db.prepare('SELECT offset,context FROM intake_long_events WHERE id=?').get(id);
@@ -531,22 +545,22 @@ export class EventIntake {
         .prepare(
           'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
         )
-        .run(group, this.quick.now(), this.quick.now() + 30000);
+        .run(group, this.sink.now(), this.sink.now() + 30000);
     });
-    const result = await this.quick.parent.asOwner(
-      this.quick.state(),
+    const result = await this.sink.asOwner(
+      this.sink.state(),
       () =>
-        this.quick.ctx.llm.generate({
+        this.sink.ctx.llm.generate({
           system: LONG_INTAKE_SYSTEM,
           prompt: JSON.stringify(input),
           maxOutputTokens: budget.maxOutputTokens,
           boundedInput: true,
-          ...(this.quick.state().intakeModelKey
-            ? { modelKey: this.quick.state().intakeModelKey }
+          ...(this.sink.state().intakeModelKey
+            ? { modelKey: this.sink.state().intakeModelKey }
             : {}),
-          signal: this.quick.abort.signal,
+          signal: this.sink.abort.signal,
         }),
-      this.quick.abort.signal,
+      this.sink.abort.signal,
     );
     this.ready();
     if ((await this.authorize([event])).length !== 1) return false;
@@ -578,7 +592,7 @@ export class EventIntake {
             .prepare('INSERT OR IGNORE INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
             .run(
               hash([event.id]),
-              this.quick.now(),
+              this.sink.now(),
               JSON.stringify({ direction, evidenceIds: [event.id] }),
             );
       } else {
@@ -590,7 +604,7 @@ export class EventIntake {
       }
       this.db.prepare('UPDATE intake_groups SET retry_at=0 WHERE id=?').run(group);
       this.save('lastCall', {
-        at: this.quick.now(),
+        at: this.sink.now(),
         modelId: result.modelId,
         inputChars: JSON.stringify(input).length,
         estimatedInputTokens: estimatePluginLlmInputTokens(
@@ -609,14 +623,14 @@ export class EventIntake {
         wakeRequested: Boolean(direction),
       });
     });
-    this.quick.store.update((s) => {
+    this.sink.update((s) => {
       s.intakeError = null;
     });
     return Boolean(direction);
   }
   /** Defer one event and rotate its group without delaying short neighbours. */
   private deferLong(event: any) {
-    const retryAt = this.quick.now() + 30000;
+    const retryAt = this.sink.now() + 30000;
     this.transaction(() => {
       this.db
         .prepare("UPDATE intake_events SET retry_at=? WHERE id=? AND status='pending'")
@@ -627,20 +641,20 @@ export class EventIntake {
         .prepare(
           'INSERT INTO intake_groups VALUES(?,?,0) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked',
         )
-        .run(hash([event.source, event.group]), this.quick.now());
+        .run(hash([event.source, event.group]), this.sink.now());
     });
   }
   async judge() {
     this.ready();
     if (!this.groups('pending').length) return;
-    const budget = await this.quick.parent.asOwner(
-      this.quick.state(),
+    const budget = await this.sink.asOwner(
+      this.sink.state(),
       () =>
-        this.quick.ctx.llm.budget({
-          modelKey: this.quick.state().intakeModelKey,
+        this.sink.ctx.llm.budget({
+          modelKey: this.sink.state().intakeModelKey,
           maxOutputTokens: 2048,
         }),
-      this.quick.abort.signal,
+      this.sink.abort.signal,
     );
     const available =
       budget.maxInputTokens -
@@ -648,7 +662,7 @@ export class EventIntake {
     if (available <= 0) throw Error('Model input capacity cannot fit screening instructions');
     const rows = this.batch(available);
     if (!rows.length) return;
-    if (this.quick.now() - Number(rows[0].at) < 1500) return;
+    if (this.sink.now() - Number(rows[0].at) < 1500) return;
     const authorized = await this.authorize(rows.map((r) => JSON.parse(String(r.payload))));
     const events: any[] = [];
     for (const event of authorized) {
@@ -683,22 +697,22 @@ export class EventIntake {
           .prepare(
             'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
           )
-          .run(group.id, this.quick.now(), this.quick.now() + 30000);
+          .run(group.id, this.sink.now(), this.sink.now() + 30000);
     });
-    const result = await this.quick.parent.asOwner(
-      this.quick.state(),
+    const result = await this.sink.asOwner(
+      this.sink.state(),
       () =>
-        this.quick.ctx.llm.generate({
+        this.sink.ctx.llm.generate({
           system: INTAKE_SYSTEM,
           prompt: JSON.stringify(input),
           maxOutputTokens: budget.maxOutputTokens,
           boundedInput: true,
-          ...(this.quick.state().intakeModelKey
-            ? { modelKey: this.quick.state().intakeModelKey }
+          ...(this.sink.state().intakeModelKey
+            ? { modelKey: this.sink.state().intakeModelKey }
             : {}),
-          signal: this.quick.abort.signal,
+          signal: this.sink.abort.signal,
         }),
-      this.quick.abort.signal,
+      this.sink.abort.signal,
     );
     this.ready();
     if ((await this.authorize(events)).length !== events.length) return;
@@ -718,12 +732,12 @@ export class EventIntake {
         const ids = events.map((event) => event.id);
         this.db
           .prepare('INSERT OR IGNORE INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
-          .run(hash(ids), this.quick.now(), JSON.stringify({ direction, evidenceIds: ids }));
+          .run(hash(ids), this.sink.now(), JSON.stringify({ direction, evidenceIds: ids }));
       }
       for (const group of groups)
         this.db.prepare('UPDATE intake_groups SET retry_at=0 WHERE id=?').run(group.id);
       this.save('lastCall', {
-        at: this.quick.now(),
+        at: this.sink.now(),
         modelId: result.modelId,
         inputChars: JSON.stringify(input).length,
         estimatedInputTokens: estimatePluginLlmInputTokens(INTAKE_SYSTEM, JSON.stringify(input)),
@@ -735,7 +749,7 @@ export class EventIntake {
         wakeRequested: Boolean(direction),
       });
     });
-    this.quick.store.update((s) => {
+    this.sink.update((s) => {
       s.intakeError = null;
     });
     return Boolean(direction);
@@ -813,7 +827,7 @@ export class EventIntake {
     const wanted = ids ? new Set(ids) : undefined;
     return rows
       .filter((row) => !wanted || wanted.has(String(row.id)))
-      .filter((row) => wanted || (this.hintRetryAt.get(String(row.id)) ?? 0) <= this.quick.now())
+      .filter((row) => wanted || (this.hintRetryAt.get(String(row.id)) ?? 0) <= this.sink.now())
       .map((row) => ({
         id: String(row.id),
         ...JSON.parse(String(row.payload)),
@@ -854,19 +868,22 @@ export class EventIntake {
     );
   }
   async next(capturedOnly = false) {
-    if (capturedOnly) this.quick.ready();
+    if (capturedOnly) this.sink.ready();
     else this.readyForRead();
     const wakes = await this.readableWakes(undefined, capturedOnly);
-    if (capturedOnly) this.quick.ready();
+    if (capturedOnly) this.sink.ready();
     else this.readyForRead();
     // Bound durable activation metadata too; model capacity selects a smaller FIFO batch.
     return wakes.length ? { ids: wakes.slice(0, 128).map((wake) => wake.id) } : undefined;
   }
-  /** Called within the activation transaction, including upgrades of old pending work. */
+  /** Idempotently retain receipts captured by a durable job, including legacy upgrades. */
   capture(wake: { ids: string[] }) {
-    this.quick.ready();
-    for (const id of wake.ids)
-      this.db.prepare("UPDATE intake_wakes SET captured=1 WHERE id=? AND status='pending'").run(id);
+    this.transaction(() => {
+      for (const id of wake.ids)
+        this.db
+          .prepare("UPDATE intake_wakes SET captured=1 WHERE id=? AND status='pending'")
+          .run(id);
+    }, false);
   }
   async prepare(wake: { ids: string[] }, fits: (hints: WakeHint[]) => boolean) {
     // Measure old captures without releasing their content; a rejected oversized anchor
@@ -884,7 +901,7 @@ export class EventIntake {
     const hints = new Map<string, WakeHint>();
     for (const item of await this.readableWakes(wake.ids)) {
       if (!fits([hintOf(item)])) {
-        this.hintRetryAt.set(item.id, this.quick.now() + 30000);
+        this.hintRetryAt.set(item.id, this.sink.now() + 30000);
         this.reportError(
           'wake-capacity',
           'A discovery hint exceeds the investigation model or Host message limit. It remains pending; other hints can continue.',
@@ -903,17 +920,20 @@ export class EventIntake {
     return (await this.prepare(wake, () => true)).directions;
   }
   /** Acknowledge this wake's execution, not completion of any underlying matter.
-   * Called inside the successful activation's state transaction. New hints stay pending. */
+   * Its receipt commits before scheduler settlement; a retry may acknowledge it again.
+   * New hints stay pending. */
   complete(wake: { ids: string[] }) {
-    for (const id of wake.ids)
-      this.db
-        .prepare("UPDATE intake_wakes SET status='delivered' WHERE id=? AND status='pending'")
-        .run(id);
+    this.transaction(() => {
+      for (const id of wake.ids)
+        this.db
+          .prepare("UPDATE intake_wakes SET status='delivered' WHERE id=? AND status='pending'")
+          .run(id);
+    }, false);
   }
   private async authorize(events: any[]) {
     const accepted: any[] = [];
-    await this.quick.parent.asOwner(
-      this.quick.state(),
+    await this.sink.asOwner(
+      this.sink.state(),
       async () => {
         const sources = new Map<string, any[]>();
         for (const event of events) {
@@ -929,11 +949,11 @@ export class EventIntake {
                   ? (
                       await Promise.all(
                         [...new Set(group.map((e) => String(e.object.id)))].map(async (id) =>
-                          (await this.quick.ctx.sessionQuery.historyRead(id)) ? id : null,
+                          (await this.sink.ctx.sessionQuery.historyRead(id)) ? id : null,
                         ),
                       )
                     ).filter(Boolean)
-                  : await this.quick.ctx.sources.authorize(
+                  : await this.sink.ctx.sources.authorize(
                       source,
                       group.map((e) => e.object),
                     ),
@@ -950,14 +970,14 @@ export class EventIntake {
               }, false);
               this.unavailable.delete(source);
             } catch (error) {
-              this.quick.abort.signal.throwIfAborted();
-              this.unavailable.set(source, this.quick.now() + 30000);
+              this.sink.abort.signal.throwIfAborted();
+              this.unavailable.set(source, this.sink.now() + 30000);
               this.reportError(source, String(error));
             }
           }),
         );
       },
-      this.quick.abort.signal,
+      this.sink.abort.signal,
     );
     return accepted;
   }

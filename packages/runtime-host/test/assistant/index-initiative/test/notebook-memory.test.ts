@@ -390,3 +390,46 @@ test('oversized catalog and history items retain the correct expansion route', (
   assert.deepEqual(update.read, { view: 'event', eventId: update.id });
   assert.equal((book.readMemory(update.read) as any).view, 'event');
 });
+
+test('large identifiers retain bounded expansion and cannot stall catalog pagination', (t) => {
+  const file = directory(t);
+  let book = new Notebook(file);
+  const topics = ['ordinary', '界'.repeat(850), '\u0000'.repeat(900)];
+  topics.forEach((topicId, i) =>
+    commit(book, `large-id-${i}`, { notes: [note('A source-backed observation', topicId)] }),
+  );
+  book.close();
+  book = new Notebook(file);
+  t.after(() => book.close());
+  const found: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page: any = book.readMemory({ view: 'catalog', limit: 1, cursor });
+    assert.equal(page.items.length, 1);
+    assert.ok(Buffer.byteLength(JSON.stringify(page.items)) <= 5000);
+    assert.notEqual(page.nextCursor, cursor);
+    const item = page.items[0];
+    if (item.read.view === 'event') {
+      let body: any = book.readMemory(item.read);
+      let text = body.text;
+      const firstCursor = body.nextCursor;
+      while (body.nextCursor) {
+        body = book.readMemory({ ...item.read, cursor: body.nextCursor });
+        text += body.text;
+      }
+      found.push(JSON.parse(text).payload.topicId);
+      if (firstCursor)
+        assert.throws(
+          () =>
+            book.readMemory({
+              ...item.read,
+              eventSequence: item.read.eventSequence + 1,
+              cursor: firstCursor,
+            }),
+          /Invalid notebook cursor/,
+        );
+    } else found.push(item.id);
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.deepEqual(found, [...topics].reverse());
+});

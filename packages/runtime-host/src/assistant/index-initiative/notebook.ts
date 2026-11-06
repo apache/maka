@@ -308,12 +308,26 @@ export class Notebook {
       feedbackRevision: this.revision(),
     };
   }
+  /** Small starting points, not a complete history or proof of investigation coverage. */
+  continuation() {
+    return this.db
+      .prepare(
+        "SELECT seq,at,payload FROM events WHERE kind='research-checkpoint' ORDER BY seq DESC LIMIT 3",
+      )
+      .all()
+      .map((row) => ({
+        at: row.at,
+        text: String(JSON.parse(String(row.payload)).text).slice(0, 200),
+        read: { view: 'event', eventSequence: Number(row.seq) },
+      }));
+  }
   seed(previousInvestigation?: unknown) {
     return (
       '# 共享记忆：目录与用户反馈\n' +
       JSON.stringify(
         {
           ...(previousInvestigation ? { previousInvestigation } : {}),
+          recentProgress: this.continuation(),
           catalog: this.readMemory({ view: 'catalog', limit: 8 }),
           pendingFeedback: this.readMemory({ view: 'feedback', limit: 4 }),
           feedbackRules: this.readMemory({ view: 'rules', limit: 4 }),

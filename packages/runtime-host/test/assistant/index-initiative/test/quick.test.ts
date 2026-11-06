@@ -18,13 +18,14 @@
  */
 
 import test from 'node:test';
+import { laneFixture } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
-import { DiscoveryCoordinator } from '../../../../src/assistant/index-initiative/coordination.js';
+import { DiscoveryRunner } from '../../../../src/assistant/index-initiative/runner.js';
 import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
 import { RunCostLedger } from '../../../../src/assistant/run-cost.js';
 import { fixture, until } from './fixture.js';
@@ -66,9 +67,10 @@ async function setup() {
   parentStore.lease();
   parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
-    coordinator: new DiscoveryCoordinator(parentStore, () => 0),
+    runner: new DiscoveryRunner(parentStore, () => 0),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
+    notebook: { continuation: () => [] },
     refreshNotebook: () => {
       notebookRefreshes++;
     },
@@ -648,7 +650,8 @@ for (const phase of ['list', 'historyList', 'activityToken']) {
       let closing: Promise<void> | undefined;
       try {
         f.advance(15 * 60000);
-        const tick = f.q.tick();
+        // The shared dispatch may have been entered by the broad controller.
+        const tick = parent.runner.tick().catch(() => {});
         await until(() => !!observed);
         const reason = Error(`${cancel} stopped`);
         if (cancel === 'quick') closing = f.q.close();
@@ -762,8 +765,9 @@ test('a failed quick run is recorded as failed and its retry as a separate run',
 test('activity already waiting for broad discovery does not wait for another polling interval', async () => {
   const f = await setup();
   try {
-    const coordinator = f.q.parent.coordinator;
-    const broad = coordinator.acquire('broad')!;
+    const coordinator = f.q.parent.runner;
+    const broad = laneFixture(coordinator, f.q.parent.store, 'broad');
+    await broad.start();
     f.advance(15 * 60000);
     await f.run();
     assert.equal(coordinator.waiting('quick'), true);
@@ -771,7 +775,7 @@ test('activity already waiting for broad discovery does not wait for another pol
     await f.run();
     assert.equal(coordinator.waiting('quick'), true);
     assert.equal(f.calls(), 0);
-    coordinator.release(broad, 'completed');
+    await broad.finish();
     await f.run();
     assert.equal(f.calls(), 1);
     assert.equal(coordinator.status().running, null);
@@ -800,6 +804,43 @@ test('a paused quick check still runs once and never reports a disabled intake',
     await f.run();
     assert.equal(f.calls(), 1);
     assert.equal(f.q.state().lastError, null);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a completed business commit survives lease expiry before Runner settlement', async () => {
+  const f = await setup();
+  try {
+    const update = f.q.store.update.bind(f.q.store);
+    let expired = false;
+    f.q.store.update = (change) => {
+      const state = update(change);
+      if (!expired && state.lastFinishedAt && !state.active) {
+        expired = true;
+        f.q.parent.store.db.exec('UPDATE lease SET until_at=0');
+      }
+      return state;
+    };
+    f.advance(15 * 60000);
+    await f.q.dispatch();
+    await f.q.running;
+    const id = f.q.parent.runner.job('quick').id;
+    assert.equal(f.calls(), 1);
+    assert.equal(f.q.parent.runner.job('quick').state, 'settling');
+    f.q.store.update = update;
+    assert.equal(f.q.parent.store.lease(), true);
+    await f.q.dispatch();
+    assert.equal(f.q.parent.runner.job('quick'), undefined);
+    assert.equal(f.q.parent.runner.previous().outcome, 'completed');
+    assert.equal(f.calls(), 1, 'settlement recovery never invokes the model');
+    await f.q.control({ action: 'check' });
+    await f.q.dispatch();
+    await f.q.running;
+    const jobs = f.q.parent.store.db.prepare('SELECT id FROM discovery_jobs').all();
+    assert.equal(jobs.length, 2);
+    assert.ok(jobs.some((job: any) => job.id !== id));
+    assert.equal(f.calls(), 2);
   } finally {
     await f.close();
   }

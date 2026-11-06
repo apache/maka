@@ -19,12 +19,11 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { EventIntake } from './intake.js';
 import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
-import { RECOVERY_ATTEMPT_LIMIT, RECOVERY_LIMIT_MS } from './coordination.js';
+import { DiscoveryExecutionEnded, type DiscoveryJob } from './runner.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
@@ -97,64 +96,136 @@ const reportSchema = z
 export class QuickDiscoveryController {
   readonly store: InitiativeStore;
   readonly intake: EventIntake;
+  readonly intakeStore: InitiativeStore;
   readonly abort = new AbortController();
   owned = false;
-  running?: Promise<void>;
+  get running() {
+    return this.parent.runner.running('quick');
+  }
   ticking?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
   private heartbeat?: ReturnType<typeof setInterval>;
   private agent?: any;
-  private recovering = false;
-  private permit?: string;
+  private closing?: Promise<void>;
   constructor(
     readonly ctx: any,
     readonly parent: any,
     readonly directory: string,
     readonly now: () => number = Date.now,
   ) {
-    this.store = new InitiativeStore(join(directory, 'quick-discovery'), randomUUID());
-    this.intake = new EventIntake(this);
-    this.recovering = this.owesHost();
-    this.parent.coordinator.recoveryLanes.quick = () => this.recovering;
-    this.parent.coordinator.recoveryState.quick = () => this.state()?.recovery;
-  }
-  /** An unfinished wake whose admission the Host has not resolved. A recovery that was
-   * already given up keeps the wake pending without withholding the shared slot. */
-  private owesHost() {
-    const s = this.state();
-    const unfinished = s?.active ?? s?.pending;
-    return !s?.recovery?.exceededAt && !!unfinished && !unfinished.executionCompleted;
+    const path = join(directory, 'quick-discovery');
+    this.store = parent.store.scope('quick', path);
+    this.intakeStore = new InitiativeStore(path, parent.store.owner);
+    const owner = this;
+    this.intake = new EventIntake({
+      store: this.intakeStore,
+      ctx,
+      abort: this.abort,
+      now,
+      get owned() {
+        return owner.owned;
+      },
+      state: () => this.state(),
+      update: (change) => {
+        this.store.update(change);
+      },
+      ready: () => {
+        this.ready();
+        this.intakeStore.fence();
+      },
+      asOwner: (state, fn, signal) => parent.asOwner(state, fn, signal),
+      requestWake: () => this.tick(),
+    });
+    parent.runner.register('quick', {
+      store: this.store,
+      ready: () => this.ready(),
+      request: () => this.requestRun(),
+      prepare: (job: DiscoveryJob) => this.prepareRun(job),
+      recovery: async () => {
+        const state = this.state();
+        const work = state?.active ?? state?.pending;
+        if (!work || work.executionCompleted || !state.workerSession) return;
+        const sessions = await this.owner(state, () => this.ctx.sessionQuery.list());
+        if (!sessions.some((session: any) => session.id === state.workerSession)) return;
+        const agent = await this.owner(state, () =>
+          this.ctx.agents.resume({ sessionId: state.workerSession }),
+        );
+        return { agent, messageId: work.messageId };
+      },
+      reattach: () =>
+        this.store.update((state) => {
+          state.active ??= state.pending;
+          state.pending = null;
+          delete state.recovery;
+        }),
+      defer: (cancelled: boolean) =>
+        this.store.update((state) => {
+          if (state.active) {
+            state.pending = state.active;
+            state.active = null;
+          }
+          if (cancelled && state.pending && !state.pending.executionCompleted) {
+            state.pending.messageId = randomUUID();
+            delete state.pending.submission;
+          }
+          delete state.recovery;
+        }),
+      unfinished: () => !!(this.state()?.active || this.state()?.pending),
+      run: (agent: any) => this.run(agent, this.state()),
+      error: (error: unknown) =>
+        this.store.update((state) => {
+          if (state) {
+            state.lastError = String(error);
+            state.retryAt = this.now() + state.intervalMs;
+          }
+        }),
+    });
   }
   start(tickMs: number) {
     const acquire = () => {
-      const owned = this.store.lease();
-      if (owned && !this.owned)
-        this.store.update((s) => {
-          this.intake.upgrade(s);
-          // A restored Root can call its tools before the next scheduler tick.
-          // Keep its durable execution identity until Host reconciliation settles it.
-          if (s?.active?.executionCompleted) {
-            s.pending = s.active;
-            s.active = null;
-            s.retryAt = this.now();
-          }
+      const owned = this.store.ownsLease() && this.intakeStore.lease();
+      if (owned && !this.owned) {
+        this.owned = true;
+        this.store.transaction(() => {
+          this.store.fence();
+          const legacy = this.intakeStore.get();
+          if (!this.store.configuration() && legacy) this.store.saveConfiguration(legacy);
+          for (const worker of this.intakeStore.db.prepare('SELECT * FROM context_workers').all())
+            this.store.bindWorker(
+              String(worker.session_id),
+              worker.role as any,
+              worker.mode as any,
+              String(worker.context_key),
+            );
+          this.store.update((state) => {
+            this.intake.upgrade(state);
+          });
         });
-      if (owned) this.recovering = this.owesHost();
+      }
       if (!owned && this.owned) this.abort.abort(Error('Quick discovery ownership lost'));
       this.owned = owned;
     };
     acquire();
     this.heartbeat = setInterval(acquire, 10000);
     this.heartbeat.unref?.();
-    this.timer = setInterval(() => void this.tick(), tickMs);
+    // Source collection remains live while the shared Runner is investigating.
+    this.timer = setInterval(() => void this.intake.tick().catch(() => {}), tickMs);
     this.timer.unref?.();
   }
   ready() {
     this.abort.signal.throwIfAborted();
+    if (!this.owned) throw Error('Quick discovery is not started');
     this.store.fence();
   }
   state() {
-    return this.store.get();
+    return this.store.get() ?? this.intakeStore.get();
+  }
+  workerIdentity(sessionId: string) {
+    // Role filtering also runs before ownership is acquired during legacy adoption.
+    return (
+      this.store.worker(sessionId) ??
+      (!this.store.configuration() ? this.intakeStore.worker(sessionId) : undefined)
+    );
   }
   /** The activation that owns this worker's reads and writes. A saved submission alone
    * is not admission proof; pending work must first be reconciled with the Host. */
@@ -211,7 +282,7 @@ export class QuickDiscoveryController {
       }
       if (input.action === 'check') s.checkRequested = true;
     });
-    if (input.action === 'pause') this.parent.coordinator.withdraw('quick');
+    if (input.action === 'pause') this.parent.runner.withdraw('quick');
     return state;
   }
   private owner<T>(s: any, fn: () => T): T {
@@ -272,140 +343,19 @@ export class QuickDiscoveryController {
   }
   tick(): Promise<void> {
     void this.intake.tick().catch(() => {});
-    if (this.ticking || this.running || !this.owned || this.abort.signal.aborted)
-      return this.ticking ?? Promise.resolve();
-    this.ticking = this.dispatch()
-      .catch((error) => {
-        if (this.abort.signal.aborted) return;
-        this.store.update((s) => {
-          if (s) {
-            s.lastError = String(error);
-            s.retryAt = this.now() + s.intervalMs;
-          }
-        });
-      })
+    if (!this.owned || this.abort.signal.aborted) return Promise.resolve();
+    this.ticking = this.parent.runner
+      .tick()
+      .catch(() => {})
       .finally(() => {
         this.ticking = undefined;
       });
-    return this.ticking;
+    return this.ticking!;
   }
-  private async restoreExecution() {
-    const state = this.state();
-    const unfinished = state?.active ?? state?.pending;
-    if (!unfinished || unfinished.executionCompleted || !state.workerSession) {
-      this.recovering = false;
-      return;
-    }
-    const leavePending = () => {
-      this.store.update((s) => {
-        if (s.active?.id === unfinished.id) {
-          s.pending = s.active;
-          s.active = null;
-        }
-      });
-      this.stopWaiting();
-    };
-    const sessions = await this.owner(state, () => this.ctx.sessionQuery.list());
-    if (!sessions.some((session: any) => session.id === state.workerSession)) {
-      leavePending(); // A removed worker cannot own a live execution in this tree.
-      return;
-    }
-    const agent = await this.owner(state, () =>
-      this.ctx.agents.resume({ sessionId: state.workerSession }),
-    );
-    const execution = await agent.messageExecution(unfinished.messageId);
-    this.ready();
-    if (!execution) {
-      // Startup or an uncertain query is not proof of absence, but an answer that never
-      // comes must stop withholding the shared slot.
-      this.deferRecovery(unfinished);
-      return;
-    }
-    if (
-      execution.state === 'owned' ||
-      execution.state === 'pending' ||
-      // `inbox` is admitted and queued exactly like `pending`: the Host owns it, so it
-      // can be reattached but must never be submitted again.
-      execution.state === 'inbox'
-    ) {
-      const permit = this.permit ?? this.parent.coordinator.acquire('quick');
-      if (!permit) return;
-      let restored = false;
-      try {
-        const current = this.store.update((s) => {
-          if ((s.active ?? s.pending)?.id !== unfinished.id)
-            throw Error('Quick wake ownership changed');
-          s.active = s.active ?? s.pending;
-          s.pending = null;
-          delete s.recovery;
-        });
-        this.recovering = false;
-        this.launch(agent, current, permit);
-        restored = true;
-      } finally {
-        if (!restored) this.parent.coordinator.release(permit);
-      }
-      return;
-    }
-    if (execution.state === 'not_admitted' || execution.state === 'cancelled') {
-      leavePending();
-      return;
-    }
-    // Any other answer is unusable: keep it bounded rather than waiting forever.
-    this.deferRecovery(unfinished);
+  dispatch() {
+    return this.parent.runner.tick();
   }
-  /** Stop withholding the shared slot, including the reservation a crashed window left.
-   * Reclaim it while this lane still reports recovering: a reservation cannot be taken
-   * after the lane has stopped asking for it. */
-  private stopWaiting() {
-    const permit =
-      this.permit ??
-      (this.parent.coordinator.status().running?.lane === 'quick'
-        ? this.parent.coordinator.acquire('quick')
-        : undefined);
-    if (permit) this.parent.coordinator.release(permit, 'interrupted');
-    this.permit = undefined;
-    this.recovering = false;
-    this.parent.coordinator.recover();
-  }
-  /** Count one unresolved reconciliation. Past the bound the wake stays pending as
-   * unconfirmed: it is never resubmitted, and it no longer blocks the other lane. */
-  private deferRecovery(unfinished: any) {
-    this.store.update((s) => {
-      if ((s.active ?? s.pending)?.id !== unfinished.id)
-        throw Error('Quick wake ownership changed');
-      const now = this.now();
-      const previous = s.recovery?.id === unfinished.id ? s.recovery : undefined;
-      const since = previous?.since ?? now;
-      const attempts = (previous?.attempts ?? 0) + 1;
-      const exceeded =
-        !!previous?.exceededAt ||
-        now - since >= RECOVERY_LIMIT_MS ||
-        attempts >= RECOVERY_ATTEMPT_LIMIT;
-      s.recovery = exceeded
-        ? {
-            id: unfinished.id,
-            since,
-            attempts,
-            exceededAt: previous?.exceededAt ?? now,
-            reason: 'Host did not confirm the interrupted quick wake; continuing without it',
-          }
-        : { id: unfinished.id, since, attempts };
-      if (!exceeded) return;
-      s.pending = s.active ?? s.pending;
-      s.active = null;
-      s.lastError = s.recovery.reason;
-      s.retryAt = now + s.intervalMs;
-      this.store.log('quick-recovery-exceeded', { id: unfinished.id, attempts });
-    });
-    if (this.state()?.recovery?.exceededAt) this.stopWaiting();
-  }
-  async dispatch() {
-    if (this.running) return;
-    if (this.recovering) {
-      await this.restoreExecution();
-      if (this.recovering || this.running) return;
-    }
+  private async requestRun() {
     const s = this.state(),
       now = this.now();
     if (
@@ -414,10 +364,9 @@ export class QuickDiscoveryController {
       s.active ||
       (s.retryAt > now && !s.checkRequested)
     ) {
-      this.parent.coordinator.withdraw('quick');
-      return;
+      return false;
     }
-    const waiting = this.parent.coordinator.waiting('quick');
+    const waiting = this.parent.runner.waiting('quick');
     const eventWake = await this.intake.next(!s.intakeEnabled);
     const last = s.lastPeriodicFinishedAt ?? s.startedAt;
     const quiet = inQuietHours(now, s.quietHours);
@@ -429,8 +378,7 @@ export class QuickDiscoveryController {
       (now < last + s.intervalMs ||
         (now < (s.observation?.at ?? 0) + s.intervalMs && (quiet || now < last + s.idleMs)))
     ) {
-      this.parent.coordinator.withdraw('quick');
-      return;
+      return false;
     }
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
     const observation = eventWake
@@ -454,69 +402,52 @@ export class QuickDiscoveryController {
       !changed &&
       (quiet || now < last + s.idleMs)
     ) {
-      this.parent.coordinator.withdraw('quick');
-      return;
+      return false;
     }
-    const permit = this.parent.coordinator.acquire('quick');
-    if (!permit) return;
-    let admitted = false;
-    try {
-      const agent = await this.worker(s);
-      const snapshot = await agent.snapshot();
-      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
-      this.ready();
-      this.parent.coordinator.assertActive(permit);
-      const current = this.store.update((state) => {
-        if ((!state.enabled && !state.checkRequested) || state.active) return;
-        state.active = state.pending ?? {
-          id: randomUUID(),
-          from: state.checkedThrough ?? state.startedAt,
-          to: now,
-          tokens: observation.tokens,
-          messageId: randomUUID(),
-          reports: [],
-          periodic: state.checkRequested || !eventWake || (now >= last + s.idleMs && !quiet),
-          ...(eventWake ? { eventWake } : {}),
-        };
-        if (state.active.eventWake) this.intake.capture(state.active.eventWake);
-        state.checkRequested = false;
-        state.lastError = null;
-        this.store.log('quick-started', {
-          id: state.active.id,
-          from: state.active.from,
-          to: state.active.to,
-        });
-      });
-      if (!current.active) return;
-      admitted = true;
-      this.launch(agent, current, permit);
-    } finally {
-      if (!admitted) this.parent.coordinator.release(permit);
-    }
+    return true;
   }
-
-  private launch(agent: any, current: any, permit: string) {
-    this.permit = permit;
-    this.agent = agent;
-    let deferred = false;
-    this.running = this.run(agent, current)
-      .then((result) => {
-        deferred = result === 'deferred';
-      })
-      .finally(() => {
-        this.running = undefined;
-        const finished = this.state();
-        const unfinished = finished?.active ?? finished?.pending;
-        this.recovering = this.owesHost() && unfinished?.messageId === current.active.messageId;
-        if (this.recovering) return;
-        this.permit = undefined;
-        this.parent.coordinator.release(
-          permit,
-          deferred || finished?.active || finished?.pending || finished?.lastError
-            ? 'interrupted'
-            : 'completed',
-        );
-      });
+  private async prepareRun(job: DiscoveryJob) {
+    const state = this.state(),
+      now = this.now();
+    const eventWake = await this.intake.next(!state.intakeEnabled);
+    const last = state.lastPeriodicFinishedAt ?? state.startedAt;
+    const quiet = inQuietHours(now, state.quietHours);
+    // A queued event can lose authorization before the slot becomes available.
+    // That does not make an otherwise premature periodic wake due.
+    if (!state.pending && !state.checkRequested && !eventWake && now < last + state.intervalMs)
+      return;
+    const agent = await this.worker(state);
+    const snapshot = await agent.snapshot();
+    if (
+      snapshot.root?.kind === 'reserved' ||
+      snapshot?.agent?.status === 'running' ||
+      awaitingUser(snapshot)
+    )
+      return;
+    this.ready();
+    const current = this.store.update((s) => {
+      if ((!s.enabled && !s.checkRequested) || s.active) return;
+      s.active = s.pending
+        ? { ...s.pending, retrying: true }
+        : {
+            id: job.id,
+            startedAt: job.startedAt,
+            from: s.checkedThrough ?? s.startedAt,
+            to: now,
+            tokens: s.observation?.tokens ?? s.checkedTokens ?? {},
+            messageId: randomUUID(),
+            reports: [],
+            periodic: s.checkRequested || !eventWake || (now >= last + s.idleMs && !quiet),
+            ...(eventWake ? { eventWake } : {}),
+          };
+      s.pending = null;
+      s.checkRequested = false;
+      s.lastError = null;
+      this.store.log('quick-started', { id: s.active.id, from: s.active.from, to: s.active.to });
+    });
+    if (!current.active) return;
+    if (current.active.eventWake) this.intake.capture(current.active.eventWake);
+    return agent;
   }
 
   private async worker(s: any) {
@@ -621,6 +552,7 @@ export class QuickDiscoveryController {
       }
   }
   async run(agent: any, state: any) {
+    this.agent = agent;
     const active = state.active;
     // Observation only (#6309): the model window of this attempt, when it ran one.
     const startedAt = Date.now();
@@ -639,7 +571,8 @@ export class QuickDiscoveryController {
           this.parent.refreshNotebook();
           const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v3']);
           let first = this.state().promptVersion !== version;
-          const previous = this.parent.coordinator.previous();
+          const previous = this.parent.runner.previous();
+          const progress = this.parent.notebook.continuation();
           const inputFor = (hints: WakeHint[]) => {
             // Sort oldest first and label each hint with its age: a capture can stay pending
             // for hours, and an unlabeled old hint reads like the discovery of the moment.
@@ -650,6 +583,8 @@ export class QuickDiscoveryController {
             let input = hints.length
               ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。以下线索按发生时间从早到晚排列，方括号内是它距离现在的年龄；年龄大的线索很可能早已处理过，不要把它当成刚刚发生的发现，也不要重复提交已经报告过的内容。模型概述：${JSON.stringify(summary)}。概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
               : quickWakeInput(active.from, active.to, first);
+            if (progress.length)
+              input += `\n近期调查进展（有限摘要，按需用 DiscoveryNotebook 读取原记录；不是待办清单或已完成证明）：${JSON.stringify(progress)}`;
             if (previous)
               input += `\n上一轮调查的记忆增量入口：${JSON.stringify(previous)}。用 DiscoveryNotebook 读取 memory 指定的历史范围；调查记录不是完整覆盖或已告知证明，结合当前认识、反馈与来源判断是否需要继续。`;
             return input;
@@ -683,7 +618,7 @@ export class QuickDiscoveryController {
             let capacity = await fitsWorker();
             let batch = await this.intake.prepare(active.eventWake, capacity.fits);
             if (
-              state.pending &&
+              active.retrying &&
               (typeof active.wakeInputTokens === 'number'
                 ? active.wakeInputTokens > capacity.limit
                 : batch.oversized)
@@ -757,44 +692,18 @@ export class QuickDiscoveryController {
               s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
           });
           modelFrom = Date.now();
-          const result = (await this.owner(state, () =>
-            agent.followup(input, { messageId: active.messageId }),
-          )) as any;
-          if (!['turn_started', 'followup'].includes(result?.disposition))
-            throw Error('Host rejected quick discovery wake');
         }
-        // whenIdle alone does not prove a queued message entered execution.
-        for (;;) {
-          this.ready();
-          const execution = await agent.messageExecution(active.messageId);
-          if (['owned', 'completed'].includes(execution?.state)) break;
-          if (execution?.state === 'cancelled') {
-            failedExecution = true;
-            throw Error('Quick wake cancelled');
-          }
-          await delay(50, undefined, { signal: this.abort.signal });
+        try {
+          await this.parent.runner.execute(
+            'quick',
+            agent,
+            this.state().active.submission ?? { messageId: active.messageId },
+            this.abort.signal,
+          );
+        } catch (error) {
+          failedExecution = error instanceof DiscoveryExecutionEnded;
+          throw error;
         }
-        let waitError: unknown;
-        let snapshot: any;
-        for (;;) {
-          try {
-            await agent.whenIdle(this.abort.signal);
-          } catch (error) {
-            waitError = error;
-          }
-          snapshot = await agent.snapshot();
-          if (waitError || !awaitingUser(snapshot)) break;
-          await delay(1000, undefined, { signal: this.abort.signal });
-        }
-        failedExecution =
-          ['failed', 'aborted'].includes(snapshot?.agent?.status) ||
-          (snapshot?.agent?.status === 'blocked' && snapshot.pendingInteractions === 0);
-        if (waitError) throw waitError;
-        if (
-          awaitingUser(snapshot) ||
-          ['failed', 'aborted', 'blocked', 'waiting_for_user'].includes(snapshot?.agent?.status)
-        )
-          throw Error(`Quick discovery ended with ${snapshot?.agent?.status}`);
         this.ready();
         this.store.update((s) => {
           s.active.executionCompleted = true;
@@ -858,13 +767,30 @@ export class QuickDiscoveryController {
         });
     }
   }
-  async close() {
+  close() {
+    return (this.closing ??= this.stop());
+  }
+  private async stop() {
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
     this.abort.abort(Error('Quick discovery stopped'));
-    if (this.agent && this.owned) await this.agent.cancel();
-    await Promise.allSettled([this.ticking, this.running, this.intake.close()].filter(Boolean));
-    if (this.owned) this.store.release();
+    let failure: unknown;
+    try {
+      if (this.agent && this.owned) {
+        this.store.fence();
+        await this.agent.cancel();
+      }
+    } catch (error) {
+      failure = error;
+    }
+    await Promise.allSettled(
+      [this.parent.runner.dispatching, this.running, this.intake.close()].filter(Boolean),
+    );
+    this.parent.runner.unregister('quick');
+    if (this.owned) this.intakeStore.release();
+    this.owned = false;
+    this.intakeStore.close();
+    if (failure) throw failure;
   }
 }
 
@@ -908,7 +834,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.api.register('assistant.quick-discovery-status', () => ({
     ...(quick.state() ?? { configured: false }),
     intake: quick.intake.status(),
-    coordination: parent.coordinator.status(),
+    coordination: parent.runner.status(),
   }));
   for (const [name, description, parameters, impl] of [
     [
@@ -924,7 +850,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       () => ({
         ...(quick.state() ?? { configured: false }),
         intake: quick.intake.status(),
-        coordination: parent.coordinator.status(),
+        coordination: parent.runner.status(),
       }),
     ],
   ] as const)
@@ -965,7 +891,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
     },
   });
   ctx.tools.filter?.((sessionId: string, tools: any[]) =>
-    quick.store.worker(sessionId)?.role !== 'quick'
+    quick.workerIdentity(sessionId)?.role !== 'quick'
       ? tools
       : tools.filter(
           (tool) =>
@@ -991,7 +917,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
     name: 'quick-discovery.role',
     order: 812,
     text: ({ sessionId }: any) =>
-      quick.store.worker(sessionId)?.role === 'quick'
+      quick.workerIdentity(sessionId)?.role === 'quick'
         ? '你在快速发现后台会话中运行，只读调查，不委派执行任务，不自行设置心跳。用 DiscoveryNotebook 读取相关记忆；仅通过 DiscoveryNotebookRemember 提交知识增量，不直接修改记事本文件。'
         : undefined,
   });

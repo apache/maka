@@ -74,6 +74,7 @@ export const memoryRead = z
     entryId: id.optional(),
     revision: z.number().int().positive().optional(),
     eventId: id.optional(),
+    eventSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     afterSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     throughSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     query: z.string().trim().min(1).max(200).optional(),
@@ -274,6 +275,7 @@ export class NotebookMemory {
           input.query ?? null,
           input.afterSequence ?? null,
           input.throughSequence ?? null,
+          ...(input.eventSequence === undefined ? [] : [input.eventSequence]),
         ]),
       )
       .digest('hex');
@@ -332,6 +334,15 @@ export class NotebookMemory {
               : { view: 'event', eventId: item.id }),
         };
       }
+      // Identifiers can be larger than the preview itself (including JSON escapes).
+      // Keep a bounded route to the original event instead of returning an empty
+      // page with the same cursor forever. Catalog keys are the first note's seq.
+      if (Buffer.byteLength(JSON.stringify(item)) > 4200)
+        item = {
+          text: String(item.text ?? '').slice(0, 200),
+          truncated: true,
+          read: { view: 'event', eventSequence: row.key },
+        };
       if (
         items.length >= input.limit ||
         Buffer.byteLength(JSON.stringify([...items, item])) > 5000
@@ -353,9 +364,13 @@ export class NotebookMemory {
   private body(input: MemoryRead, p: Position) {
     let row: any;
     if (input.view === 'event')
-      row = this.db
-        .prepare('SELECT * FROM events WHERE id=? AND seq<=?')
-        .get(input.eventId ?? '', p.through);
+      row = input.eventSequence
+        ? this.db
+            .prepare('SELECT * FROM events WHERE seq=? AND seq<=?')
+            .get(input.eventSequence, p.through)
+        : this.db
+            .prepare('SELECT * FROM events WHERE id=? AND seq<=?')
+            .get(input.eventId ?? '', p.through);
     else {
       row = this.db
         .prepare(
@@ -389,6 +404,8 @@ export class NotebookMemory {
   }
   read(raw: unknown) {
     const input = memoryRead.parse(raw);
+    if (input.eventSequence !== undefined && (input.view !== 'event' || input.eventId))
+      throw new NotebookValidationError('eventSequence requires an event read without eventId');
     if (input.query && !['catalog', 'topic'].includes(input.view))
       throw new NotebookValidationError('query is supported only for catalog and topic reads');
     if (

@@ -34,7 +34,7 @@ function hints(
     for (let i = start; i < start + count; i++) {
       const id = `hint-${i}`;
       ids.push(id);
-      f.q.store.db
+      f.q.intakeStore.db
         .prepare(
           "INSERT INTO intake_events(id,source,at,payload,status) VALUES(?,?,?,?, 'screened')",
         )
@@ -50,7 +50,7 @@ function hints(
             content: id,
           }),
         );
-      f.q.store.db
+      f.q.intakeStore.db
         .prepare('INSERT INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
         .run(id, i, JSON.stringify({ direction: text(i), evidenceIds: [id] }));
     }
@@ -58,7 +58,7 @@ function hints(
   return ids;
 }
 const status = (f: any, id: string) =>
-  f.q.store.db.prepare('SELECT status FROM intake_wakes WHERE id=?').get(id)?.status;
+  f.q.intakeStore.db.prepare('SELECT status FROM intake_wakes WHERE id=?').get(id)?.status;
 
 for (const intakeEnabled of [true, false]) {
   test(`an unavailable captured hint cannot block healthy work or periodic checks (intake=${intakeEnabled})`, async (t) => {
@@ -83,11 +83,11 @@ for (const intakeEnabled of [true, false]) {
     await f.q.running;
     assert.equal(f.counts().workerCalls, 0);
     assert.equal(costs.length, 0, 'a deferred hint is not a model run');
-    assert.equal(f.parent.coordinator.previous().outcome, 'interrupted');
+    assert.equal(f.parent.runner.previous().outcome, 'interrupted');
     assert.equal(status(f, 'hint-0'), 'pending');
     // B arrives after A was captured and became unavailable.
     hints(f, 1, () => 'healthy direction', 1);
-    f.q.store.db
+    f.q.intakeStore.db
       .prepare(
         "UPDATE intake_events SET source='healthy',payload=json_set(payload,'$.source','healthy') WHERE id='hint-1'",
       )
@@ -124,7 +124,7 @@ test('a partially unreadable batch acknowledges only the hints sent to the worke
   const f = await intakeFixture();
   t.after(() => f.close());
   hints(f, 2, (i) => (i ? 'healthy direction' : 'offline direction'));
-  f.q.store.db
+  f.q.intakeStore.db
     .prepare(
       "UPDATE intake_events SET source='healthy',payload=json_set(payload,'$.source','healthy') WHERE id='hint-1'",
     )
@@ -252,7 +252,7 @@ test('old oversized captures recover on a fresh worker and retain the remaining 
     };
   });
   // Simulate a persisted activation from the version before independent captures.
-  f.q.store.db.exec('ALTER TABLE intake_wakes DROP COLUMN captured');
+  f.q.intakeStore.db.exec('ALTER TABLE intake_wakes DROP COLUMN captured');
   await f.restart();
   await f.q.dispatch();
   await f.q.running;
@@ -277,7 +277,7 @@ test('a hint captured hours ago cannot pass for a fresh discovery', async (t) =>
   const base = Date.now();
   const insert = (id: string, at: number, direction: string) =>
     f.q.store.update(() => {
-      f.q.store.db
+      f.q.intakeStore.db
         .prepare(
           "INSERT INTO intake_events(id,source,at,payload,status) VALUES(?,?,?,?, 'screened')",
         )
@@ -293,7 +293,7 @@ test('a hint captured hours ago cannot pass for a fresh discovery', async (t) =>
             content: id,
           }),
         );
-      f.q.store.db
+      f.q.intakeStore.db
         .prepare('INSERT INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
         .run(id, at, JSON.stringify({ direction, evidenceIds: [id] }));
     });

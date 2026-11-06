@@ -231,9 +231,7 @@ export async function initializeInitiative(
     z.object({}),
     (_: any, call: any) => {
       const state = visible(call);
-      return state
-        ? { ...state, coordination: controller.coordinator.status() }
-        : { configured: false };
+      return state ? { ...state, coordination: controller.runner.status() } : { configured: false };
     },
   );
   register(

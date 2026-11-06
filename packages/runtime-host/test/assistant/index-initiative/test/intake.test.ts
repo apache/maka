@@ -27,20 +27,20 @@ test('lease takeover during source collection cannot change receipts, cursors or
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
-  const before = f.q.store.db.prepare('SELECT * FROM intake_sources').all();
+  const before = f.q.intakeStore.db.prepare('SELECT * FROM intake_sources').all();
   f.add('new');
   const changes = f.ctx.sources.changes;
   const successor = new InitiativeStore(f.q.store.directory, 'successor');
   try {
     f.ctx.sources.changes = async (...args: any[]) => {
       const page = await changes(...args);
-      f.q.store.db.exec('UPDATE lease SET until_at=0');
+      f.q.intakeStore.db.exec('UPDATE lease SET until_at=0');
       assert.equal(successor.lease(), true);
       return page;
     };
     await assert.rejects(f.q.intake.collect(), /ownership changed/);
-    assert.deepEqual(f.q.store.db.prepare('SELECT * FROM intake_sources').all(), before);
-    assert.equal(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 0);
+    assert.deepEqual(f.q.intakeStore.db.prepare('SELECT * FROM intake_sources').all(), before);
+    assert.equal(f.q.intakeStore.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 0);
     assert.equal(f.delivered.size, 0);
   } finally {
     successor.release();
@@ -64,15 +64,15 @@ for (const phase of ['batch', 'long-progress', 'long-final']) {
     }
     if (phase === 'long-final') {
       await f.q.intake.judge();
-      assert.ok(f.q.store.db.prepare('SELECT offset FROM intake_long_events').get()?.offset);
+      assert.ok(f.q.intakeStore.db.prepare('SELECT offset FROM intake_long_events').get()?.offset);
       f.ctx.llm.budget = async () => ({ maxInputTokens: 64000, maxOutputTokens: 1000 });
     }
-    const before = f.q.store.db.prepare('SELECT * FROM intake_long_events').all();
+    const before = f.q.intakeStore.db.prepare('SELECT * FROM intake_long_events').all();
     const successor = new InitiativeStore(f.q.store.directory, 'successor');
     let calls = 0;
     f.ctx.sources.authorize = async (_: string, objects: any[]) => {
       if (++calls === 2) {
-        f.q.store.db.exec('UPDATE lease SET until_at=0');
+        f.q.intakeStore.db.exec('UPDATE lease SET until_at=0');
         assert.equal(successor.lease(), true);
       }
       return objects.map((object) => object.id);
@@ -80,10 +80,13 @@ for (const phase of ['batch', 'long-progress', 'long-final']) {
     try {
       await assert.rejects(f.q.intake.judge(), /ownership changed/);
       assert.equal(
-        f.q.store.db.prepare('SELECT status FROM intake_events').get()?.status,
+        f.q.intakeStore.db.prepare('SELECT status FROM intake_events').get()?.status,
         'pending',
       );
-      assert.deepEqual(f.q.store.db.prepare('SELECT * FROM intake_long_events').all(), before);
+      assert.deepEqual(
+        f.q.intakeStore.db.prepare('SELECT * FROM intake_long_events').all(),
+        before,
+      );
       assert.equal(f.q.intake.status().wakes.length, 0);
     } finally {
       successor.release();
@@ -120,23 +123,24 @@ test('durable receipt survives restart, replay is deduplicated and cursor is ind
   await f.q.intake.collect();
   f.add('one');
   await f.q.intake.collect();
-  const cursor = f.q.store.db
+  const cursor = f.q.intakeStore.db
     .prepare('SELECT cursor FROM intake_sources WHERE id=?')
     .get('mail')?.cursor;
   await f.restart();
   f.advance();
   await f.q.intake.collect();
-  assert.equal(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 1);
+  assert.equal(f.q.intakeStore.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 1);
   f.ctx.llm.generate = async () => {
     throw Error('model offline');
   };
   await assert.rejects(f.q.intake.judge(), /offline/);
   assert.equal(
-    f.q.store.db.prepare('SELECT cursor FROM intake_sources WHERE id=?').get('mail')?.cursor,
+    f.q.intakeStore.db.prepare('SELECT cursor FROM intake_sources WHERE id=?').get('mail')?.cursor,
     cursor,
   );
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     1,
   );
 });
@@ -173,7 +177,8 @@ test('malformed or obsolete output remains pending; the only result is a directi
     f.advance(31000);
   }
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     1,
   );
   assert.equal(parseIntake('"  卡片部署可能没生效  "'), '卡片部署可能没生效');
@@ -203,7 +208,7 @@ test('empty selection retains originals without waking or repeating them as back
   assert.equal(batch?.ids.length, 1);
   assert.match(
     String(
-      f.q.store.db.prepare("SELECT payload FROM intake_events WHERE status='screened'").get()
+      f.q.intakeStore.db.prepare("SELECT payload FROM intake_events WHERE status='screened'").get()
         ?.payload,
     ),
     /尚未验收/,
@@ -281,7 +286,7 @@ test('source authorization outage cannot block healthy source delivery or consum
   await f.q.intake.collect();
   f.add('good');
   await f.q.intake.collect();
-  f.q.store.db
+  f.q.intakeStore.db
     .prepare(
       "UPDATE intake_events SET source='healthy',payload=json_set(payload,'$.source','healthy') WHERE json_extract(payload,'$.content')='good'",
     )
@@ -297,7 +302,8 @@ test('source authorization outage cannot block healthy source delivery or consum
   assert.equal(f.counts().modelCalls, 1);
   assert.equal((await f.q.intake.next())?.ids.length, 1);
   assert.equal(
-    f.q.store.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     13,
   );
   f.ctx.sources.authorize = authorize;
@@ -305,7 +311,8 @@ test('source authorization outage cannot block healthy source delivery or consum
   await f.q.intake.judge();
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     0,
   );
 });
@@ -328,7 +335,8 @@ test('large events are delivered in bounded calls with no total-work truncation'
   for (let i = 0; i < 5; i++) await f.q.intake.judge();
   assert.equal(contents.join(''), 'x'.repeat(60000));
   assert.equal(
-    f.q.store.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT count(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     0,
   );
 });
@@ -350,7 +358,8 @@ test('one batch produces one hint, without selected IDs or an investigation chec
   };
   await f.q.intake.judge();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     102,
   );
   const wake = await f.q.intake.next();
@@ -384,7 +393,7 @@ test('new arrivals cannot be consumed by a screening decision for an older batch
     return { text: '""' };
   };
   await f.q.intake.judge();
-  const pending = f.q.store.db
+  const pending = f.q.intakeStore.db
     .prepare("SELECT payload FROM intake_events WHERE status='pending'")
     .all();
   assert.equal(pending.length, 1);

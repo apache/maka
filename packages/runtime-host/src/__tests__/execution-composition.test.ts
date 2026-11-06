@@ -6121,7 +6121,7 @@ async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHa
       assert.ok(activation && !activation.executionCompleted);
       if (eventDriven) assert.ok(activation.eventWake?.ids.length);
       const hintStates = () =>
-        quick.store.db
+        quick.intakeStore.db
           .prepare('SELECT status FROM intake_wakes ORDER BY id')
           .all()
           .map((row) => row.status);
@@ -6150,7 +6150,7 @@ async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHa
         await quick.running;
         assert.equal(quick.state().active, null);
         assert.equal(quick.state().lastError, null);
-        assert.equal(parent.coordinator.previous().outcome, 'completed');
+        assert.equal(parent.runner.previous()!.outcome, 'completed');
         return;
       }
       assert.ok(await preparation.residencies());
@@ -6193,7 +6193,7 @@ async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHa
       assert.equal(runningSessions.size, 1);
       await quick.tick();
       assert.equal(quick.state().active?.id, activation.id);
-      assert.equal(parent.coordinator.status().running?.lane, 'quick');
+      assert.equal(parent.runner.status().running?.lane, 'quick');
       const remember = parent.ctx.tools
         .resolve(quickSession, [])
         .tools.find((tool: any) => tool.name === 'DiscoveryNotebookRemember');
@@ -6455,7 +6455,7 @@ for (const phase of ['discovery', 'judgement'] as const) {
           await quick.tick();
           assert.equal(quick.state().active, null);
           await parent.tick();
-          assert.equal(parent.coordinator.status().running?.lane, 'broad');
+          assert.equal(parent.runner.status().running?.lane, 'broad');
           assert.equal(parent.store.get().active.id, original.active.id);
           assert.equal(
             parent.store.get().enabled,
@@ -6466,7 +6466,7 @@ for (const phase of ['discovery', 'judgement'] as const) {
           await parent.running;
           await pollFor(() => !parent.store.get().active);
           assert.equal(parent.store.get().lastError, null);
-          const memory = parent.notebook.readMemory(parent.coordinator.previous().memory);
+          const memory = parent.notebook.readMemory(parent.runner.previous()!.memory);
           assert.ok('items' in memory);
           const text = JSON.stringify(memory.items);
           assert.match(text, /before-recovery/);

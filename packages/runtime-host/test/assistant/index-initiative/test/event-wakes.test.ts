@@ -47,12 +47,14 @@ test('pending hints coalesce into one wake, exact directions deduplicate, quiet 
   assert.equal(await f.q.intake.next(), undefined);
   assert.equal(f.q.state().lastError, null);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
     3,
   );
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='investigated'").get()
-      ?.n,
+    f.q.intakeStore.db
+      .prepare("SELECT COUNT(*) n FROM intake_events WHERE status='investigated'")
+      .get()?.n,
     0,
   );
 });
@@ -80,7 +82,8 @@ test('hints survive restart and failed worker execution; retry uses the same act
   await f.q.running;
   assert.equal(await f.q.intake.next(), undefined);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='screened'").get()
+      ?.n,
     1,
   );
 });
@@ -126,7 +129,8 @@ test('hint permissions are rechecked; authorization outages retry and revocation
   };
   assert.equal(await f.q.intake.next(), undefined);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
     1,
   );
   f.ctx.sources.authorize = authorize;
@@ -135,7 +139,8 @@ test('hint permissions are rechecked; authorization outages retry and revocation
   f.allow(false);
   assert.deepEqual(await f.q.intake.directions(wake!), []);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='discarded'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='discarded'").get()
+      ?.n,
     1,
   );
 });
@@ -166,11 +171,13 @@ test('a transient authorization failure between admission and hints keeps the wa
   assert.equal(f.q.state().pending, null, 'deferred hints cannot own a failed activation');
   assert.equal(f.counts().workerCalls, 0);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
     1,
   );
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
     0,
   );
   f.ctx.sources.authorize = authorize;
@@ -181,11 +188,13 @@ test('a transient authorization failure between admission and hints keeps the wa
   assert.equal(f.prompts.length, 1);
   assert.match(f.prompts[0], /卡片可能没生效/);
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()
+      ?.n,
     0,
   );
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='delivered'").get()
+      ?.n,
     1,
   );
 });
@@ -208,12 +217,23 @@ test('new hints arriving during a wake are not consumed by that activation', asy
   assert.doesNotMatch(f.prompts[0], /明天安排有变化/);
 });
 
-test('wake receipts and successful activation commit atomically', async (t) => {
+test('a committed intake receipt survives scheduler rollback without repeating the model', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
   await hint(f, 'one', '卡片可能没生效');
   const complete = f.q.intake.complete.bind(f.q.intake);
+  f.q.intake.complete = (wake: any) => {
+    f.q.intakeStore.db.exec('UPDATE lease SET until_at=0');
+    complete(wake);
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /ownership changed/);
+  assert.equal(f.q.state().pending.executionCompleted, true);
+  assert.equal(f.q.intakeStore.lease(), true);
+  assert.ok(await f.q.intake.next(), 'an expired intake owner cannot acknowledge receipts');
+  f.advance(3600000);
   f.q.intake.complete = (wake: any) => {
     complete(wake);
     throw Error('commit failure');
@@ -221,12 +241,16 @@ test('wake receipts and successful activation commit atomically', async (t) => {
   await f.q.dispatch();
   await f.q.running;
   assert.match(f.q.state().lastError, /commit failure/);
-  assert.ok(await f.q.intake.next());
+  assert.equal(await f.q.intake.next(), undefined, 'intake already committed its receipt');
+  assert.equal(f.q.state().pending.executionCompleted, true);
+  assert.equal(f.counts().workerCalls, 1);
   f.q.intake.complete = complete;
   f.advance(3600000);
   await f.q.dispatch();
   await f.q.running;
   assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.state().pending, null);
+  assert.equal(f.counts().workerCalls, 1, 'only settlement was retried');
 });
 
 test('legacy unfinished event queues rescreen without resetting sources or restoring a checklist', async (t) => {
@@ -235,10 +259,10 @@ test('legacy unfinished event queues rescreen without resetting sources or resto
   await f.q.intake.collect();
   f.add('one');
   await f.q.intake.collect();
-  f.q.store.db
+  f.q.intakeStore.db
     .prepare("UPDATE intake_events SET status='investigate',reason='old selected record'")
     .run();
-  const cursor = f.q.store.db
+  const cursor = f.q.intakeStore.db
     .prepare("SELECT cursor FROM intake_sources WHERE id='mail'")
     .get()?.cursor;
   f.q.store.update((s: any) => {
@@ -252,11 +276,12 @@ test('legacy unfinished event queues rescreen without resetting sources or resto
   });
   await f.restart();
   assert.equal(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()?.n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      ?.n,
     1,
   );
   assert.equal(
-    f.q.store.db.prepare("SELECT cursor FROM intake_sources WHERE id='mail'").get()?.cursor,
+    f.q.intakeStore.db.prepare("SELECT cursor FROM intake_sources WHERE id='mail'").get()?.cursor,
     cursor,
   );
   const unfinished = f.q.state().active ?? f.q.state().pending;
@@ -267,6 +292,7 @@ test('legacy unfinished event queues rescreen without resetting sources or resto
 test('worker tools expose no event reader, per-event report fields or mandatory finish hook', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
+  await f.q.close();
   const registered: any[] = [];
   let hooks = 0;
   const q = initializeQuickDiscovery(

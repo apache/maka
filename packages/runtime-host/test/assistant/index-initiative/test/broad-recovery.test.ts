@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { legacyState } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -95,7 +96,7 @@ function fixture() {
     // Host startup keeps the durable cycle until its admission is reconciled.
     store.recover(true);
     controller = new InitiativeController(ctx, store, {});
-    controller.coordinator.recover();
+    controller.runner.migrate();
     return controller;
   };
   return {
@@ -146,9 +147,10 @@ test('a restart during a queued wake reattaches it, and a proved-absent wake kee
     assert.equal(f.store.get().lastRun.id, interrupted.id, 'the retry stays one cycle');
     assert.equal(second.notebook.events('note')[0].payload.topicId, note.topicId);
 
+    const completedSubmissions = f.submissions.length;
     // Positive absence is the only answer that permits another submission. It must still be
     // the same cycle, not a second investigation of the same conversation.
-    f.store.update((s) => {
+    legacyState(f.store, (s) => {
       s.pendingDraft = {
         id: 'cycle-3',
         phase: 'discovery',
@@ -173,10 +175,12 @@ test('a restart during a queued wake reattaches it, and a proved-absent wake kee
     assert.ok(retried, 'a proved-absent wake is retried');
     assert.equal(retried.id, 'cycle-3', 'the retry reuses the interrupted activation id');
     assert.equal(
-      f.submissions.filter((entry) => entry.messageId !== firstId).length,
+      f.submissions.length - completedSubmissions,
       2,
-      'the retry submits again, exactly once, with a fresh message identity',
+      'the absent cycle submits exploration and judgement once each',
     );
+    assert.equal(new Set(f.submissions.map((entry) => entry.messageId)).size, f.submissions.length);
+    assert.equal(f.store.get().lastError, null);
     third.notebook.close();
     second.notebook.close();
   } finally {

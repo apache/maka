@@ -26,10 +26,17 @@ export type DiscoveryContextMode = 'legacy' | 'scoped';
 /** Scheduler metadata only. Conversation history belongs to the ordinary Session. */
 export class InitiativeStore {
   db: DatabaseSync;
+  private projection?: { read: (state: any) => any; write: (state: any) => any };
   constructor(
     readonly directory: string,
     readonly owner: string,
+    private readonly parent?: InitiativeStore,
+    private readonly namespace?: string,
   ) {
+    if (parent) {
+      this.db = parent.db;
+      return;
+    }
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, 'initiative.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
@@ -39,15 +46,37 @@ export class InitiativeStore {
       CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_at INTEGER NOT NULL);`);
   }
   get(): any {
+    const state = this.configuration();
+    return this.projection ? this.projection.read(state) : state;
+  }
+  /** Configuration views share the scheduler transaction; intake keeps its own DB. */
+  scope(namespace: string, directory = this.directory) {
+    return new InitiativeStore(directory, this.owner, this, namespace);
+  }
+  project(projection: { read: (state: any) => any; write: (state: any) => any }) {
+    this.projection = projection;
+  }
+  configuration(): any {
     const row = this.db.prepare('SELECT payload FROM state WHERE id=1').get();
-    return row ? JSON.parse(String(row.payload)) : null;
+    const raw = row ? JSON.parse(String(row.payload)) : {};
+    if (this.namespace) return raw.scopes?.[this.namespace] ?? null;
+    delete raw.scopes;
+    return Object.keys(raw).length ? raw : null;
   }
   save(s: any) {
+    this.transaction(() => this.saveConfiguration(this.projection ? this.projection.write(s) : s));
+  }
+  saveConfiguration(s: any) {
+    const row = this.db.prepare('SELECT payload FROM state WHERE id=1').get();
+    const raw = row ? JSON.parse(String(row.payload)) : {};
+    const payload = this.namespace
+      ? { ...raw, scopes: { ...raw.scopes, [this.namespace]: s } }
+      : { ...s, ...(raw.scopes ? { scopes: raw.scopes } : {}) };
     this.db
       .prepare(
         'INSERT INTO state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',
       )
-      .run(JSON.stringify(s));
+      .run(JSON.stringify(payload));
   }
   log(kind: string, payload: any) {
     this.db
@@ -55,6 +84,7 @@ export class InitiativeStore {
       .run(Date.now(), kind, JSON.stringify(payload));
   }
   transaction<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const value = fn();
@@ -78,10 +108,12 @@ export class InitiativeStore {
       return true;
     });
   }
+  ownsLease() {
+    const lease = this.db.prepare('SELECT * FROM lease WHERE id=1').get();
+    return !!lease && lease.owner === this.owner && Number(lease.until_at) > Date.now();
+  }
   fence() {
-    const l = this.db.prepare('SELECT * FROM lease WHERE id=1').get();
-    if (!l || l.owner !== this.owner || Number(l.until_at) <= Date.now())
-      throw Error('Initiative ownership changed');
+    if (!this.ownsLease()) throw Error('Initiative ownership changed');
   }
   update(fn: (s: any) => void) {
     return this.transaction(() => {
@@ -112,6 +144,7 @@ export class InitiativeStore {
         throw Error('Finish or recover the pending discovery before changing context mode');
       const s = {
         version: 2,
+        ...(old?.runnerSchema ? { runnerSchema: old.runnerSchema } : {}),
         ...binding,
         discoverySession: old?.discoverySession,
         judgementSession: old?.judgementSession,
@@ -194,7 +227,7 @@ export class InitiativeStore {
       delete s.instructions;
     });
   }
-  claim() {
+  claim(id?: string, startedAt?: number) {
     return this.update((s) => {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
       // A new cycle is where an unconfirmed recovery is retried, so its old bound ends here.
@@ -204,8 +237,8 @@ export class InitiativeStore {
       const retried = s.retry;
       delete s.retry;
       s.active = {
-        id: retried?.id ?? randomUUID(),
-        startedAt: retried?.startedAt ?? Date.now(),
+        id: id ?? retried?.id ?? randomUUID(),
+        startedAt: startedAt ?? retried?.startedAt ?? Date.now(),
         phase:
           s.pendingDraft?.phase ??
           (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
@@ -326,9 +359,11 @@ export class InitiativeStore {
     });
   }
   release() {
+    if (this.parent) return;
     this.db.prepare('DELETE FROM lease WHERE owner=?').run(this.owner);
   }
   close() {
+    if (this.parent) return;
     this.db.close();
   }
 }

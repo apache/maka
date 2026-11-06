@@ -25,12 +25,13 @@ import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
 
 const pending = (f: any) =>
   Number(
-    f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get().n,
+    f.q.intakeStore.db.prepare("SELECT COUNT(*) n FROM intake_events WHERE status='pending'").get()
+      .n,
   );
 const wakes = (f: any) =>
-  Number(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_wakes').get().n);
+  Number(f.q.intakeStore.db.prepare('SELECT COUNT(*) n FROM intake_wakes').get().n);
 const progress = (f: any) =>
-  f.q.store.db.prepare('SELECT offset,context FROM intake_long_events').get();
+  f.q.intakeStore.db.prepare('SELECT offset,context FROM intake_long_events').get();
 const original = (ending: string) =>
   JSON.stringify({
     messages: [
@@ -116,9 +117,9 @@ test('one long event creates at most one wake, including interleaved dispatch, r
   assert.equal(wakes(f), 1);
   assert.equal(f.counts().workerCalls, 1);
   const receipt = JSON.parse(
-    String(f.q.store.db.prepare('SELECT payload FROM intake_wakes').get().payload),
+    String(f.q.intakeStore.db.prepare('SELECT payload FROM intake_wakes').get().payload),
   );
-  const root = f.q.store.db.prepare('SELECT id FROM intake_events').get().id;
+  const root = f.q.intakeStore.db.prepare('SELECT id FROM intake_events').get().id;
   assert.deepEqual(receipt.evidenceIds, [root]);
   await f.restart();
   await f.q.intake.collect();
@@ -201,7 +202,10 @@ test('revocation during long-event screening cannot commit a summary or wake', a
   await f.q.intake.judge();
   assert.equal(wakes(f), 0);
   assert.equal(progress(f), undefined);
-  assert.equal(f.q.store.db.prepare('SELECT status FROM intake_events').get().status, 'revoked');
+  assert.equal(
+    f.q.intakeStore.db.prepare('SELECT status FROM intake_events').get().status,
+    'revoked',
+  );
 });
 
 test('natural boundaries preserve complete messages where possible; giant records remain lossless Unicode fragments', () => {
@@ -228,13 +232,13 @@ test('natural boundaries preserve complete messages where possible; giant record
 
 test('legacy unfinished fragments restart from the retained original and withdraw pending partial hints', async (t) => {
   const f = await setup(t, original('未修复'));
-  const root = f.q.store.db.prepare('SELECT id,payload FROM intake_events').get();
-  f.q.store.db.prepare("UPDATE intake_events SET status='split' WHERE id=?").run(root.id);
+  const root = f.q.intakeStore.db.prepare('SELECT id,payload FROM intake_events').get();
+  f.q.intakeStore.db.prepare("UPDATE intake_events SET status='split' WHERE id=?").run(root.id);
   for (const [id, status] of [
     ['old-one', 'screened'],
     ['old-two', 'pending'],
   ])
-    f.q.store.db
+    f.q.intakeStore.db
       .prepare('INSERT INTO intake_events(id,source,at,payload,status) VALUES(?,?,?,?,?)')
       .run(
         id,
@@ -248,14 +252,15 @@ test('legacy unfinished fragments restart from the retained original and withdra
         }),
         status,
       );
-  f.q.store.db
+  f.q.intakeStore.db
     .prepare('INSERT INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
     .run('partial-wake', 0, JSON.stringify({ direction: '旧片段', evidenceIds: ['old-one'] }));
-  f.q.store.db.prepare("DELETE FROM intake_meta WHERE key='long-event-v2'").run();
+  f.q.intakeStore.db.prepare("DELETE FROM intake_meta WHERE key='long-event-v2'").run();
   await f.restart();
   assert.equal(pending(f), 1);
   assert.equal(
-    f.q.store.db.prepare("SELECT status FROM intake_wakes WHERE id='partial-wake'").get().status,
+    f.q.intakeStore.db.prepare("SELECT status FROM intake_wakes WHERE id='partial-wake'").get()
+      .status,
     'discarded',
   );
   assert.equal(await f.q.intake.next(), undefined);
@@ -341,7 +346,7 @@ test('an event that cannot fit is backed off on its own row instead of blocking 
     return { text: JSON.stringify('客户改期需要关注') };
   };
   const retry = () =>
-    f.q.store.db
+    f.q.intakeStore.db
       .prepare(
         "SELECT retry_at FROM intake_events WHERE json_extract(payload,'$.content')='正文很长的一条消息'",
       )
@@ -415,7 +420,7 @@ test('an unfittable event rotates behind other groups even after its deferral ex
   f.advance(31000);
   await f.q.intake.judge();
   assert.equal(calls, 3);
-  const retained = f.q.store.db
+  const retained = f.q.intakeStore.db
     .prepare("SELECT payload,retry_at FROM intake_events WHERE status='pending'")
     .get();
   assert.equal(JSON.parse(String(retained.payload)).object.title, title);

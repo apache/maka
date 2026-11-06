@@ -18,6 +18,8 @@
  */
 
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
+import { view } from './notebook-output.js';
 import assert from 'node:assert/strict';
 import { fixture, until } from './fixture.js';
 import { output, note } from './notebook-output.js';
@@ -43,13 +45,29 @@ test('scoped cycles rotate workers, retain current memory and keep retired worke
             topicId: note.topicId,
           });
           assert.equal(current.items[0].text, note.text);
+          const seed = JSON.parse(
+            (await readFile(view(prompt), 'utf8')).split('\n').slice(1).join('\n'),
+          );
+          assert.equal(seed.recentProgress[0].text, '已核对原始记录；等待新版本后复查。');
+          const original = await invoke('DiscoveryNotebook', seed.recentProgress[0].read);
+          assert.equal(JSON.parse(original.text).payload.topicId, note.topicId);
           assert.equal(
             f.workers.get(id).transcript.length,
             1,
             'new worker does not copy old transcript',
           );
         }
-        await output(prompt, { notes: discoveries.length === 1 ? [note] : [] });
+        await output(
+          prompt,
+          discoveries.length === 1
+            ? {
+                notes: [note],
+                checkpoints: [
+                  { topicId: note.topicId, text: '已核对原始记录；等待新版本后复查。' },
+                ],
+              }
+            : {},
+        );
       } else {
         judgements.push(id);
         await output(prompt);
@@ -124,7 +142,7 @@ test('quick scoped wakes rotate only after success and preserve the shared entry
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     await f.invoke('InitiativeConfigure', { contextMode: 'scoped' });
-    f.setRunner(async ({ id, invoke }: any) => {
+    f.setRunner(async ({ id, prompt, invoke }: any) => {
       workers.push(id);
       const context = await invoke('DiscoveryNotebook', {});
       if (workers.length === 1) {
@@ -135,8 +153,17 @@ test('quick scoped wakes rotate only after success and preserve the shared entry
           notes: [note],
         });
         entryId = result.entryIds[0];
+        await invoke('DiscoveryNotebookRemember', {
+          key: 'progress',
+          executionId: context.executionId,
+          expectedFeedbackRevision: context.feedbackRevision,
+          checkpoints: [
+            { topicId: note.topicId, text: '已检查版本；下一步核对新产物。', entryIds: [entryId] },
+          ],
+        });
         throw Error('Controlled interruption');
       }
+      assert.match(prompt, /已检查版本；下一步核对新产物/);
       const topic = await invoke('DiscoveryNotebook', { view: 'topic', topicId: note.topicId });
       assert.equal(topic.items.length, 1);
       assert.equal(topic.items[0].id, entryId);

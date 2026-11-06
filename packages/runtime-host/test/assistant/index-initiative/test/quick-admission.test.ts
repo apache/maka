@@ -18,6 +18,7 @@
  */
 
 import test from 'node:test';
+import { legacyState } from './runner-fixture.js';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { HostMessageCoordinator } from '../../../../src/server/message-coordinator.js';
@@ -165,7 +166,7 @@ for (const eventIntake of [false, true]) {
     assert.ok(active && !active.executionCompleted);
     assert.equal(host.starts(), 1);
     assert.ok(host.receipts.has(active.messageId));
-    assert.equal(f.parent.coordinator.status().running?.lane, 'quick');
+    assert.equal(f.parent.runner.status().running?.lane, 'quick');
     f.agent.followup = followup;
     f.advance(3600000); // Hint ages/current time also differ on replay.
     await host.restart();
@@ -177,7 +178,7 @@ for (const eventIntake of [false, true]) {
     assert.equal(f.q.state().pending, null);
     assert.equal(host.submissions.length, 1, 'never resubmit a different payload for an owned ID');
     assert.equal(host.starts(), 1, 'do not start a replacement investigation');
-    assert.equal(f.parent.coordinator.previous().outcome, 'completed');
+    assert.equal(f.parent.runner.previous().outcome, 'completed');
     if (eventIntake) assert.equal(await f.q.intake.next(), undefined);
     else assert.equal(f.q.state().checkedThrough, active.to);
   });
@@ -299,13 +300,13 @@ for (const unknown of [false, true]) {
       const query = f.agent.messageExecution;
       if (unknown) f.agent.messageExecution = async () => undefined as any;
       await f.restart();
-      const coordinator = f.parent.coordinator;
-      assert.equal(coordinator.acquire('broad'), undefined);
+      const coordinator = f.parent.runner;
+      assert.equal(coordinator.status().running?.lane, 'quick');
       if (unknown) {
         await f.q.dispatch();
         assert.equal(
-          coordinator.acquire('broad'),
-          undefined,
+          coordinator.status().running?.lane,
+          'quick',
           'an unknown receipt cannot free recovery capacity',
         );
         f.agent.messageExecution = query;
@@ -325,9 +326,7 @@ for (const unknown of [false, true]) {
       await observing;
       assert.equal(f.q.state().pending, null);
       assert.equal(f.delivered.size, 1);
-      const permit = coordinator.acquire('broad');
-      assert.ok(permit, 'queued broad work starts after the recovered execution settles');
-      coordinator.release(permit!);
+      assert.equal(coordinator.status().running, null, 'capacity is released after settlement');
     } finally {
       running = false;
       release();
@@ -342,7 +341,7 @@ for (const missing of [false, true]) {
     await f.q.control({ action: 'check', eventIntake: false });
     await f.q.dispatch();
     await f.q.running;
-    f.q.store.update((s: any) => {
+    legacyState(f.q.store, (s: any) => {
       s.pending = {
         id: 'not-started',
         messageId: 'not-admitted',
@@ -359,8 +358,6 @@ for (const missing of [false, true]) {
     assert.equal(f.q.state().active, null);
     assert.equal(f.q.state().pending.id, 'not-started');
     assert.equal(f.counts().workerCalls, 1);
-    const permit = f.parent.coordinator.acquire('broad');
-    assert.ok(permit);
-    f.parent.coordinator.release(permit!);
+    assert.equal(f.parent.runner.status().running, null);
   });
 }
