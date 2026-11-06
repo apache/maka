@@ -121,6 +121,7 @@ pub(crate) async fn capture(
     cancellation: &CancellationToken,
     resources: ModelPreparationResources,
     overlay_bytes: usize,
+    target: Option<crate::history::ReplayTarget>,
 ) -> Result<Arc<FrozenHistory>, RunError> {
     let captured = log.capture_source(selection).await?;
     let receipt = captured.reserve_local_resource()?;
@@ -140,6 +141,7 @@ pub(crate) async fn capture(
             &cancellation,
             resources,
             overlay_bytes,
+            target,
         ))
         .catch_unwind()
         .await;
@@ -191,6 +193,7 @@ pub(crate) async fn capture(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn capture_owned(
     captured: CapturedSource,
     language: Language,
@@ -199,11 +202,13 @@ async fn capture_owned(
     cancellation: &CancellationToken,
     resources: ModelPreparationResources,
     overlay_bytes: usize,
+    target: Option<crate::history::ReplayTarget>,
 ) -> Result<Arc<FrozenHistory>, RunError> {
     let work = acquire_work(&resources, cancellation).await?;
     let budget = work.budget();
     let plan = plan(
         &captured,
+        target.as_ref(),
         language,
         vision,
         provider,
@@ -237,6 +242,7 @@ async fn capture_owned(
                 rows,
                 chat,
                 overlay_bytes,
+                target,
             )
             .await;
         }
@@ -276,12 +282,13 @@ async fn capture_owned(
             vision,
             provider,
             replay: captured.selection().replay.as_ref(),
-            model: captured.selection().model.as_ref(),
+            model: target.as_ref(),
             budget: budget.clone(),
             directory_owner: owner.clone(),
             captured: Some(&captured),
             arena: Some(&arena),
             cancellation,
+            row: None,
             row_root: None,
             payload_root: None,
             internal_arena: false,
@@ -304,7 +311,7 @@ async fn capture_owned(
                 }
                 let payload = captured.describe_payload(&row)?;
                 let row_root = captured.metadata_source(&row)?;
-                let row_context = context.for_row(&row_root, payload.as_ref());
+                let row_context = context.for_row(&row, &row_root, payload.as_ref());
                 let projected = super::source_projector::project_row(
                     &metadata,
                     entry.payload.as_ref(),
@@ -532,6 +539,7 @@ fn row_slots() -> usize {
 #[allow(clippy::too_many_arguments)]
 async fn plan(
     captured: &CapturedSource,
+    target: Option<&crate::history::ReplayTarget>,
     language: Language,
     vision: bool,
     provider: &ProviderKind,
@@ -544,12 +552,13 @@ async fn plan(
         vision,
         provider,
         replay: captured.selection().replay.as_ref(),
-        model: captured.selection().model.as_ref(),
+        model: target,
         budget: budget.clone(),
         directory_owner: Arc::new(()),
         captured: Some(captured),
         arena: None,
         cancellation,
+        row: None,
         row_root: None,
         payload_root: None,
         internal_arena: false,
@@ -592,7 +601,7 @@ async fn plan(
             let metadata = entry.directory;
             let payload = captured.describe_payload(&row).map_err(io::Error::other)?;
             let row_root = captured.metadata_source(&row).map_err(io::Error::other)?;
-            let row_context = context.for_row(&row_root, payload.as_ref());
+            let row_context = context.for_row(&row, &row_root, payload.as_ref());
 
             let payload = entry.payload.as_ref();
             if chat_policy {

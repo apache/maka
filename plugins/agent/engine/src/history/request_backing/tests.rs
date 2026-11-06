@@ -50,7 +50,6 @@ async fn source(path: &std::path::Path) -> (RootStore, CapturedSource, SessionEx
             through: 0,
             before: 1,
             captured_through: 0,
-            model: None,
             replay: None,
             prior_unknown: false,
         })

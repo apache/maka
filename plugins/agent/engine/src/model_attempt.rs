@@ -162,7 +162,7 @@ pub(super) async fn prompt_with_resources(
     purpose: ModelPurpose,
     instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
-    let target = maka_event_log::context::semantic::SemanticModel {
+    let target = crate::history::ReplayTarget {
         model: settings.provider.model.clone(),
         codex: settings.codex.cloned(),
         operation: settings.operation,
@@ -200,7 +200,6 @@ pub(super) async fn prompt_with_resources(
             model: settings.provider.model.clone(),
         });
     selection.prior_unknown = prior_unknown;
-    selection.model = Some(target);
     let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
         system.is_some(),
         source.baseline.is_some(),
@@ -219,6 +218,7 @@ pub(super) async fn prompt_with_resources(
         cancellation,
         resources,
         overlay_bytes,
+        Some(target),
     )
     .await?;
     let mut prompt = PreparedPrompt::from_history(body);

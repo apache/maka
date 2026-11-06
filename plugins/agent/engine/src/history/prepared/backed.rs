@@ -79,6 +79,7 @@ pub(super) async fn capture(
     rows: usize,
     chat: super::super::chat_source::ChatShape,
     overlay_bytes: usize,
+    target: Option<crate::history::ReplayTarget>,
 ) -> Result<Arc<FrozenHistory>, RunError> {
     let bytes = metadata_bytes();
     let staged = tokio::select! {
@@ -105,12 +106,13 @@ pub(super) async fn capture(
             vision,
             provider,
             replay: captured.selection().replay.as_ref(),
-            model: captured.selection().model.as_ref(),
+            model: target.as_ref(),
             budget: budget.clone(),
             directory_owner: owner.clone(),
             captured: Some(&captured),
             arena: Some(&arena),
             cancellation,
+            row: None,
             row_root: None,
             payload_root: None,
             internal_arena: true,
@@ -147,7 +149,7 @@ pub(super) async fn capture(
                 }
                 let payload = captured.describe_payload(&row)?;
                 let row_root = captured.metadata_source(&row)?;
-                let row_context = context.for_row(&row_root, payload.as_ref());
+                let row_context = context.for_row(&row, &row_root, payload.as_ref());
                 let projected = super::super::source_projector::arena::project_row(
                     &metadata,
                     entry.payload.as_ref(),

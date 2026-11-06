@@ -267,7 +267,6 @@ pub(super) async fn selected_view_at(
         through: high_water,
         before,
         captured_through: captured,
-        model: None,
         replay: None,
         prior_unknown,
     };

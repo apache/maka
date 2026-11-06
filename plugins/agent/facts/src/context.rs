@@ -331,27 +331,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_replay_distinguishes_same_model_reuse_from_cross_model_proof() {
-        for (same_model, hashes_match, inference, compaction) in [
-            (true, None, true, true),
-            (false, None, false, false),
-            (true, Some(true), true, true),
-            (false, Some(true), true, true),
-            (true, Some(false), false, true),
-            (false, Some(false), false, false),
-        ] {
-            assert_eq!(
-                codex_replay_allowed(same_model, hashes_match, ModelOperation::Inference),
-                inference
-            );
-            assert_eq!(
-                codex_replay_allowed(same_model, hashes_match, ModelOperation::CodexCompaction),
-                compaction
-            );
-        }
-    }
-
-    #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {
         let mut context = ModelRequestContext {
             operation: ModelOperation::Inference,

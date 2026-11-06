@@ -359,3 +359,10 @@ mod tests {
         assert!(project(&prefix, "session", Language::En).is_err());
     }
 }
+
+#[derive(Clone)]
+pub(crate) struct ReplayTarget {
+    pub model: String,
+    pub codex: Option<maka_agent_facts::context::CodexRequestProvenance>,
+    pub operation: maka_agent_facts::context::ModelOperation,
+}

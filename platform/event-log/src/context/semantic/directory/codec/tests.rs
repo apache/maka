@@ -100,7 +100,6 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
         RowDirectory::AssistantPart {
             model_id: text(3),
             route_identity: text(7),
-            codex: Some(json(9, ValueKind::Object)),
             payload: PartSource::Complete(position),
         },
         RowDirectory::ToolResult {
@@ -302,8 +301,8 @@ fn stored_fixture<T: serde::Serialize + serde::de::DeserializeOwned>(
 #[test]
 fn frozen_rowdirectory_bytes_keep_their_meaning() {
     stored_fixture::<RowDirectory>(
-        "04f90106049f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08910249479f447b1b473d359884f2b8541a1ad0b7d194ed59b79e8eee48047ec4830564fd00000400",
-        r#"{"AssistantPart":{"model_id":{"range":{"start":249,"len":6},"measure":{"bytes":4,"sha256":[159,134,208,129,136,76,125,101,154,47,234,160,197,90,208,21,163,191,79,27,43,11,130,44,209,93,108,21,176,240,10,8]}},"route_identity":{"range":{"start":273,"len":73},"measure":{"bytes":71,"sha256":[159,68,123,27,71,61,53,152,132,242,184,84,26,26,208,183,209,148,237,89,183,158,142,238,72,4,126,196,131,5,100,253]}},"codex":null,"payload":{"Complete":{"sourceSequence":4,"itemIndex":0}}}}"#,
+        "04f90106049f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08910249479f447b1b473d359884f2b8541a1ad0b7d194ed59b79e8eee48047ec4830564fd000400",
+        r#"{"AssistantPart":{"model_id":{"range":{"start":249,"len":6},"measure":{"bytes":4,"sha256":[159,134,208,129,136,76,125,101,154,47,234,160,197,90,208,21,163,191,79,27,43,11,130,44,209,93,108,21,176,240,10,8]}},"route_identity":{"range":{"start":273,"len":73},"measure":{"bytes":71,"sha256":[159,68,123,27,71,61,53,152,132,242,184,84,26,26,208,183,209,148,237,89,183,158,142,238,72,4,126,196,131,5,100,253]}},"payload":{"Complete":{"sourceSequence":4,"itemIndex":0}}}}"#,
     );
 }
 

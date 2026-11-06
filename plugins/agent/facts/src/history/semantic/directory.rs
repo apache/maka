@@ -76,7 +76,6 @@ pub enum RowDirectory {
     AssistantPart {
         model_id: TextSpan,
         route_identity: TextSpan,
-        codex: Option<JsonSpan>,
         payload: PartSource,
     },
     ToolResult {

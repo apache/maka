@@ -70,7 +70,6 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
             through,
             before: u64::MAX,
             captured_through: through,
-            model: None,
             replay: None,
             prior_unknown: false,
         };
@@ -85,6 +84,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
             &cancellation,
             resources,
             0,
+            None,
         )
         .await
         .unwrap();
@@ -103,6 +103,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
             &cancellation,
             resources,
             0,
+            None,
         )
         .await
         .unwrap();

@@ -46,7 +46,8 @@ pub struct SemanticRow {
     /// Canonical sequence that published this row version.
     pub revision: u64,
     pub invocation: Invocation,
-    /// Assistant items share their request position; item_index orders them.
+    /// Projection order may use the completion position, not the producing
+    /// request. item_index orders parts within that position.
     pub order: RowPosition,
     pub kind: SemanticKind,
 }
@@ -80,7 +81,6 @@ pub enum SemanticKind {
         step_id: String,
         model_id: String,
         route_identity: String,
-        codex: Option<crate::context::CodexRequestProvenance>,
         accepted_at: u64,
         index: u64,
         payload: PartPayload,
@@ -169,7 +169,6 @@ pub struct RequestFrontier {
     pub source: u64,
     pub model_id: String,
     pub route_identity: String,
-    pub codex: Option<crate::context::CodexRequestProvenance>,
     pub main: bool,
     pub item_acceptance: bool,
     pub recorded: BTreeMap<u64, RecordedFrontier>,
@@ -372,7 +371,6 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             model_id,
             route_identity,
             source_high_water,
-            context,
             purpose,
             item_acceptance,
             ..
@@ -390,7 +388,6 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                     source: *source_high_water,
                     model_id: model_id.clone(),
                     route_identity: route_identity.clone(),
-                    codex: context.as_ref().and_then(|c| c.codex.clone()),
                     main: *purpose == crate::context::ModelPurpose::Main,
                     item_acceptance: *item_acceptance,
                     recorded: BTreeMap::new(),
@@ -757,7 +754,6 @@ fn assistant_row(
             step_id: step.into(),
             model_id: request.model_id.clone(),
             route_identity: request.route_identity.clone(),
-            codex: request.codex.clone(),
             accepted_at: stored.sequence,
             index,
             payload,

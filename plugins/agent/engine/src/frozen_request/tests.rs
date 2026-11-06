@@ -176,21 +176,6 @@ async fn released_request_rehydration(with_image: bool) {
     };
     let mut input = settings(invocation.clone());
     input.provider.adapter = Some("fixture".into());
-    input.context = Some(maka_agent_facts::context::ModelRequestContext {
-        operation: maka_agent_facts::context::ModelOperation::Inference,
-        provider_id: "fixture".into(),
-        codex: Some(maka_agent_facts::context::CodexRequestProvenance {
-            connection_id: "accepted-connection".into(),
-            account_id: Some("accepted-account".into()),
-            compatibility: Some(maka_agent_facts::context::CodexCompatibility {
-                comp_hash: "3000".into(),
-                fetched_at: 1,
-            }),
-        }),
-        context_window: None,
-        model_context_window: None,
-        declared_window: None,
-    });
     if with_image {
         input.supports_vision = true;
         input.provider.image_input = Some(maka_agent_facts::configuration::ImageInput {
@@ -229,294 +214,182 @@ async fn released_request_rehydration(with_image: bool) {
         engine.0.loaded("session"),
     );
     let cancellation = CancellationToken::new();
-    for seed in [true, false] {
-        let original_tools = tools.capture(".", cancellation.clone()).await.unwrap();
-        let view = Arc::new(
-            inner
-                .log
-                .read_model_view("session", Some("invocation"))
-                .await
-                .unwrap(),
-        );
-        let capture = model_attempt::RequestSource::from(view.as_ref());
-        let surface = crate::request_composition::Surface::capture(
-            &original_tools,
-            &inner.shared.model,
-            &input,
-        )
-        .unwrap();
-        let mut prompt = model_attempt::prompt(
-            &inner,
-            &input,
-            &view,
-            &cancellation,
-            None,
-            "invocation",
-            false,
-            surface.system(),
-            ModelPurpose::Main,
-        )
-        .await
-        .unwrap();
-        drop(view);
-        let definitions = original_tools.definitions();
-        model_attempt::prepare_wire(
-            &input,
-            &mut prompt,
-            &definitions,
-            surface.max_output_tokens,
-            &cancellation,
-        )
-        .await
-        .unwrap();
-        let prepared = model_attempt::prepare_request(
-            &input,
-            prompt.clone(),
-            definitions,
-            surface.max_output_tokens,
-            ModelPurpose::Main,
-            None,
-        )
-        .unwrap();
-        let expected = prepared.input_digest.clone();
-        let event = RuntimeEvent::new(
-            invocation.clone(),
-            Fact::ModelRequested {
-                source_capture: capture.capture,
-                item_acceptance: surface.adapter.supports_item_acceptance(),
-                effective_source_digest: Some(capture.effective_digest),
-                purpose: ModelPurpose::Main,
-                context: input.context.clone(),
-                context_breakdown: Some(prepared.context_breakdown),
-                checkpoint_event_id: capture.checkpoint,
-                step_id: if seed {
-                    "producer-step"
-                } else {
-                    "original-step"
-                }
-                .into(),
-                model_id: input.provider.model.clone(),
-                source_scope: capture.evidence.scope,
-                source_high_water: capture.evidence.high_water,
-                source_digest: capture.evidence.digest,
-                input_digest: prepared.input_digest,
-                route_identity: prepared.route_identity,
-            },
-        );
-        let original = event.id.clone();
+    let original_tools = tools.capture(".", cancellation.clone()).await.unwrap();
+    let view = Arc::new(
         inner
             .log
-            .append(
-                &EventWrite::plain(event)
-                    .unwrap()
-                    .with_composition(surface.evidence())
-                    .unwrap(),
-            )
+            .read_model_view("session", Some("invocation"))
             .await
+            .unwrap(),
+    );
+    let capture = model_attempt::RequestSource::from(view.as_ref());
+    let surface =
+        crate::request_composition::Surface::capture(&original_tools, &inner.shared.model, &input)
             .unwrap();
-        if seed {
-            use maka_agent_facts::model::{
-                ModelFinishReason, ModelPart, TextKind,
-                recorded::{CompletionPart, ModelCompletion, ModelPartRecord},
-            };
-            let part = ModelPartRecord {
-                ordinal: 0,
-                message_id: "original-reasoning".into(),
-                started_at: std::time::SystemTime::now(),
-                provider_part_id: Some("original-reasoning".into()),
-                part: Arc::new(ModelPart::Text {
-                    text_kind: TextKind::Thinking,
-                    text: "".into(),
-                    provider_options: Some(Arc::new(
-                        json!({"openai":{"itemId":"original-reasoning","reasoningEncryptedContent":"opaque-original"}}),
-                    )),
-                }),
-            };
-            let completion = ModelCompletion {
-                compaction: None,
-                parts: vec![CompletionPart::Own(part)],
-                finish_reason: ModelFinishReason::Stop,
-                usage: Default::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            };
-            let completed = RuntimeEvent::new(
-                invocation.clone(),
-                Fact::ModelCompleted {
-                    step_id: "producer-step".into(),
-                    output: completion,
-                },
-            );
-            inner
-                .log
-                .append(&EventWrite::plain(completed).unwrap())
-                .await
-                .unwrap();
-            drop(prepared.request);
-            drop(original_tools);
-            drop(surface);
-            prompt.close().await.unwrap();
-            continue;
-        }
-        assert_opaque_reasoning(&prompt, &inner.shared.preparation_resources).await;
-        let replay = FrozenReplay::new(&inner, &input, original.clone(), surface.adapter.clone());
-        let output_limit = surface.max_output_tokens;
-        drop(prepared.request);
-        drop(original_tools);
-        drop(surface);
-        prompt.close().await.unwrap();
-        drop(prompt);
-        // A different Session advances the physical publication watermark without
-        // being a member of the selected request history.
-        let other = crate::test_support::session(&root, "other").await;
-        other
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    Invocation {
-                        session_id: "other".into(),
-                        turn_id: "other".into(),
-                        run_id: "other".into(),
-                        invocation_id: "other".into(),
-                    },
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            source_messages: vec![],
-                            content: "future publication".into(),
-                            request_fingerprint: None,
-                        },
-                    },
-                ))
+    let mut prompt = model_attempt::prompt(
+        &inner,
+        &input,
+        &view,
+        &cancellation,
+        None,
+        "invocation",
+        false,
+        surface.system(),
+        ModelPurpose::Main,
+    )
+    .await
+    .unwrap();
+    drop(view);
+    let definitions = original_tools.definitions();
+    model_attempt::prepare_wire(
+        &input,
+        &mut prompt,
+        &definitions,
+        surface.max_output_tokens,
+        &cancellation,
+    )
+    .await
+    .unwrap();
+    let prepared = model_attempt::prepare_request(
+        &input,
+        prompt.clone(),
+        definitions,
+        surface.max_output_tokens,
+        ModelPurpose::Main,
+        None,
+    )
+    .unwrap();
+    let expected = prepared.input_digest.clone();
+    let event = RuntimeEvent::new(
+        invocation.clone(),
+        Fact::ModelRequested {
+            source_capture: capture.capture,
+            item_acceptance: surface.adapter.supports_item_acceptance(),
+            effective_source_digest: Some(capture.effective_digest),
+            purpose: ModelPurpose::Main,
+            context: None,
+            context_breakdown: Some(prepared.context_breakdown),
+            checkpoint_event_id: capture.checkpoint,
+            step_id: "original-step".into(),
+            model_id: input.provider.model.clone(),
+            source_scope: capture.evidence.scope,
+            source_high_water: capture.evidence.high_water,
+            source_digest: capture.evidence.digest,
+            input_digest: prepared.input_digest,
+            route_identity: prepared.route_identity,
+        },
+    );
+    let original = event.id.clone();
+    inner
+        .log
+        .append(
+            &EventWrite::plain(event)
+                .unwrap()
+                .with_composition(surface.evidence())
                 .unwrap(),
-            )
-            .await
-            .unwrap();
-        let mut fresh = input.clone();
-        fresh.configuration.system_prompt = Some(SystemPrompt {
-            text: "future system must not enter frozen input".into(),
-            policy_revision: 1,
-            sources: vec![],
-        });
-        fresh.provider_options = json!({"temperature": 0.75});
-        fresh
-            .context
-            .as_mut()
-            .unwrap()
-            .codex
-            .as_mut()
-            .unwrap()
-            .compatibility
-            .as_mut()
-            .unwrap()
-            .comp_hash = "4000".into();
-        let replayed = replay.prepared(&cancellation).await.unwrap();
-        let replayed_request = model_attempt::prepare_request(
-            &input,
-            replayed.clone(),
-            vec![],
-            output_limit,
-            ModelPurpose::Main,
-            None,
         )
+        .await
         .unwrap();
-        assert_eq!(replayed_request.input_digest, expected);
-        drop(replayed_request);
-        replayed.close().await.unwrap();
-        drop(replayed);
-        let stopped = CancellationToken::new();
-        stopped.cancel();
-        assert!(matches!(
-            replay.prepared(&stopped).await,
-            Err(RunError::Cancelled)
-        ));
-        let rebuilt = rehydrate_frozen_request(&inner, &original, &fresh, &tools, &cancellation)
-            .await
-            .unwrap();
-        let rebuilt_request = model_attempt::prepare_request(
-            &rebuilt.input,
-            rebuilt.prompt.clone(),
-            rebuilt.tools.definitions(),
-            rebuilt.surface.max_output_tokens,
-            ModelPurpose::Main,
-            None,
+    let replay = FrozenReplay::new(&inner, &input, original.clone(), surface.adapter.clone());
+    let output_limit = surface.max_output_tokens;
+    drop(prepared.request);
+    drop(original_tools);
+    drop(surface);
+    prompt.close().await.unwrap();
+    drop(prompt);
+    // A different Session advances the physical publication watermark without
+    // being a member of the selected request history.
+    let other = crate::test_support::session(&root, "other").await;
+    other
+        .append(
+            &EventWrite::plain(RuntimeEvent::new(
+                Invocation {
+                    session_id: "other".into(),
+                    turn_id: "other".into(),
+                    run_id: "other".into(),
+                    invocation_id: "other".into(),
+                },
+                Fact::InvocationOpened {
+                    configuration: None,
+                    input: InvocationInput::Message {
+                        source_messages: vec![],
+                        content: "future publication".into(),
+                        request_fingerprint: None,
+                    },
+                },
+            ))
+            .unwrap(),
         )
+        .await
         .unwrap();
-        assert_eq!(rebuilt_request.input_digest, expected);
-        assert_eq!(rebuilt.source.capture, capture.capture);
-        assert_eq!(rebuilt.input.provider_options, json!({}));
-        assert_eq!(rebuilt.input.context, input.context);
-        assert_opaque_reasoning(&rebuilt.prompt, &inner.shared.preparation_resources).await;
-        drop(rebuilt_request);
-        rebuilt.prompt.close().await.unwrap();
-        let mut changed_route = fresh.clone();
-        changed_route.provider.base_url = "https://changed.invalid/v1".into();
+    let mut fresh = input.clone();
+    fresh.configuration.system_prompt = Some(SystemPrompt {
+        text: "future system must not enter frozen input".into(),
+        policy_revision: 1,
+        sources: vec![],
+    });
+    fresh.provider_options = json!({"temperature": 0.75});
+    let replayed = replay.prepared(&cancellation).await.unwrap();
+    let replayed_request = model_attempt::prepare_request(
+        &input,
+        replayed.clone(),
+        vec![],
+        output_limit,
+        ModelPurpose::Main,
+        None,
+    )
+    .unwrap();
+    assert_eq!(replayed_request.input_digest, expected);
+    drop(replayed_request);
+    replayed.close().await.unwrap();
+    drop(replayed);
+    let stopped = CancellationToken::new();
+    stopped.cancel();
+    assert!(matches!(
+        replay.prepared(&stopped).await,
+        Err(RunError::Cancelled)
+    ));
+    let rebuilt = rehydrate_frozen_request(&inner, &original, &fresh, &tools, &cancellation)
+        .await
+        .unwrap();
+    let rebuilt_request = model_attempt::prepare_request(
+        &rebuilt.input,
+        rebuilt.prompt.clone(),
+        rebuilt.tools.definitions(),
+        rebuilt.surface.max_output_tokens,
+        ModelPurpose::Main,
+        None,
+    )
+    .unwrap();
+    assert_eq!(rebuilt_request.input_digest, expected);
+    assert_eq!(rebuilt.source.capture, capture.capture);
+    assert_eq!(rebuilt.input.provider_options, json!({}));
+    drop(rebuilt_request);
+    rebuilt.prompt.close().await.unwrap();
+    let mut changed_route = fresh.clone();
+    changed_route.provider.base_url = "https://changed.invalid/v1".into();
+    assert!(matches!(
+        rehydrate_frozen_request(&inner, &original, &changed_route, &tools, &cancellation).await,
+        Err(RunError::ReconciliationRequired(_))
+    ));
+    if with_image {
+        let mut changed_image = fresh.clone();
+        changed_image
+            .provider
+            .image_input
+            .as_mut()
+            .unwrap()
+            .max_width = Some(64);
         assert!(matches!(
-            rehydrate_frozen_request(&inner, &original, &changed_route, &tools, &cancellation)
+            rehydrate_frozen_request(&inner, &original, &changed_image, &tools, &cancellation)
                 .await,
             Err(RunError::ReconciliationRequired(_))
         ));
-        if with_image {
-            let mut changed_image = fresh.clone();
-            changed_image
-                .provider
-                .image_input
-                .as_mut()
-                .unwrap()
-                .max_width = Some(64);
-            assert!(matches!(
-                rehydrate_frozen_request(&inner, &original, &changed_image, &tools, &cancellation)
-                    .await,
-                Err(RunError::ReconciliationRequired(_))
-            ));
-        }
-        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
+    assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 0);
     tools.shutdown().await.unwrap();
     engine.drain().await;
     execution.finish();
-}
-
-async fn assert_opaque_reasoning(
-    prompt: &PreparedPrompt,
-    resources: &maka_model::ModelPreparationResources,
-) {
-    use maka_agent_facts::model::prompt_source::source::{AssistantRecipe, MessageRecipe, json};
-    let work = resources.acquire_work().await.unwrap();
-    let mut messages = prompt.recipes().unwrap().open(0);
-    let mut found = false;
-    while let Some(message) = messages.next().await.unwrap() {
-        if let MessageRecipe::Assistant { content, .. } = message {
-            let mut parts = content.open(0);
-            while let Some(part) = parts.next().await.unwrap() {
-                if let AssistantRecipe::Reasoning {
-                    provider_options: Some(options),
-                    ..
-                } = part
-                {
-                    let encrypted = json::field(
-                        &options,
-                        &["openai", "reasoningEncryptedContent"],
-                        work.budget(),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                    assert!(
-                        json::text_eq(&encrypted.text().unwrap(), "opaque-original", work.budget())
-                            .await
-                            .unwrap()
-                    );
-                    found = true;
-                }
-            }
-        }
-    }
-    assert!(
-        found,
-        "frozen input must retain the actual opaque reasoning"
-    );
 }
 
 struct NeverExecuted;

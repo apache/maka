@@ -488,7 +488,6 @@ impl<'a> Scan<'a> {
             let (mut steering, mut custom, mut is_error, mut archived) = (None, None, None, None);
             let mut kind = None;
             let mut origin = None;
-            let mut codex = None;
             s.object(|s, k| {
                 if k.is("kind") {
                     let value = s.name()?;
@@ -509,8 +508,6 @@ impl<'a> Scan<'a> {
                     model = Some(s.text()?);
                 } else if k.is("route_identity") {
                     route = Some(s.text()?);
-                } else if k.is("codex") {
-                    codex = s.optional_json()?;
                 } else if k.is("call_id") {
                     call = Some(s.text()?);
                 } else if k.is("name") {
@@ -558,7 +555,6 @@ impl<'a> Scan<'a> {
                 RowDirectory::AssistantPart {
                     model_id: required(model)?,
                     route_identity: required(route)?,
-                    codex,
                     payload: required(part)?,
                 }
             } else if variant.is("ToolResult") {
