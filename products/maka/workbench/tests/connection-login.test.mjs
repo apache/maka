@@ -121,6 +121,7 @@ function connectionEditor({
   failDiscovery = false,
   existing = true,
   supportsCompaction = false,
+  signedIn = false,
 } = {}) {
   const provider = {
     entryId: 'maka.codex',
@@ -135,7 +136,7 @@ function connectionEditor({
     name: wrongProvider ? 'other' : 'chatgpt',
   };
   let version = existing ? 1 : 0;
-  let configured = false;
+  let configured = signedIn;
   const locator = { scope: 'connection', connectionId: 'connection', kind: 'provider' };
   const status = () => ({
     locator,
@@ -327,23 +328,44 @@ function connectionEditor({
   };
 }
 
-test('server-side compaction is opt-in, applies on change and survives reopening a connection', async () => {
-  const { owner, operations } = connectionEditor({ supportsCompaction: true });
+test('server-side compaction applies on change, rediscovers models and survives reopening a connection', async () => {
+  const { owner, operations, calls } = connectionEditor({
+    supportsCompaction: true,
+    signedIn: true,
+  });
+  const reopen = async () => {
+    const target = owner.editor().baseline.target;
+    owner.back();
+    assert.equal(owner.page(), 'connections');
+    await owner.openConnection(target);
+    assert.equal(owner.page(), 'connection');
+  };
   assert.equal(owner.supportsServerSideCompaction(), true);
   assert.equal(owner.editor().serverSideCompaction, false);
-  assert.equal(owner.dirty(), false);
   await owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
   assert.equal(operations.error(), '');
+  assert.deepEqual(
+    calls.map((call) => call.method),
+    ['update', 'discoverModels'],
+  );
   assert.equal(owner.dirty(), false);
-  await owner.openConnection(owner.editor().baseline.target);
-  assert.equal(operations.error(), '');
+  await reopen();
   assert.equal(owner.editor().serverSideCompaction, true);
-  assert.equal(owner.dirty(), false);
   await owner.toggleServerSideCompaction({ ...owner.action(), enabled: false });
-  await owner.openConnection(owner.editor().baseline.target);
+  await reopen();
   assert.equal(operations.error(), '');
   assert.equal(owner.editor().serverSideCompaction, false);
   assert.equal(owner.dirty(), false);
+});
+
+test('a switch flipped with unsaved typing joins that draft instead of saving alone', async () => {
+  const { owner, calls } = connectionEditor({ supportsCompaction: true });
+  owner.edit('name', 'A personal name');
+  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
+  assert.deepEqual(calls, []);
+  assert.equal(owner.editor().name, 'A personal name');
+  assert.equal(owner.editor().serverSideCompaction, true);
+  assert.equal(owner.dirty(), true);
 });
 
 test('only supporting providers offer compaction, and new connections start with it off', async () => {

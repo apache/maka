@@ -30,6 +30,7 @@ import {
   SettingsFormFooter,
   SettingsInlineInput,
   SettingsInput,
+  SettingsProblem,
   SettingsRow,
   SettingsSearch,
   SettingsSection,
@@ -66,6 +67,9 @@ function ServerList(props: { owner: McpSettingsOwner }) {
       </If>
       <If when={owner.loading() && !owner.inventory()}>
         <LoadingIndicator />
+      </If>
+      <If when={!owner.loading() && !owner.inventory()}>
+        <SettingsProblem retry={owner.refresh} />
       </If>
       <If when={owner.inventory()}>
         <SettingsSection title={tr('MCP servers')}>

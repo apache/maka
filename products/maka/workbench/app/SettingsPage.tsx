@@ -458,6 +458,7 @@ export function SettingsSegmented(props: {
             {(choice) => (
               <SettingsButton
                 label={choice().title}
+                selected={choice().value === props.value}
                 tone={choice().value === props.value ? undefined : 'quiet'}
                 disabled={props.disabled || choice().disabled}
                 onPress={() => props.change(choice().value)}
@@ -687,6 +688,7 @@ export function SettingsButton(props: {
   accessibilityLabel?: string;
   onPress(): void;
   disabled?: boolean;
+  selected?: boolean;
   tone?: 'primary' | 'quiet' | 'danger';
   icon?: 'plus' | 'refresh' | 'trash';
   /** Shows only the icon; the label still names the button. */
@@ -698,6 +700,7 @@ export function SettingsButton(props: {
     <Button
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
+      selected={props.selected}
       onPress={props.onPress}
       style={{
         ...controlStyle,

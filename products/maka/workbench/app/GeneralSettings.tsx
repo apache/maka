@@ -37,6 +37,7 @@ import {
   SettingsButton,
   SettingsFormFooter,
   SettingsInput,
+  SettingsProblem,
   SettingsRow,
   SettingsSection,
   SettingsSelect,
@@ -94,7 +95,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       <If
         when={facts()}
         else={
-          <If when={owner.loading()}>
+          <If when={owner.loading()} else={<SettingsProblem retry={owner.refresh} />}>
             <LoadingIndicator label={tr('Reading preferences…')} />
           </If>
         }
@@ -333,7 +334,7 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
         </SettingsSection>
       </If>
       <If when={!document() && !owner.loading()}>
-        <SettingsRow label={tr('Source unavailable. Reload to try again.')} tone="muted" />
+        <SettingsProblem retry={inputAction(owner.reloadGlobal, request)} />
       </If>
     </SettingsBody>
   );

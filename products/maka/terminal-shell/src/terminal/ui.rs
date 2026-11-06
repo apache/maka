@@ -19,7 +19,10 @@
 
 use super::output::FrameWriter;
 use crossterm::event::{Event, MouseEventKind};
-use nsh_core::{MountBatch, platform::Environment};
+use nsh_core::{
+    MountBatch,
+    platform::{Environment, Lifecycle},
+};
 use nsh_engine::{EngineConfig, LocalEngine, MountSink};
 use nsh_platform_tui::{
     CellMetrics, ImageProtocol, ProtocolType, ServiceOutput, ServiceRequest, Surface, SurfaceEvent,
@@ -337,6 +340,15 @@ impl Session {
         }
         for event in command.inputs {
             super::interrupt::activity(&self.host, &event);
+            let lifecycle = match event {
+                Event::FocusGained => Some(Lifecycle::Active),
+                Event::FocusLost => Some(Lifecycle::Inactive),
+                _ => None,
+            };
+            if let Some(lifecycle) = lifecycle.filter(|now| *now != self.environment.lifecycle) {
+                self.environment.lifecycle = lifecycle;
+                self.engine().control().set_environment(self.environment);
+            }
             changed |= match event {
                 Event::Mouse(mouse)
                     if matches!(

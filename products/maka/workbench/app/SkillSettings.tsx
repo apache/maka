@@ -30,6 +30,7 @@ import {
   SettingsFormFooter,
   SettingsInput,
   SettingsLede,
+  SettingsProblem,
   SettingsRow,
   SettingsSearch,
   SettingsSection,
@@ -110,6 +111,9 @@ function Library(props: { owner: SkillSettingsOwner }) {
       </If>
       <If when={owner.loading()}>
         <LoadingIndicator />
+      </If>
+      <If when={!owner.loading() && !owner.page()}>
+        <SettingsProblem retry={owner.refresh} />
       </If>
     </SettingsBody>
   );

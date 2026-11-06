@@ -279,6 +279,7 @@ export function createModelSettings(
   });
   let alive = true;
   let read = 0;
+  let modelRead = 0;
   let editorInstance = restored?.editor?.instance ?? 0;
   let pendingInitialModel = restored?.initialModel ?? (restored ? null : (initialModel ?? null));
   cleanup(() => {
@@ -306,6 +307,7 @@ export function createModelSettings(
     model()?.originalId === request.originalId;
   const cancelRead = () => {
     read += 1;
+    modelRead += 1;
     loading.set(false);
     modelLoading.set(false);
     openingProvider.set(null);
@@ -795,55 +797,31 @@ export function createModelSettings(
     try {
       const detail = await readDetail({ connectionId: form.baseline.target.connectionId });
       const status = await readCredential(detail);
-      if (!alive || generation !== read || editor()?.instance !== form.instance || dirty()) return;
+      if (
+        !alive ||
+        generation !== read ||
+        editor()?.instance !== form.instance ||
+        dirty() ||
+        confirmation()
+      )
+        return;
       editor.set({ ...editor()!, baseline: detail, ...fields(detail) });
       credential.set(status);
     } catch (reason) {
       if (generation === read) report(reason);
     }
   };
-  // A switch commits on its own. Typed text that is not saved yet stays in the
-  // editor; a connection that does not exist yet keeps the switch in its draft.
-  const applySwitch = (
-    request: ConnectionAction,
-    local: Partial<ConnectionEditor>,
-    changes: (original: Detail) => Record<string, unknown>,
-  ) => {
+  const applySwitch = (request: ConnectionAction, local: Partial<ConnectionEditor>) => {
     const form = editor();
     if (!current(request) || !form || busy()) return;
-    if (!form.baseline) {
-      editor.set({ ...form, ...local });
-      return;
-    }
-    const original = form.baseline;
-    return run(async () => {
-      const result = await mutate('settings', 'update', {
-        expected: basis(original),
-        changes: changes(original),
-      });
-      if (result.kind !== 'committed' || !result.connection) throw rejection(result);
-      const draft = editor();
-      if (!(await adopt(result.connection, form.instance, 'unchanged')) || !draft) return;
-      const before = fields(original);
-      editor.set({
-        ...editor()!,
-        name: draft.name === before.name ? editor()!.name : draft.name,
-        baseUrl: draft.baseUrl === before.baseUrl ? editor()!.baseUrl : draft.baseUrl,
-        overlay: draft.overlay === before.overlay ? editor()!.overlay : draft.overlay,
-      });
-      await loadConnections();
-    });
+    const clean = !!form.baseline && !dirty();
+    editor.set({ ...form, ...local });
+    if (clean) return saveConnection(request);
   };
   const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) =>
-    applySwitch(request, { enabled: request.enabled }, () => ({ enabled: request.enabled }));
+    applySwitch(request, { enabled: request.enabled });
   const toggleServerSideCompaction = (request: ConnectionAction & { enabled: boolean }) =>
-    applySwitch(request, { serverSideCompaction: request.enabled }, (original) => ({
-      configuration: {
-        ...original.target.configuration,
-        serverSideCompaction: request.enabled,
-      },
-      modelOverrides: original.editing!.modelOverrides,
-    }));
+    applySwitch(request, { serverSideCompaction: request.enabled });
   const fetchModels = async (form: ConnectionEditor & { baseline: Detail }) => {
     discovery.set('fetching');
     try {
@@ -982,7 +960,7 @@ export function createModelSettings(
   };
   const loadModelMetadata = async (request: ModelAction) => {
     const connectionId = editor()!.baseline!.target.connectionId;
-    const generation = ++read;
+    const generation = ++modelRead;
     const current = model()!;
     const parsed = modelOverride(current);
     modelLoading.set(false);
@@ -994,7 +972,7 @@ export function createModelSettings(
         modelId: request.modelId.trim(),
         overrides: parsed.value,
       });
-      if (generation !== read || !currentModel(request)) return;
+      if (generation !== modelRead || !currentModel(request)) return;
       if (
         result.kind !== 'ready' ||
         result.choice.selection.connectionId !== connectionId ||
@@ -1011,9 +989,9 @@ export function createModelSettings(
         },
       });
     } catch (reason) {
-      if (generation === read && currentModel(request)) report(reason);
+      if (generation === modelRead && currentModel(request)) report(reason);
     } finally {
-      if (alive && generation === read) modelLoading.set(false);
+      if (alive && generation === modelRead) modelLoading.set(false);
     }
   };
   const changeModel = (change: Partial<ModelEditor>) => {
