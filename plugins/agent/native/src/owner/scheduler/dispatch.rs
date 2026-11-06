@@ -182,7 +182,7 @@ impl Owner {
             internal_bindings: selected_catalog.bindings.clone(),
             behavior: self.bot_behavior(
                 &target.session_id,
-                self.capture_behavior(&session.configuration.workspace, &snapshot, language)
+                self.capture_behavior(Some(&session.configuration.workspace), &snapshot, language)
                     .await?,
                 &snapshot,
                 language,

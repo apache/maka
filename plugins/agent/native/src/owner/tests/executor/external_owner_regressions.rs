@@ -64,7 +64,10 @@ async fn external_skills_candidates_steering_and_queue_edits_use_the_same_bridge
             assert_eq!(page["skills"], json!([]), "autocomplete cannot grant LoadGuide");
             let first = f.mutation(2, "send", input_runtime(&session, runtime, "complete"), Uuid::new_v4()).await.unwrap();
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
-            packet(&mut control, "opened").await;
+            let opened = packet(&mut control, "opened").await;
+            let instructions = opened["request"]["instructions"].as_str().unwrap();
+            assert!(instructions.contains("FindGuide") && instructions.contains("LoadGuide"));
+            assert!(instructions.contains("review"));
             let denied = f.mutation(2, "send", json!({"sessionId":session,"message":"/skill:native-only inspect"}), Uuid::new_v4()).await.unwrap();
             assert_eq!(denied["kind"], "rejected", "native tools must not be implicitly bridged: {denied}");
             let mut input = input_runtime(&session, runtime, "queued");

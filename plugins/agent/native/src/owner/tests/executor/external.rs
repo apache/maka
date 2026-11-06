@@ -28,7 +28,11 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
         let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
             settings.tools = vec![super::external_support::host_tool("observe", "SessionRead")];
             let home = settings.workspace_roots[0].path.clone();
-            std::fs::write(std::path::Path::new(&home).join("AGENTS.md"), "CAPTURED EXTERNAL GUIDANCE 中文").unwrap();
+            std::fs::create_dir(home.join(".maka")).unwrap();
+            std::fs::write(home.join(".maka/AGENTS.md"), "CAPTURED EXTERNAL GUIDANCE 中文").unwrap();
+            for name in ["CLAUDE.md", "GEMINI.md"] {
+                std::fs::write(home.join(".maka").join(name), "CLI GLOBAL RULES").unwrap();
+            }
             settings.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.to_str().unwrap().into()) });
             settings.external.as_mut().unwrap().commands.antigravity.as_mut().unwrap().env.insert("MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL".into(), "1".into());
         }).await;
@@ -40,7 +44,10 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
             let mut original_operation = None;
             for round in 0..4 {
                 let guidance = if round < 2 { "CAPTURED EXTERNAL GUIDANCE 中文" } else { "UPDATED EXTERNAL GUIDANCE 中文" };
-                std::fs::write(f.workspace.join("AGENTS.md"), guidance).unwrap();
+                std::fs::write(f.workspace.join(".maka/AGENTS.md"), guidance).unwrap();
+                for name in ["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
+                    std::fs::write(f.workspace.join(name), format!("CLI PROJECT RULES {round}")).unwrap();
+                }
                 let operation = Uuid::new_v4();
                 let input = input_runtime(&session, runtime, "complete");
                 let accepted = f.mutation(2,"send",input.clone(),operation).await.unwrap();
@@ -65,7 +72,11 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                     let instructions = opened["request"]["instructions"].as_str().unwrap();
                     assert!(instructions.starts_with("<maka_system_instructions>\n"));
                     assert!(instructions.ends_with("\n</maka_system_instructions>"));
-                    assert!(instructions.contains(guidance));
+                    assert!(instructions.contains("You are [Maka](https://github.com/apache/maka), an AI agent."));
+                    assert!(instructions.contains(&format!("<global_instruction>\n{guidance}\n</global_instruction>")));
+                    assert!(!instructions.contains("CLI GLOBAL RULES"));
+                    assert!(!instructions.contains("CLI PROJECT RULES"));
+                    assert!(!instructions.contains("<workspace-instructions"));
                     assert!(instructions.contains("replace all earlier Maka instruction blocks"));
                     if round == 2 {
                         assert!(!instructions.contains("CAPTURED EXTERNAL GUIDANCE"));
