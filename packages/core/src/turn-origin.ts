@@ -133,28 +133,32 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
   if (
     hasExactShape(value, SCHEDULED_TASK_ORIGIN_SHAPE) &&
     value.kind === 'scheduled_task' &&
-    typeof value.scheduledTaskId === 'string'
+    typeof value.scheduledTaskId === 'string' &&
+    value.scheduledTaskId.length > 0
   ) {
     return { kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId };
   }
   if (
     hasExactShape(value, CLOUD_ACTIVATION_ORIGIN_SHAPE) &&
     value.kind === 'cloud_activation' &&
-    typeof value.activationId === 'string'
+    typeof value.activationId === 'string' &&
+    value.activationId.length > 0
   ) {
     return { kind: 'cloud_activation', activationId: value.activationId };
   }
   if (
     hasExactShape(value, LEGACY_AUTOMATION_ORIGIN_SHAPE) &&
     (value.kind === 'automation' || value.kind === 'legacy_automation') &&
-    typeof value.automationId === 'string'
+    typeof value.automationId === 'string' &&
+    value.automationId.length > 0
   ) {
     return { kind: 'legacy_automation', automationId: value.automationId };
   }
   if (
     hasExactShape(value, GOAL_ORIGIN_SHAPE) &&
     value.kind === 'goal' &&
-    typeof value.goalId === 'string'
+    typeof value.goalId === 'string' &&
+    value.goalId.length > 0
   ) {
     try {
       return {
@@ -170,8 +174,11 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
     hasExactShape(value, AGENT_GRAPH_ORIGIN_SHAPE) &&
     value.kind === 'agent_graph' &&
     typeof value.graphId === 'string' &&
+    value.graphId.length > 0 &&
     typeof value.wakeId === 'string' &&
-    typeof value.attemptId === 'string'
+    value.wakeId.length > 0 &&
+    typeof value.attemptId === 'string' &&
+    value.attemptId.length > 0
   ) {
     return {
       kind: 'agent_graph',
