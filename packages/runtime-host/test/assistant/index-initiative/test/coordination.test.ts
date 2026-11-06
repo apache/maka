@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
 import { DiscoveryRunner } from '../../../../src/assistant/index-initiative/runner.js';
+import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
 import { laneFixture } from './runner-fixture.js';
 import { Notebook } from '../../../../src/assistant/index-initiative/notebook.js';
 import { fixture, until } from './fixture.js';
@@ -52,6 +53,36 @@ const note = {
   sources: ['fixture'],
   tags: [],
 };
+
+test('idle quick cutover preserves a scoped worker identity before publishing its binding', async (t) => {
+  const { root, store, runner } = setup(t);
+  const legacy = new InitiativeStore(join(root, 'quick-discovery'), store.owner);
+  legacy.lease();
+  legacy.bind({ sessionId: 'owner', cwd: root });
+  legacy.bindWorker('scoped-worker', 'quick', 'scoped', 'previous-cycle');
+  legacy.update((s) => {
+    s.workerSession = 'scoped-worker';
+    s.enabled = true;
+    s.intervalMs = 900_000;
+  });
+  legacy.release();
+  legacy.close();
+  const quick = new QuickDiscoveryController({}, { store, runner }, root);
+  try {
+    quick.start(3_600_000);
+    assert.equal(quick.state().workerSession, 'scoped-worker');
+    assert.equal(quick.state().enabled, true);
+    assert.equal(quick.state().intervalMs, 900_000);
+    assert.deepEqual(quick.workerIdentity('scoped-worker'), {
+      role: 'quick',
+      mode: 'scoped',
+      contextKey: 'previous-cycle',
+    });
+    assert.throws(() => quick.execution('scoped-worker', true), /No active quick discovery/);
+  } finally {
+    await quick.close();
+  }
+});
 
 async function output(prompt: string, draft: any = {}) {
   const path = /完成后把增量操作写入 ([^\n]+)，格式/.exec(prompt)?.[1];

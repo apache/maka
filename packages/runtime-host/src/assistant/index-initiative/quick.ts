@@ -221,7 +221,8 @@ export class QuickDiscoveryController {
           if (!this.store.configuration()) {
             const legacy = this.intakeStore.get();
             requireIdleDiscovery(legacy);
-            if (legacy) this.store.saveConfiguration(legacy);
+            // Import durable roles before exposing workerSession: without its row,
+            // worker() would infer a legacy identity for a scoped worker binding.
             for (const worker of this.intakeStore.db.prepare('SELECT * FROM context_workers').all())
               this.store.bindWorker(
                 String(worker.session_id),
@@ -229,6 +230,7 @@ export class QuickDiscoveryController {
                 worker.mode as any,
                 String(worker.context_key),
               );
+            if (legacy) this.store.saveConfiguration(legacy);
           }
           this.store.update((state) => {
             this.intake.upgrade(state);
