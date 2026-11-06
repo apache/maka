@@ -202,6 +202,76 @@ async fn indexed_caller_membership_preserves_present_sources_and_prunes_missing_
     }
 }
 
+#[tokio::test]
+async fn role_groups_preserve_empty_users_and_omit_empty_assistants_without_stray_separators() {
+    use crate::prompt::{AssistantPart, Message};
+    let empty_user = || Message::User {
+        content: Vec::new(),
+        provider_options: None,
+    };
+    let assistant = |text: Option<&str>| Message::Assistant {
+        content: text
+            .map(|text| AssistantPart::Text {
+                text: text.into(),
+                provider_options: None,
+            })
+            .into_iter()
+            .collect(),
+        provider_options: None,
+    };
+    for (messages, expected) in [
+        (
+            vec![
+                Message::System {
+                    content: "rules".into(),
+                    provider_options: None,
+                },
+                empty_user(),
+                assistant(None),
+                Message::user("one"),
+                Message::user("two"),
+            ],
+            json!({
+                "model":"model",
+                "system":[{"type":"text","text":"rules"}],
+                "messages":[
+                    {"role":"user","content":[]},
+                    {"role":"user","content":[
+                        {"type":"text","text":"one"},
+                        {"type":"text","text":"two"}
+                    ]}
+                ]
+            }),
+        ),
+        (
+            vec![
+                assistant(None),
+                assistant(Some("one")),
+                assistant(Some("two")),
+                empty_user(),
+            ],
+            json!({
+                "model":"model",
+                "messages":[
+                    {"role":"assistant","content":[
+                        {"type":"text","text":"one"},
+                        {"type":"text","text":"two"}
+                    ]},
+                    {"role":"user","content":[]}
+                ]
+            }),
+        ),
+        (
+            vec![assistant(None)],
+            json!({"model":"model","messages":[]}),
+        ),
+    ] {
+        let bytes = source_request_bytes(&messages).await;
+        let actual: Value = serde_json::from_slice(&bytes).expect("complete role-group JSON");
+        assert_eq!(actual, expected);
+    }
+}
+
 async fn source_request_bytes(messages: &[crate::prompt::Message]) -> Vec<u8> {
     use crate::{
         ModelPreparationResources, PreparationPolicy, ProviderAuth, ProviderConfig, ProviderKind,
