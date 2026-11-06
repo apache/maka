@@ -54,11 +54,12 @@ export async function initializeInitiative(
   ctx.backgroundSessions.register(() =>
     [store.get()?.discoverySession, store.get()?.judgementSession].filter(Boolean),
   );
-  // Discovery investigates and reports; it must not hold conversation-mutating tools.
+  // Background sessions investigate and report; neither may hold conversation-mutating
+  // tools — the judgement Session shares the discovery boundary (#6412).
   if (!ctx.tools.filter)
     throw Error('Assistant tool filtering is required to bound discovery Sessions');
   ctx.tools.filter((sessionId, tools) =>
-    store.get()?.discoverySession === sessionId
+    [store.get()?.discoverySession, store.get()?.judgementSession].includes(sessionId)
       ? tools.filter((tool) => !DISCOVERY_EXCLUDED_TOOLS.has(tool.name))
       : tools,
   );
