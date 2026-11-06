@@ -132,7 +132,10 @@ async fn events<W: AsyncWrite + Unpin>(
     }
 }
 
-async fn require_idle(db: &mut SqliteConnection, inventory: &Inventory) -> Result<(), StoreError> {
+pub(crate) async fn require_idle(
+    db: &mut SqliteConnection,
+    inventory: &Inventory,
+) -> Result<(), StoreError> {
     for session in &inventory.sessions {
         if crate::sessions::has_active_invocation(db, &session.id).await? {
             return Err(StoreError::SessionBusy);
@@ -149,6 +152,24 @@ async fn require_idle(db: &mut SqliteConnection, inventory: &Inventory) -> Resul
         }
     }
     Ok(())
+}
+
+pub(crate) async fn history_cut(
+    db: &mut SqliteConnection,
+    session: &str,
+) -> Result<String, StoreError> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let mut rows = sqlx::query_scalar::<_, i64>(
+        "SELECT sequence FROM runtime_events WHERE event_session=?1
+         UNION SELECT sequence FROM session_history_members WHERE session_id=?1 ORDER BY sequence",
+    )
+    .bind(session)
+    .fetch(db);
+    while let Some(sequence) = rows.try_next().await? {
+        hash.update(sequence_number(sequence)?.to_le_bytes());
+    }
+    Ok(hex::encode(hash.finalize()))
 }
 
 async fn catalog<W: AsyncWrite + Unpin>(

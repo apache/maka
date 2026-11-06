@@ -112,7 +112,7 @@ impl Owner {
         if self.graph_selected(id).await? {
             return Err("graph_background_conflict".into());
         }
-        let session = self.session(id).await?;
+        let session = self.mutable_session(id).await?;
         if session.configuration.workspace != target.workspace
             || session.configuration.permissions != target.permissions
             || session.configuration.boundary_revision != target.boundary_revision
@@ -155,7 +155,7 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        let current = self.session(id).await?;
+        let current = self.mutable_session(id).await?;
         if current.configuration != session.configuration || current.archived {
             return Err("scheduler_authorization_changed".into());
         }

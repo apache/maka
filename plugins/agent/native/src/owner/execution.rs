@@ -400,6 +400,12 @@ impl Owner {
             .session(&source.session_id)
             .await
             .map_err(RunError::Internal)?;
+        if !self.runs.workspace_available(
+            &source.session_id,
+            std::path::Path::new(&session.configuration.workspace.path),
+        ) {
+            return Ok(());
+        }
         drop(runs);
         let store = self
             .store
@@ -449,6 +455,10 @@ impl Owner {
             return Err(RunError::Cancelled);
         }
         if runs.busy(&source.session_id)
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&current.configuration.workspace.path),
+            )
             || self
                 .has_parked_invocation(&source.session_id)
                 .await
@@ -527,6 +537,10 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::Archived));
         }
         if runs.busy(&input.session_id)
+            || !self.runs.workspace_available(
+                &input.session_id,
+                std::path::Path::new(&session.configuration.workspace.path),
+            )
             || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store

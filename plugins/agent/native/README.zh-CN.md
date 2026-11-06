@@ -21,12 +21,14 @@
 
 [English](README.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
+[`CheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
 和原 `RecoveryRef` 绑定到 Root 持有的历史捕获与恢复流程。
 [服务适配层](src/owner/checkpoints.rs)通过 Host 准入、原操作回执授权和有界订阅读取提供显式管理方法。
 领域回执可确认 checkpoint 成功，但不伪造通用 Host 的清理确认。
 参见 [API 工作流](../api/README.zh-CN.md#历史-checkpoint-管理)和[手动性能基线](src/owner/tests/checkpoints/benchmark.rs)。
-Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
+模型工具和跨 Root 恢复激活不在此 API 范围内；Workspace 与同 Root 恢复见下文。
+
+[检查适配层](src/owner/checkpoints/load.rs)通过相同 Host 管理边界提供精确加载及有界历史、Artifact 查询。加载的历史保留原 ID，放在隔离存储中，不向本 Owner 的执行或消息恢复注册。响应未知时使用原操作及原输入查询 `historyCheckpointLoadReceipt`。Workspace 发布与显式的同 Root 目录恢复分别见 [Session 适配器](src/owner/checkpoints/session.rs)和[恢复适配器](src/owner/checkpoints/restore.rs)。这两者保留条件一致性提示，要求明确的目标权限与模型，不自动发起消息。跨 Root 恢复及系统级外部停写仍未提供，详见 [API 支持范围](../api/README.zh-CN.md#workspace-发布与本地继续执行)。
 
 `agent.fork` 捕获源会话版本和显式 `position`：`end`、带逻辑 Turn ID 的 `through_turn` 或 `before_turn`，以及表示空历史的 `start`。`before_turn` 排除目标完整轮次，指定第一轮可创建空对话。Host 在复制事务中从规范历史计算边界，客户端无需寻找上一轮或依赖采样的历史导航点。返回的分支保留该位置，源会话保持不变。
 

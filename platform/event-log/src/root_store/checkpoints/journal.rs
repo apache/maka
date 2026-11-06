@@ -90,6 +90,51 @@ pub(super) async fn read(
         .await
 }
 
+pub(super) async fn original(
+    log: &EventLog,
+    request: Request,
+) -> Result<Option<PublicationRequest>, StoreError> {
+    log.connection
+        .read(move |db| {
+            Box::pin(async move {
+                binding(db, &request).await?;
+                let original: Option<String> = sqlx::query_scalar(
+                    "SELECT request_json FROM history_checkpoint_publications WHERE request_key=?",
+                )
+                .bind(request.key()?)
+                .fetch_optional(db)
+                .await?;
+                original
+                    .map(|json| {
+                        let original: Request = serde_json::from_str(&json)?;
+                        if original.scope != request.scope
+                            || original.session_id != request.session_id
+                            || original.publication.fingerprint != request.publication.fingerprint
+                            || original.publication.expected_revision
+                                != request.publication.expected_revision
+                            || original.publication.confirmed_subtree_digest
+                                != request.publication.confirmed_subtree_digest
+                            || original
+                                .publication
+                                .workspace
+                                .as_ref()
+                                .map(|v| v.consistency)
+                                != request
+                                    .publication
+                                    .workspace
+                                    .as_ref()
+                                    .map(|v| v.consistency)
+                        {
+                            return Err(invalid("checkpoint operation inputs differ"));
+                        }
+                        Ok(original.publication)
+                    })
+                    .transpose()
+            })
+        })
+        .await
+}
+
 pub(super) async fn read_head(
     log: &EventLog,
     scope: Scope,

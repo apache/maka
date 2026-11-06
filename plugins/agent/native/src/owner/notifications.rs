@@ -103,6 +103,10 @@ impl Owner {
             Err(error) => return Err(error),
         };
         if session.archived
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&session.configuration.workspace.path),
+            )
             || session.configuration.workspace != route.workspace
             || session.configuration.binding != route.binding
         {
@@ -133,6 +137,10 @@ impl Owner {
         }
         let current = self.session(&source.session_id).await?;
         if runs.busy(&source.session_id)
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&current.configuration.workspace.path),
+            )
             || self.has_parked_invocation(&source.session_id).await?
             || current.configuration != session.configuration
             || current.archived

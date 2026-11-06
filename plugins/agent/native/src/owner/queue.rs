@@ -53,7 +53,7 @@ impl maka_agent_engine::NativeApprovalExecutor for Owner {
     > {
         Box::pin(async move {
             let session = self
-                .session(&pending.invocation.session_id)
+                .mutable_session(&pending.invocation.session_id)
                 .await
                 .map_err(maka_agent_facts::tools::ToolError::Failed)?;
             workspace::validate(
@@ -166,6 +166,15 @@ impl Owner {
             if !self.owns(&session) {
                 continue;
             }
+            if self.runs.has_checkpoints()
+                && let Ok(current) = self.session(&session).await
+                && !self.runs.workspace_available(
+                    &session,
+                    std::path::Path::new(&current.configuration.workspace.path),
+                )
+            {
+                continue;
+            }
             let mut runs = self.runs.state().await;
             if runs.closing || self.stop.is_cancelled() {
                 return Ok(());
@@ -200,7 +209,7 @@ impl Owner {
     }
 
     // Recover the owner-scoped durable backlog without limiting active Sessions.
-    async fn schedule(self: &Arc<Self>) {
+    pub(super) async fn schedule(self: &Arc<Self>) {
         if let Err(error) = self.schedule_pending().await
             && !(self.stop.is_cancelled()
                 && matches!(
@@ -241,6 +250,15 @@ impl Owner {
                     .activation_checkpoint(session)
                     .await?
                     .is_some()
+                {
+                    continue;
+                }
+                if self.runs.has_checkpoints()
+                    && let Ok(current) = self.session(session).await
+                    && !self.runs.workspace_available(
+                        session,
+                        std::path::Path::new(&current.configuration.workspace.path),
+                    )
                 {
                     continue;
                 }
@@ -489,6 +507,23 @@ impl Owner {
         loop {
             if cancellation.is_cancelled() {
                 return Ok(None);
+            }
+            if self.runs.has_checkpoints() {
+                if self.runs.checkpointed(session) {
+                    return Ok(None);
+                }
+                if let Some(record) = self
+                    .store
+                    .get_session::<StoredSessionConfiguration>(session)
+                    .await?
+                    && let Ok(resolved) = resolve_session(record)
+                    && !self.runs.workspace_available(
+                        session,
+                        std::path::Path::new(&resolved.configuration.workspace.path),
+                    )
+                {
+                    return Ok(None);
+                }
             }
             let store = self.store.session(session).await?;
             if let Some(checkpoint) = store.activation_checkpoint(session).await? {

@@ -432,6 +432,18 @@ impl Owner {
                 if other.as_ref().map(reference) != destination {
                     return Ok(ProjectResult::Changed);
                 }
+                if current
+                    .locations
+                    .iter()
+                    .chain(other.iter().flat_map(|p| &p.locations))
+                    .any(|location| {
+                        !self
+                            .runs
+                            .workspace_available("", std::path::Path::new(&location.path))
+                    })
+                {
+                    return Ok(ProjectResult::Busy);
+                }
                 let ids = std::iter::once(current.id.clone())
                     .chain(current.aliases.iter().cloned())
                     .chain(other.iter().flat_map(|record| {

@@ -176,6 +176,7 @@ struct Control {
 }
 #[derive(Default)]
 struct Runs {
+    checkpoints: Arc<std::sync::Mutex<BTreeMap<String, Vec<std::path::PathBuf>>>>,
     closing: bool,
     controls: BTreeMap<String, Control>,
     preparing: BTreeMap<String, CancellationToken>,
@@ -184,7 +185,9 @@ struct Runs {
 }
 impl Runs {
     fn busy(&self, session: &str) -> bool {
-        self.controls.contains_key(session) || self.preparing.contains_key(session)
+        self.controls.contains_key(session)
+            || self.preparing.contains_key(session)
+            || self.checkpoints.lock().unwrap().contains_key(session)
     }
 }
 struct CreationPolicy {
@@ -759,6 +762,22 @@ impl Owner {
             .ok_or("agent_session_unavailable")?;
         resolve_session(session)
     }
+    pub(in crate::owner) async fn mutable_session(
+        &self,
+        id: &str,
+    ) -> Result<SessionRecord<ResolvedConfiguration>, String> {
+        if self.runs.checkpointed(id) {
+            return Err("agent_checkpoint_busy".into());
+        }
+        let session = self.session(id).await?;
+        if !self.runs.workspace_available(
+            id,
+            std::path::Path::new(&session.configuration.workspace.path),
+        ) {
+            return Err("agent_checkpoint_busy".into());
+        }
+        Ok(session)
+    }
     pub(crate) fn caller_store(
         &self,
         scope: &maka_capabilities::call::Scope,
@@ -994,7 +1013,17 @@ impl Owner {
         })
     }
     pub async fn mark_read(&self, input: MarkRead) -> Result<MarkReadResult, String> {
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MarkReadResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MarkReadResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MarkReadResult::Rejected {
                 reason: Rejection::Closed,
@@ -1047,7 +1076,17 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(MetadataResult::Rejected { reason });
         }
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::Closed,
@@ -1263,7 +1302,7 @@ impl Owner {
                 .as_ref()
                 .map(|parked| parked.checkpoint.invocation.clone())
         });
-        let session = self.session(&id).await?;
+        let session = self.mutable_session(&id).await?;
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
@@ -1456,7 +1495,7 @@ impl Owner {
                             .map_err(|_| "agent_execution_unavailable")?
                             .map(|parked| parked.checkpoint.invocation),
                     };
-                    let current = self.session(&id).await?;
+                    let current = self.mutable_session(&id).await?;
                     if current.configuration != session.configuration || current.archived {
                         return Err("agent_session_configuration_changed".into());
                     }
@@ -1694,6 +1733,7 @@ impl Owner {
         let runs = self.runs.clone().try_lock_owned().ok()?;
         if !runs.controls.is_empty()
             || !runs.preparing.is_empty()
+            || self.runs.has_checkpoints()
             || !self.workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()

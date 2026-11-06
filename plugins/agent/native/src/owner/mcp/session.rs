@@ -77,7 +77,7 @@ impl Owner {
                     if owner.stop.is_cancelled() || context.scope().cancellation.is_cancelled() {
                         return Err("agent_session_mcp_cancelled".into());
                     }
-                    let current = owner.session(&input.session_id).await?;
+                    let current = owner.mutable_session(&input.session_id).await?;
                     if current.archived || current.configuration.workspace != workspace {
                         return Err("agent_session_unavailable".into());
                     }
@@ -138,7 +138,7 @@ impl Owner {
                 return Err("agent_session_busy".into());
             }
         }
-        let current = self.session(session).await?;
+        let current = self.mutable_session(session).await?;
         if current.archived || self.has_parked_invocation(session).await? {
             return Err("agent_session_unavailable".into());
         }

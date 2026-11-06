@@ -131,7 +131,12 @@ impl Owner {
         if let Some(patch) = self.patch_record(&execution, binding.base_commit()).await? {
             return Ok(PatchResult::Ready { patch });
         }
-        if runs.closing || !ended(&execution.state) {
+        if runs.closing
+            || !ended(&execution.state)
+            || !self
+                .runs
+                .workspace_available(&session.id, std::path::Path::new(&workspace.path))
+        {
             return Ok(PatchResult::Busy);
         }
         if self
@@ -210,6 +215,9 @@ impl Owner {
             if !self.owns(&member.session_id)
                 || member.orphaned_shells
                 || runs.busy(&member.session_id)
+                || !self
+                    .runs
+                    .workspace_available(&member.session_id, std::path::Path::new(path))
                 || self
                     .store
                     .session(&member.session_id)

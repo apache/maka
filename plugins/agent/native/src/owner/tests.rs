@@ -534,6 +534,22 @@ impl Fixture {
     ) -> Self {
         Self::configured_provider(base, model, peer, tooling, configure, "openai-compatible").await
     }
+    async fn configured_with_temp_home(
+        base: &str,
+        configure: impl FnOnce(&mut Configuration),
+    ) -> Self {
+        Self::configured_application(
+            base,
+            None,
+            None,
+            None,
+            configure,
+            "openai-compatible",
+            FixtureApplication::Agent,
+            true,
+        )
+        .await
+    }
     async fn configured_provider(
         base: &str,
         model: Option<ModelExecutor>,
@@ -550,6 +566,7 @@ impl Fixture {
             configure,
             provider_name,
             FixtureApplication::Agent,
+            false,
         )
         .await
     }
@@ -569,9 +586,11 @@ impl Fixture {
             configure,
             "openai-compatible",
             FixtureApplication::Workhub(setup),
+            false,
         )
         .await
     }
+    #[allow(clippy::too_many_arguments)]
     async fn configured_application(
         base: &str,
         model: Option<ModelExecutor>,
@@ -580,6 +599,7 @@ impl Fixture {
         configure: impl FnOnce(&mut Configuration),
         provider_name: &str,
         application: FixtureApplication,
+        use_temp_home: bool,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
@@ -708,6 +728,7 @@ impl Fixture {
             FixtureApplication::Agent => {
                 let capture = captured.clone();
                 let replacement = Arc::new(StdMutex::new(model));
+                let temp_home = use_temp_home.then(|| dir.path().to_path_buf());
                 // Actual Host NativeContext and original NativeOwner; only the model
                 // implementation is controlled in failure tests, never Root/admission.
                 native
@@ -717,10 +738,14 @@ impl Fixture {
                             let capture = capture.clone();
                             let catalog = catalog.clone();
                             let replacement = replacement.lock().unwrap().take();
+                            let temp_home = temp_home.clone();
                             Box::pin(async move {
                                 let services = context.services();
                                 let mut owner =
                                     Owner::open(context, configuration, catalog).await.unwrap();
+                                if let Some(home) = temp_home {
+                                    Arc::get_mut(&mut owner).unwrap().home = Some(home);
+                                }
                                 if let Some(model) = replacement {
                                     Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
                                         model,

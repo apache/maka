@@ -1484,6 +1484,55 @@ pub enum HistoryPage {
     },
 }
 
+impl From<maka_agent_ports::session::history::Page> for HistoryPage {
+    fn from(value: maka_agent_ports::session::history::Page) -> Self {
+        let maka_agent_ports::session::history::Page::Ready {
+            through,
+            chunks,
+            before,
+            after,
+        } = value;
+        HistoryPage::Ready {
+            through,
+            before,
+            after,
+            chunks: chunks
+                .into_iter()
+                .map(|chunk| HistoryChunk {
+                    model_part: chunk.model_part,
+                    has_references: chunk.has_references,
+                    final_output: chunk.final_output,
+                    model: chunk.model,
+                    origin: chunk.origin,
+                    compaction: chunk.compaction,
+                    attachments: chunk
+                        .attachments
+                        .into_iter()
+                        .map(|attachment| HistoryAttachment {
+                            name: attachment.name,
+                            mime_type: attachment.mime_type,
+                            bytes: attachment.bytes,
+                            kind: attachment.kind,
+                        })
+                        .collect(),
+                    timing: chunk.timing,
+                    field: chunk.field,
+                    message_id: chunk.message_id,
+                    turn_id: chunk.turn_id,
+                    timestamp: chunk.timestamp,
+                    role: chunk.role,
+                    order: chunk.order,
+                    position: chunk.position,
+                    offset: chunk.offset,
+                    total_bytes: chunk.total_bytes,
+                    text: chunk.text,
+                    tool: chunk.tool,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistorySourceRead")]
@@ -1842,12 +1891,12 @@ pub fn contract() -> Contract {
                     method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
                 ),
                 (
-                    "publishHistoryCheckpoint".into(),
-                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                    "publishCheckpoint".into(),
+                    method::<CheckpointPublish, CheckpointPublication>(MethodMode::Mutation),
                 ),
                 (
-                    "historyCheckpointReceipt".into(),
-                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                    "checkpointReceipt".into(),
+                    method::<CheckpointReceiptRead, CheckpointReceipt>(MethodMode::Query),
                 ),
                 (
                     "historyCheckpointHead".into(),
@@ -1857,6 +1906,13 @@ pub fn contract() -> Contract {
                     "readHistoryCheckpoint".into(),
                     method::<HistoryCheckpointRead, Option<HistoryCheckpointFrame>>(MethodMode::Subscription),
                 ),
+                ("loadHistoryCheckpoint".into(), method::<HistoryCheckpointRead, CheckpointLoad>(MethodMode::Mutation)),
+                ("restoreSessionCheckpoint".into(), method::<SessionCheckpointRestore, SessionCheckpointRestored>(MethodMode::Mutation)),
+                ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
+                ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
+                ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
                     "fork".into(),
                     method::<Fork, ForkResult>(MethodMode::Mutation),

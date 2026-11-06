@@ -26,6 +26,8 @@ use std::{
 use uuid::Uuid;
 
 mod body;
+mod load;
+mod workspace;
 
 fn namespaces(path: &Path) -> root::RootNamespaces {
     root::RootNamespaces {
@@ -60,6 +62,7 @@ async fn fixture(path: &Path) -> (RootStore, HistoryCheckpoints, PublicationRequ
         fingerprint: "a".repeat(64),
         expected_revision: None,
         confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+        workspace: None,
     };
     (store, handle, request)
 }
@@ -710,6 +713,7 @@ async fn killed_writer_recovers_without_a_new_capture() {
             fingerprint: "a".repeat(64),
             expected_revision: None,
             confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+            workspace: None,
         };
         let receipt = handle.receipt(input.clone()).await.unwrap().unwrap();
         if matches!(phase, "claimed" | "payload") {

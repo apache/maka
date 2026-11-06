@@ -194,6 +194,22 @@ impl Projects {
             .get(session)
             .is_some_and(|client| client.generation == generation)
     }
+    pub fn has_any_client(&self, session: &str) -> bool {
+        self.snapshots
+            .read()
+            .expect("MCP snapshots")
+            .clients
+            .contains_key(session)
+    }
+    pub fn client_sessions(&self) -> Vec<String> {
+        self.snapshots
+            .read()
+            .expect("MCP snapshots")
+            .clients
+            .keys()
+            .cloned()
+            .collect()
+    }
     pub fn client_cleanup_failed(&self, error: String) {
         *self.cleanup_failure.lock().expect("MCP cleanup state") = Some(error);
     }
