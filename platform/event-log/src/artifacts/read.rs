@@ -29,7 +29,6 @@ impl EventLog {
         artifact_id: &str,
         read: impl FnOnce(&Artifact, &mut dyn std::io::Read) -> T + Send + 'static,
     ) -> Result<Option<T>, StoreError> {
-        self.validate_root()?;
         let (session, turn) = match scope {
             ArtifactReadScope::Session(session) => (session.to_owned(), None),
             ArtifactReadScope::Execution(invocation) => {
@@ -44,26 +43,26 @@ impl EventLog {
         let artifact = artifact_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let result = async {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Deferred,
+                    )?;
+                    let result = (|| {
                         if turn.is_none() {
-                            require_session(&mut tx, &session).await?;
+                            require_session(&tx, &session)?;
                         }
-                        match lookup(&mut tx, &session, &artifact, turn.as_deref()).await? {
+                        match lookup(&tx, &session, &artifact, turn.as_deref())? {
                             Some(row) => {
-                                with_blob(&mut tx, row, |record, blob| Ok(read(record, blob)))
-                                    .await
-                                    .map(Some)
+                                with_blob(&tx, row, |record, blob| Ok(read(record, blob))).map(Some)
                             }
                             None => Ok(None),
                         }
-                    }
-                    .await;
+                    })();
                     // Cleanup failure takes precedence over a callback's business result.
-                    tx.rollback().await?;
+                    tx.rollback()?;
                     result
-                })
+                }
             })
             .await
     }
@@ -75,7 +74,6 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<ArtifactPage, StoreError> {
-        self.validate_root()?;
         ids(session_id, None)?;
         if limit == 0 || limit > 128 || offset > 9_007_199_254_740_991 {
             return Err(invalid("Invalid artifact page bounds"));
@@ -83,33 +81,33 @@ impl EventLog {
         let session_id = session_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    require_session(&mut tx, &session_id).await?;
-                    let revision = revision(&mut tx, &session_id).await?;
-                    let total: i64 =
-                        sqlx::query_scalar("SELECT COUNT(*) FROM artifacts WHERE session_id = ?")
-                            .bind(&session_id)
-                            .fetch_one(&mut *tx)
-                            .await?;
-                    let rows: Vec<(String, String)> = sqlx::query_as(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                require_session(&tx, &session_id)?;
+                let revision = revision(&tx, &session_id)?;
+                let total: i64 = tx
+                    .prepare_cached("SELECT COUNT(*) FROM artifacts WHERE session_id = ?")?
+                    .query_row(rusqlite::params![&session_id], |row| row.get(0))?;
+                let rows: Vec<(String, String)> = tx
+                    .prepare_cached(
                         "SELECT id, record_json FROM artifacts WHERE session_id = ?
                 ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
-                    )
-                    .bind(&session_id)
-                    .bind(limit as i64)
-                    .bind(offset as i64)
-                    .fetch_all(&mut *tx)
-                    .await?;
-                    let records = rows
-                        .into_iter()
-                        .map(|(id, raw)| decode(&raw, &session_id, &id))
-                        .collect::<Result<_, _>>()?;
-                    Ok(ArtifactPage {
-                        revision,
-                        records,
-                        total: total as u64,
-                    })
+                    )?
+                    .query_map(
+                        rusqlite::params![&session_id, limit as i64, offset as i64],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let records = rows
+                    .into_iter()
+                    .map(|(id, raw)| decode(&raw, &session_id, &id))
+                    .collect::<Result<_, _>>()?;
+                Ok(ArtifactPage {
+                    revision,
+                    records,
+                    total: total as u64,
                 })
             })
             .await
@@ -120,20 +118,18 @@ impl EventLog {
         session_id: &str,
         artifact_id: &str,
     ) -> Result<ArtifactEntry, StoreError> {
-        self.validate_root()?;
         ids(session_id, Some(artifact_id))?;
         let (session_id, artifact_id) = (session_id.to_owned(), artifact_id.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    require_session(&mut tx, &session_id).await?;
-                    let revision = revision(&mut tx, &session_id).await?;
-                    let record = read_record(&mut tx, &session_id, &artifact_id)
-                        .await?
-                        .map(|(record, _)| record);
-                    Ok(ArtifactEntry { revision, record })
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                require_session(&tx, &session_id)?;
+                let revision = revision(&tx, &session_id)?;
+                let record = read_record(&tx, &session_id, &artifact_id)?.map(|(record, _)| record);
+                Ok(ArtifactEntry { revision, record })
             })
             .await
     }
@@ -147,7 +143,6 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<Option<ArtifactChunk>, StoreError> {
-        self.validate_root()?;
         ids(session_id, Some(artifact_id))?;
         if limit == 0 || offset > 9_007_199_254_740_991 {
             return Err(invalid("Invalid artifact read bounds"));
@@ -155,32 +150,31 @@ impl EventLog {
         let (session, artifact) = (session_id.to_owned(), artifact_id.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let result = async {
-                        require_session(&mut tx, &session).await?;
-                        let Some(row) = lookup(&mut tx, &session, &artifact, None).await? else {
-                            return Ok(None);
-                        };
-                        if offset > row.record.size_bytes {
-                            return Err(StoreError::ArtifactOffset);
-                        }
-                        with_blob(&mut tx, row, |record, blob| {
-                            let length = (record.size_bytes - offset).min(limit as u64) as usize;
-                            let mut bytes = vec![0; length];
-                            blob.read_at_exact(&mut bytes, offset as usize)?;
-                            Ok(ArtifactChunk {
-                                total_bytes: record.size_bytes,
-                                bytes,
-                            })
-                        })
-                        .await
-                        .map(Some)
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = (|| {
+                    require_session(&tx, &session)?;
+                    let Some(row) = lookup(&tx, &session, &artifact, None)? else {
+                        return Ok(None);
+                    };
+                    if offset > row.record.size_bytes {
+                        return Err(StoreError::ArtifactOffset);
                     }
-                    .await;
-                    tx.rollback().await?;
-                    result
-                })
+                    with_blob(&tx, row, |record, blob| {
+                        let length = (record.size_bytes - offset).min(limit as u64) as usize;
+                        let mut bytes = vec![0; length];
+                        blob.read_at_exact(&mut bytes, offset as usize)?;
+                        Ok(ArtifactChunk {
+                            total_bytes: record.size_bytes,
+                            bytes,
+                        })
+                    })
+                    .map(Some)
+                })();
+                tx.rollback()?;
+                result
             })
             .await
     }
@@ -191,24 +185,17 @@ struct Row {
     record: Artifact,
 }
 
-async fn lookup(
-    connection: &mut sqlx::SqliteConnection,
+fn lookup(
+    connection: &rusqlite::Connection,
     session: &str,
     artifact: &str,
     turn: Option<&str>,
 ) -> Result<Option<Row>, StoreError> {
-    let row: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT c.rowid, length(c.payload),
+    let row: Option<(i64, i64, Option<String>, Option<String>)> = connection.prepare_cached("SELECT c.rowid, length(c.payload),
          record_json,
          CASE WHEN length(CAST(artifacts.content_sha256 AS BLOB)) = 71 THEN artifacts.content_sha256 END
          FROM artifacts JOIN contents c USING(content_sha256) WHERE session_id = ?1 AND artifacts.id = ?2
-         AND (?3 IS NULL OR json_extract(record_json, '$.turnId') = ?3)",
-    )
-    .bind(session)
-    .bind(artifact)
-    .bind(turn)
-    .fetch_optional(connection)
-    .await?;
+         AND (?3 IS NULL OR json_extract(record_json, '$.turnId') = ?3)")?.query_row(rusqlite::params![session, artifact, turn], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,))).optional()?;
     row.map(|(rowid, total, raw, digest)| {
         let raw = raw.ok_or_else(|| invalid("Stored artifact metadata is missing"))?;
         digest.ok_or_else(|| invalid("Stored artifact digest exceeds limit"))?;
@@ -221,24 +208,18 @@ async fn lookup(
     .transpose()
 }
 
-async fn with_blob<T>(
-    connection: &mut sqlx::SqliteConnection,
+fn with_blob<T>(
+    connection: &rusqlite::Connection,
     row: Row,
     read: impl FnOnce(&Artifact, &mut rusqlite::blob::Blob<'_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
-    let mut locked = connection.lock_handle().await?;
-    // SAFETY: this original SQLx guard excludes worker FFI. The non-owning
-    // wrapper and read-only Blob remain in this no-await scope; neither escapes.
-    let borrowed = unsafe { rusqlite::Connection::from_handle(locked.as_raw_handle().as_ptr()) }?;
-    let mut blob = borrowed.blob_open("main", "contents", "payload", row.rowid, true)?;
+    let mut blob = connection.blob_open("main", "contents", "payload", row.rowid, true)?;
     let result = if blob.len() as u64 == row.record.size_bytes {
         read(&row.record, &mut blob)
     } else {
         Err(invalid("Stored artifact payload size mismatch"))
     };
     let closed = blob.close();
-    drop(borrowed);
-    drop(locked);
     closed?;
     result
 }

@@ -28,58 +28,48 @@ use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use rusqlite::{Connection, OptionalExtension, params};
 
 mod artifacts;
 mod catalog;
 mod copies;
 mod material;
 
-pub(super) async fn validate(staged: &mut SqliteConnection) -> Result<(), StoreError> {
-    prepare(staged, None).await?.close().await?;
+pub(super) fn validate(staged: &Connection) -> Result<(), StoreError> {
+    prepare(staged, None)?;
     Ok(())
 }
 
-pub(super) async fn prepare(
-    staged: &mut SqliteConnection,
+pub(super) fn prepare(
+    staged: &Connection,
     positions: Option<&super::relocation::Positions>,
-) -> Result<SqliteConnection, StoreError> {
-    let mut original = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .query_planner_stability(true)
-            .filename("")
-            .create_if_missing(true)
-            .pragma("temp_store", "FILE")
-            .pragma("page_size", "4096")
-            .pragma("cache_size", "-4096")
-            .pragma("max_page_count", "393216"),
-    )
-    .await?;
-    let result = async {
-        crate::schema::initialize_connection(&mut original).await?;
-        let mut tx = original.begin().await?;
-        replay(staged, &mut tx, positions).await?;
-        tx.commit().await?;
-        Ok::<_, StoreError>(())
-    }
-    .await;
-    match result {
-        Ok(()) => Ok(original),
-        Err(error) => {
-            original.close().await?;
-            Err(error)
-        }
-    }
+) -> Result<Connection, StoreError> {
+    let original = Connection::open("")?;
+    original.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG,
+        true,
+    )?;
+    original.execute_batch(
+        "PRAGMA temp_store=FILE;
+         PRAGMA page_size=4096;
+         PRAGMA cache_size=-4096;",
+    )?;
+    crate::schema::initialize_connection(&original)?;
+    let tx =
+        rusqlite::Transaction::new_unchecked(&original, rusqlite::TransactionBehavior::Deferred)?;
+    replay(staged, &tx, positions)?;
+    tx.commit()?;
+    Ok(original)
 }
 
-async fn replay(
-    staged: &mut SqliteConnection,
-    original: &mut SqliteConnection,
+fn replay(
+    staged: &Connection,
+    original: &Connection,
     positions: Option<&super::relocation::Positions>,
 ) -> Result<(), StoreError> {
-    let header: String = sqlx::query_scalar("SELECT record_json FROM frames WHERE number=1")
-        .fetch_one(&mut *staged)
-        .await?;
+    let header: String = staged
+        .prepare_cached("SELECT record_json FROM frames WHERE number=1")?
+        .query_row(params![], |row| row.get(0))?;
     let Record::Header {
         source_high_water,
         inventory,
@@ -87,13 +77,11 @@ async fn replay(
     else {
         return Err(invalid("missing staged header"));
     };
-    let mut copies = copies::Copies::read(staged, source_high_water, positions).await?;
+    let mut copies = copies::Copies::read(staged, source_high_water, positions)?;
     let source_high_water = positions.map_or(source_high_water, |p| p.fence(source_high_water));
     let mut after = 0i64;
     loop {
-        let row: Option<String> = sqlx::query_scalar(
-            "SELECT record_json FROM frames INDEXED BY source_events WHERE kind='event' AND source_sequence>? ORDER BY source_sequence LIMIT 1"
-        ).bind(after).fetch_optional(&mut *staged).await?;
+        let row: Option<String> = staged.prepare_cached("SELECT record_json FROM frames INDEXED BY source_events WHERE kind='event' AND source_sequence>? ORDER BY source_sequence LIMIT 1")?.query_row(params![after], |row| row.get(0)).optional()?;
         let Some(row) = row else {
             break;
         };
@@ -102,11 +90,9 @@ async fn replay(
         };
         after = sequence as i64;
         let sequence = positions.map_or(Ok(sequence), |p| p.event(sequence))?;
-        copies
-            .install(staged, original, sequence - 1, positions)
-            .await?;
+        copies.install(staged, original, sequence - 1, positions)?;
         let json = match positions {
-            Some(positions) => positions.json(original, json).await?,
+            Some(positions) => positions.json(original, json)?,
             None => json,
         };
         let event: RuntimeEvent = serde_json::from_str(&json)?;
@@ -119,7 +105,7 @@ async fn replay(
         ] {
             crate::sessions::validate_id(id)?;
         }
-        let payload = material::tool(staged, &event).await?;
+        let payload = material::tool(staged, &event)?;
         crate::tool_payloads::verify_binding(&event, payload.as_ref().map(|p| p.len() as i64))?;
         match &event.fact {
             Fact::MessageImported { source, record } => {
@@ -136,71 +122,57 @@ async fn replay(
                 ) {
                     EventWrite::plain(event.clone()).map_err(|e| invalid(&e.to_string()))?;
                 }
-                crate::append::history::validate(original, &event).await?;
-                request(original, &event, sequence).await?;
+                crate::append::history::validate(original, &event)?;
+                request(original, &event, sequence)?;
             }
         }
-        crate::message_identity::validate(original, &event).await?;
+        crate::message_identity::validate(original, &event)?;
         crate::message_identity::validate_source_id(
             original,
             &event.invocation.session_id,
             &event.id,
-        )
-        .await?;
+        )?;
         crate::append::ingress::insert(
             original,
             &event,
             json,
             crate::append::ingress::Position::Imported(Some(sequence)),
-        )
-        .await?;
-        crate::message_sources::insert(original, &event).await?;
+        )?;
+        crate::message_sources::insert(original, &event)?;
         if let Some(payload) = payload {
-            crate::tool_payloads::store_raw(original, &event.id, &payload).await?;
+            crate::tool_payloads::store_raw(original, &event.id, &payload)?;
         }
-        material::composition(staged, original, &event).await?;
+        material::composition(staged, original, &event)?;
     }
     // The fence can fall in a gap, or after the last exported proof event.
-    copies
-        .install(staged, original, source_high_water, positions)
-        .await?;
-    let mixed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events GROUP BY invocation_id
+    copies.install(staged, original, source_high_water, positions)?;
+    let mixed: bool = original.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events GROUP BY invocation_id
            HAVING SUM(kind='message_imported')>0 AND COUNT(*)>1)
          OR EXISTS(SELECT 1 FROM runtime_events GROUP BY event_session,json_extract(event_header,'$.invocation.run_id')
-           HAVING COUNT(DISTINCT invocation_id)>1)",
-    )
-    .fetch_one(&mut *original)
-    .await?;
+           HAVING COUNT(DISTINCT invocation_id)>1)")?.query_row(params![], |row| row.get(0))?;
     if mixed {
         return Err(invalid("imported messages cannot admit an invocation"));
     }
     let mut after = 0i64;
     loop {
-        let row: Option<(i64,String)> = sqlx::query_as(
-            "SELECT sequence,event_header FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1"
-        ).bind(after).fetch_optional(&mut *original).await?;
+        let row: Option<(i64,String)> = original.prepare_cached("SELECT sequence,event_header FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1")?.query_row(params![after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         let Some((sequence, json)) = row else {
             break;
         };
         let event: RuntimeEvent = serde_json::from_str(&json)?;
         if matches!(&event.fact, Fact::ContextCheckpointRecorded { checkpoint } if matches!(checkpoint.mode, CheckpointMode::Standalone))
         {
-            context::validate_checkpoint_terminal(original, &event).await?;
+            context::validate_checkpoint_terminal(original, &event)?;
         }
         after = sequence;
     }
-    material::check_bindings(staged, original).await?;
-    catalog::validate(staged, original, &inventory, source_high_water).await?;
-    artifacts::validate(staged, original, &inventory, positions).await?;
-    super::accounting::validate(staged, original).await
+    material::check_bindings(staged, original)?;
+    catalog::validate(staged, original, &inventory, source_high_water)?;
+    artifacts::validate(staged, original, &inventory, positions)?;
+    super::accounting::validate(staged, original)
 }
 
-async fn request(
-    db: &mut SqliteConnection,
-    event: &RuntimeEvent,
-    sequence: u64,
-) -> Result<(), StoreError> {
+fn request(db: &Connection, event: &RuntimeEvent, sequence: u64) -> Result<(), StoreError> {
     let Fact::ModelRequested {
         source_scope,
         source_high_water,
@@ -214,9 +186,9 @@ async fn request(
     else {
         return Ok(());
     };
-    let selection = Selection::for_invocation(db, &event.invocation).await?;
+    let selection = Selection::for_invocation(db, &event.invocation)?;
     if *purpose == ModelPurpose::Main {
-        context::safety::model_source_unchanged(db, &selection, event).await?;
+        context::safety::model_source_unchanged(db, &selection, event)?;
     }
     if source_capture.publication_watermark >= sequence
         || *source_high_water > source_capture.publication_watermark
@@ -226,11 +198,11 @@ async fn request(
             "request source is not its preceding selected history",
         ));
     }
-    let source = context::evidence::selected(db, &selection, *source_high_water).await?;
+    let source = context::evidence::selected(db, &selection, *source_high_water)?;
     if source.digest != *source_digest {
         return Err(invalid("request original source digest mismatch"));
     }
-    let baseline = context::read::latest_selected(db, &selection, *source_high_water).await?;
+    let baseline = context::read::latest_selected(db, &selection, *source_high_water)?;
     if baseline.as_ref().map(|b| &b.event_id) != checkpoint_event_id.as_ref() {
         return Err(invalid("request original baseline mismatch"));
     }
@@ -243,7 +215,6 @@ async fn request(
         effective,
         source_capture.publication_watermark + 1,
     )
-    .await
 }
 
 fn invalid(message: &str) -> StoreError {

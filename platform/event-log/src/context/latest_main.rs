@@ -19,12 +19,10 @@
 
 use super::{AcceptedMainContext, LatestMainContext, selection::Selection};
 use crate::{EventLog, StoreError, sequence_number};
-use futures_util::TryStreamExt;
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::model::ModelUsage;
-use sqlx::{Connection, Row, SqliteConnection};
 use std::time::SystemTime;
 
 impl EventLog {
@@ -32,47 +30,47 @@ impl EventLog {
         &self,
         session: &str,
     ) -> Result<LatestMainContext, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let selected = read(&mut tx, &session).await?;
-                    tx.commit().await?;
-                    Ok(selected)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let selected = read(&tx, &session)?;
+                tx.commit()?;
+                Ok(selected)
             })
             .await
     }
 }
 
-pub(super) async fn read(
-    connection: &mut SqliteConnection,
+pub(super) fn read(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<LatestMainContext, StoreError> {
-    read_through(connection, session, i64::MAX as u64).await
+    read_through(connection, session, i64::MAX as u64)
 }
 
-pub(super) async fn read_through(
-    connection: &mut SqliteConnection,
+pub(super) fn read_through(
+    connection: &rusqlite::Connection,
     session: &str,
     through: u64,
 ) -> Result<LatestMainContext, StoreError> {
-    read_selected(connection, &Selection::session(session), through).await
+    read_selected(connection, &Selection::session(session), through)
 }
 
-pub(super) async fn read_selected(
-    connection: &mut SqliteConnection,
+pub(super) fn read_selected(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
 ) -> Result<LatestMainContext, StoreError> {
-    read_selected_at(connection, selection, through, through.saturating_add(1)).await
+    read_selected_at(connection, selection, through, through.saturating_add(1))
 }
 
-pub(super) async fn read_selected_at(
-    connection: &mut SqliteConnection,
+pub(super) fn read_selected_at(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
     archives_before: u64,
@@ -85,7 +83,7 @@ pub(super) async fn read_selected_at(
     let archive_filter = Selection::predicate("a", "?3");
     // LEFT JOIN deliberately retains a damaged newest completion. Only a proven
     // summary can be skipped; missing trace must not reveal an older main.
-    let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let mut rows_statement = connection.prepare_cached(&format!(
         "WITH runtime_events AS NOT MATERIALIZED (SELECT e.* FROM main.runtime_events e WHERE e.sequence <= ?2 AND {filter})
          SELECT c.sequence, json_extract(c.event_header, '$.invocation') AS ci,
          json_extract(r.event_header, '$.invocation') AS ri, json_extract(o.event_header, '$.invocation') AS oi,
@@ -119,19 +117,24 @@ pub(super) async fn read_selected_at(
          LEFT JOIN runtime_events o ON o.invocation_id = c.invocation_id AND o.kind = 'invocation_opened'
          WHERE c.kind = 'model_completed' AND json_extract(c.event_header, '$.invocation.session_id') = ?1
          ORDER BY c.sequence DESC"
-    ))).bind(session).bind(through as i64).bind(&selection.lineage)
-        .bind(archives_before.min(i64::MAX as u64) as i64).fetch(connection);
-    while let Some(row) = rows.try_next().await? {
+    ))?;
+    let mut rows = rows_statement.query(rusqlite::params![
+        session,
+        through as i64,
+        &selection.lineage,
+        archives_before.min(i64::MAX as u64) as i64
+    ])?;
+    while let Some(row) = rows.next()? {
         let selected = (|| -> Option<(ModelPurpose, Option<AcceptedMainContext>)> {
             let completion: Invocation =
-                serde_json::from_str(row.try_get::<&str, _>("ci").ok()?).ok()?;
+                serde_json::from_str(&row.get::<_, String>("ci").ok()?).ok()?;
             let request: Invocation =
-                serde_json::from_str(row.try_get::<&str, _>("ri").ok()?).ok()?;
+                serde_json::from_str(&row.get::<_, String>("ri").ok()?).ok()?;
             let opening: Invocation =
-                serde_json::from_str(row.try_get::<&str, _>("oi").ok()?).ok()?;
-            let sequence: i64 = row.try_get("sequence").ok()?;
-            let requested: i64 = row.try_get("requested").ok()?;
-            let opened: i64 = row.try_get("opened").ok()?;
+                serde_json::from_str(&row.get::<_, String>("oi").ok()?).ok()?;
+            let sequence: i64 = row.get("sequence").ok()?;
+            let requested: i64 = row.get("requested").ok()?;
+            let opened: i64 = row.get("opened").ok()?;
             if completion != request
                 || completion != opening
                 || completion.session_id != session
@@ -139,15 +142,15 @@ pub(super) async fn read_selected_at(
             {
                 return None;
             }
-            let step: &str = row.try_get("cs").ok()?;
-            if step != row.try_get::<&str, _>("rs").ok()?
-                || step != row.try_get::<&str, _>("operation_id").ok()?
+            let step: String = row.get("cs").ok()?;
+            if step != row.get::<_, String>("rs").ok()?
+                || step != row.get::<_, String>("operation_id").ok()?
             {
                 return None;
             }
-            let kind: &str = row.try_get("opening_kind").ok()?;
-            let purpose: &str = row.try_get("purpose").ok()?;
-            let purpose = match (kind, purpose) {
+            let kind: String = row.get("opening_kind").ok()?;
+            let purpose: String = row.get("purpose").ok()?;
+            let purpose = match (kind.as_str(), purpose.as_str()) {
                 ("message" | "continuation" | "handoff", "main") => ModelPurpose::Main,
                 ("message" | "continuation" | "handoff" | "context_compact", "summary") => {
                     ModelPurpose::Summary
@@ -157,19 +160,20 @@ pub(super) async fn read_selected_at(
             if purpose == ModelPurpose::Summary {
                 return Some((purpose, None));
             }
-            let model_id: String = row.try_get("model_id").ok()?;
+            let model_id: String = row.get("model_id").ok()?;
             if model_id.is_empty() || model_id.encode_utf16().count() > 512 {
                 return None;
             }
-            let context: Option<String> = row.try_get("context").ok()?;
+            let context: Option<String> = row.get("context").ok()?;
             let context: Option<ModelRequestContext> =
                 context.map(|s| serde_json::from_str(&s)).transpose().ok()?;
             if context.as_ref().is_some_and(|c| c.validate().is_err()) {
                 return None;
             }
             let context_breakdown: Option<maka_agent_facts::context::PreparedContextBreakdown> =
-                row.try_get::<Option<&str>, _>("context_breakdown")
+                row.get::<_, Option<String>>("context_breakdown")
                     .ok()?
+                    .as_deref()
                     .map(serde_json::from_str)
                     .transpose()
                     .ok()?;
@@ -180,28 +184,29 @@ pub(super) async fn read_selected_at(
                 return None;
             }
             let usage: ModelUsage =
-                serde_json::from_str(row.try_get::<&str, _>("usage").ok()?).ok()?;
+                serde_json::from_str(&row.get::<_, String>("usage").ok()?).ok()?;
             let finished_at: Option<SystemTime> = row
-                .try_get::<Option<&str>, _>("finished_at")
+                .get::<_, Option<String>>("finished_at")
                 .ok()?
+                .as_deref()
                 .map(serde_json::from_str)
                 .transpose()
                 .ok()?;
             Some((
                 purpose,
                 Some(AcceptedMainContext {
-                    projection_current: row.try_get("projection_current").ok()?,
+                    projection_current: row.get("projection_current").ok()?,
                     sequence: sequence_number(sequence).ok()?,
                     finished_at,
                     requested_at: row
-                        .try_get::<Option<&str>, _>("requested_at")
+                        .get::<_, Option<String>>("requested_at")
                         .ok()
                         .flatten()
-                        .and_then(|value| serde_json::from_str(value).ok()),
+                        .and_then(|value| serde_json::from_str(&value).ok()),
                     model_id,
-                    route_identity: row.try_get("route_identity").ok()?,
-                    connection_id: row.try_get("connection_id").ok()?,
-                    checkpoint_event_id: row.try_get("checkpoint_id").ok()?,
+                    route_identity: row.get("route_identity").ok()?,
+                    connection_id: row.get("connection_id").ok()?,
+                    checkpoint_event_id: row.get("checkpoint_id").ok()?,
                     context,
                     context_breakdown,
                     usage,

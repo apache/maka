@@ -25,26 +25,21 @@ use maka_agent_facts::{
     tool_call::ToolCallIdentity,
 };
 use serde_json::{Value, json};
-use sqlx::{Connection, SqliteConnection};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-async fn database() -> SqliteConnection {
-    initialize(SqliteConnection::connect("sqlite::memory:").await.unwrap()).await
+fn database() -> rusqlite::Connection {
+    initialize(rusqlite::Connection::open_in_memory().unwrap())
 }
 
-async fn initialize(mut db: SqliteConnection) -> SqliteConnection {
-    crate::sqlite_functions::register(&mut db).await.unwrap();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
-        kind != "trigger"
-    })))
-    .execute(&mut db)
-    .await
-    .unwrap();
+fn initialize(db: rusqlite::Connection) -> rusqlite::Connection {
+    crate::sqlite_functions::register(&db).unwrap();
+    db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
+        .unwrap();
     append(
-        &mut db,
+        &db,
         Fact::InvocationOpened {
             configuration: None,
             input: InvocationInput::Message {
@@ -53,8 +48,7 @@ async fn initialize(mut db: SqliteConnection) -> SqliteConnection {
                 request_fingerprint: None,
             },
         },
-    )
-    .await;
+    );
     db
 }
 
@@ -68,33 +62,29 @@ fn invocation() -> Invocation {
 }
 
 // Isolate seed discovery and the real ingress reducers from admission policy.
-async fn append(db: &mut SqliteConnection, fact: Fact) -> (u64, String) {
+fn append(db: &rusqlite::Connection, fact: Fact) -> (u64, String) {
     let event = RuntimeEvent::new(invocation(), fact);
     let id = event.id.clone();
-    let mut tx = db.begin().await.unwrap();
-    let sequence = crate::connection::worker_query(&mut tx, move |worker| {
-        Box::pin(async move {
-            let json = serde_json::to_string(&event)?;
-            let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
-                sequence: None,
-                event_id: &event.id,
-                invocation_id: Some(&event.invocation.invocation_id),
-                kind: event.fact.kind(),
-                operation_id: event.fact.operation_id(),
-                json: &json,
-            })
-            .execute(&mut *worker)
-            .await?;
-            let sequence = crate::sequence_number(inserted.last_insert_rowid())?;
-            let stored = StoredEvent { sequence, event };
-            crate::model_items::record(worker, &stored).await?;
-            crate::context::projection::record(worker, &stored, &json).await?;
-            Ok(sequence)
-        })
-    })
-    .await
+    let tx =
+        rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred).unwrap();
+    let json = serde_json::to_string(&event).unwrap();
+    crate::canonical_insert::insert(
+        &tx,
+        crate::canonical_insert::Record {
+            sequence: None,
+            event_id: &event.id,
+            invocation_id: Some(&event.invocation.invocation_id),
+            kind: event.fact.kind(),
+            operation_id: event.fact.operation_id(),
+            json: &json,
+        },
+    )
     .unwrap();
-    tx.commit().await.unwrap();
+    let sequence = crate::sequence_number(tx.last_insert_rowid()).unwrap();
+    let stored = StoredEvent { sequence, event };
+    crate::model_items::record(&tx, &stored).unwrap();
+    crate::context::projection::record(&tx, &stored, &json).unwrap();
+    tx.commit().unwrap();
     (sequence, id)
 }
 
@@ -177,31 +167,29 @@ fn settle(operation: &str) -> Fact {
     }
 }
 
-async fn seeds(db: &mut SqliteConnection) -> Vec<(u64, String)> {
-    measured(db)
-        .await
-        .0
+fn seeds(db: &rusqlite::Connection) -> Vec<(u64, String)> {
+    let root = crate::turns::read(db, "session", None).unwrap().unwrap();
+    read(db, Some(&root))
+        .unwrap()
         .into_iter()
         .map(|seed| (seed.start_sequence, seed.tool_use_id))
         .collect()
 }
 
-async fn measured(db: &mut SqliteConnection) -> (Vec<ToolStreamSeed>, usize) {
-    let root = crate::turns::read(db, "session", None)
-        .await
-        .unwrap()
-        .unwrap();
+fn measured(db: &mut rusqlite::Connection) -> (Vec<ToolStreamSeed>, usize) {
+    let root = crate::turns::read(db, "session", None).unwrap().unwrap();
     let count = Arc::new(AtomicUsize::new(0));
     let observed = count.clone();
-    db.lock_handle()
-        .await
-        .unwrap()
-        .set_progress_handler(1, move || {
+    db.progress_handler(
+        1,
+        Some(move || {
             observed.fetch_add(1, Ordering::Relaxed);
-            true
-        });
-    let result = read(db, Some(&root)).await;
-    db.lock_handle().await.unwrap().remove_progress_handler();
+            false
+        }),
+    )
+    .unwrap();
+    let result = read(db, Some(&root));
+    db.progress_handler(0, None::<fn() -> bool>).unwrap();
     (result.unwrap(), count.load(Ordering::Relaxed))
 }
 
@@ -212,38 +200,33 @@ fn expected(sequence: u64, operation: &str) -> (u64, String) {
     )
 }
 
-async fn settled_round(db: &mut SqliteConnection, index: usize) {
+fn settled_round(db: &rusqlite::Connection, index: usize) {
     let step = format!("history-{index}");
     let operation = format!("{step}:call");
-    append(db, request(&step, false)).await;
+    append(db, request(&step, false));
     append(
         db,
         complete(
             &step,
             vec![json!({"kind":"own","data":record(&step,0,call("call",false))})],
         ),
-    )
-    .await;
-    append(db, dispatch(&operation)).await;
-    append(db, settle(&operation)).await;
+    );
+    append(db, dispatch(&operation));
+    append(db, settle(&operation));
 }
 
-#[tokio::test]
-async fn settled_same_run_history_does_not_grow_active_seed_work() {
+#[test]
+fn settled_same_run_history_does_not_grow_active_seed_work() {
     let mut samples = Vec::new();
     for history in [20, 220] {
-        let mut db = database().await;
+        let mut db = database();
         for index in 0..history {
-            settled_round(&mut db, index).await;
+            settled_round(&db, index);
         }
-        append(&mut db, request("pending:step", true)).await;
-        let (start, _) = append(
-            &mut db,
-            observed("pending:step", 0, call("tiny:call", false)),
-        )
-        .await;
-        let (native, _) = append(&mut db, dispatch("native:pending")).await;
-        let (actual, steps) = measured(&mut db).await;
+        append(&db, request("pending:step", true));
+        let (start, _) = append(&db, observed("pending:step", 0, call("tiny:call", false)));
+        let (native, _) = append(&db, dispatch("native:pending"));
+        let (actual, steps) = measured(&mut db);
         assert_eq!(
             actual,
             vec![
@@ -266,37 +249,32 @@ async fn settled_same_run_history_does_not_grow_active_seed_work() {
     );
 }
 
-#[tokio::test]
-async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interruption() {
+#[test]
+fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interruption() {
     let directory = tempfile::tempdir().unwrap();
-    let options = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(directory.path().join("seeds.sqlite"))
-        .create_if_missing(true);
-    let mut db = initialize(SqliteConnection::connect_with(&options).await.unwrap()).await;
-    append(&mut db, request("approval:step", true)).await;
+    let path = directory.path().join("seeds.sqlite");
+    let db = initialize(rusqlite::Connection::open(&path).unwrap());
+    append(&db, request("approval:step", true));
     let (start, id) = append(
-        &mut db,
+        &db,
         observed("approval:step", 0, call("call:original", false)),
-    )
-    .await;
+    );
     let operation = "approval:step:call:original";
-    assert_eq!(seeds(&mut db).await, vec![expected(start, operation)]);
+    assert_eq!(seeds(&db), vec![expected(start, operation)]);
     let (ended, _) = append(
-        &mut db,
+        &db,
         complete(
             "approval:step",
             vec![json!({"kind":"ref","data":{"event_id":id,"ordinal":0}})],
         ),
-    )
-    .await;
-    let (dispatched, _) = append(&mut db, dispatch(operation)).await;
-    assert_eq!(seeds(&mut db).await, vec![expected(start, operation)]);
-    db.close().await.unwrap();
-    let mut db = SqliteConnection::connect_with(&options).await.unwrap();
-    crate::sqlite_functions::register(&mut db).await.unwrap();
-    assert_eq!(seeds(&mut db).await, vec![expected(start, operation)]);
-    let replay:Vec<(i64,String)>=sqlx::query_as("SELECT sequence,kind FROM runtime_events WHERE sequence>? AND sequence<=? ORDER BY sequence")
-        .bind((start-1) as i64).bind(dispatched as i64).fetch_all(&mut db).await.unwrap();
+    );
+    let (dispatched, _) = append(&db, dispatch(operation));
+    assert_eq!(seeds(&db), vec![expected(start, operation)]);
+    db.close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    crate::sqlite_functions::register(&db).unwrap();
+    assert_eq!(seeds(&db), vec![expected(start, operation)]);
+    let replay:Vec<(i64,String)>=db.prepare_cached("SELECT sequence,kind FROM runtime_events WHERE sequence>? AND sequence<=? ORDER BY sequence").unwrap().query_map(rusqlite::params![(start-1) as i64,dispatched as i64], |row| Ok((row.get(0)?,row.get(1)?,))).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
     assert_eq!(
         replay,
         vec![
@@ -305,32 +283,27 @@ async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interr
             (dispatched as i64, "tool_dispatched".into())
         ]
     );
-    append(&mut db, settle(operation)).await;
-    assert_eq!(seeds(&mut db).await, vec![]);
+    append(&db, settle(operation));
+    assert_eq!(seeds(&db), vec![]);
 
-    append(&mut db, request("interrupted", true)).await;
+    append(&db, request("interrupted", true));
     append(
-        &mut db,
+        &db,
         observed("interrupted", 0, call("never-dispatched", false)),
-    )
-    .await;
-    let (pending, _) = append(
-        &mut db,
-        observed("interrupted", 1, call("dispatched", false)),
-    )
-    .await;
-    append(&mut db, dispatch("interrupted:dispatched")).await;
-    append(&mut db, interrupted("interrupted")).await;
+    );
+    let (pending, _) = append(&db, observed("interrupted", 1, call("dispatched", false)));
+    append(&db, dispatch("interrupted:dispatched"));
+    append(&db, interrupted("interrupted"));
     assert_eq!(
-        seeds(&mut db).await,
+        seeds(&db),
         vec![expected(pending, "interrupted:dispatched")]
     );
 }
 
-#[tokio::test]
-async fn native_nested_and_rejected_tools_keep_their_original_seeds() {
+#[test]
+fn native_nested_and_rejected_tools_keep_their_original_seeds() {
     use maka_agent_facts::tool_call::{ToolOrigin, ToolRejection};
-    let mut db = database().await;
+    let db = database();
     let mut native = dispatch("host:sdk");
     let Fact::ToolDispatched { call: identity, .. } = &mut native else {
         unreachable!()
@@ -341,7 +314,7 @@ async fn native_nested_and_rejected_tools_keep_their_original_seeds() {
         activation: "activation".into(),
         parent: None,
     };
-    let (host, _) = append(&mut db, native).await;
+    let (host, _) = append(&db, native);
     let mut cell = dispatch("cell:child");
     let Fact::ToolDispatched { call: identity, .. } = &mut cell else {
         unreachable!()
@@ -350,11 +323,11 @@ async fn native_nested_and_rejected_tools_keep_their_original_seeds() {
         parent_operation_id: "host:sdk".into(),
         parent_tool_call_id: "host:sdk".into(),
     };
-    let (child, _) = append(&mut db, cell).await;
-    append(&mut db, request("rejected", true)).await;
-    append(&mut db, observed("rejected", 0, call("call", false))).await;
+    let (child, _) = append(&db, cell);
+    append(&db, request("rejected", true));
+    append(&db, observed("rejected", 0, call("call", false)));
     append(
-        &mut db,
+        &db,
         Fact::ToolRejected {
             operation_id: "rejected:call".into(),
             call: ToolCallIdentity::standalone("call".into()),
@@ -362,12 +335,11 @@ async fn native_nested_and_rejected_tools_keep_their_original_seeds() {
             input: serde_json::from_value(json!({"kind":"json","data":{}})).unwrap(),
             reason: ToolRejection::Unavailable,
         },
-    )
-    .await;
+    );
     assert_eq!(
-        seeds(&mut db).await,
+        seeds(&db),
         vec![expected(host, "host:sdk"), expected(child, "cell:child")]
     );
-    append(&mut db, settle("cell:child")).await;
-    assert_eq!(seeds(&mut db).await, vec![expected(host, "host:sdk")]);
+    append(&db, settle("cell:child"));
+    assert_eq!(seeds(&db), vec![expected(host, "host:sdk")]);
 }

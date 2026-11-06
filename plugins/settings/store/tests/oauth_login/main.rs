@@ -27,7 +27,6 @@ use maka_config::{ConfigError, ConfigurationStore, oauth::enrollment::*};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_plugin_core::scope::Scope;
 use serde_json::json;
-use sqlx::Connection;
 use std::{path::Path, sync::Arc};
 
 fn namespaces(path: &Path) -> RootNamespaces {
@@ -116,13 +115,13 @@ async fn existing(store: &ConfigurationStore, attempt: &str, id: &str) -> LoginS
         authentication: create(attempt).authentication,
     }
 }
-async fn sql(path: &Path) -> sqlx::SqliteConnection {
-    sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(path.join("root/configuration-rust.sqlite")),
-    )
-    .await
-    .unwrap()
+fn sql(path: &Path) -> rusqlite::Connection {
+    let connection =
+        rusqlite::Connection::open(path.join("root/configuration-rust.sqlite")).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .unwrap();
+    connection
 }
 
 #[tokio::test]
@@ -210,14 +209,12 @@ async fn authentication_receipts_bind_inputs_and_survive_reopen_without_publishi
         LoginPreparation::Rejected(LoginRejection::AttemptConflict)
     ));
     assert_eq!(store.catalog().await.unwrap(), snapshot);
-    let mut db = sql(temp.path()).await;
+    let db = sql(temp.path());
     let (target, method, digest): (String, String, String) =
-        sqlx::query_as("SELECT target, method, request_fingerprint FROM oauth_login_receipts WHERE attempt_id = 'account-login'")
-            .fetch_one(&mut db)
-            .await
+        db.prepare_cached("SELECT target, method, request_fingerprint FROM oauth_login_receipts WHERE attempt_id = 'account-login'").unwrap().query_row(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,)))
             .unwrap();
     assert!(!format!("{target}{method}{digest}").contains("private-input"));
-    db.close().await.unwrap();
+    db.close().unwrap();
     store.shutdown().await.unwrap();
 }
 

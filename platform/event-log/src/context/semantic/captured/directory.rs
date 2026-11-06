@@ -313,14 +313,14 @@ impl CapturedSource {
     ) -> Result<DirectoryPage<B>, StoreError> {
         let selection = self.0.selection.clone();
         let domain = self.0.domain.clone();
-        self.0.log.connection.read(move|db|Box::pin(async move{
-   available_at(db,&selection.session,selection.captured_through).await?;
-   let mut tx=db.begin().await?;
-   let result=crate::connection::worker_query(&mut tx,move|worker|Box::pin(async move{with_raw(worker,|raw|{
+        self.0.log.connection.read(move|db|{
+   available_at(db,&selection.session,selection.captured_through)?;
+   let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+   let result=(move|worker|{{ let raw: &rusqlite::Connection = worker;
     let mut packed=Packed::new(buffer);
     let zero=RowPosition{source_sequence:0,item_index:0};let point=cursor.unwrap_or(SemanticCursor{order:zero,id:zero});
     let query=rows_query(true).replace("r.order_sequence=?11","?11 IS NULL").replace("?13 IS NULL","?15 IS NULL").replace("json_extract(?13,'$.base')","?15").replace("json_extract(?13,'$.current')","?16").replace("SELECT r.row_json FROM","SELECT r.rowid,r.source_sequence,r.source_index,r.revision,r.order_sequence,r.order_index,length(CAST(r.row_json AS BLOB)),r.directory_bytes FROM");
-    let mut statement=raw.prepare(&query)?;
+    let mut statement=raw.prepare_cached(&query)?;
     let mut rows=statement.query(params![&selection.session,selection.after as i64,selection.through as i64,selection.captured_through as i64,selection.before.min(i64::MAX as u64) as i64,&selection.lineage,point.order.source_sequence as i64,point.order.item_index as i64,point.id.source_sequence as i64,point.id.item_index as i64,None::<i64>,i64::MAX,None::<i64>,selection.prior_unknown,selection.replay.as_ref().map(|r|r.base as i64),selection.replay.as_ref().map(|r|r.current.as_str())])?;
     let mut last=None;let mut more=false;
     while let Some(r)=rows.next()?{
@@ -336,9 +336,9 @@ impl CapturedSource {
      if !pushed {more=true;break;}last=Some(SemanticCursor{order,id});
     }
     Ok(DirectoryPage{domain,packed,next:if more{last}else{None}})
-   })})).await;
-   let closed=tx.rollback().await;settle_read(result,closed)
-  })).await
+   }})(&tx);
+   let closed=tx.rollback();settle_read(result,closed)
+  }).await
     }
     /// Seek a closed child list by ordinal; no per-leaf owner jobs are created.
     pub async fn child_page<B: SourceBuffer>(
@@ -357,14 +357,14 @@ impl CapturedSource {
             .map(i64::try_from)
             .transpose()
             .map_err(|_| invalid("directory ordinal exceeds SQLite range"))?;
-        self.0.log.connection.read(move|db|Box::pin(async move{
-   let mut tx=db.begin().await?;let result=crate::connection::worker_query(&mut tx,move|worker|Box::pin(async move{with_raw(worker,|raw|{
+        self.0.log.connection.read(move|db|{
+   let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;let result=(move|worker|{{ let raw: &rusqlite::Connection = worker;
     let mut statement=raw.prepare("SELECT ordinal,directory_bytes FROM context_semantic_directory_children WHERE source_sequence=? AND source_index=? AND list_kind=? AND ordinal>? ORDER BY ordinal")?;
     let mut rows=statement.query(params![key.source_sequence as i64,key.item_index as i64,kind.as_str(),after.unwrap_or(-1)])?;
     let mut packed=Packed::new(buffer);let mut last=None;let mut more=false;
     while let Some(r)=rows.next()?{if !packed.push(&[column_bytes(r,1)?])?{more=true;break;}last=Some(crate::sequence_number(r.get(0)?)?);}
     Ok(ChildPage{packed,next:if more{last}else{None}})
-   })})).await;let closed=tx.rollback().await;settle_read(result,closed)
-  })).await
+   }})(&tx);let closed=tx.rollback();settle_read(result,closed)
+  }).await
     }
 }

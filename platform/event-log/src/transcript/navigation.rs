@@ -25,7 +25,7 @@ use maka_agent_facts::{
 use maka_presentation::navigation::{
     RecordedTurnState, TurnContribution, TurnLandmark, TurnStateMessage, truncate,
 };
-use sqlx::{Connection, Row};
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 
 mod queries;
@@ -38,28 +38,27 @@ pub struct TurnPage {
 impl EventLog {
     /// Visible raw history fence, including running Turns, captured with Session existence.
     pub async fn navigation_fence(&self, session: &str) -> Result<Option<u64>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let exists: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-                    )
-                    .bind(&session)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    if !exists {
-                        return Err(StoreError::SessionNotFound);
-                    }
-                    let raw: Option<i64> = sqlx::query_scalar(queries::FENCE)
-                        .bind(&session)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                    raw.map(sequence_number).transpose()
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
+                    rusqlite::params![&session],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    return Err(StoreError::SessionNotFound);
+                }
+                let raw: Option<i64> =
+                    tx.query_row(queries::FENCE, rusqlite::params![&session], |row| {
+                        row.get(0)
+                    })?;
+                raw.map(sequence_number).transpose()
             })
             .await
     }
@@ -73,7 +72,6 @@ impl EventLog {
         position: Option<RowPosition>,
         limit: usize,
     ) -> Result<TurnPage, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         let through_sql = super::read::sql_number(through)?;
         let position = position.map(sql_position).transpose()?;
@@ -83,15 +81,10 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, through).await?;
-                    let rows = sqlx::query(queries::ROWS)
-                        .bind(&session)
-                        .bind(through_sql)
-                        .bind(position.map(|p| p.0))
-                        .bind(position.map(|p| p.1))
-                        .fetch_all(&mut *tx)
-                        .await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, through)?;
+                    let rows = tx.prepare_cached(queries::ROWS)?.query_map(rusqlite::params![&session, through_sql, position.map(|p| p.0), position.map(|p| p.1)], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,)))?.collect::<Result<Vec<_>, _>>()
+                        ?;
                     let mut contributions: Vec<TurnContribution> = Vec::new();
                     let mut indices = HashMap::new();
                     let mut next_position = None;
@@ -103,8 +96,8 @@ impl EventLog {
                     let budget = (192_usize * 1024).saturating_sub(serde_json::to_vec(&envelope)?.len());
                     let mut bytes = 0usize;
                     for (index, row) in rows.into_iter().enumerate() {
-                        let position = row_position(row.try_get(0)?, row.try_get(1)?)?;
-                        let turn: String = row.try_get(2)?;
+                        let position = row_position(row.0, row.1)?;
+                        let turn: String = row.2;
                         if index == 256
                             || !indices.contains_key(&turn) && contributions.len() == limit
                         {
@@ -128,16 +121,15 @@ impl EventLog {
                             ),
                         };
                         if contribution.user_prompt_preview.is_none() {
-                            let role: String = row.try_get(3)?;
-                            let kind: String = row.try_get(4)?;
+                            let role = &row.3;
+                            let kind = &row.4;
                             if role == "user" && matches!(kind.as_str(), "invocation_opened" | "message_steered") {
-                                contribution.user_prompt_preview = preview(tx,&session,position,256).await?;
+                                contribution.user_prompt_preview = preview(tx,&session,position,256)?;
                             }
                         }
-                        if row.try_get::<String,_>(3)? == "turn_state" {
-                            super::bodycache::ensure(tx,&session,position).await?;
-                            let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-                                .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
+                        if row.3 == "turn_state" {
+                            super::bodycache::ensure(tx,&session,position)?;
+                            let bytes: Vec<u8> = tx.query_row("SELECT payload FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, sql_position(position)?.0, sql_position(position)?.1], |row| row.get(0))?;
                             let mut message: TurnStateMessage = serde_json::from_slice(&bytes)?;
                             if message.turn_id != contribution.turn_id {
                                 return Err(StoreError::TranscriptConflict);
@@ -168,7 +160,7 @@ impl EventLog {
                         contributions,
                         next_position,
                     })
-                }))
+                })
             })
             .await
     }
@@ -181,7 +173,6 @@ impl EventLog {
         limit: usize,
         turn: Option<&str>,
     ) -> Result<Vec<TurnLandmark>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         let through_sql = super::read::sql_number(through)?;
         if let Some(turn) = turn {
@@ -194,19 +185,16 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, through).await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, through)?;
                     if let Some(turn) = turn {
-                        let bounds: Option<(i64, i64, i64, i64)> = sqlx::query_as(queries::BOUNDS)
-                            .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;
+                        let bounds: Option<(i64, i64, i64, i64)> = tx.query_row(queries::BOUNDS, rusqlite::params![&session, &turn, through_sql], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
                         let Some((first_source, first_index, last_source, last_index)) = bounds else { return Ok(vec![]); };
-                        let prompt: Option<(i64,i64,Option<String>)> = sqlx::query_as(
-                            "SELECT row.source_sequence,row.item_index,row.user_origin FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
+                        let prompt: Option<(i64,i64,Option<String>)> = tx.query_row("SELECT row.source_sequence,row.item_index,row.user_origin FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
                              WHERE row.owner_key=?1 AND row.turn_id=?2 AND row.source_sequence<=?3 AND row.role='user'
-                             AND source.kind IN ('invocation_opened','message_steered') ORDER BY row.source_sequence,row.item_index LIMIT 1")
-                            .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;
+                             AND source.kind IN ('invocation_opened','message_steered') ORDER BY row.source_sequence,row.item_index LIMIT 1", rusqlite::params![&session, &turn, through_sql], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?;
                         let (label, origin) = match prompt {
-                            Some((source,item,origin)) => (preview(tx,&session,row_position(source,item)?,96).await?, decode_origin(origin)?),
+                            Some((source,item,origin)) => (preview(tx,&session,row_position(source,item)?,96)?, decode_origin(origin)?),
                             None => (None, None),
                         };
 
@@ -216,39 +204,30 @@ impl EventLog {
                             origin,
                         }]);
                     }
-                    let selected: Vec<String> = sqlx::query_scalar(queries::LANDMARKS)
-                        .bind(&session)
-                        .bind(through_sql)
-                        .bind(limit as i64)
-                        .fetch_all(&mut *tx)
-                        .await?;
+                    let selected: Vec<String> = tx.prepare_cached(queries::LANDMARKS)?.query_map(rusqlite::params![&session, through_sql, limit as i64], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()
+                        ?;
                     let mut result = Vec::new();
                     for invocation in selected {
-                        if let Some(row) = sqlx::query(queries::PROMPT)
-                            .bind(&session)
-                            .bind(&invocation)
-                            .bind(through_sql)
-                            .fetch_optional(&mut *tx)
-                            .await?
+                        if let Some(row) = tx.query_row(queries::PROMPT, rusqlite::params![&session, &invocation, through_sql], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?,))).optional()
+                            ?
                         {
-                            let label = preview(tx,&session,row_position(row.try_get(1)?,row.try_get(2)?)?,96).await?;
+                            let label = preview(tx,&session,row_position(row.1,row.2)?,96)?;
                             if let Some(label) = label {
-                                let turn_id: String = row.try_get(0)?;
-                                let (first_source, first_index, last_source, last_index): (i64, i64, i64, i64) = sqlx::query_as(queries::BOUNDS)
-                                    .bind(&session).bind(&turn_id).bind(through_sql).fetch_one(&mut *tx).await?;
+                                let turn_id: String = row.0;
+                                let (first_source, first_index, last_source, last_index): (i64, i64, i64, i64) = tx.query_row(queries::BOUNDS, rusqlite::params![&session, &turn_id, through_sql], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?;
                                 result.push(TurnLandmark {
                                     position: row_position(first_source, first_index)?,
                                     last_position: row_position(last_source, last_index)?,
                                     turn_id,
                                     label,
-                                    origin: decode_origin(row.try_get(3)?)?,
+                                    origin: decode_origin(row.3)?,
                                 });
                             }
                         }
                     }
 
                     Ok(result)
-                }))
+                })
             })
             .await
     }
@@ -260,15 +239,14 @@ fn decode_origin(origin: Option<String>) -> Result<Option<MessageOrigin>, StoreE
         .transpose()?)
 }
 
-async fn preview(
-    db: &mut sqlx::SqliteConnection,
+fn preview(
+    db: &rusqlite::Connection,
     session: &str,
     position: RowPosition,
     budget: i64,
 ) -> Result<Option<String>, StoreError> {
-    super::bodycache::ensure(db, session, position).await?;
-    sqlx::query_scalar("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-        .bind(session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).bind(budget).fetch_one(db).await.map_err(Into::into)
+    super::bodycache::ensure(db, session, position)?;
+    db.query_row("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![session, sql_position(position)?.0, sql_position(position)?.1, budget], |row| row.get(0)).map_err(Into::into)
 }
 
 /// SQLite borrows the selected string; only the bounded preview is allocated in Rust.

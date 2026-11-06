@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use crate::connection::BoxFuture;
+use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, future::Shared};
 use std::panic::AssertUnwindSafe;
 
@@ -168,12 +168,8 @@ impl StageOwner {
     }
     pub(crate) async fn open(
         &self,
-        options: sqlx::sqlite::SqliteConnectOptions,
-        initialize: impl for<'c> FnOnce(
-            &'c mut SqliteConnection,
-        ) -> BoxFuture<'c, Result<(), StoreError>>
-        + Send
-        + 'static,
+        options: crate::connection::OpenOptions,
+        initialize: impl FnOnce(&mut SqliteConnection) -> Result<(), StoreError> + Send + 'static,
     ) -> Result<crate::connection::OwnedConnection, StoreError> {
         self.validate_current()?;
         // No await separates registration from spawning the actual SQL owner.

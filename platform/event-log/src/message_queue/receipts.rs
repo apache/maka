@@ -20,8 +20,8 @@
 //! Epoch-scoped receipts share the queue transaction, not an in-memory cache.
 use super::{QueueEdit, invalid};
 use crate::{EventLog, StoreError, message_admissions::PendingMessageAdmission};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, SqliteConnection};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueCommandKind {
@@ -88,28 +88,28 @@ impl EventLog {
     /// Called once by the root owner before publishing its new Host epoch.
     /// Old commands still fail closed at the Host boundary; they are never replayed.
     pub async fn begin_message_epoch(&self, epoch: &str) -> Result<(), StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(epoch)?;
         let epoch = epoch.to_owned();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    sqlx::query("DELETE FROM queue_command_receipts WHERE host_epoch != ?")
-                        .bind(&epoch)
-                        .execute(&mut *tx)
-                        .await?;
-                    sqlx::query("DELETE FROM message_submit_receipts WHERE host_epoch != ?")
-                        .bind(&epoch)
-                        .execute(&mut *tx)
-                        .await?;
-                    sqlx::query("DELETE FROM message_interrupt_receipts WHERE host_epoch != ?")
-                        .bind(epoch)
-                        .execute(&mut *tx)
-                        .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(())
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                tx.execute(
+                    "DELETE FROM queue_command_receipts WHERE host_epoch != ?",
+                    rusqlite::params![&epoch],
+                )?;
+                tx.execute(
+                    "DELETE FROM message_submit_receipts WHERE host_epoch != ?",
+                    rusqlite::params![&epoch],
+                )?;
+                tx.execute(
+                    "DELETE FROM message_interrupt_receipts WHERE host_epoch != ?",
+                    rusqlite::params![epoch],
+                )?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(())
             })
             .await
     }
@@ -119,34 +119,34 @@ impl EventLog {
         session: &str,
         command: &QueueCommand,
     ) -> Result<Option<QueueReceipt>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         command.validate()?;
         let session = session.to_owned();
         let command = command.clone();
         self.connection
-            .read(move |connection| {
-                Box::pin(async move { read(connection, &session, &command).await })
-            })
+            .read(move |connection| read(connection, &session, &command))
             .await
     }
 }
 
-pub(super) async fn read(
-    connection: &mut SqliteConnection,
+pub(super) fn read(
+    connection: &Connection,
     session: &str,
     command: &QueueCommand,
 ) -> Result<Option<QueueReceipt>, StoreError> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT fingerprint, receipt_json FROM queue_command_receipts
+    let row: Option<(String, String)> = connection
+        .query_row(
+            "SELECT fingerprint, receipt_json FROM queue_command_receipts
          WHERE host_epoch = ? AND session_id = ? AND operation = ? AND command_id = ?",
-    )
-    .bind(&command.host_epoch)
-    .bind(session)
-    .bind(command.kind.as_str())
-    .bind(&command.command_id)
-    .fetch_optional(connection)
-    .await?;
+            rusqlite::params![
+                &command.host_epoch,
+                session,
+                command.kind.as_str(),
+                &command.command_id
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
     row.map(|(fingerprint, json)| {
         if fingerprint != command.fingerprint {
             return Err(invalid("command identity belongs to another input"));
@@ -156,25 +156,25 @@ pub(super) async fn read(
     .transpose()
 }
 
-pub(super) async fn insert(
-    connection: &mut SqliteConnection,
+pub(super) fn insert(
+    connection: &Connection,
     session: &str,
     command: &QueueCommand,
     receipt: &QueueReceipt,
 ) -> Result<(), StoreError> {
     let json = serde_json::to_string(receipt)?;
-    sqlx::query(
+    connection.execute(
         "INSERT INTO queue_command_receipts
          (host_epoch, session_id, operation, command_id, fingerprint, receipt_json)
          VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&command.host_epoch)
-    .bind(session)
-    .bind(command.kind.as_str())
-    .bind(&command.command_id)
-    .bind(&command.fingerprint)
-    .bind(json)
-    .execute(connection)
-    .await?;
+        rusqlite::params![
+            &command.host_epoch,
+            session,
+            command.kind.as_str(),
+            &command.command_id,
+            &command.fingerprint,
+            json
+        ],
+    )?;
     Ok(())
 }

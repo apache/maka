@@ -25,16 +25,7 @@ pub(crate) async fn inspect_cache<T: Send + 'static>(
     operation: impl FnOnce(&rusqlite::Connection) -> T + Send + 'static,
 ) -> T {
     log.connection
-        .observe(move |db| {
-            Box::pin(async move {
-                db.run_on_worker(move |handle| {
-                    // SAFETY: SQLx fences this borrowed handle for the callback.
-                    let borrowed = unsafe { rusqlite::Connection::from_handle(handle.as_ptr()) }?;
-                    Ok(operation(&borrowed))
-                })
-                .await?
-            })
-        })
+        .observe(move |db| Ok(operation(db)))
         .await
         .unwrap()
 }

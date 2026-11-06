@@ -22,7 +22,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
 /// Current work reached from one immutable Message identity, not Session activity.
@@ -40,46 +40,43 @@ impl EventLog {
         session: &str,
         message: &str,
     ) -> Result<MessageExecution, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(message)?;
         let (session, message) = (session.to_owned(), message.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    execution(&mut tx, &session, &message).await
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                execution(&tx, &session, &message)
             })
             .await
     }
 }
 
-pub(crate) async fn execution(
-    tx: &mut SqliteConnection,
+pub(crate) fn execution(
+    tx: &Connection,
     session: &str,
     message: &str,
 ) -> Result<MessageExecution, StoreError> {
-    if let Some(owner) = read(tx, session, message).await? {
+    if let Some(owner) = read(tx, session, message)? {
         return match owner {
-            DeliveryOwner::Exclusive(invocation) => lineage(tx, &invocation)
-                .await
-                .map(|boundary| MessageExecution::Owned(Box::new(boundary))),
+            DeliveryOwner::Exclusive(invocation) => {
+                lineage(tx, &invocation).map(|boundary| MessageExecution::Owned(Box::new(boundary)))
+            }
             DeliveryOwner::Shared(invocation) => lineage(tx, &invocation)
-                .await
                 .map(|boundary| MessageExecution::Shared(Box::new(boundary))),
         };
     }
-    if crate::message_queue::cancelled(tx, session, message).await? {
+    if crate::message_queue::cancelled(tx, session, message)? {
         return Ok(MessageExecution::Cancelled);
     }
-    let pending: bool = sqlx::query_scalar(
+    let pending: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM message_admissions WHERE session_id = ? AND message_id = ?)",
-    )
-    .bind(session)
-    .bind(message)
-    .fetch_one(tx)
-    .await?;
+        rusqlite::params![session, message],
+        |row| row.get(0),
+    )?;
     Ok(if pending {
         MessageExecution::Pending
     } else {
@@ -93,20 +90,20 @@ enum DeliveryOwner {
     Shared(Invocation),
 }
 
-async fn read(
-    tx: &mut SqliteConnection,
+fn read(
+    tx: &Connection,
     session: &str,
     message: &str,
 ) -> Result<Option<DeliveryOwner>, StoreError> {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT e.event_header
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT e.event_header
          FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
          WHERE s.session_id = ? AND s.message_id = ?",
-    )
-    .bind(session)
-    .bind(message)
-    .fetch_optional(&mut *tx)
-    .await?;
+            rusqlite::params![session, message],
+            |row| row.get(0),
+        )
+        .optional()?;
     let Some(json) = json else {
         return Ok(None);
     };
@@ -148,30 +145,29 @@ async fn read(
 
 /// Follow explicit continuation edges, never the Session's latest Run. Caller
 /// keeps one SQL snapshot through owner selection and any control admission.
-pub(crate) async fn lineage(
-    tx: &mut SqliteConnection,
-    owner: &Invocation,
-) -> Result<TurnBoundary, StoreError> {
+pub(crate) fn lineage(tx: &Connection, owner: &Invocation) -> Result<TurnBoundary, StoreError> {
     let mut current = owner.clone();
     let mut seen = HashSet::new();
     loop {
         if !seen.insert(current.run_id.clone()) {
             return Err(invalid("Message owner continuation cycle"));
         }
-        let opening: Option<String> = sqlx::query_scalar(
-            "SELECT event_header
+        let opening: Option<String> = tx
+            .query_row(
+                "SELECT event_header
              FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
-        )
-        .bind(&current.invocation_id)
-        .fetch_optional(&mut *tx)
-        .await?;
+                rusqlite::params![&current.invocation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         let opening: RuntimeEvent =
             serde_json::from_str(&opening.ok_or_else(|| invalid("Message owner has no opening"))?)?;
         if opening.invocation != current {
             return Err(invalid("Message owner identity changed"));
         }
-        let successors: Vec<String> = sqlx::query_scalar(
-            "SELECT event_header
+        let successors: Vec<String> = tx
+            .prepare_cached(
+                "SELECT event_header
              FROM event_log INDEXED BY continuation_source_boundary
              WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
              AND kind = 'invocation_opened'
@@ -179,16 +175,17 @@ pub(crate) async fn lineage(
              AND json_extract(event_header, '$.invocation.session_id') = ?
              AND json_extract(event_header, '$.fact.input.claim.source.invocation.run_id') = ?
              LIMIT 2",
-        )
-        .bind(&current.session_id)
-        .bind(&current.run_id)
-        .fetch_all(&mut *tx)
-        .await?;
+            )?
+            .query_map(
+                rusqlite::params![&current.session_id, &current.run_id],
+                |row| row.get(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
         if successors.len() > 1 {
             return Err(invalid("Message owner has ambiguous continuations"));
         }
         let Some(successor) = successors.into_iter().next() else {
-            return crate::turns::project(tx, opening).await;
+            return crate::turns::project(tx, opening);
         };
         let successor: RuntimeEvent = serde_json::from_str(&successor)?;
         let Fact::InvocationOpened { input, .. } = &successor.fact else {
@@ -207,13 +204,12 @@ pub(crate) async fn lineage(
         }
         // Append already authenticated the immutable raw prefix. Verify this
         // edge still names the sealed owner's complete Run-local boundary.
-        let (count, sealed): (i64, bool) = sqlx::query_as(
+        let (count, sealed): (i64, bool) = tx.query_row(
             "SELECT COUNT(*), COALESCE(MAX(kind = 'invocation_ended'), 0)
              FROM runtime_events WHERE invocation_id = ?",
-        )
-        .bind(&current.invocation_id)
-        .fetch_one(&mut *tx)
-        .await?;
+            rusqlite::params![&current.invocation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         if !sealed || u64::try_from(count).ok() != Some(claim.source.high_water) {
             return Err(invalid(
                 "Message owner continuation has an invalid sealed boundary",

@@ -53,17 +53,15 @@ async fn hidden(root: &RootStore, id: &str) {
     root.log
         .connection
         .run(move |db| {
-            Box::pin(async move {
-                use sqlx::Connection;
-                let mut tx = db.begin().await?;
-                sqlx::query("UPDATE session_creations SET visible=0 WHERE session_id=?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-                crate::sessions::advance_catalog(&mut tx).await?;
-                tx.commit().await?;
-                Ok(())
-            })
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            tx.execute(
+                "UPDATE session_creations SET visible=0 WHERE session_id=?",
+                rusqlite::params![id],
+            )?;
+            crate::sessions::advance_catalog(&tx)?;
+            tx.commit()?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -157,7 +155,7 @@ async fn revision_binds_all_data_counters_control_visibility_and_query_without_t
     let page = root.list_sessions::<Value>(None, None, 1).await.unwrap();
     root.log
         .connection
-        .run(|db| Box::pin(async move { crate::sessions::advance_catalog(db).await }))
+        .run(|db| crate::sessions::advance_catalog(db))
         .await
         .unwrap();
     assert!(matches!(

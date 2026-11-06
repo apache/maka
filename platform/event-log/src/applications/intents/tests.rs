@@ -120,14 +120,11 @@ async fn corrupted_history_is_never_overwritten_as_a_fresh_intent() {
     store
         .connection
         .run(move |connection| {
-            Box::pin(async move {
-                sqlx::query("UPDATE application_intents SET operation=? WHERE cursor=?")
-                    .bind(format!("{operation}\0extra"))
-                    .bind(cursor as i64)
-                    .execute(&mut *connection)
-                    .await?;
-                Ok(())
-            })
+            connection.execute(
+                "UPDATE application_intents SET operation=? WHERE cursor=?",
+                params![format!("{operation}\0extra"), cursor as i64],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -141,17 +138,11 @@ async fn corrupted_history_is_never_overwritten_as_a_fresh_intent() {
     store
         .connection
         .run(move |connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE application_intents SET operation=?, reference_json=? WHERE cursor=?",
-                )
-                .bind(operation)
-                .bind("{}")
-                .bind(cursor as i64)
-                .execute(&mut *connection)
-                .await?;
-                Ok(())
-            })
+            connection.execute(
+                "UPDATE application_intents SET operation=?, reference_json=? WHERE cursor=?",
+                params![operation, "{}", cursor as i64],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -170,13 +161,11 @@ async fn corrupted_history_is_never_overwritten_as_a_fresh_intent() {
     let rows: i64 = store
         .connection
         .run(|connection| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar("SELECT COUNT(*) FROM application_intents")
-                        .fetch_one(connection)
-                        .await?,
-                )
-            })
+            Ok(connection.query_row(
+                "SELECT COUNT(*) FROM application_intents",
+                params![],
+                |row| row.get(0),
+            )?)
         })
         .await
         .unwrap();

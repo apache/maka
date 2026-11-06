@@ -22,8 +22,8 @@ use maka_agent_facts::interaction::GrantTarget;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::entity_id;
+use rusqlite::OptionalExtension;
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::Row;
 
 pub(crate) fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
@@ -103,23 +103,23 @@ pub(crate) fn equivalent(left: &InteractionOutcome, right: &InteractionOutcome) 
     }
 }
 
-pub(crate) async fn read_scoped(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_scoped(
+    connection: &rusqlite::Connection,
     request_id: &str,
     expected_session: Option<&str>,
 ) -> Result<Option<InteractionRecord>, StoreError> {
-    read_from(connection, request_id, expected_session).await
+    read_from(connection, request_id, expected_session)
 }
 
-pub(crate) async fn read_local(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_local(
+    connection: &rusqlite::Connection,
     request_id: &str,
 ) -> Result<Option<InteractionRecord>, StoreError> {
-    read_from(connection, request_id, None).await
+    read_from(connection, request_id, None)
 }
 
-async fn read_from(
-    connection: &mut sqlx::SqliteConnection,
+fn read_from(
+    connection: &rusqlite::Connection,
     request_id: &str,
     expected_session: Option<&str>,
 ) -> Result<Option<InteractionRecord>, StoreError> {
@@ -128,22 +128,25 @@ async fn read_from(
         FROM interaction_requests AS request LEFT JOIN interaction_outcomes AS outcome
         ON outcome.request_id=request.request_id WHERE request.request_id=?
         AND (? IS NULL OR request.session_id=?)";
-    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(request_id)
-        .bind(expected_session)
-        .bind(expected_session)
-        .fetch_optional(connection)
-        .await?;
-    let Some(row) = row else { return Ok(None) };
-    let mut record: InteractionRecord = decode(row.try_get(2)?)?;
+    let row: Option<(String, i64, String, Option<String>)> = connection
+        .query_row(
+            sql,
+            rusqlite::params![request_id, expected_session, expected_session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((session, created, json, outcome)) = row else {
+        return Ok(None);
+    };
+    let mut record: InteractionRecord = decode(&json)?;
     if record.outcome.is_some()
         || record.request_id != request_id
-        || record.session_id != row.try_get::<&str, _>(0)?
-        || i64::try_from(record.created_at).ok() != Some(row.try_get(1)?)
+        || record.session_id != session
+        || i64::try_from(record.created_at).ok() != Some(created)
     {
         return Err(invalid("stored interaction identity changed"));
     }
-    record.outcome = row.try_get::<Option<&str>, _>(3)?.map(decode).transpose()?;
+    record.outcome = outcome.as_deref().map(decode).transpose()?;
     record.validate().map_err(invalid)?;
     Ok(Some(record))
 }

@@ -17,86 +17,79 @@
  * under the License.
  */
 
-use sqlx::SqliteConnection;
+use rusqlite::Connection as SqliteConnection;
 
 use crate::StoreError;
 
-static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATIONS: &[crate::migration::Migration] = &[crate::migration::Migration {
+    version: 1,
+    description: "runtime",
+    sql: include_str!("../migrations/0001_runtime.sql"),
+}];
 
-pub(crate) async fn initialize_connection(
-    connection: &mut SqliteConnection,
-) -> Result<(), StoreError> {
-    let application_id: i64 = sqlx::query_scalar("PRAGMA application_id")
-        .fetch_one(&mut *connection)
-        .await?;
-    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(&mut *connection)
-        .await?;
-    let tables: i64 = sqlx::query_scalar(
+pub(crate) fn initialize_connection(connection: &SqliteConnection) -> Result<(), StoreError> {
+    let application_id: i64 =
+        connection.query_row("PRAGMA application_id", rusqlite::params![], |row| {
+            row.get(0)
+        })?;
+    let version: i64 =
+        connection.query_row("PRAGMA user_version", rusqlite::params![], |row| row.get(0))?;
+    let tables: i64 = connection.query_row(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+        rusqlite::params![],
+        |row| row.get(0),
+    )?;
     if !((application_id == 0 && version == 0 && tables == 0)
         || (application_id == 0x4d414b52 && matches!(version, 0 | 2)))
     {
         return Err(StoreError::UnsupportedDatabase);
     }
-    let ledger: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations')",
-    )
-    .fetch_one(&mut *connection)
-    .await?;
+    let ledger: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations')", rusqlite::params![], |row| row.get(0))?;
     // Version zero is only a genuinely empty or interrupted initial setup.
     // Existing data is never adopted by creating a new migration ledger.
     if (version == 0 && tables != i64::from(ledger)) || (version == 2 && !ledger) {
         return Err(StoreError::UnsupportedDatabase);
     }
     if ledger {
-        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-            .fetch_one(&mut *connection)
-            .await?;
+        let applied: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM _sqlx_migrations",
+            rusqlite::params![],
+            |row| row.get(0),
+        )?;
         if (version == 0) != (applied == 0) {
             return Err(StoreError::UnsupportedDatabase);
         }
     }
     // Blob offsets address the canonical serializer's UTF-8 bytes.
     if tables == 0 {
-        sqlx::query("PRAGMA encoding = 'UTF-8'")
-            .execute(&mut *connection)
-            .await?;
+        connection.execute("PRAGMA encoding = 'UTF-8'", rusqlite::params![])?;
     }
-    let encoding: String = sqlx::query_scalar("PRAGMA main.encoding")
-        .fetch_one(&mut *connection)
-        .await?;
+    let encoding: String =
+        connection.query_row("PRAGMA main.encoding", rusqlite::params![], |row| {
+            row.get(0)
+        })?;
     if encoding != "UTF-8" {
         return Err(StoreError::UnsupportedDatabase);
     }
-    // A fresh file needs pointer-map pages before SQLx creates its first table.
+    // A fresh file needs pointer-map pages before the migration runner creates its first table.
     // Reclamation can then return space in small steps without a full VACUUM.
     if tables == 0 {
-        sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
-            .execute(&mut *connection)
-            .await?;
+        connection.execute("PRAGMA auto_vacuum = INCREMENTAL", rusqlite::params![])?;
     }
-    // Establish Rust identity before SQLx creates its migration ledger, so a
+    // Establish Rust identity before the migration runner creates its migration ledger, so a
     // crash before migration 1 is distinguishable from an unrelated database.
     if application_id == 0 {
-        sqlx::raw_sql("PRAGMA application_id = 1296124754")
-            .execute(&mut *connection)
-            .await?;
+        connection.execute_batch("PRAGMA application_id = 1296124754")?;
     }
-    crate::sqlite_functions::register(connection).await?;
-    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
-    sqlx::raw_sql(
+    crate::sqlite_functions::register(connection)?;
+    crate::migration::run(connection, MIGRATIONS)?;
+    connection.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
-    )
-    .execute(&mut *connection)
-    .await?;
+    )?;
     // Migrations create the standalone main table; derived Session reads must
     // resolve the root's live bindings before rebuilding any execution state.
-    crate::message_sources::initialize(connection).await?;
-    crate::sessions::initialize_execution(connection).await?;
+    crate::message_sources::initialize(connection)?;
+    crate::sessions::initialize_execution(connection)?;
     Ok(())
 }
 

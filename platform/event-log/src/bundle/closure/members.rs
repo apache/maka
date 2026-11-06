@@ -19,23 +19,21 @@
 
 use super::Closure;
 use crate::{StoreError, sequence_number};
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeSet;
 
 impl Closure {
     /// Follow only this member's flattened ownership chain. Do not expose a
     /// proof-only parent's complete conversation, catalog or private artifacts.
-    pub(super) async fn member(
+    pub(super) fn member(
         &mut self,
-        db: &mut SqliteConnection,
+        db: &Connection,
         session: &str,
         sequence: u64,
     ) -> Result<(), StoreError> {
-        let owner: String =
-            sqlx::query_scalar("SELECT event_session FROM runtime_events WHERE sequence=?")
-                .bind(sequence as i64)
-                .fetch_one(&mut *db)
-                .await?;
+        let owner: String = db
+            .prepare_cached("SELECT event_session FROM runtime_events WHERE sequence=?")?
+            .query_row(params![sequence as i64], |row| row.get(0))?;
         let mut current = session.to_owned();
         let mut seen = BTreeSet::new();
         while current != owner {
@@ -45,10 +43,8 @@ impl Closure {
             if self.members.contains_key(&(current.clone(), sequence)) {
                 return Ok(());
             }
-            let row: Option<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT c.source_session_id,h.archive_sequence FROM session_history_copies c
-                 JOIN session_history_members h ON h.session_id=c.session_id WHERE c.session_id=? AND h.sequence=?"
-            ).bind(&current).bind(sequence as i64).fetch_optional(&mut *db).await?;
+            let row: Option<(String, Option<i64>)> = db.prepare_cached("SELECT c.source_session_id,h.archive_sequence FROM session_history_copies c
+                 JOIN session_history_members h ON h.session_id=c.session_id WHERE c.session_id=? AND h.sequence=?")?.query_row(params![&current, sequence as i64], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
             let (source, archive) =
                 row.ok_or_else(|| invalid("bundle member is outside its declared source history"))?;
             self.copies.insert(current.clone());

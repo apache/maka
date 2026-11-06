@@ -46,39 +46,37 @@ impl ConfigurationStore {
         }
         let store = Arc::clone(self);
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                use ConnectionEffectRejectionReason as Rejected;
-                use ConnectionTestPreparation as Preparation;
-                let Some(connection) = catalog::find(tx, &input.connection_id).await? else {
-                    return Ok(Preparation::Rejected(Rejected::ConnectionNotFound));
-                };
-                if !connection.enabled {
-                    return Ok(Preparation::Rejected(Rejected::ConnectionDisabled));
-                }
-                let material = EffectSnapshot::read(tx, connection).await?;
-                if let Some(id) = &input.model_id
-                    && !material.connection.enabled_model_ids.contains(id)
-                    && !material
-                        .connection
-                        .models
-                        .iter()
-                        .any(|model| model.id == *id)
-                    && !material
-                        .connection
-                        .model_overrides
-                        .as_ref()
-                        .is_some_and(|values| values.contains_key(id))
-                {
-                    return Err(ConfigError::Invalid(
-                        "connection test model is not in the canonical model set".into(),
-                    ));
-                }
-                Ok(Preparation::Ready(Box::new(PreparedConnectionTest {
-                    store,
-                    material,
-                    model_id: input.model_id,
-                })))
-            })
+            use ConnectionEffectRejectionReason as Rejected;
+            use ConnectionTestPreparation as Preparation;
+            let Some(connection) = catalog::find(tx, &input.connection_id)? else {
+                return Ok(Preparation::Rejected(Rejected::ConnectionNotFound));
+            };
+            if !connection.enabled {
+                return Ok(Preparation::Rejected(Rejected::ConnectionDisabled));
+            }
+            let material = EffectSnapshot::read(tx, connection)?;
+            if let Some(id) = &input.model_id
+                && !material.connection.enabled_model_ids.contains(id)
+                && !material
+                    .connection
+                    .models
+                    .iter()
+                    .any(|model| model.id == *id)
+                && !material
+                    .connection
+                    .model_overrides
+                    .as_ref()
+                    .is_some_and(|values| values.contains_key(id))
+            {
+                return Err(ConfigError::Invalid(
+                    "connection test model is not in the canonical model set".into(),
+                ));
+            }
+            Ok(Preparation::Ready(Box::new(PreparedConnectionTest {
+                store,
+                material,
+                model_id: input.model_id,
+            })))
         })
         .await
     }
@@ -113,36 +111,33 @@ impl PreparedConnectionTest {
         let material = self.material;
         self.store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    use ConnectionEffectChangedDomain as Changed;
-                    let catalog = catalog::read(tx).await?;
-                    let current = catalog
-                        .connections
-                        .into_iter()
-                        .find(|row| row.connection_id == material.connection.connection_id);
-                    let mut changed = material.changed(tx, current.as_ref()).await?;
-                    if current.as_ref().is_some_and(|row| {
-                        !same_test_basis(row, &material.connection)
-                            || row.request_body_overlay != material.connection.request_body_overlay
-                    }) && !changed.contains(&Changed::Connection)
-                    {
-                        changed.insert(0, Changed::Connection);
-                    }
-                    if !changed.is_empty() {
-                        return Ok(ConnectionTestRunResult::Superseded { changed });
-                    }
-                    let mut row = current.expect("unchanged connection exists");
-                    row.revision = catalog::next_revision(row.revision)?;
-                    row.last_test = Some(summary);
-                    catalog::write_entry(tx, &row).await?;
-                    let catalog_revision =
-                        catalog::advance(tx, catalog.revision, catalog.default_target.as_ref())
-                            .await?;
-                    Ok(ConnectionTestRunResult::Committed {
-                        catalog_revision,
-                        connection: catalog::basis(&row),
-                        test,
-                    })
+                use ConnectionEffectChangedDomain as Changed;
+                let catalog = catalog::read(tx)?;
+                let current = catalog
+                    .connections
+                    .into_iter()
+                    .find(|row| row.connection_id == material.connection.connection_id);
+                let mut changed = material.changed(tx, current.as_ref())?;
+                if current.as_ref().is_some_and(|row| {
+                    !same_test_basis(row, &material.connection)
+                        || row.request_body_overlay != material.connection.request_body_overlay
+                }) && !changed.contains(&Changed::Connection)
+                {
+                    changed.insert(0, Changed::Connection);
+                }
+                if !changed.is_empty() {
+                    return Ok(ConnectionTestRunResult::Superseded { changed });
+                }
+                let mut row = current.expect("unchanged connection exists");
+                row.revision = catalog::next_revision(row.revision)?;
+                row.last_test = Some(summary);
+                catalog::write_entry(tx, &row)?;
+                let catalog_revision =
+                    catalog::advance(tx, catalog.revision, catalog.default_target.as_ref())?;
+                Ok(ConnectionTestRunResult::Committed {
+                    catalog_revision,
+                    connection: catalog::basis(&row),
+                    test,
                 })
             })
             .await

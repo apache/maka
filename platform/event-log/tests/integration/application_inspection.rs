@@ -24,7 +24,6 @@ use maka_event_log::{
 use maka_plugin_core::{composition::Input, deployment::DeploymentRef};
 use rusqlite::config::DbConfig;
 use serde_json::{Value, json};
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -156,48 +155,36 @@ impl Fixture {
     async fn retain_committed_wal(&mut self) {
         let owner = self.owner();
         let lease = FileLease::acquire_existing(&self.database_lease()).unwrap();
-        let mut connection =
-            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(self.database()))
-                .await
-                .unwrap();
-        {
-            let mut locked = connection.lock_handle().await.unwrap();
-            // SAFETY: the non-owning wrapper remains under SQLx's exclusive
-            // handle guard and is dropped before another SQLx operation.
-            let borrowed =
-                unsafe { rusqlite::Connection::from_handle(locked.as_raw_handle().as_ptr()) }
-                    .unwrap();
-            assert!(
-                borrowed
-                    .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
-                    .unwrap()
-            );
-            assert!(
-                borrowed
-                    .db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)
-                    .unwrap()
-            );
-        }
-        sqlx::query("PRAGMA wal_autocheckpoint=0")
-            .execute(&mut connection)
-            .await
+        let connection = rusqlite::Connection::open(self.database()).unwrap();
+        assert!(
+            connection
+                .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+                .unwrap()
+        );
+        assert!(
+            connection
+                .db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)
+                .unwrap()
+        );
+        connection
+            .execute_batch("PRAGMA wal_autocheckpoint=0")
             .unwrap();
-        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
-            .fetch_one(&mut connection)
-            .await
+        let mode: String = connection
+            .query_row("PRAGMA journal_mode", rusqlite::params![], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
         let configuration = json!({"original":"latest retained WAL selection","enabled":false});
-        let changed = sqlx::query(
-            "UPDATE application_launch SET configuration=? WHERE singleton=1 AND deployment=?",
-        )
-        .bind(serde_json::to_string(&configuration).unwrap())
-        .bind(self.reference.deployment.to_string())
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        assert_eq!(changed.rows_affected(), 1);
-        connection.close().await.unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE application_launch SET configuration=? WHERE singleton=1 AND deployment=?",
+                rusqlite::params![
+                    serde_json::to_string(&configuration).unwrap(),
+                    self.reference.deployment.to_string()
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+        connection.close().unwrap();
         owner.validate_current().unwrap();
         lease.validate().unwrap();
         drop((lease, owner));
@@ -263,10 +250,10 @@ async fn inspection_retains_both_original_leases_and_rejects_public_mutation() {
         )
         .await
         .unwrap_err();
-    let StoreError::Sqlx(sqlx::Error::Database(error)) = error else {
+    let StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _)) = error.underlying() else {
         panic!("ordinary mutation must be rejected by SQLite query_only")
     };
-    assert_eq!(error.code().as_deref(), Some("8"));
+    assert_eq!(error.code, rusqlite::ErrorCode::ReadOnly);
     assert_eq!(
         inspector
             .application_launch()
@@ -380,15 +367,11 @@ async fn inspection_missing_original_members_and_foreign_identity_never_initiali
     // Deliberately foreign identity, changed under the original test-owned leases.
     let owner = f.owner();
     let lease = FileLease::acquire_existing(&f.database_lease()).unwrap();
-    let mut connection =
-        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(f.database()))
-            .await
-            .unwrap();
-    sqlx::query("PRAGMA application_id=12345")
-        .execute(&mut connection)
-        .await
+    let connection = rusqlite::Connection::open(f.database()).unwrap();
+    connection
+        .execute_batch("PRAGMA application_id=12345")
         .unwrap();
-    connection.close().await.unwrap();
+    connection.close().unwrap();
     drop((lease, owner));
     let before = members(&f.root);
     let error = match EventLog::for_application_inspection(Arc::new(f.owner())).await {

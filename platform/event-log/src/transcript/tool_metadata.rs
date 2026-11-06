@@ -21,8 +21,7 @@ use super::read::sql_position;
 use crate::StoreError;
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Tool;
-use sqlx::SqliteConnection;
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::Connection;
 
 // Materialize the one-row owner and keep it before each indexed lookup.
 // Reordering these joins can scan the Session's payloads or entire tool indexes.
@@ -130,33 +129,26 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
 /// Read scalar metadata only. The unique call key and the bounded result index
 /// lookup avoid loading payloads or scanning an entire Turn for each fragment.
 /// Pairing is evaluated at the supplied fence, never against future outcomes.
-pub(super) async fn read(
-    tx: &mut SqliteConnection,
+pub(super) fn read(
+    tx: &Connection,
     session: &str,
     position: RowPosition,
     through: i64,
 ) -> Result<Tool, StoreError> {
-    let session = session.to_owned();
-    crate::connection::worker_query(tx, move |worker| {
-        Box::pin(async move { read_on_worker(worker, &session, position, through).await })
-    })
-    .await
+    read_on_worker(tx, session, position, through)
 }
 
-pub(super) async fn read_on_worker(
-    tx: &mut SqliteWorkerConnection<'_>,
+pub(super) fn read_on_worker(
+    tx: &rusqlite::Connection,
     session: &str,
     position: RowPosition,
     through: i64,
 ) -> Result<Tool, StoreError> {
     let (source_sequence, item_index) = sql_position(position)?;
-    let encoded: String = sqlx::query_scalar(METADATA_SQL)
-        .bind(session)
-        .bind(source_sequence)
-        .bind(item_index)
-        .bind(through)
-        .fetch_one(tx)
-        .await?;
+    let encoded: String = tx.prepare_cached(METADATA_SQL)?.query_row(
+        rusqlite::params![session, source_sequence, item_index, through],
+        |row| row.get(0),
+    )?;
     let mut tool: Tool = serde_json::from_str(&encoded)?;
     if let Some(call) = &mut tool.call
         && call

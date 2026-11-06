@@ -56,19 +56,7 @@ pub(crate) const SPAN_COLUMNS: &str = "e.event_header IS NOT NULL AS canonical_l
  length(canonical_body.payload) AS canonical_raw_bytes,e.sequence AS canonical_sequence";
 
 impl SpanMetadata {
-    pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, StoreError> {
-        use sqlx::Row;
-        Ok(Self {
-            sequence: row.try_get("canonical_sequence")?,
-            live: row.try_get("canonical_live")?,
-            length: row.try_get("canonical_length")?,
-            body_reference: row.try_get("canonical_body_reference")?,
-            slot_offset: row.try_get("canonical_offset")?,
-            body_id: row.try_get("canonical_body_id")?,
-            raw_bytes: row.try_get("canonical_raw_bytes")?,
-        })
-    }
-    pub(crate) fn from_handle(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         let base = row.as_ref().column_index("canonical_live")?;
         Ok(Self {
             sequence: row.get(base + 6)?,
@@ -97,7 +85,7 @@ pub(crate) fn with_span<T>(
     raw.query_row(&query, [sequence], |row| {
         Ok(with_span_metadata(
             raw,
-            SpanMetadata::from_handle(row)?,
+            SpanMetadata::from_row(row)?,
             offset,
             bytes,
             consume,

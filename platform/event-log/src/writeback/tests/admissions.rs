@@ -68,18 +68,16 @@ async fn open(path: &std::path::Path) -> Arc<EventLog> {
 }
 pub(super) async fn gate(
     log: &Arc<EventLog>,
-) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
     let (entered, reached) = oneshot::channel();
-    let (release, wait) = oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
     let log = log.clone();
     let task = tokio::spawn(async move {
         log.connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    wait.await.unwrap();
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(10)).unwrap();
+                Ok(())
             })
             .await
             .unwrap();
@@ -90,13 +88,11 @@ pub(super) async fn gate(
         .unwrap();
     (release, task)
 }
-pub(super) async fn hook(log: &EventLog, callback: impl FnMut() -> bool + Send + 'static) {
+pub(super) async fn hook(log: &EventLog, mut callback: impl FnMut() -> bool + Send + 'static) {
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                db.lock_handle().await?.set_commit_hook(callback);
-                Ok(())
-            })
+            db.commit_hook(Some(move || !callback()))?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -166,15 +162,11 @@ async fn late_domain_rejection_rolls_back_pending_and_retention_only_for_that_re
     let exhausted = maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER;
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO message_queue_state(session_id, revision) VALUES ('c', ?)",
-                )
-                .bind(exhausted as i64)
-                .execute(db)
-                .await?;
-                Ok(())
-            })
+            db.execute(
+                "INSERT INTO message_queue_state(session_id, revision) VALUES ('c', ?)",
+                [exhausted as i64],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -223,10 +215,10 @@ async fn storage_failure_rolls_back_prepared_neighbors_and_preserves_cause() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.sqlite");
         let log = open(&path).await;
-        log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TRIGGER admission_fault AFTER INSERT ON message_admissions WHEN NEW.session_id='b' BEGIN SELECT RAISE(ABORT, 'admission storage fault'); END;").execute(db).await?;
+        log.connection.run(|db| {
+        db.execute_batch("CREATE TRIGGER admission_fault AFTER INSERT ON message_admissions WHEN NEW.session_id='b' BEGIN SELECT RAISE(ABORT, 'admission storage fault'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
         if rollback_fails {
             forbid_rollback(&log).await;
         }
@@ -238,23 +230,31 @@ async fn storage_failure_rolls_back_prepared_neighbors_and_preserves_cause() {
         release.send(()).unwrap();
         gate.await.unwrap();
         for error in [a.await.unwrap_err(), b.await.unwrap_err()] {
-            let error = match error {
-                StoreError::Sqlx(error) if !rollback_fails => error,
-                StoreError::CommitUnknown(error) if rollback_fails => error,
-                error => panic!("{error:?}"),
-            };
             if rollback_fails {
-                assert!(error.to_string().contains("rollback unconfirmed"));
+                assert!(
+                    matches!(&error, StoreError::Shared(cause) if matches!(cause.as_ref(), StoreError::RollbackFailed { .. }))
+                );
             }
-            let database = error.as_database_error().unwrap();
+            let StoreError::Sqlite(sql) = error.underlying() else {
+                panic!("{error:?}");
+            };
             assert_eq!(
-                database.code().unwrap(),
-                rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER.to_string()
+                sql.sqlite_error().unwrap().extended_code,
+                rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER
             );
-            assert!(database.as_error().source().is_some());
-            assert!(error.to_string().contains("admission storage fault"));
+            assert!(sql.to_string().contains("admission storage fault"));
         }
-        log.connection.shutdown().await.unwrap();
+        if !rollback_fails {
+            log.connection
+                .run(|db| {
+                    db.execute_batch("DROP TRIGGER admission_fault")?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        let closed = log.connection.shutdown().await;
+        assert_eq!(closed.is_err(), rollback_fails);
         assert!(stored(&path).is_empty());
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(reopened.message_queue_revision("a").await.unwrap(), 0);
@@ -264,51 +264,34 @@ async fn storage_failure_rolls_back_prepared_neighbors_and_preserves_cause() {
 }
 
 #[tokio::test]
-async fn singleton_rejection_requires_confirmed_rollback() {
+async fn singleton_rejection_rolls_back_and_keeps_writer_available() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.sqlite");
     let log = open(&path).await;
-    forbid_rollback(&log).await;
-    let error = log.admit_message(admission("missing")).await.unwrap_err();
-    assert!(matches!(error, StoreError::CommitUnknown(_)), "{error:?}");
-    log.connection.shutdown().await.unwrap();
+    assert!(matches!(
+        log.admit_message(admission("missing")).await,
+        Err(StoreError::SessionNotFound)
+    ));
     assert!(stored(&path).is_empty());
+    assert_eq!(
+        log.admit_message(admission("a")).await.unwrap(),
+        admission("a")
+    );
+    assert_eq!(stored(&path), ["a"]);
+    log.connection.shutdown().await.unwrap();
 }
 
 pub(super) async fn forbid_rollback(log: &EventLog) {
-    unsafe extern "C" fn deny_rollback(
-        _: *mut std::ffi::c_void,
-        action: std::ffi::c_int,
-        operation: *const std::ffi::c_char,
-        _: *const std::ffi::c_char,
-        _: *const std::ffi::c_char,
-        _: *const std::ffi::c_char,
-    ) -> std::ffi::c_int {
-        if action == rusqlite::ffi::SQLITE_TRANSACTION && !operation.is_null() {
-            // SAFETY: SQLite supplies a callback-local NUL-terminated operation.
-            if unsafe { std::ffi::CStr::from_ptr(operation) }.to_bytes() == b"ROLLBACK" {
-                return rusqlite::ffi::SQLITE_DENY;
-            }
-        }
-        rusqlite::ffi::SQLITE_OK
-    }
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                let mut handle = db.lock_handle().await?;
-                // SAFETY: callback is static, no context is dereferenced; the handle is exclusive.
-                assert_eq!(
-                    unsafe {
-                        rusqlite::ffi::sqlite3_set_authorizer(
-                            handle.as_raw_handle().as_mut(),
-                            Some(deny_rollback),
-                            std::ptr::null_mut(),
-                        )
-                    },
-                    rusqlite::ffi::SQLITE_OK
-                );
-                Ok(())
-            })
+            db.authorizer(Some(|context: AuthContext<'_>| match context.action {
+                AuthAction::Transaction {
+                    operation: TransactionOperation::Rollback,
+                } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
         })
         .await
         .unwrap();

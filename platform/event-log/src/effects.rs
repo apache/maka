@@ -23,9 +23,9 @@
 use crate::{EventLog, StoreError};
 use maka_capabilities::call::Identity;
 use maka_capabilities::storage::Namespace;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Connection, Row};
 use uuid::Uuid;
 
 /// Durable observation of the original resource owner; never a live grant.
@@ -146,7 +146,6 @@ pub struct Record {
 impl EventLog {
     /// Caller may start the effect only after this durable admission succeeds.
     pub async fn begin_host_effect(&self, request: Request) -> Result<Uuid, StoreError> {
-        self.validate_root()?;
         if matches!(request.source, Identity::Agent { .. }) {
             return Err(invalid("Agent effects belong to their invocation journal"));
         }
@@ -175,15 +174,11 @@ impl EventLog {
         };
         let id = Uuid::new_v4();
         self.connection.run(move |connection| {
-            Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            if let Some(session) = session { crate::sessions::retain(&mut tx, &session).await?; }
-            sqlx::query("INSERT INTO host_effects (id, package_id, scope_id, request) VALUES (?, ?, ?, ?)")
-                .bind(id.to_string()).bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(raw)
-                .execute(&mut *tx).await?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            if let Some(session) = session { crate::sessions::retain(&tx, &session)?; }
+            tx.execute("INSERT INTO host_effects (id, package_id, scope_id, request) VALUES (?, ?, ?, ?)", rusqlite::params![id.to_string(), namespace.package(), String::from(namespace.scope().clone()), raw])?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(id)
-            })
         }).await
     }
 
@@ -194,7 +189,6 @@ impl EventLog {
         outcome: Outcome,
         payload: Option<Vec<u8>>,
     ) -> Result<(), StoreError> {
-        self.validate_root()?;
         match (&outcome, &payload) {
             (Outcome::Image { mime_type, digest }, Some(bytes))
                 if matches!(
@@ -208,16 +202,13 @@ impl EventLog {
         }
         let raw = serde_json::to_string(&outcome)?;
         self.connection.run(move |connection| {
-            Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let result = sqlx::query("UPDATE host_effects SET outcome = ?, payload = ? WHERE id = ? AND outcome IS NULL")
-                .bind(raw).bind(payload).bind(id.to_string()).execute(&mut *tx).await?;
-            if result.rows_affected() != 1 {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+            let result = tx.execute("UPDATE host_effects SET outcome = ?, payload = ? WHERE id = ? AND outcome IS NULL", rusqlite::params![raw, payload, id.to_string()])?;
+            if result != 1 {
                 return Err(StoreError::EventConflict);
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             Ok(())
-            })
         }).await
     }
 
@@ -226,26 +217,20 @@ impl EventLog {
         namespace: Namespace,
         id: Uuid,
     ) -> Result<Option<Record>, StoreError> {
-        self.validate_root()?;
         self.connection.read(move |connection| {
-            Box::pin(async move {
-            let row = sqlx::query("SELECT request, outcome, payload FROM host_effects WHERE id = ? AND package_id = ? AND scope_id = ?")
-                .bind(id.to_string()).bind(namespace.package()).bind(String::from(namespace.scope().clone()))
-                .fetch_optional(connection).await?;
-            row.map(|row| {
+            let row: Option<(String,Option<String>,Option<Vec<u8>>)> = connection.query_row("SELECT request, outcome, payload FROM host_effects WHERE id = ? AND package_id = ? AND scope_id = ?", rusqlite::params![id.to_string(), namespace.package(), String::from(namespace.scope().clone())], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?;
+            row.map(|(request,outcome,payload)| {
                 Ok(Record {
-                    request: serde_json::from_str(row.try_get("request")?)?,
-                    outcome: row.try_get::<Option<&str>, _>("outcome")?.map(serde_json::from_str).transpose()?,
-                    payload: row.try_get("payload")?,
+                    request: serde_json::from_str(&request)?,
+                    outcome: outcome.as_deref().map(serde_json::from_str).transpose()?,
+                    payload,
                 })
             }).transpose()
-            })
         }).await
     }
 
     /// Called only at exclusive Host recovery, before accepting new resource work.
     pub async fn recover_host_effects(&self) -> Result<(), StoreError> {
-        self.validate_root()?;
         let outcome = serde_json::to_string(&Outcome::Unknown {
             message:
                 "Host stopped before recording the effect outcome; do not replay automatically"
@@ -253,15 +238,13 @@ impl EventLog {
         })?;
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    sqlx::query("UPDATE host_effects SET outcome = ? WHERE outcome IS NULL")
-                        .bind(outcome)
-                        .execute(&mut *tx)
-                        .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(())
-                })
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+                tx.execute(
+                    "UPDATE host_effects SET outcome = ? WHERE outcome IS NULL",
+                    rusqlite::params![outcome],
+                )?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(())
             })
             .await
     }

@@ -19,7 +19,7 @@
 
 use crate::{EventLog, StoreError, sequence_number, sessions};
 use maka_agent_facts::history::RowPosition;
-use sqlx::Row;
+use rusqlite::OptionalExtension;
 
 pub(super) const ORDER: &str = "SELECT order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3";
 
@@ -58,7 +58,6 @@ impl EventLog {
         through: u64,
         cut: RowPosition,
     ) -> Result<bool, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         let session = session.to_owned();
         let fence = sql_number(through)?;
@@ -66,10 +65,9 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
-                    Box::pin(async move {
-                        super::directory::ensure(tx, &session, through).await?;
-                        let crossing: bool = sqlx::query_scalar(
-                            "SELECT EXISTS(SELECT 1 FROM transcript_directory
+                    {
+                        super::directory::ensure(tx, &session, through)?;
+                        let crossing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM transcript_directory
                  WHERE owner_key = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2
                  GROUP BY turn_id HAVING
                     SUM((order_sequence,order_item) <= (
@@ -79,16 +77,10 @@ impl EventLog {
                     AND SUM((order_sequence,order_item) > (
                         COALESCE((SELECT order_sequence FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?3),
                         COALESCE((SELECT order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?4)
-                    )) > 0)",
-                        )
-                        .bind(session)
-                        .bind(fence)
-                        .bind(source)
-                        .bind(item)
-                        .fetch_one(tx)
-                        .await?;
+                    )) > 0)", rusqlite::params![session, fence, source, item], |row| row.get(0))
+                        ?;
                         Ok(!crossing)
-                    })
+                    }
                 })
             })
             .await
@@ -98,7 +90,6 @@ impl EventLog {
         session: &str,
         read: &TranscriptRead,
     ) -> Result<Vec<TranscriptRowHeader>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         if read.limit == 0 || read.limit > 256 {
             return Err(invalid("invalid transcript header limit"));
@@ -118,8 +109,8 @@ impl EventLog {
         let fence = read.through;
         let direction = read.direction;
         let limit = read.limit as i64;
-        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::ensure(tx, &session, fence).await?;
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| {
+            super::directory::ensure(tx, &session, fence)?;
             let order_position = position;
             let query = match (direction, order_position.is_some()) {
                 (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
@@ -127,20 +118,23 @@ impl EventLog {
                 (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
                 (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3",
             };
-            let mut query = sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through).bind(limit);
-            if let Some((source,item))=order_position { query=query.bind(source).bind(item); }
-            let selected = query.fetch_all(&mut *tx).await?;
+            let mut statement = tx.prepare_cached(query)?;
+            let decode = |row: &rusqlite::Row<'_>| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?,row.get::<_, String>(2)?,row.get::<_, i64>(3)?,row.get::<_, i64>(4)?));
+            let selected = if let Some((source,item)) = order_position {
+                statement.query_map(rusqlite::params![&session,through,limit,source,item], decode)?.collect::<Result<Vec<_>,_>>()?
+            } else {
+                statement.query_map(rusqlite::params![&session,through,limit], decode)?.collect::<Result<Vec<_>,_>>()?
+            };
             let mut result = Vec::with_capacity(selected.len());
             for row in selected {
-                let position = row_position(row.try_get(0)?, row.try_get(1)?)?;
-                super::bodycache::ensure(tx, &session, position).await?;
-                let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-                    .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
-                result.push(TranscriptRowHeader { position, order: row_position(row.try_get(3)?,row.try_get(4)?)?, turn_id: row.try_get(2)?, total_bytes: sequence_number(bytes)?, digest });
+                let position = row_position(row.0, row.1)?;
+                super::bodycache::ensure(tx, &session, position)?;
+                let (bytes, digest): (i64, String) = tx.query_row("SELECT total_bytes,digest FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, sql_position(position)?.0, sql_position(position)?.1], |row| Ok((row.get(0)?, row.get(1)?,)))?;
+                result.push(TranscriptRowHeader { position, order: row_position(row.3,row.4)?, turn_id: row.2, total_bytes: sequence_number(bytes)?, digest });
             }
 
             Ok(result)
-        }))).await
+        })).await
     }
     /// Slice immutable UTF-8 JSON bytes; assembly may cross code points.
     pub async fn transcript_fragment(
@@ -150,7 +144,6 @@ impl EventLog {
         offset: u64,
         length: u64,
     ) -> Result<Vec<u8>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         if length == 0 || length > 512 * 1024 {
             return Err(invalid("invalid transcript fragment length"));
@@ -162,19 +155,17 @@ impl EventLog {
                 .ok_or_else(|| invalid("invalid transcript byte offset"))?,
         )?;
         let session = session.to_owned();
-        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::ensure(tx, &session, position.source_sequence).await?;
-            super::bodycache::ensure(tx, &session, position).await?;
-            let total:i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-                .bind(&session).bind(source).bind(item).fetch_optional(&mut *tx).await?.ok_or_else(||invalid("transcript message was not found"))?;
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| {
+            super::directory::ensure(tx, &session, position.source_sequence)?;
+            super::bodycache::ensure(tx, &session, position)?;
+            let total:i64=tx.query_row("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, source, item], |row| row.get(0)).optional()?.ok_or_else(||invalid("transcript message was not found"))?;
             let total = sequence_number(total)?;
             if offset.checked_add(length).is_none_or(|end|end>total) { return Err(invalid("transcript fragment exceeds message")); }
-            let bytes:Vec<u8>=sqlx::query_scalar("SELECT substr(payload,?4,?5) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-                .bind(&session).bind(source).bind(item).bind(start).bind(length as i64).fetch_one(&mut *tx).await?;
+            let bytes:Vec<u8>=tx.query_row("SELECT substr(payload,?4,?5) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, source, item, start, length as i64], |row| row.get(0))?;
             if bytes.len() as u64 != length { return Err(invalid("transcript payload length changed")); }
 
             Ok(bytes)
-        }))).await
+        })).await
     }
     pub async fn transcript_turn_bounds(
         &self,
@@ -182,35 +173,29 @@ impl EventLog {
         turn: &str,
         through: u64,
     ) -> Result<Option<TranscriptTurnBounds>, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session)?;
         sessions::validate_id(turn)?;
         let fence = sql_number(through)?;
         let session = session.to_owned();
         let turn = turn.to_owned();
-        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::ensure(tx,&session,through).await?;
-            let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence,order_item LIMIT 1")
-                .bind(&session).bind(&turn).bind(fence).fetch_optional(&mut *tx).await?;
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| {
+            super::directory::ensure(tx,&session,through)?;
+            let first:Option<(i64,i64)>=tx.query_row("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence,order_item LIMIT 1", rusqlite::params![&session, &turn, fence], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             let Some((source,item))=first else {  return Ok(None) };
-            let (last_source,last_item):(i64,i64)=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence DESC,order_item DESC LIMIT 1")
-                .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
+            let (last_source,last_item):(i64,i64)=tx.query_row("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence DESC,order_item DESC LIMIT 1", rusqlite::params![&session, &turn, fence], |row| Ok((row.get(0)?, row.get(1)?,)))?;
             // Exact serialized bytes intentionally visit the whole requested Turn.
             // Page locators at the existing header batch size, rather than retaining
             // an unbounded Turn's positions while its selected bodies are generated.
-            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3")
-                .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
+            let rows: i64 = tx.query_row("SELECT COUNT(*) FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3", rusqlite::params![&session, &turn, fence], |row| row.get(0))?;
             let rows=sequence_number(rows)?;
             let mut bytes=0u64;
             let mut cursor=(0i64,0i64);
             loop {
-                let selected: Vec<(i64,i64)> = sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")
-                    .bind(&session).bind(&turn).bind(fence).bind(cursor.0).bind(cursor.1).fetch_all(&mut *tx).await?;
+                let selected: Vec<(i64,i64)> = tx.prepare_cached("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")?.query_map(rusqlite::params![&session, &turn, fence, cursor.0, cursor.1], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
                 if selected.is_empty() { break; }
                 for (source,item) in selected {
-                    super::bodycache::ensure(tx,&session,row_position(source,item)?).await?;
-                    let size: i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
-                        .bind(&session).bind(source).bind(item).fetch_one(&mut *tx).await?;
+                    super::bodycache::ensure(tx,&session,row_position(source,item)?)?;
+                    let size: i64=tx.query_row("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3", rusqlite::params![&session, source, item], |row| row.get(0))?;
                     bytes=bytes.checked_add(sequence_number(size)?).ok_or(StoreError::PrefixTooLarge)?;
                     cursor=(source,item);
                 }
@@ -218,7 +203,7 @@ impl EventLog {
             let bounds = TranscriptTurnBounds { first:row_position(source,item)?,last:row_position(last_source,last_item)?,rows,bytes };
 
             Ok(Some(bounds))
-        }))).await
+        })).await
     }
 }
 pub(super) fn sql_number(value: u64) -> Result<i64, StoreError> {

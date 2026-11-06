@@ -34,10 +34,10 @@ async fn failed_publication_leaves_no_session_and_retry_publishes_once_after_reo
         .unwrap(),
     );
     let store = RootStore::open(owner.clone()).await.unwrap();
-    store.log.connection.run(|db|Box::pin(async move {
-        sqlx::query("CREATE TRIGGER reject_creation BEFORE INSERT ON session_creations BEGIN SELECT RAISE(ABORT,'publication failed'); END").execute(db).await?;
+    store.log.connection.run(|db|{
+        db.execute("CREATE TRIGGER reject_creation BEFORE INSERT ON session_creations BEGIN SELECT RAISE(ABORT,'publication failed'); END", rusqlite::params![])?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     assert!(
         store
             .create_session("session", "create", &json!({"title":"original"}), 1)
@@ -55,12 +55,8 @@ async fn failed_publication_leaves_no_session_and_retry_publishes_once_after_reo
         .log
         .connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("DROP TRIGGER reject_creation")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            db.execute("DROP TRIGGER reject_creation", rusqlite::params![])?;
+            Ok(())
         })
         .await
         .unwrap();

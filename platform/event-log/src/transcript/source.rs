@@ -29,7 +29,7 @@ use maka_agent_ports::session::history::SourceFormat;
 use maka_agent_ports::session::history::SourcePosition;
 use maka_agent_ports::session::history::SourceRole;
 use maka_agent_ports::session::history::SourceSegment;
-use sqlx::Row;
+use rusqlite::OptionalExtension;
 
 fn source_sql() -> String {
     format!("WITH original AS (SELECT
@@ -72,7 +72,6 @@ impl EventLog {
         through: u64,
         tool_use_id: &str,
     ) -> Result<RowPosition, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let fence = through;
         let fence_sql = sql_number(fence)?;
@@ -81,21 +80,18 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
-                    Box::pin(async move {
-                        super::directory::ensure(tx, &session, fence).await?;
-                        let (source, item): (i64, i64) = sqlx::query_as(
+                    super::directory::ensure(tx, &session, fence)?;
+                    let (source, item): (i64, i64) = tx
+                        .query_row(
                             "SELECT source_sequence,item_index FROM transcript_directory
                  WHERE owner_key = ? AND message_id = ? AND source_sequence <= ?
                  AND role = 'tool_call'",
+                            rusqlite::params![&session, tool_use_id, fence_sql],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
                         )
-                        .bind(&session)
-                        .bind(tool_use_id)
-                        .bind(fence_sql)
-                        .fetch_optional(&mut *tx)
-                        .await?
+                        .optional()?
                         .ok_or_else(|| invalid("history source was not found"))?;
-                        row_position(source, item)
-                    })
+                    row_position(source, item)
                 })
             })
             .await
@@ -114,7 +110,6 @@ impl EventLog {
             field,
             path,
         } = selection;
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if !(4..=128 * 1024).contains(&max_bytes) {
             return Err(invalid("invalid history source limits"));
@@ -139,39 +134,30 @@ impl EventLog {
         };
         self.connection
             .observe(move |connection| {
-                super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::ensure(tx, &session, fence).await?;
-                    let exists: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-                    )
-                    .bind(&session)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                super::bodycache::run(connection, move |tx| {
+                    super::directory::ensure(tx, &session, fence)?;
+                    let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)", rusqlite::params![&session], |row| row.get(0))
+                    ?;
                     if !exists {
                         return Err(invalid("Session no longer exists"));
                     }
-                    super::bodycache::ensure(tx, &session, locator).await?;
+                    super::bodycache::ensure(tx, &session, locator)?;
                     let sql = source_sql();
                     let header = format!(
                         "{sql} SELECT format, length(CAST(body AS BLOB)), role, thinking, failure_message, error_class, timestamp, operation, message_origin FROM source"
                     );
-                    let header = sqlx::query(sqlx::AssertSqlSafe(header.as_str()))
-                            .bind(&session)
-                            .bind(source_sequence_sql).bind(item_sql)
-                            .bind(selected)
-                            .bind(json_path.as_deref())
-                            .fetch_optional(&mut *tx)
-                            .await?
+                    let header = tx.query_row(&header, rusqlite::params![&session, source_sequence_sql, item_sql, selected, json_path.as_deref()], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, String>(2)?, row.get::<_, bool>(3)?, row.get::<_, bool>(4)?, row.get::<_, bool>(5)?, row.get::<_, i64>(6)?, row.get::<_, bool>(7)?, row.get::<_, Option<String>>(8)?,))).optional()
+                            ?
                             .ok_or_else(|| invalid("history source was not found"))?;
-                    let format: Option<String> = header.try_get(0)?;
-                    let total: Option<i64> = header.try_get(1)?;
-                    let role: String = header.try_get(2)?;
-                    let thinking: bool = header.try_get(3)?;
-                    let failure_message: bool = header.try_get(4)?;
-                    let error_class: bool = header.try_get(5)?;
-                    let timestamp: i64 = header.try_get(6)?;
-                    let operation: bool = header.try_get(7)?;
-                    let origin: Option<String> = header.try_get(8)?;
+                    let format: Option<String> = header.0;
+                    let total: Option<i64> = header.1;
+                    let role: String = header.2;
+                    let thinking: bool = header.3;
+                    let failure_message: bool = header.4;
+                    let error_class: bool = header.5;
+                    let timestamp: i64 = header.6;
+                    let operation: bool = header.7;
+                    let origin: Option<String> = header.8;
                     let total = sequence_number(
                         total.ok_or_else(|| invalid("field is not a history source"))?,
                     )?;
@@ -210,17 +196,11 @@ impl EventLog {
                     if offset > total {
                         return Err(invalid("history source offset exceeds field"));
                     }
-                    let byte: Vec<u8> = sqlx::query_scalar(sqlx::AssertSqlSafe(read.as_str()))
-                        .bind(&session)
-                        .bind(source_sequence_sql).bind(item_sql)
-                        .bind(selected)
-                        .bind(json_path.as_deref())
-                        .bind(sql_number(offset)? + 1)
-                        .bind(1i64)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                    if byte.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-                        return Err(invalid("history source offset splits UTF-8"));
+                    if offset < total {
+                        let byte: Vec<u8> = tx.query_row(read.as_str(), rusqlite::params![&session, source_sequence_sql, item_sql, selected, json_path.as_deref(), sql_number(offset)? + 1, 1i64], |row| row.get(0))?;
+                        if byte.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+                            return Err(invalid("history source offset splits UTF-8"));
+                        }
                     }
                     let reverse = matches!(
                         position,
@@ -231,15 +211,11 @@ impl EventLog {
                     } else {
                         (offset, total.min(offset + max_bytes as u64))
                     };
-                    let bytes: Vec<u8> = sqlx::query_scalar(sqlx::AssertSqlSafe(read.as_str()))
-                        .bind(&session)
-                        .bind(source_sequence_sql).bind(item_sql)
-                        .bind(selected)
-                        .bind(json_path.as_deref())
-                        .bind(sql_number(start)? + 1)
-                        .bind((end - start) as i64)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                    let bytes: Vec<u8> = if start == end {
+                        Vec::new()
+                    } else {
+                        tx.query_row(read.as_str(), rusqlite::params![&session, source_sequence_sql, item_sql, selected, json_path.as_deref(), sql_number(start)? + 1, (end - start) as i64], |row| row.get(0))?
+                    };
                     let text = if reverse {
                         let skipped = bytes
                             .iter()
@@ -262,12 +238,12 @@ impl EventLog {
                         return Err(invalid("history source made no progress"));
                     }
                     let tool = if matches!(role, SourceRole::ToolCall | SourceRole::ToolResult) {
-                        Some(tool_metadata(tx, &session, locator, fence_sql).await?)
+                        Some(tool_metadata(tx, &session, locator, fence_sql)?)
                     } else {
                         None
                     };
                     let model = if role == SourceRole::Assistant {
-                        super::model::resolve(tx, &session, locator, sql_number(through)?).await?.model
+                        super::model::resolve(tx, &session, locator, sql_number(through)?)?.model
                     } else { None };
                     let source = HistorySource {
                         model,
@@ -286,7 +262,7 @@ impl EventLog {
                     };
 
                     Ok(source)
-                }))
+                })
             })
             .await
     }

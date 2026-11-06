@@ -35,24 +35,24 @@ struct ContentId(i64);
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredOutput {
+enum StoredOutput<Id = ContentId> {
     Json {
-        value: ContentId,
+        value: Id,
     },
     Text {
-        text: ContentId,
+        text: Id,
     },
     Model {
-        value: ContentId,
+        value: Id,
     },
     Operation {
         reference: RecoveryRef,
         cleanup: OperationCleanup,
-        value: ContentId,
+        value: Id,
     },
     Mcp {
-        content: Vec<StoredBlock>,
-        structured_content: Option<ContentId>,
+        content: Vec<StoredBlock<Id>>,
+        structured_content: Option<Id>,
     },
     Image {
         image: ImageOutput,
@@ -60,33 +60,33 @@ enum StoredOutput {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum StoredBlock {
+enum StoredBlock<Id = ContentId> {
     Block {
-        value: ContentId,
+        value: Id,
     },
     Text {
-        text: ContentId,
+        text: Id,
     },
     Image {
-        media: StoredMedia,
+        media: StoredMedia<Id>,
         mime_type: String,
     },
     Audio {
-        media: StoredMedia,
+        media: StoredMedia<Id>,
         mime_type: String,
     },
     Resource {
         uri: String,
         mime_type: Option<String>,
-        text: Option<ContentId>,
-        blob: Option<StoredMedia>,
+        text: Option<Id>,
+        blob: Option<StoredMedia<Id>>,
     },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "encoding", rename_all = "snake_case")]
-enum StoredMedia {
-    Base64 { content: ContentId },
-    Literal { content: ContentId },
+enum StoredMedia<Id = ContentId> {
+    Base64 { content: Id },
+    Literal { content: Id },
 }
 impl StoredMedia {
     fn decode(self, values: &BTreeMap<ContentId, Vec<u8>>) -> Result<String, StoreError> {
@@ -101,43 +101,52 @@ impl StoredMedia {
     }
 }
 
-struct Builder<'a> {
-    connection: &'a mut SqliteConnection,
-    refs: BTreeSet<ContentId>,
+#[derive(Clone, Copy, Serialize)]
+struct AtomId(usize);
+
+struct Atom {
+    digest: String,
+    bytes: Vec<u8>,
 }
-impl Builder<'_> {
-    async fn bytes(&mut self, bytes: &[u8]) -> Result<ContentId, StoreError> {
-        let digest = maka_agent_facts::artifact::content_digest(bytes);
-        let id = ContentId(crate::content::put(self.connection, &digest, bytes).await?);
-        self.refs.insert(id);
-        Ok(id)
+
+struct Builder {
+    atoms: Vec<Atom>,
+}
+impl Builder {
+    fn bytes(&mut self, bytes: Vec<u8>) -> AtomId {
+        let id = AtomId(self.atoms.len());
+        self.atoms.push(Atom {
+            digest: maka_agent_facts::artifact::content_digest(&bytes),
+            bytes,
+        });
+        id
     }
-    async fn json(&mut self, value: &impl Serialize) -> Result<ContentId, StoreError> {
-        self.bytes(&serde_json::to_vec(value)?).await
+    fn json(&mut self, value: &impl Serialize) -> Result<AtomId, StoreError> {
+        Ok(self.bytes(serde_json::to_vec(value)?))
     }
-    async fn media(&mut self, data: String) -> Result<StoredMedia, StoreError> {
+    fn media(&mut self, data: String) -> Result<StoredMedia<AtomId>, StoreError> {
         if let Ok(bytes) = STANDARD.decode(&data)
             && STANDARD.encode(&bytes) == data
         {
             Ok(StoredMedia::Base64 {
-                content: self.bytes(&bytes).await?,
+                content: self.bytes(bytes),
             })
         } else {
             Ok(StoredMedia::Literal {
-                content: self.json(&data).await?,
+                content: self.json(&data)?,
             })
         }
     }
-    async fn output(&mut self, output: ToolOutput) -> Result<StoredOutput, StoreError> {
+    fn output(&mut self, output: ToolOutput) -> Result<StoredOutput<AtomId>, StoreError> {
         Ok(match output {
             ToolOutput::Json(value) => StoredOutput::Json {
-                value: self.json(&value).await?,
+                value: self.json(&value)?,
             },
             ToolOutput::Text(text) => StoredOutput::Text {
-                text: self.json(&text).await?,
+                text: self.json(&text)?,
             },
             ToolOutput::Model(value) => StoredOutput::Model {
-                value: self.json(&value).await?,
+                value: self.json(&value)?,
             },
             ToolOutput::Image(image) => StoredOutput::Image { image },
             ToolOutput::Operation(reply) => {
@@ -152,7 +161,7 @@ impl Builder<'_> {
                 StoredOutput::Operation {
                     reference,
                     cleanup,
-                    value: self.json(&value).await?,
+                    value: self.json(&value)?,
                 }
             }
             ToolOutput::Mcp(result) => {
@@ -160,14 +169,14 @@ impl Builder<'_> {
                 for block in result.content {
                     let stored = match block {
                         ContentBlock::Text { text } => StoredBlock::Text {
-                            text: self.json(&text).await?,
+                            text: self.json(&text)?,
                         },
                         ContentBlock::Image { data, mime_type } => StoredBlock::Image {
-                            media: self.media(data).await?,
+                            media: self.media(data)?,
                             mime_type,
                         },
                         ContentBlock::Audio { data, mime_type } => StoredBlock::Audio {
-                            media: self.media(data).await?,
+                            media: self.media(data)?,
                             mime_type,
                         },
                         ContentBlock::Resource {
@@ -179,24 +188,24 @@ impl Builder<'_> {
                             uri,
                             mime_type,
                             text: if let Some(text) = text {
-                                Some(self.json(&text).await?)
+                                Some(self.json(&text)?)
                             } else {
                                 None
                             },
                             blob: if let Some(blob) = blob {
-                                Some(self.media(blob).await?)
+                                Some(self.media(blob)?)
                             } else {
                                 None
                             },
                         },
                         block => StoredBlock::Block {
-                            value: self.json(&block).await?,
+                            value: self.json(&block)?,
                         },
                     };
                     content.push(stored);
                 }
                 let structured_content = if let Some(value) = result.structured_content {
-                    Some(self.json(&value).await?)
+                    Some(self.json(&value)?)
                 } else {
                     None
                 };
@@ -278,30 +287,127 @@ impl StoredOutput {
     }
 }
 
-pub(super) async fn store(
-    connection: &mut SqliteConnection,
+pub(crate) struct PreparedToolMaterial {
+    atoms: Vec<Atom>,
+    descriptor: StoredOutput<AtomId>,
+    raw_bytes: usize,
+    raw_digest: String,
+}
+impl PreparedToolMaterial {
+    pub(crate) fn new(bytes: &[u8], raw_digest: &str) -> Result<Self, StoreError> {
+        let mut builder = Builder { atoms: Vec::new() };
+        let descriptor = builder.output(serde_json::from_slice(bytes)?)?;
+        Ok(Self {
+            atoms: builder.atoms,
+            descriptor,
+            raw_bytes: bytes.len(),
+            raw_digest: raw_digest.to_owned(),
+        })
+    }
+    pub(crate) fn store(
+        self,
+        connection: &rusqlite::Connection,
+        event: &str,
+    ) -> Result<(), StoreError> {
+        let mut ids = Vec::with_capacity(self.atoms.len());
+        for atom in self.atoms {
+            ids.push(ContentId(crate::content::put(
+                connection,
+                &atom.digest,
+                &atom.bytes,
+            )?));
+        }
+        let descriptor = self.descriptor.map_ids(&|AtomId(index)| ids[index]);
+        let encoded = serde_json::to_vec(&descriptor)?;
+        let digest = maka_agent_facts::artifact::content_digest(&encoded);
+        let content = crate::content::put(connection, &digest, &encoded)?;
+        connection.prepare_cached("INSERT INTO tool_result_payloads(event_id,content_id,raw_bytes,raw_digest) VALUES(?,?,?,?)")?
+            .execute(rusqlite::params![event, content, self.raw_bytes as i64, self.raw_digest])?;
+        for ContentId(id) in ids.into_iter().collect::<BTreeSet<_>>() {
+            connection
+                .prepare_cached("INSERT INTO tool_result_parts(event_id,content_id) VALUES(?,?)")?
+                .execute(rusqlite::params![event, id])?;
+        }
+        Ok(())
+    }
+}
+
+impl<Id> StoredMedia<Id> {
+    fn map_ids<Next>(self, map: &impl Fn(Id) -> Next) -> StoredMedia<Next> {
+        match self {
+            Self::Base64 { content } => StoredMedia::Base64 {
+                content: map(content),
+            },
+            Self::Literal { content } => StoredMedia::Literal {
+                content: map(content),
+            },
+        }
+    }
+}
+impl<Id> StoredBlock<Id> {
+    fn map_ids<Next>(self, map: &impl Fn(Id) -> Next) -> StoredBlock<Next> {
+        match self {
+            Self::Block { value } => StoredBlock::Block { value: map(value) },
+            Self::Text { text } => StoredBlock::Text { text: map(text) },
+            Self::Image { media, mime_type } => StoredBlock::Image {
+                media: media.map_ids(map),
+                mime_type,
+            },
+            Self::Audio { media, mime_type } => StoredBlock::Audio {
+                media: media.map_ids(map),
+                mime_type,
+            },
+            Self::Resource {
+                uri,
+                mime_type,
+                text,
+                blob,
+            } => StoredBlock::Resource {
+                uri,
+                mime_type,
+                text: text.map(map),
+                blob: blob.map(|media| media.map_ids(map)),
+            },
+        }
+    }
+}
+impl<Id> StoredOutput<Id> {
+    fn map_ids<Next>(self, map: &impl Fn(Id) -> Next) -> StoredOutput<Next> {
+        match self {
+            Self::Json { value } => StoredOutput::Json { value: map(value) },
+            Self::Text { text } => StoredOutput::Text { text: map(text) },
+            Self::Model { value } => StoredOutput::Model { value: map(value) },
+            Self::Image { image } => StoredOutput::Image { image },
+            Self::Operation {
+                reference,
+                cleanup,
+                value,
+            } => StoredOutput::Operation {
+                reference,
+                cleanup,
+                value: map(value),
+            },
+            Self::Mcp {
+                content,
+                structured_content,
+            } => StoredOutput::Mcp {
+                content: content
+                    .into_iter()
+                    .map(|block| block.map_ids(map))
+                    .collect(),
+                structured_content: structured_content.map(map),
+            },
+        }
+    }
+}
+
+pub(super) fn store(
+    connection: &rusqlite::Connection,
     event: &str,
     bytes: &[u8],
+    raw_digest: &str,
 ) -> Result<(), StoreError> {
-    let mut builder = Builder {
-        connection,
-        refs: BTreeSet::new(),
-    };
-    let descriptor = builder.output(serde_json::from_slice(bytes)?).await?;
-    let encoded = serde_json::to_vec(&descriptor)?;
-    let digest = maka_agent_facts::artifact::content_digest(&encoded);
-    let content = crate::content::put(builder.connection, &digest, &encoded).await?;
-    sqlx::query("INSERT INTO tool_result_payloads(event_id,content_id,raw_bytes,raw_digest) VALUES(?,?,?,?)")
-        .bind(event).bind(content).bind(bytes.len() as i64).bind(maka_agent_facts::artifact::content_digest(bytes))
-        .execute(&mut *builder.connection).await?;
-    for ContentId(id) in builder.refs {
-        sqlx::query("INSERT INTO tool_result_parts(event_id,content_id) VALUES(?,?)")
-            .bind(event)
-            .bind(id)
-            .execute(&mut *builder.connection)
-            .await?;
-    }
-    Ok(())
+    PreparedToolMaterial::new(bytes, raw_digest)?.store(connection, event)
 }
 
 pub(super) fn read_on_handle(db: &RawConnection, event: &str) -> Result<ToolOutput, StoreError> {
@@ -313,14 +419,12 @@ pub(super) fn read_on_handle(db: &RawConnection, event: &str) -> Result<ToolOutp
     serde_json::from_slice::<StoredOutput>(&descriptor)?.decode(&values)
 }
 
-pub(crate) async fn encode(
-    connection: &mut SqliteConnection,
+pub(crate) fn encode(
+    connection: &rusqlite::Connection,
     event: &str,
 ) -> Result<Vec<u8>, StoreError> {
-    let descriptor:Vec<u8>=sqlx::query_scalar("SELECT c.payload FROM tool_result_payloads p JOIN contents c ON c.id=p.content_id WHERE event_id=?")
-        .bind(event).fetch_one(&mut *connection).await?;
-    let values:Vec<(i64,Vec<u8>)>=sqlx::query_as("SELECT c.id,c.payload FROM tool_result_parts p JOIN contents c ON c.id=p.content_id WHERE event_id=?")
-        .bind(event).fetch_all(connection).await?;
+    let descriptor:Vec<u8>=connection.prepare_cached("SELECT c.payload FROM tool_result_payloads p JOIN contents c ON c.id=p.content_id WHERE event_id=?")?.query_row(rusqlite::params![event], |row| row.get(0))?;
+    let values:Vec<(i64,Vec<u8>)>=connection.prepare_cached("SELECT c.id,c.payload FROM tool_result_parts p JOIN contents c ON c.id=p.content_id WHERE event_id=?")?.query_map(rusqlite::params![event], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
     let values = values
         .into_iter()
         .map(|(id, bytes)| (ContentId(id), bytes))
@@ -328,4 +432,50 @@ pub(crate) async fn encode(
     Ok(serde_json::to_vec(
         &serde_json::from_slice::<StoredOutput>(&descriptor)?.decode(&values)?,
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_tool_material_roundtrips_shared_and_literal_media_with_existing_content() {
+        let output = ToolOutput::Mcp(CallResult {
+            content: vec![
+                ContentBlock::Text {
+                    text: "shared".into(),
+                },
+                ContentBlock::Text {
+                    text: "shared".into(),
+                },
+                ContentBlock::Image {
+                    data: "AAEC".into(),
+                    mime_type: "image/png".into(),
+                },
+                ContentBlock::Audio {
+                    data: "literal media".into(),
+                    mime_type: "audio/wav".into(),
+                },
+                ContentBlock::Resource {
+                    uri: "resource:test".into(),
+                    mime_type: None,
+                    text: Some("resource text".into()),
+                    blob: Some("AAEC".into()),
+                },
+            ],
+            structured_content: Some(serde_json::Value::Null),
+        });
+        let bytes = serde_json::to_vec(&output).unwrap();
+        let prepared =
+            PreparedToolMaterial::new(&bytes, &maka_agent_facts::artifact::content_digest(&bytes))
+                .unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE contents(id INTEGER PRIMARY KEY,content_sha256 TEXT NOT NULL UNIQUE,payload BLOB NOT NULL);
+            CREATE TABLE tool_result_payloads(event_id TEXT PRIMARY KEY,content_id INTEGER,raw_bytes INTEGER,raw_digest TEXT);
+            CREATE TABLE tool_result_parts(event_id TEXT,content_id INTEGER,PRIMARY KEY(event_id,content_id));
+            INSERT INTO contents VALUES(37,'existing',X'00');").unwrap();
+        prepared.store(&db, "settled").unwrap();
+        assert_eq!(read_on_handle(&db, "settled").unwrap(), output);
+        assert_eq!(encode(&db, "settled").unwrap(), bytes);
+    }
 }

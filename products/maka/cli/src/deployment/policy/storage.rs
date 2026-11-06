@@ -21,29 +21,24 @@ use super::{Deployment, Record};
 use crate::deployment::{store, updates};
 use maka_event_log::{StoreError, root::FileLease};
 use maka_host_runtime::HostError;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{path::Path, sync::Arc};
 
 pub(in crate::deployment) async fn read(directory: &Path) -> Result<Record, HostError> {
-    let mut connection = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .filename(directory.join("deployment.sqlite"))
-            .read_only(true),
-    )
-    .await?;
-    let result = load(&mut connection).await;
-    let closed = connection.close().await;
-    let record = result?;
-    closed?;
-    Ok(record)
+    store::read_database(directory.join("deployment.sqlite"), |connection| {
+        Ok(load(connection)?)
+    })
+    .await
 }
 
-async fn load(connection: &mut SqliteConnection) -> Result<Record, StoreError> {
-    let value: Option<String> = sqlx::query_scalar(
-        "SELECT configuration FROM deployment_update_policy WHERE singleton = 1",
-    )
-    .fetch_optional(connection)
-    .await?;
+fn load(connection: &Connection) -> Result<Record, StoreError> {
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT configuration FROM deployment_update_policy WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(value
         .map(|value| serde_json::from_str(&value))
         .transpose()?
@@ -59,17 +54,16 @@ pub(in crate::deployment) async fn write(
 ) -> Result<(), HostError> {
     let (deployment, previous, next) = (deployment.clone(), previous.clone(), next.clone());
     let connection = store::open_writer(directory, lease, None).await?;
-    let result = connection.run(move |connection| Box::pin(async move {
-        let mut transaction = connection.begin().await?;
-        let (active, _) = updates::load(&mut transaction).await?;
-        if active != deployment || load(&mut transaction).await? != previous {
+    let result = connection.run(move |connection| {
+        let transaction = connection.transaction()?;
+        let (active, _) = updates::load(&transaction)?;
+        if active != deployment || load(&transaction)? != previous {
             return Err(StoreError::InvalidTransition("deployment or update policy changed".into()))
         }
-        sqlx::query("INSERT INTO deployment_update_policy(singleton, configuration) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET configuration = excluded.configuration")
-            .bind(serde_json::to_string(&next)?).execute(&mut *transaction).await?;
-        transaction.commit().await?;
+        transaction.execute("INSERT INTO deployment_update_policy(singleton, configuration) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET configuration = excluded.configuration", params![serde_json::to_string(&next)?])?;
+        transaction.commit().map_err(StoreError::CommitUnknown)?;
         Ok(())
-    })).await;
+    }).await;
     let closed = connection.close().await;
     result?;
     closed?;

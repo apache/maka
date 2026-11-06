@@ -115,13 +115,13 @@ async fn cross_session_auxiliary_retains_session_and_source_atomicity() {
         .unwrap()
         .connection
         .read(|conn| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar(
+            {
+                Ok(conn.query_row(
                     "SELECT count(*) FROM event_log WHERE kind='auxiliary_model_started'",
-                )
-                .fetch_one(conn)
-                .await?)
-            })
+                    rusqlite::params![],
+                    |row| row.get(0),
+                )?)
+            }
         })
         .await
         .unwrap();
@@ -272,14 +272,14 @@ async fn receipt_write_failure_preserves_confirmed_cleanup_and_pending_recovery(
             panic!("new");
         };
         let scope = claim.auxiliary_scope();
-        store.owner().unwrap().connection.run(move |connection| Box::pin(async move {
+        store.owner().unwrap().connection.run(move |connection| {
             if commit_failure {
-                sqlx::raw_sql("CREATE TABLE settlement_parent(id INTEGER PRIMARY KEY); CREATE TABLE settlement_probe(id INTEGER REFERENCES settlement_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TEMP TRIGGER reject_settlement_commit AFTER UPDATE OF outcome_json ON application_operations BEGIN INSERT INTO settlement_probe VALUES(1); END;").execute(connection).await?;
+                connection.execute_batch("CREATE TABLE settlement_parent(id INTEGER PRIMARY KEY); CREATE TABLE settlement_probe(id INTEGER REFERENCES settlement_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TEMP TRIGGER reject_settlement_commit AFTER UPDATE OF outcome_json ON application_operations BEGIN INSERT INTO settlement_probe VALUES(1); END;")?;
             } else {
-                sqlx::raw_sql("CREATE TEMP TRIGGER reject_settlement BEFORE UPDATE OF outcome_json ON application_operations BEGIN SELECT RAISE(ABORT,'known settlement rollback'); END;").execute(connection).await?;
+                connection.execute_batch("CREATE TEMP TRIGGER reject_settlement BEFORE UPDATE OF outcome_json ON application_operations BEGIN SELECT RAISE(ABORT,'known settlement rollback'); END;")?;
             }
             Ok(())
-        })).await.unwrap();
+        }).await.unwrap();
         let failure = store
             .finish_operation(
                 &claim,
@@ -291,9 +291,9 @@ async fn receipt_write_failure_preserves_confirmed_cleanup_and_pending_recovery(
             .await
             .unwrap_err();
         if commit_failure {
-            assert!(matches!(failure, StoreError::CommitUnknown(_)));
+            assert!(matches!(failure.underlying(), StoreError::CommitUnknown(_)));
         } else {
-            assert!(matches!(failure, StoreError::Sqlx(_)));
+            assert!(matches!(failure.underlying(), StoreError::Sqlite(_)));
         }
         // The same SQL owner acknowledged rollback; provider cleanup knowledge
         // does not depend on whether the original receipt committed.
@@ -302,16 +302,16 @@ async fn receipt_write_failure_preserves_confirmed_cleanup_and_pending_recovery(
             .unwrap()
             .connection
             .run(move |connection| {
-                Box::pin(async move {
-                    assert!(!sqlx::Connection::is_in_transaction(connection));
-                    if commit_failure {
-                        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM settlement_probe")
-                            .fetch_one(connection)
-                            .await?;
-                        assert_eq!(rows, 0);
-                    }
-                    Ok(())
-                })
+                assert!(connection.is_autocommit());
+                if commit_failure {
+                    let rows: i64 = connection.query_row(
+                        "SELECT count(*) FROM settlement_probe",
+                        rusqlite::params![],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(rows, 0);
+                }
+                Ok(())
             })
             .await
             .unwrap();
@@ -370,11 +370,9 @@ async fn cancelled_receipt_observer_keeps_sql_custody_without_inventing_provider
         owner
             .connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    released.await.unwrap();
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                released.blocking_recv().unwrap();
+                Ok(())
             })
             .await
     });

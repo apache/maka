@@ -20,7 +20,6 @@
 use maka_agent_facts::event::LogPrefix;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::StoredEvent;
-use sqlx::Connection;
 
 use crate::{EventLog, StoreError, context::selection::Selection, sequence_number};
 
@@ -45,20 +44,15 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<LogPrefix, StoreError> {
-        self.validate_root()?;
-        self.connection.read(move |connection| Box::pin(async move {
-        let mut transaction = connection.begin().await?;
-        let selection = Selection::resolve(&mut transaction, &scope).await?;
+        self.connection.read(move |connection| {
+        let transaction = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+        let selection = Selection::resolve(&transaction, &scope)?;
         let collected: bool = match &selection.session {
-            Some(session) => sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
+            Some(session) => transaction.prepare_cached("SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
                  JOIN event_log e ON e.sequence=p.sequence
-                 WHERE p.kind='session' AND p.owner=? AND e.event_header IS NULL)",
-            ).bind(session).fetch_one(&mut *transaction).await?,
-            None => sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY invocation_sequence
-                 WHERE invocation_id IS NOT NULL AND event_header IS NULL)",
-            ).fetch_one(&mut *transaction).await?,
+                 WHERE p.kind='session' AND p.owner=? AND e.event_header IS NULL)")?.query_row(rusqlite::params![session], |row| row.get(0))?,
+            None => transaction.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY invocation_sequence
+                 WHERE invocation_id IS NOT NULL AND event_header IS NULL)")?.query_row(rusqlite::params![], |row| row.get(0))?,
         };
         if collected { return Err(StoreError::MaterialCollected); }
         let lineage = Selection::predicate("e", "?2");
@@ -68,10 +62,9 @@ impl EventLog {
         } else { "?1 IS NULL" };
         let filter = format!("{session_filter} AND {lineage}");
         // Only internal SQL clauses are formatted; all identities remain bound.
-        let budget = sqlx::query_as::<_, (i64, i64, i64)>(sqlx::AssertSqlSafe(format!(
+        let (high_water, count, bytes): (i64,i64,i64) = transaction.prepare_cached(&format!(
             "SELECT COALESCE(MAX(sequence), 0), COUNT(*), COALESCE(SUM(canonical_bytes), 0) FROM {source} e WHERE {filter}"
-        ))).bind(&selection.session).bind(&selection.lineage);
-        let (high_water, count, bytes) = budget.fetch_one(&mut *transaction).await?;
+        ))?.query_row(rusqlite::params![&selection.session,&selection.lineage], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
         if sequence_number(count)? > max_events as u64 || sequence_number(bytes)? > max_bytes as u64
         {
             return Err(StoreError::PrefixTooLarge);
@@ -86,49 +79,40 @@ impl EventLog {
         let root_scope = session.is_none();
         let (events, root_digest) = if count == 0 {
             (Vec::new(), root_scope.then(crate::context::evidence::RootDigest::new))
-        } else { crate::connection::worker_query(&mut transaction, move |worker| Box::pin(async move {
-            // SAFETY: this callback exclusively owns the original SQLite worker.
-            // The wrapper and all borrowed rows/statements close before return.
-            let raw = unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
-            let result = (|| {
-                let mut digest = session.is_none().then(crate::context::evidence::RootDigest::new);
-                let mut events = Vec::new();
-                let mut statement = raw.prepare(&query)?;
-                // Keep large body payloads out of the ordered event records.
-                // Both statements borrow the original transaction's snapshot.
-                let mut bodies = raw.prepare(
-                    "SELECT id AS canonical_body_id,length(payload) AS canonical_raw_bytes,
-                     payload AS canonical_payload FROM contents WHERE id=?"
-                )?;
-                let mut rows = statement.query(rusqlite::params![session, selected_lineage])?;
-                while let Some(row) = rows.next()? {
-                    let sequence: i64 = row.get("sequence")?;
-                    let event = crate::canonical::decode_event_on_handle(row, &mut bodies, |parts| {
-                        if let Some(digest) = &mut digest { digest.record(sequence, &parts); }
-                    })?;
-                    events.push(StoredEvent { sequence: sequence_number(sequence)?, event });
-                }
-                if events.len() as u64 != sequence_number(count)? {
-                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                        "prefix decoder stopped before completing the admitted snapshot").into());
-                }
-                Ok((events, digest))
-            })();
-            drop(raw);
-            result
-        })).await? };
+        } else {
+            let mut digest = root_scope.then(crate::context::evidence::RootDigest::new);
+            let mut events = Vec::new();
+            let mut statement = transaction.prepare_cached(&query)?;
+            let mut bodies = transaction.prepare_cached(
+                "SELECT id AS canonical_body_id,length(payload) AS canonical_raw_bytes,
+                 payload AS canonical_payload FROM contents WHERE id=?"
+            )?;
+            let mut rows = statement.query(rusqlite::params![session, selected_lineage])?;
+            while let Some(row) = rows.next()? {
+                let sequence: i64 = row.get("sequence")?;
+                let event = crate::canonical::decode_event_on_handle(row, &mut bodies, |parts| {
+                    if let Some(digest) = &mut digest { digest.record(sequence, &parts); }
+                })?;
+                events.push(StoredEvent { sequence: sequence_number(sequence)?, event });
+            }
+            if events.len() as u64 != sequence_number(count)? {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                    "prefix decoder stopped before completing the admitted snapshot").into());
+            }
+            (events,digest)
+        };
         let digest = match root_digest {
             Some(digest) => digest.finish(high_water)?,
             None => crate::context::evidence::selected(
-                &mut transaction, &selection, sequence_number(high_water)?).await?.digest,
+                &transaction, &selection, sequence_number(high_water)?)?.digest,
         };
-        transaction.commit().await?;
+        transaction.commit()?;
         Ok(LogPrefix {
             scope,
             high_water: sequence_number(high_water)?,
             digest,
             events,
         })
-        })).await
+        }).await
     }
 }

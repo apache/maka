@@ -21,9 +21,9 @@
 use super::*;
 use crate::checkpoints::{PreparedRestore, RestoreOperation, RestoredSession};
 use maka_agent_facts::execution::DirectoryIdentity;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::SqliteConnection;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,8 +60,8 @@ async fn prior(
 ) -> Result<Option<Preparation>, StoreError> {
     let key = request.key()?;
     let expected = serde_json::to_string(request)?;
-    log.connection.read(move |db| Box::pin(async move {
-        let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT request_json,prepared_json,directory_identity_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?").bind(key).fetch_optional(db).await?;
+    log.connection.read(move |db| {
+        let row: Option<(String, String, Option<String>, Option<String>)> = db.query_row("SELECT request_json,prepared_json,directory_identity_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?", rusqlite::params![key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,))).optional()?;
         row.map(|(original, prepared, directory_identity, result)| {
             if original != expected { return Err(invalid("checkpoint restore identity conflict")); }
             Ok(Preparation {
@@ -70,7 +70,7 @@ async fn prior(
                 result: result.map(|r|serde_json::from_str(&r)).transpose()?,
             })
         }).transpose()
-    })).await
+    }).await
 }
 
 pub(crate) struct Commit {
@@ -80,12 +80,14 @@ pub(crate) struct Commit {
     directory_identity: DirectoryIdentity,
 }
 impl Commit {
-    pub(crate) async fn validate(&self, db: &mut SqliteConnection) -> Result<(), StoreError> {
-        let current: Option<String> =
-            sqlx::query_scalar("SELECT head_json FROM history_checkpoint_heads WHERE session_id=?")
-                .bind(&self.request.session)
-                .fetch_optional(&mut *db)
-                .await?;
+    pub(crate) fn validate(&self, db: &Connection) -> Result<(), StoreError> {
+        let current: Option<String> = db
+            .query_row(
+                "SELECT head_json FROM history_checkpoint_heads WHERE session_id=?",
+                rusqlite::params![&self.request.session],
+                |row| row.get(0),
+            )
+            .optional()?;
         if current
             .as_deref()
             .map(serde_json::from_str::<Head>)
@@ -95,10 +97,13 @@ impl Commit {
         {
             return Err(invalid("checkpoint restore head moved"));
         }
-        let archived: bool = sqlx::query_scalar("SELECT archived FROM session_control WHERE id=?")
-            .bind(&self.request.session)
-            .fetch_optional(&mut *db)
-            .await?
+        let archived: bool = db
+            .query_row(
+                "SELECT archived FROM session_control WHERE id=?",
+                rusqlite::params![&self.request.session],
+                |row| row.get(0),
+            )
+            .optional()?
             .ok_or(StoreError::SessionNotFound)?;
         if archived {
             return Err(invalid("archived Session cannot be restored"));
@@ -111,12 +116,11 @@ impl Commit {
                 revision: 0,
             }],
         };
-        crate::bundle::require_idle(db, &inventory).await?;
-        if crate::bundle::history_cut(db, &self.request.session).await? != self.prepared.history_cut
-        {
+        crate::bundle::require_idle(db, &inventory)?;
+        if crate::bundle::history_cut(db, &self.request.session)? != self.prepared.history_cut {
             return Err(invalid("live Session history advanced beyond checkpoint"));
         }
-        let row: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT request_json,prepared_json,directory_identity_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?").bind(&self.key).fetch_optional(db).await?;
+        let row: Option<(String, String, Option<String>, Option<String>)> = db.query_row("SELECT request_json,prepared_json,directory_identity_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?", rusqlite::params![&self.key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,))).optional()?;
         if row
             != Some((
                 serde_json::to_string(&self.request)?,
@@ -129,18 +133,14 @@ impl Commit {
         }
         Ok(())
     }
-    pub(crate) async fn record(
-        self,
-        db: &mut SqliteConnection,
-        revision: u64,
-    ) -> Result<(), StoreError> {
+    pub(crate) fn record(self, db: &Connection, revision: u64) -> Result<(), StoreError> {
         let result = RestoredSession {
             operation: self.request.operation.operation,
             session_id: self.request.session,
             session_revision: revision,
             prepared: self.prepared,
         };
-        sqlx::query("UPDATE checkpoint_workspace_restores SET result_json=? WHERE restore_key=? AND result_json IS NULL").bind(serde_json::to_string(&result)?).bind(self.key).execute(db).await?;
+        db.execute("UPDATE checkpoint_workspace_restores SET result_json=? WHERE restore_key=? AND result_json IS NULL", rusqlite::params![serde_json::to_string(&result)?, self.key])?;
         Ok(())
     }
 }
@@ -161,14 +161,14 @@ impl HistoryCheckpoints {
         let key = crate::checkpoints::load_key(&self.scope, self.session.id(), operation)?;
         let scope = self.scope.clone();
         let session = self.session.id().to_owned();
-        self.session.scoped().await?.connection.read(move |db|Box::pin(async move {
-            let row: Option<(String,Option<String>)> = sqlx::query_as("SELECT request_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?").bind(key).fetch_optional(db).await?;
+        self.session.scoped().await?.connection.read(move |db|{
+            let row: Option<(String,Option<String>)> = db.query_row("SELECT request_json,result_json FROM checkpoint_workspace_restores WHERE restore_key=?", rusqlite::params![key], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             row.map(|(request,result)| {
                 let request: RequestIdentity = serde_json::from_str(&request)?;
                 if request.scope != scope || request.session != session || request.operation.operation != operation || request.operation.fingerprint != fingerprint || request.operation.revision != revision { return Err(invalid("checkpoint restore identity conflict")); }
                 result.map(|r|serde_json::from_str(&r).map_err(StoreError::from)).transpose()
             }).transpose().map(Option::flatten)
-        })).await
+        }).await
     }
     /// The parent was selected by the trusted Host. Always creates a new child,
     /// never overwrites an existing project. Partial destinations fail closed.
@@ -191,13 +191,13 @@ impl HistoryCheckpoints {
             let current = log.get_session::<Value>(&request.session).await?.ok_or(StoreError::SessionNotFound)?;
             if current.archived { return Err(invalid("archived Session cannot be restored")); }
             let expected = history_cut.clone();
-            log.connection.read(move |db| Box::pin(async move {
-                crate::bundle::require_idle(db, &inventory).await?;
-                if crate::bundle::history_cut(db, &inventory.root_session_id).await? != expected {
+            log.connection.read(move |db| {
+                crate::bundle::require_idle(db, &inventory)?;
+                if crate::bundle::history_cut(db, &inventory.root_session_id)? != expected {
                     return Err(invalid("live Session history advanced beyond checkpoint"));
                 }
                 Ok(())
-            })).await?;
+            }).await?;
             let parent = request.operation.parent.canonicalize()?;
             let directory = cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority())?;
             if directory_identity(&directory)? != request.operation.parent_identity { return Err(invalid("restore parent directory changed")); }
@@ -207,9 +207,9 @@ impl HistoryCheckpoints {
             let encoded = serde_json::to_string(&request)?;
             let data = serde_json::to_string(&prepared)?;
             // The durable claim precedes writes, and commit rechecks both Head and live revision.
-            log.connection.run(move |db|Box::pin(async move {
-                sqlx::query("INSERT INTO checkpoint_workspace_restores(restore_key,request_json,prepared_json) VALUES(?,?,?)").bind(key).bind(encoded).bind(data).execute(db).await?; Ok(())
-            })).await?;
+            log.connection.run(move |db|{
+                db.execute("INSERT INTO checkpoint_workspace_restores(restore_key,request_json,prepared_json) VALUES(?,?,?)", rusqlite::params![key, encoded, data])?; Ok(())
+            }).await?;
             let name = prepared.path.file_name().ok_or_else(||invalid("restore destination missing"))?;
             directory.create_dir(name)?;
             use cap_fs_ext::DirExt;
@@ -221,11 +221,11 @@ impl HistoryCheckpoints {
             let identity = serde_json::to_string(&identity)?;
             // A claim alone never proves we created the directory. Publish its
             // physical identity only after the complete copy and directory sync.
-            log.connection.run(move |db|Box::pin(async move {
-                let changed = sqlx::query("UPDATE checkpoint_workspace_restores SET directory_identity_json=? WHERE restore_key=? AND directory_identity_json IS NULL AND result_json IS NULL").bind(identity).bind(key).execute(db).await?;
-                if changed.rows_affected() != 1 { return Err(invalid("checkpoint restore claim changed")); }
+            log.connection.run(move |db|{
+                let changed = db.execute("UPDATE checkpoint_workspace_restores SET directory_identity_json=? WHERE restore_key=? AND directory_identity_json IS NULL AND result_json IS NULL", rusqlite::params![identity, key])?;
+                if changed != 1 { return Err(invalid("checkpoint restore claim changed")); }
                 Ok(())
-            })).await?;
+            }).await?;
             Ok(prepared)
         }).await
     }

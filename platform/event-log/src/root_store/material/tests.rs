@@ -51,18 +51,17 @@ async fn block_update(
     let (release, released) = std::sync::mpsc::channel();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut entered = Some(entered);
-                db.lock_handle().await?.set_update_hook(move |update| {
-                    if update.table == table
-                        && let Some(entered) = entered.take()
-                    {
-                        let _ = entered.send(());
-                        let _ = released.recv();
-                    }
-                });
-                Ok(())
-            })
+            let mut entered = Some(entered);
+            db.update_hook(Some(move |_, _: &str, updated_table: &str, _| {
+                if updated_table == table
+                    && let Some(entered) = entered.take()
+                {
+                    let _ = entered.send(());
+                    let _ = released.recv();
+                }
+            }))
+            .unwrap();
+            Ok(())
         })
         .await
         .unwrap();
@@ -152,20 +151,16 @@ async fn retire(root: &RootStore, session: &str) {
 async fn material_state(log: &EventLog) -> (i64, i64, i64) {
     log.connection
         .read(|db| {
-            Box::pin(async move {
-                let bodies = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
-                )
-                .fetch_one(&mut *db)
-                .await?;
-                let free = sqlx::query_scalar("PRAGMA freelist_count")
-                    .fetch_one(&mut *db)
-                    .await?;
-                let pages = sqlx::query_scalar("PRAGMA page_count")
-                    .fetch_one(db)
-                    .await?;
-                Ok((bodies, free, pages))
-            })
+            let bodies = db.query_row(
+                "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
+                rusqlite::params![],
+                |row| row.get(0),
+            )?;
+            let free = db.query_row("PRAGMA freelist_count", rusqlite::params![], |row| {
+                row.get(0)
+            })?;
+            let pages = db.query_row("PRAGMA page_count", rusqlite::params![], |row| row.get(0))?;
+            Ok((bodies, free, pages))
         })
         .await
         .unwrap()
@@ -227,10 +222,9 @@ async fn retirement_automatically_collects_after_the_last_archived_fork_is_remov
         pages_after < pages_before,
         "automatic vacuum must shrink the database"
     );
-    let proof: (i64, i64) = log.connection.read(|db| Box::pin(async move {
-        Ok(sqlx::query_as("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log")
-            .fetch_one(db).await?)
-    })).await.unwrap();
+    let proof: (i64, i64) = log.connection.read(|db| {
+        Ok(db.query_row("SELECT COUNT(*), SUM(event_header IS NULL AND body_digest IS NOT NULL AND retained_json NOT LIKE '%private input%') FROM event_log", rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?)))?)
+    }).await.unwrap();
     assert_eq!(
         proof,
         (12, 12),

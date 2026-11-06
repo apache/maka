@@ -20,7 +20,7 @@
 //! Final output membership from a logical Turn's original successful terminal.
 use super::model::Producer;
 use crate::StoreError;
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::OptionalExtension;
 
 // Choose the latest logical state first, including a later running/failed state.
 // A copied Session's directory and membership retain the same original evidence.
@@ -50,44 +50,43 @@ WHERE e.invocation_id = ?2 AND e.kind = 'executor_completed' AND e.sequence <= ?
 ORDER BY e.sequence DESC LIMIT 1";
 
 /// One lookup per Turn in a history page; never hydrate model output bodies.
-pub(super) async fn resolve_on_worker(
-    tx: &mut SqliteWorkerConnection<'_>,
+pub(super) fn resolve_on_worker(
+    tx: &rusqlite::Connection,
     session: &str,
     turn: &str,
     through: i64,
 ) -> Result<Option<Producer>, StoreError> {
-    let terminal: Option<(String, i64)> = sqlx::query_as(TERMINAL)
-        .bind(session)
-        .bind(turn)
-        .bind(through)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let terminal: Option<(String, i64)> = tx
+        .query_row(TERMINAL, rusqlite::params![session, turn, through], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
     let Some((invocation, terminal)) = terminal else {
         return Ok(None);
     };
-    let requested: Option<String> = sqlx::query_scalar(REQUESTED)
-        .bind(session)
-        .bind(&invocation)
-        .bind(terminal)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let requested: Option<String> = tx
+        .query_row(
+            REQUESTED,
+            rusqlite::params![session, &invocation, terminal],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(step) = requested {
-        let completed: bool = sqlx::query_scalar(COMPLETED)
-            .bind(session)
-            .bind(&invocation)
-            .bind(&step)
-            .bind(terminal)
-            .fetch_one(&mut *tx)
-            .await?;
+        let completed: bool = tx.query_row(
+            COMPLETED,
+            rusqlite::params![session, &invocation, &step, terminal],
+            |row| row.get(0),
+        )?;
         // An interrupted/latest request must never fall back to an earlier answer.
         return Ok(completed.then_some(Producer::Model { invocation, step }));
     }
-    let executor: Option<Option<String>> = sqlx::query_scalar(EXECUTOR)
-        .bind(session)
-        .bind(&invocation)
-        .bind(terminal)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let executor: Option<Option<String>> = tx
+        .query_row(
+            EXECUTOR,
+            rusqlite::params![session, &invocation, terminal],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(executor.flatten().map(|message_id| Producer::Executor {
         invocation,
         message_id,

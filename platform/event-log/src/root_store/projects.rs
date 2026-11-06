@@ -24,6 +24,7 @@ use crate::projects::{
     ProjectError, ProjectMutation, ProjectRecord, ProjectRegistration, ProjectRelink,
     ProjectRelinkGuard,
 };
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -219,14 +220,15 @@ impl RootStore {
             let id: Option<String> = control
                 .connection
                 .read(move |connection| {
-                    Box::pin(async move {
-                        Ok(
-                            sqlx::query_scalar("SELECT id FROM projects WHERE identity=?")
-                                .bind(identity)
-                                .fetch_optional(connection)
-                                .await?,
-                        )
-                    })
+                    {
+                        Ok(connection
+                            .query_row(
+                                "SELECT id FROM projects WHERE identity=?",
+                                rusqlite::params![identity],
+                                |row| row.get(0),
+                            )
+                            .optional()?)
+                    }
                 })
                 .await?;
             match id {
@@ -261,18 +263,15 @@ impl RootStore {
             .scoped(custody.clone())
             .connection
             .read(move |connection| {
-                Box::pin(async move {
-                    for change in &changes {
-                        crate::workspace_bindings::require_headroom(
-                            connection,
-                            change.id,
-                            change.permission_epoch,
-                            change.metadata_epoch,
-                        )
-                        .await?;
-                    }
-                    Ok(())
-                })
+                for change in &changes {
+                    crate::workspace_bindings::require_headroom(
+                        connection,
+                        change.id,
+                        change.permission_epoch,
+                        change.metadata_epoch,
+                    )?;
+                }
+                Ok(())
             })
             .await?;
         self.require_open()?;
@@ -290,17 +289,15 @@ async fn binding_advances(
         .clone()
         .filter(|project| project.id != source.id);
     let scope = guard.owner_scope.clone();
-    control.connection.read(move |connection| Box::pin(async move {
+    control.connection.read(move |connection| {
         let mut changes = BTreeMap::new();
         for (project, relocation) in std::iter::once((source, true)).chain(absorbed.map(|project| (project, false))) {
             for project_id in std::iter::once(project.id).chain(project.aliases) {
                 let mut after = String::new();
                 loop {
-                    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
-                        "SELECT id,permission_epoch,metadata_epoch FROM workspace_bindings
+                    let rows: Vec<(String, i64, i64)> = connection.prepare_cached("SELECT id,permission_epoch,metadata_epoch FROM workspace_bindings
                          WHERE owner_scope=? AND json_extract(workspace_json,'$.projectId')=? AND id>?
-                         ORDER BY id LIMIT 32",
-                    ).bind(&scope).bind(&project_id).bind(&after).fetch_all(&mut *connection).await?;
+                         ORDER BY id LIMIT 32")?.query_map(rusqlite::params![&scope, &project_id, &after], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                     if rows.is_empty() { break; }
                     for (id, permission, metadata) in rows {
                         after.clone_from(&id);
@@ -318,7 +315,7 @@ async fn binding_advances(
             }
         }
         Ok(changes.into_values().collect())
-    })).await
+    }).await
 }
 
 fn next_epoch(current: i64, increment: u64) -> Result<u64, StoreError> {

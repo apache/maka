@@ -24,18 +24,17 @@ use std::sync::{
 };
 
 async fn append_noise(log: &EventLog, first: i64, last: i64) {
-    log.connection.run(move |db| Box::pin(async move {
-        let mut tx=db.begin().await?;
-        sqlx::query("INSERT INTO contents(content_sha256,payload) VALUES ('test',X'') ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+    log.connection.run(move |db| {
+        let tx=Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
+        tx.execute("INSERT INTO contents(content_sha256,payload) VALUES ('test',X'') ON CONFLICT DO NOTHING", rusqlite::params![])?;
         for number in first..=last {
             let id=format!("noise-{number:08}");
-            sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
-                VALUES('session',?,0,json_object('sessionId','session','id',?,'createdAt',0,'sizeBytes',0,'source','user_upload'),'test',?)")
-                .bind(&id).bind(&id).bind(crate::artifacts::identity::artifact_lookup_digest("session",&id).as_slice()).execute(&mut *tx).await?;
+            tx.execute("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
+                VALUES('session',?,0,json_object('sessionId','session','id',?,'createdAt',0,'sizeBytes',0,'source','user_upload'),'test',?)", rusqlite::params![&id, &id, crate::artifacts::identity::artifact_lookup_digest("session",&id).as_slice()])?;
         }
-        tx.commit().await?;
+        tx.commit()?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
 }
 
 async fn resolve_steps(log: &EventLog, prefix: &str) -> (Option<ResourceAddress>, u64) {
@@ -50,23 +49,23 @@ async fn resource_steps(
     let observed = count.clone();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                db.lock_handle().await?.set_progress_handler(1, move || {
+            db.progress_handler(
+                1,
+                Some(move || {
                     observed.fetch_add(1, Ordering::Relaxed);
-                    true
-                });
-                Ok(())
-            })
+                    false
+                }),
+            )
+            .unwrap();
+            Ok(())
         })
         .await
         .unwrap();
     let resolved = log.resolve_read_resource("session", address).await.unwrap();
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                db.lock_handle().await?.remove_progress_handler();
-                Ok(())
-            })
+            db.progress_handler(0, None::<fn() -> bool>).unwrap();
+            Ok(())
         })
         .await
         .unwrap();
@@ -83,13 +82,13 @@ async fn literal_prefix_lookup_keeps_index_range_with_fixed_plans() {
         .await
         .unwrap();
     append_noise(&log, 1, 128).await;
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
+    log.connection.run(|db| {
+        db.execute("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)
             VALUES('session','wanted-resource-literal',0,
                 '{\"sessionId\":\"session\",\"id\":\"wanted-resource-literal\",\"createdAt\":0,\"sizeBytes\":0,\"source\":\"user_upload\"}',
-                'test',?)").bind(crate::artifacts::identity::artifact_lookup_digest("session","wanted-resource-literal").as_slice()).execute(db).await?;
+                'test',?)", rusqlite::params![crate::artifacts::identity::artifact_lookup_digest("session","wanted-resource-literal").as_slice()])?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let (small, small_steps) = resolve_steps(&log, "wanted-resource-").await;
     assert_eq!(
         small,
@@ -111,29 +110,22 @@ async fn literal_prefix_lookup_keeps_index_range_with_fixed_plans() {
 async fn append_event_noise(log: &EventLog, first: i64, last: i64) {
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin().await?;
-                crate::connection::worker_query(&mut tx, move |worker| {
-                    Box::pin(async move {
-                        for n in first..=last {
-                            crate::canonical_insert::insert(crate::canonical_insert::Record {
-                                sequence: None,
-                                event_id: &format!("noise-event-{n:08}"),
-                                invocation_id: Some("noise"),
-                                kind: "probe",
-                                operation_id: None,
-                                json: r#"{"invocation":{"session_id":"session"}}"#,
-                            })
-                            .execute(&mut *worker)
-                            .await?;
-                        }
-                        Ok(())
-                    })
-                })
-                .await?;
-                tx.commit().await?;
-                Ok(())
-            })
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
+            for n in first..=last {
+                crate::canonical_insert::insert(
+                    &tx,
+                    crate::canonical_insert::Record {
+                        sequence: None,
+                        event_id: &format!("noise-event-{n:08}"),
+                        invocation_id: Some("noise"),
+                        kind: "probe",
+                        operation_id: None,
+                        json: r#"{"invocation":{"session_id":"session"}}"#,
+                    },
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -149,7 +141,7 @@ async fn tool_result_prefix_lookup_does_not_scan_owner_history() {
         .await
         .unwrap();
     append_event_noise(&log, 1, 128).await;
-    log.connection.run(|db| Box::pin(async move {
+    log.connection.run(|db| {
         for (id, kind, operation_id, json) in [
             ("dispatch-target", "tool_dispatched", "target-operation", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"provider"}}}}"#),
             ("result-target-literal", "tool_settled", "target-operation", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"failed"}}}"#),
@@ -162,13 +154,13 @@ async fn tool_result_prefix_lookup_does_not_scan_owner_history() {
             ("dispatch-standalone", "tool_dispatched", "standalone-op", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"standalone"}}}}"#),
             ("result-standalone-literal", "tool_settled", "standalone-op", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"succeeded"}}}"#),
         ] {
-            crate::canonical_insert::insert(crate::canonical_insert::Record {
+            crate::canonical_insert::insert(db, crate::canonical_insert::Record {
                 sequence: None, event_id: id, invocation_id: Some("target"),
                 kind, operation_id: Some(operation_id), json,
-            }).execute(&mut *db).await?;
+            })?;
         }
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let wanted = ResourceAddress::ToolResult("result-target-".into());
     let (small, small_steps) = resource_steps(&log, wanted.clone()).await;
     assert_eq!(

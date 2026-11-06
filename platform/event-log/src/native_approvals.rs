@@ -21,7 +21,7 @@ use crate::{EventLog, StoreError};
 use maka_agent_facts::event::{Fact, Invocation, RuntimeEvent, StoredEvent};
 use maka_agent_facts::interaction::{InteractionOutcome, InteractionRequest};
 use maka_agent_facts::native_approval::{ActivationCheckpoint, NativeApprovalPending};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,17 +75,13 @@ pub(crate) fn receipt(
         revision: u64::try_from(revision).map_err(|_| invalid("invalid park revision"))?,
     })
 }
-pub(crate) async fn exact(
-    tx: &mut SqliteConnection,
+pub(crate) fn exact(
+    tx: &Connection,
     checkpoint: &ActivationCheckpoint,
     pending: &[NativeApprovalPending],
 ) -> Result<Option<ParkedActivationReceipt>, StoreError> {
-    let row: Option<(String, String, i64)> = sqlx::query_as(
-        "SELECT checkpoint_json,pending_json,revision FROM native_approval_checkpoints WHERE id=?",
-    )
-    .bind(&checkpoint.id)
-    .fetch_optional(tx)
-    .await?;
+    let row: Option<(String, String, i64)> = tx.query_row("SELECT checkpoint_json,pending_json,revision FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&checkpoint.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()
+    ?;
     row.map(|(saved, operations, revision)| {
         if serde_json::from_str::<ActivationCheckpoint>(&saved)? != *checkpoint
             || serde_json::from_str::<Vec<NativeApprovalPending>>(&operations)? != pending
@@ -96,12 +92,8 @@ pub(crate) async fn exact(
     })
     .transpose()
 }
-async fn live(
-    tx: &mut SqliteConnection,
-    receipt: &ParkedActivationReceipt,
-) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE id=? AND invocation_id=? AND session_id=? AND revision=? AND active=1 AND suspension_kind='native_approvals')")
-      .bind(&receipt.checkpoint_id).bind(&receipt.invocation.invocation_id).bind(&receipt.invocation.session_id).bind(receipt.revision as i64).fetch_one(tx).await?)
+fn live(tx: &Connection, receipt: &ParkedActivationReceipt) -> Result<bool, StoreError> {
+    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE id=? AND invocation_id=? AND session_id=? AND revision=? AND active=1 AND suspension_kind='native_approvals')", rusqlite::params![&receipt.checkpoint_id, &receipt.invocation.invocation_id, &receipt.invocation.session_id, receipt.revision as i64], |row| row.get(0))?)
 }
 pub(crate) fn validate_checkpoint(checkpoint: &ActivationCheckpoint) -> Result<(), StoreError> {
     crate::sessions::validate_id(&checkpoint.id)?;
@@ -110,11 +102,11 @@ pub(crate) fn validate_checkpoint(checkpoint: &ActivationCheckpoint) -> Result<(
     }
     Ok(())
 }
-pub(crate) async fn permission_current(
-    tx: &mut SqliteConnection,
+pub(crate) fn permission_current(
+    tx: &Connection,
     invocation: &Invocation,
 ) -> Result<bool, StoreError> {
-    let (binding,boundary):(Option<String>,Option<i64>)=sqlx::query_as("SELECT json_extract(event_header,'$.fact.configuration.workspace_binding'),json_extract(event_header,'$.fact.configuration.boundary_revision') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'").bind(&invocation.invocation_id).fetch_one(&mut *tx).await?;
+    let (binding,boundary):(Option<String>,Option<i64>)=tx.query_row("SELECT json_extract(event_header,'$.fact.configuration.workspace_binding'),json_extract(event_header,'$.fact.configuration.boundary_revision') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'", rusqlite::params![&invocation.invocation_id], |row| Ok((row.get(0)?, row.get(1)?,)))?;
     let expected = binding
         .map(|json| -> Result<_, StoreError> {
             Ok(maka_agent_facts::workspace::PermissionBasis {
@@ -126,18 +118,18 @@ pub(crate) async fn permission_current(
             })
         })
         .transpose()?;
-    Ok(crate::workspace_bindings::permission_basis(tx, &invocation.session_id).await? == expected)
+    Ok(crate::workspace_bindings::permission_basis(tx, &invocation.session_id)? == expected)
 }
-async fn frontier(
-    tx: &mut SqliteConnection,
+fn frontier(
+    tx: &Connection,
     checkpoint: &ActivationCheckpoint,
     pending: &[NativeApprovalPending],
     unanswered: bool,
     require_admission: bool,
 ) -> Result<bool, StoreError> {
-    crate::recovery::require_local(tx, &checkpoint.invocation.invocation_id).await?;
+    crate::recovery::require_local(tx, &checkpoint.invocation.invocation_id)?;
     let invocation = &checkpoint.invocation;
-    let current = crate::turns::read(tx, &invocation.session_id, None).await?;
+    let current = crate::turns::read(tx, &invocation.session_id, None)?;
     if !current.is_some_and(|turn| {
         turn.invocation == *invocation
             && !matches!(turn.state, crate::turns::InvocationState::Ended { .. })
@@ -148,11 +140,10 @@ async fn frontier(
         return Ok(false);
     }
     if require_admission {
-        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)").bind(&invocation.session_id).fetch_one(&mut *tx).await?;
+        let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)", rusqlite::params![&invocation.session_id], |row| row.get(0))?;
         if blocked
-            || crate::message_interrupts::fenced(tx, &invocation.session_id, &invocation.run_id)
-                .await?
-            || !permission_current(tx, invocation).await?
+            || crate::message_interrupts::fenced(tx, &invocation.session_id, &invocation.run_id)?
+            || !permission_current(tx, invocation)?
         {
             return Ok(false);
         }
@@ -167,8 +158,7 @@ async fn frontier(
         {
             return Ok(false);
         }
-        let row:Option<(i64,String)>=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'")
-           .bind(&item.dispatch.event_id).bind(&invocation.invocation_id).bind(&item.operation_id).fetch_optional(&mut *tx).await?;
+        let row:Option<(i64,String)>=tx.query_row("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'", rusqlite::params![&item.dispatch.event_id, &invocation.invocation_id, &item.operation_id], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
         let Some((sequence, json)) = row else {
             return Ok(false);
         };
@@ -188,11 +178,11 @@ async fn frontier(
         let maka_agent_facts::tool_call::ToolOrigin::Provider { step_id } = &call.origin else {
             return Ok(false);
         };
-        let completed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND kind='model_completed' AND operation_id=? AND sequence<=?)").bind(&invocation.invocation_id).bind(step_id).bind(checkpoint.through as i64).fetch_one(&mut *tx).await?;
+        let completed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND kind='model_completed' AND operation_id=? AND sequence<=?)", rusqlite::params![&invocation.invocation_id, step_id, checkpoint.through as i64], |row| row.get(0))?;
         if !completed {
             return Ok(false);
         }
-        let record = crate::interactions::records::read_local(tx, &item.interaction_id).await?;
+        let record = crate::interactions::records::read_local(tx, &item.interaction_id)?;
         let Some(record) = record else {
             return Ok(false);
         };
@@ -223,7 +213,7 @@ async fn frontier(
             return Ok(false);
         }
     }
-    let outstanding:Vec<(String,String)>=sqlx::query_as("SELECT kind,operation_id FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call')").bind(&invocation.invocation_id).fetch_all(&mut *tx).await?;
+    let outstanding:Vec<(String,String)>=tx.prepare_cached("SELECT kind,operation_id FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call')")?.query_map(rusqlite::params![&invocation.invocation_id], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
     if outstanding.len() != pending.len()
         || outstanding
             .iter()
@@ -231,15 +221,14 @@ async fn frontier(
     {
         return Ok(false);
     }
-    let pending_interactions:Vec<String>=sqlx::query_scalar("SELECT p.request_id FROM interaction_pending p JOIN interaction_requests r ON r.request_id=p.request_id WHERE p.session_id=?1 AND json_extract(r.record_json,'$.turnId')=?2 AND json_extract(r.record_json,'$.runId')=?3")
-        .bind(&invocation.session_id).bind(&invocation.turn_id).bind(&invocation.run_id).fetch_all(&mut *tx).await?;
+    let pending_interactions:Vec<String>=tx.prepare_cached("SELECT p.request_id FROM interaction_pending p JOIN interaction_requests r ON r.request_id=p.request_id WHERE p.session_id=?1 AND json_extract(r.record_json,'$.turnId')=?2 AND json_extract(r.record_json,'$.runId')=?3")?.query_map(rusqlite::params![&invocation.session_id, &invocation.turn_id, &invocation.run_id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
     if pending_interactions
         .iter()
         .any(|id| !interactions.contains(id.as_str()))
     {
         return Ok(false);
     }
-    let executor:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.kind='executor_started' AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id=e.invocation_id AND done.kind='executor_completed'))").bind(&invocation.invocation_id).fetch_one(tx).await?;
+    let executor:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.kind='executor_started' AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id=e.invocation_id AND done.kind='executor_completed'))", rusqlite::params![&invocation.invocation_id], |row| row.get(0))?;
     Ok(!executor)
 }
 impl EventLog {
@@ -248,7 +237,6 @@ impl EventLog {
         checkpoint: ActivationCheckpoint,
         pending: Vec<NativeApprovalPending>,
     ) -> Result<ParkResult, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&checkpoint.invocation.session_id)?;
         validate_checkpoint(&checkpoint)?;
         if !matches!(
@@ -258,52 +246,49 @@ impl EventLog {
             return Err(invalid("native approvals require an approval suspension"));
         }
         let commits = self.commits.session(&checkpoint.invocation.session_id);
-        self.connection.run(move |db| Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            if let Some(receipt)=exact(&mut tx,&checkpoint,&pending).await? { return Ok(ParkResult::Parked(receipt)); }
-            if !frontier(&mut tx,&checkpoint,&pending,true,true).await? { return Ok(ParkResult::Changed); }
-            let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE session_id=? AND active=1)").bind(&checkpoint.invocation.session_id).fetch_one(&mut *tx).await?;
+        self.connection.run(move |db| {
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            if let Some(receipt)=exact(&tx,&checkpoint,&pending)? { return Ok(ParkResult::Parked(receipt)); }
+            if !frontier(&tx,&checkpoint,&pending,true,true)? { return Ok(ParkResult::Changed); }
+            let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE session_id=? AND active=1)", rusqlite::params![&checkpoint.invocation.session_id], |row| row.get(0))?;
             if active { return Ok(ParkResult::Changed); }
-            crate::sessions::advance_revision(&mut tx,&checkpoint.invocation.session_id).await?;
-            let revision:i64=sqlx::query_scalar("SELECT revision FROM session_control WHERE id=?").bind(&checkpoint.invocation.session_id).fetch_one(&mut *tx).await?;
-            sqlx::query("INSERT INTO native_approval_checkpoints(id,session_id,invocation_id,checkpoint_json,pending_json,revision,active) VALUES(?,?,?,?,?,?,1)")
-              .bind(&checkpoint.id).bind(&checkpoint.invocation.session_id).bind(&checkpoint.invocation.invocation_id).bind(serde_json::to_string(&checkpoint)?).bind(serde_json::to_string(&pending)?).bind(revision).execute(&mut *tx).await?;
-            for item in &pending { sqlx::query("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')").bind(&checkpoint.id).bind(&item.operation_id).bind(&item.interaction_id).execute(&mut *tx).await?; }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?; commits.metadata();commits.activations();
+            crate::sessions::advance_revision(&tx,&checkpoint.invocation.session_id)?;
+            let revision:i64=tx.query_row("SELECT revision FROM session_control WHERE id=?", rusqlite::params![&checkpoint.invocation.session_id], |row| row.get(0))?;
+            tx.execute("INSERT INTO native_approval_checkpoints(id,session_id,invocation_id,checkpoint_json,pending_json,revision,active) VALUES(?,?,?,?,?,?,1)", rusqlite::params![&checkpoint.id, &checkpoint.invocation.session_id, &checkpoint.invocation.invocation_id, serde_json::to_string(&checkpoint)?, serde_json::to_string(&pending)?, revision])?;
+            for item in &pending { tx.execute("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')", rusqlite::params![&checkpoint.id, &item.operation_id, &item.interaction_id])?; }
+            tx.commit().map_err(StoreError::CommitUnknown)?; commits.metadata();commits.activations();
             Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
-        })).await
+        }).await
     }
     pub async fn confirm_native_approval_park(
         &self,
         checkpoint: &ActivationCheckpoint,
         pending: &[NativeApprovalPending],
     ) -> Result<Option<ParkedActivationReceipt>, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&checkpoint.invocation.session_id)?;
         let checkpoint = checkpoint.clone();
         let pending = pending.to_vec();
         self.connection
-            .read(move |tx| Box::pin(async move { exact(tx, &checkpoint, &pending).await }))
+            .read(move |tx| exact(tx, &checkpoint, &pending))
             .await
     }
     pub async fn activation_checkpoint(
         &self,
         session: &str,
     ) -> Result<Option<NativeApprovalCheckpoint>, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(session)?;
         let session = session.to_owned();
-        self.connection.read(move |db|Box::pin(async move {
-            let mut tx=db.begin().await?;
-            let row:Option<(String,String,i64,bool)>=sqlx::query_as("SELECT checkpoint_json,pending_json,revision,revoked FROM native_approval_checkpoints WHERE session_id=? AND active=1").bind(session).fetch_optional(&mut *tx).await?;
+        self.connection.read(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            let row:Option<(String,String,i64,bool)>=tx.query_row("SELECT checkpoint_json,pending_json,revision,revoked FROM native_approval_checkpoints WHERE session_id=? AND active=1", rusqlite::params![session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,))).optional()?;
             let Some((json,pending,revision,revoked))=row else {return Ok(None)};
             let checkpoint:ActivationCheckpoint=serde_json::from_str(&json)?;
-            let stop_requested=crate::message_interrupts::fenced(&mut tx,&checkpoint.invocation.session_id,&checkpoint.invocation.run_id).await?;
-            let settled:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='settled'").bind(&checkpoint.id).fetch_all(&mut *tx).await?;
+            let stop_requested=crate::message_interrupts::fenced(&tx,&checkpoint.invocation.session_id,&checkpoint.invocation.run_id)?;
+            let settled:Vec<String>=tx.prepare_cached("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='settled'")?.query_map(rusqlite::params![&checkpoint.id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
             let mut pending:Vec<NativeApprovalPending>=serde_json::from_str(&pending)?;pending.retain(|item|!settled.contains(&item.operation_id));
-            tx.commit().await?;
+            tx.commit()?;
             Ok(Some(ActivationCheckpointRecord{revoked,stop_requested,receipt:receipt(&checkpoint,revision)?,checkpoint,pending}))
-        })).await
+        }).await
     }
     pub async fn claim_native_approvals(
         &self,
@@ -311,23 +296,22 @@ impl EventLog {
         claim: &str,
         epoch: &str,
     ) -> Result<Vec<ClaimedNativeApproval>, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&receipt.invocation.session_id)?;
         let receipt = receipt.clone();
         let claim = claim.to_owned();
         let epoch = epoch.to_owned();
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            if !live(&mut tx,&receipt).await? {return Err(invalid("native approval checkpoint is no longer active"));}
-            let json:String=sqlx::query_scalar("SELECT pending_json FROM native_approval_checkpoints WHERE id=?").bind(&receipt.checkpoint_id).fetch_one(&mut *tx).await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            if !live(&tx,&receipt)? {return Err(invalid("native approval checkpoint is no longer active"));}
+            let json:String=tx.query_row("SELECT pending_json FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&receipt.checkpoint_id], |row| row.get(0))?;
             let pending:Vec<NativeApprovalPending>=serde_json::from_str(&json)?;let mut ready=Vec::new();
             for item in pending {
-                let Some(outcome)=crate::interactions::records::read_local(&mut tx,&item.interaction_id).await?.and_then(|r|r.outcome) else {continue};
-                let changed=sqlx::query("UPDATE native_approval_operations SET phase='claimed',claim=?,host_epoch=? WHERE checkpoint_id=? AND operation_id=? AND (phase='waiting' OR (phase='claimed' AND claim=? AND host_epoch=?))").bind(&claim).bind(&epoch).bind(&receipt.checkpoint_id).bind(&item.operation_id).bind(&claim).bind(&epoch).execute(&mut *tx).await?.rows_affected();
+                let Some(outcome)=crate::interactions::records::read_local(&tx,&item.interaction_id)?.and_then(|r|r.outcome) else {continue};
+                let changed=tx.execute("UPDATE native_approval_operations SET phase='claimed',claim=?,host_epoch=? WHERE checkpoint_id=? AND operation_id=? AND (phase='waiting' OR (phase='claimed' AND claim=? AND host_epoch=?))", rusqlite::params![&claim, &epoch, &receipt.checkpoint_id, &item.operation_id, &claim, &epoch])?;
                 if changed==1 {ready.push(ClaimedNativeApproval{pending:item,claim:claim.clone(),outcome});}
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;Ok(ready)
-        })).await
+            tx.commit().map_err(StoreError::CommitUnknown)?;Ok(ready)
+        }).await
     }
     pub async fn start_native_approval(
         &self,
@@ -336,62 +320,54 @@ impl EventLog {
         claim: &str,
         start_id: &str,
     ) -> Result<bool, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&receipt.invocation.session_id)?;
         let receipt = receipt.clone();
         let operation = operation.to_owned();
         let claim = claim.to_owned();
         let start_id = start_id.to_owned();
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            if !live(&mut tx,&receipt).await? {return Ok(false)}
-            let existing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND operation_id=? AND phase='started' AND claim=? AND start_id=?)").bind(&receipt.checkpoint_id).bind(&operation).bind(&claim).bind(&start_id).fetch_one(&mut *tx).await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            if !live(&tx,&receipt)? {return Ok(false)}
+            let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND operation_id=? AND phase='started' AND claim=? AND start_id=?)", rusqlite::params![&receipt.checkpoint_id, &operation, &claim, &start_id], |row| row.get(0))?;
             if existing {return Ok(true)}
-            match crate::sessions::removal::require_accepting(&mut tx,&receipt.invocation.session_id).await {
+            match crate::sessions::removal::require_accepting(&tx,&receipt.invocation.session_id) {
                 Ok(())=>{},
                 Err(StoreError::SessionRetired)=>return Ok(false),
                 Err(error)=>return Err(error),
             }
-            if crate::message_interrupts::fenced(&mut tx,&receipt.invocation.session_id,&receipt.invocation.run_id).await? || !permission_current(&mut tx,&receipt.invocation).await? {return Ok(false)}
-            let changed=sqlx::query("UPDATE native_approval_operations SET phase='started',start_id=? WHERE checkpoint_id=? AND operation_id=? AND phase='claimed' AND claim=? AND EXISTS(SELECT 1 FROM native_approval_checkpoints c WHERE c.id=checkpoint_id AND c.revoked=0) AND NOT EXISTS(SELECT 1 FROM session_control WHERE id=? AND archived=1) AND EXISTS(SELECT 1 FROM interaction_outcomes o WHERE o.request_id=interaction_id AND json_extract(o.outcome_json,'$.kind')='service_approval_decision' AND json_extract(o.outcome_json,'$.decision')='allow') AND NOT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=? AND e.kind='tool_settled')")
-              .bind(start_id).bind(&receipt.checkpoint_id).bind(&operation).bind(claim).bind(&receipt.invocation.session_id).bind(&receipt.invocation.invocation_id).bind(operation).execute(&mut *tx).await?.rows_affected();
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;Ok(changed==1)
-        })).await
+            if crate::message_interrupts::fenced(&tx,&receipt.invocation.session_id,&receipt.invocation.run_id)? || !permission_current(&tx,&receipt.invocation)? {return Ok(false)}
+            let changed=tx.execute("UPDATE native_approval_operations SET phase='started',start_id=? WHERE checkpoint_id=? AND operation_id=? AND phase='claimed' AND claim=? AND EXISTS(SELECT 1 FROM native_approval_checkpoints c WHERE c.id=checkpoint_id AND c.revoked=0) AND NOT EXISTS(SELECT 1 FROM session_control WHERE id=? AND archived=1) AND EXISTS(SELECT 1 FROM interaction_outcomes o WHERE o.request_id=interaction_id AND json_extract(o.outcome_json,'$.kind')='service_approval_decision' AND json_extract(o.outcome_json,'$.decision')='allow') AND NOT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=? AND e.kind='tool_settled')", rusqlite::params![start_id, &receipt.checkpoint_id, &operation, claim, &receipt.invocation.session_id, &receipt.invocation.invocation_id, operation])?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;Ok(changed==1)
+        }).await
     }
     pub async fn native_approvals_settled(
         &self,
         receipt: &ParkedActivationReceipt,
     ) -> Result<bool, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&receipt.invocation.session_id)?;
         let receipt = receipt.clone();
-        self.connection.read(move |tx|Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c WHERE c.id=? AND c.revision=? AND c.invocation_id=? AND c.session_id=? AND c.active=1 AND c.suspension_kind='native_approvals' AND NOT EXISTS(SELECT 1 FROM native_approval_operations o WHERE o.checkpoint_id=c.id AND o.phase!='settled'))")
-                .bind(&receipt.checkpoint_id).bind(receipt.revision as i64).bind(&receipt.invocation.invocation_id).bind(&receipt.invocation.session_id).fetch_one(tx).await?)
-        })).await
+        self.connection.read(move |tx|{
+            Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c WHERE c.id=? AND c.revision=? AND c.invocation_id=? AND c.session_id=? AND c.active=1 AND c.suspension_kind='native_approvals' AND NOT EXISTS(SELECT 1 FROM native_approval_operations o WHERE o.checkpoint_id=c.id AND o.phase!='settled'))", rusqlite::params![&receipt.checkpoint_id, receipt.revision as i64, &receipt.invocation.invocation_id, &receipt.invocation.session_id], |row| row.get(0))?)
+        }).await
     }
     pub async fn stop_native_approvals(
         &self,
         invocation: &Invocation,
         now: u64,
     ) -> Result<bool, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&invocation.session_id)?;
         let invocation = invocation.clone();
         let commits = self.commits.session(&invocation.session_id);
-        self.connection.run(move |db|Box::pin(async move {let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            let changed=sqlx::query("UPDATE native_approval_checkpoints SET revoked=1 WHERE invocation_id=? AND session_id=? AND active=1").bind(&invocation.invocation_id).bind(&invocation.session_id).execute(&mut *tx).await?.rows_affected();
-            if changed>0 {crate::interactions::lifecycle::close_in_transaction(&mut tx,Some(&invocation),&InteractionOutcome::Closure{reason:maka_agent_facts::interaction::ClosureReason::TurnStopped,committed_at:now}).await?;}
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed>0 {commits.metadata();commits.activations();}Ok(changed>0)
-        })).await
+        self.connection.run(move |db|{let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            let changed=tx.execute("UPDATE native_approval_checkpoints SET revoked=1 WHERE invocation_id=? AND session_id=? AND active=1", rusqlite::params![&invocation.invocation_id, &invocation.session_id])?;
+            if changed>0 {crate::interactions::lifecycle::close_in_transaction(&tx,Some(&invocation),&InteractionOutcome::Closure{reason:maka_agent_facts::interaction::ClosureReason::TurnStopped,committed_at:now})?;}
+            tx.commit().map_err(StoreError::CommitUnknown)?;if changed>0 {commits.metadata();commits.activations();}Ok(changed>0)
+        }).await
     }
 }
 
-pub(crate) async fn require_terminal(
-    tx: &mut SqliteConnection,
-    invocation: &Invocation,
-) -> Result<(), StoreError> {
-    let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c JOIN native_approval_operations o ON o.checkpoint_id=c.id WHERE c.invocation_id=? AND c.active=1 AND o.phase!='settled')").bind(&invocation.invocation_id).fetch_one(tx).await?;
+pub(crate) fn require_terminal(tx: &Connection, invocation: &Invocation) -> Result<(), StoreError> {
+    let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c JOIN native_approval_operations o ON o.checkpoint_id=c.id WHERE c.invocation_id=? AND c.active=1 AND o.phase!='settled')", rusqlite::params![&invocation.invocation_id], |row| row.get(0))?;
     if pending {
         return Err(invalid(
             "cannot seal an invocation with native approval obligations",
@@ -407,7 +383,6 @@ impl EventLog {
         checkpoint: ActivationCheckpoint,
         pending: Vec<NativeApprovalPending>,
     ) -> Result<ParkResult, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&checkpoint.invocation.session_id)?;
         validate_checkpoint(&checkpoint)?;
         if !matches!(
@@ -418,138 +393,128 @@ impl EventLog {
         }
         let previous = previous.clone();
         let commits = self.commits.session(&checkpoint.invocation.session_id);
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
             if checkpoint.invocation!=previous.invocation {return Err(StoreError::EventConflict)}
-            if let Some(receipt)=exact(&mut tx,&checkpoint,&pending).await? {return Ok(ParkResult::Parked(receipt))}
-            if !live(&mut tx,&previous).await? {return Ok(ParkResult::Changed)}
-            let old:String=sqlx::query_scalar("SELECT pending_json FROM native_approval_checkpoints WHERE id=?").bind(&previous.checkpoint_id).fetch_one(&mut *tx).await?;
+            if let Some(receipt)=exact(&tx,&checkpoint,&pending)? {return Ok(ParkResult::Parked(receipt))}
+            if !live(&tx,&previous)? {return Ok(ParkResult::Changed)}
+            let old:String=tx.query_row("SELECT pending_json FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&previous.checkpoint_id], |row| row.get(0))?;
             let mut expected:Vec<NativeApprovalPending>=serde_json::from_str(&old)?;
-            let remaining:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase!='settled'").bind(&previous.checkpoint_id).fetch_all(&mut *tx).await?;
+            let remaining:Vec<String>=tx.prepare_cached("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase!='settled'")?.query_map(rusqlite::params![&previous.checkpoint_id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
             expected.retain(|item|remaining.contains(&item.operation_id));
             if expected!=pending {return Err(StoreError::EventConflict)}
-            let revoked:bool=sqlx::query_scalar("SELECT revoked FROM native_approval_checkpoints WHERE id=?").bind(&previous.checkpoint_id).fetch_one(&mut *tx).await?;
-            if revoked || !permission_current(&mut tx,&checkpoint.invocation).await? {
-                revoke_for_session(&mut tx,&checkpoint.invocation.session_id,now_millis()?).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();
+            let revoked:bool=tx.query_row("SELECT revoked FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&previous.checkpoint_id], |row| row.get(0))?;
+            if revoked || !permission_current(&tx,&checkpoint.invocation)? {
+                revoke_for_session(&tx,&checkpoint.invocation.session_id,now_millis()?)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();
                 return Ok(ParkResult::Changed);
             }
-            if !frontier(&mut tx,&checkpoint,&pending,false,true).await? {return Ok(ParkResult::Changed)}
-            let physical:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase IN ('claimed','started'))").bind(&previous.checkpoint_id).fetch_one(&mut *tx).await?;
+            if !frontier(&tx,&checkpoint,&pending,false,true)? {return Ok(ParkResult::Changed)}
+            let physical:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase IN ('claimed','started'))", rusqlite::params![&previous.checkpoint_id], |row| row.get(0))?;
             if physical {return Ok(ParkResult::Changed)}
-            crate::sessions::advance_revision(&mut tx,&checkpoint.invocation.session_id).await?;
-            let revision:i64=sqlx::query_scalar("SELECT revision FROM session_control WHERE id=?").bind(&checkpoint.invocation.session_id).fetch_one(&mut *tx).await?;
-            sqlx::query("UPDATE native_approval_checkpoints SET active=0 WHERE id=?").bind(&previous.checkpoint_id).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO native_approval_checkpoints(id,session_id,invocation_id,checkpoint_json,pending_json,revision,active,revoked) SELECT ?,session_id,invocation_id,?,?,?,1,revoked FROM native_approval_checkpoints WHERE id=?")
-                .bind(&checkpoint.id).bind(serde_json::to_string(&checkpoint)?).bind(serde_json::to_string(&pending)?).bind(revision).bind(&previous.checkpoint_id).execute(&mut *tx).await?;
-            for item in &pending {sqlx::query("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')").bind(&checkpoint.id).bind(&item.operation_id).bind(&item.interaction_id).execute(&mut *tx).await?;}
-            sqlx::query("DELETE FROM native_approval_operations WHERE checkpoint_id=?").bind(&previous.checkpoint_id).execute(&mut *tx).await?;
-            sqlx::query("DELETE FROM native_approval_checkpoints WHERE id=?").bind(&previous.checkpoint_id).execute(&mut *tx).await?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
-        })).await
+            crate::sessions::advance_revision(&tx,&checkpoint.invocation.session_id)?;
+            let revision:i64=tx.query_row("SELECT revision FROM session_control WHERE id=?", rusqlite::params![&checkpoint.invocation.session_id], |row| row.get(0))?;
+            tx.execute("UPDATE native_approval_checkpoints SET active=0 WHERE id=?", rusqlite::params![&previous.checkpoint_id])?;
+            tx.execute("INSERT INTO native_approval_checkpoints(id,session_id,invocation_id,checkpoint_json,pending_json,revision,active,revoked) SELECT ?,session_id,invocation_id,?,?,?,1,revoked FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&checkpoint.id, serde_json::to_string(&checkpoint)?, serde_json::to_string(&pending)?, revision, &previous.checkpoint_id])?;
+            for item in &pending {tx.execute("INSERT INTO native_approval_operations(checkpoint_id,operation_id,interaction_id,phase) VALUES(?,?,?,'waiting')", rusqlite::params![&checkpoint.id, &item.operation_id, &item.interaction_id])?;}
+            tx.execute("DELETE FROM native_approval_operations WHERE checkpoint_id=?", rusqlite::params![&previous.checkpoint_id])?;
+            tx.execute("DELETE FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&previous.checkpoint_id])?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();Ok(ParkResult::Parked(receipt(&checkpoint,revision)?))
+        }).await
     }
     pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
-        self.validate_root()?;
         let session = self.expected_session.clone();
-        self.connection.read(move |db| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT session_id FROM native_approval_checkpoints WHERE active=1 AND (?1 IS NULL OR session_id=?1) AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=native_approval_checkpoints.session_id) ORDER BY session_id").bind(session).fetch_all(db).await?)
-        })).await
+        self.connection.read(move |db| {
+            Ok(db.prepare_cached("SELECT session_id FROM native_approval_checkpoints WHERE active=1 AND (?1 IS NULL OR session_id=?1) AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=native_approval_checkpoints.session_id) ORDER BY session_id")?.query_map(rusqlite::params![session], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
+        }).await
     }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
-        self.validate_root()?;
         let session = self.expected_session.clone();
-        self.connection.read(move |db|Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT c.session_id FROM native_approval_checkpoints c WHERE c.active=1 AND c.suspension_kind='native_approvals' AND (?1 IS NULL OR c.session_id=?1) AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=c.session_id) AND (EXISTS(SELECT 1 FROM native_approval_operations o JOIN interaction_outcomes a ON a.request_id=o.interaction_id WHERE o.checkpoint_id=c.id AND o.phase='waiting') OR NOT EXISTS(SELECT 1 FROM native_approval_operations o WHERE o.checkpoint_id=c.id AND o.phase!='settled')) ORDER BY c.session_id").bind(session).fetch_all(db).await?)
-        })).await
+        self.connection.read(move |db|{
+            Ok(db.prepare_cached("SELECT c.session_id FROM native_approval_checkpoints c WHERE c.active=1 AND c.suspension_kind='native_approvals' AND (?1 IS NULL OR c.session_id=?1) AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=c.session_id) AND (EXISTS(SELECT 1 FROM native_approval_operations o JOIN interaction_outcomes a ON a.request_id=o.interaction_id WHERE o.checkpoint_id=c.id AND o.phase='waiting') OR NOT EXISTS(SELECT 1 FROM native_approval_operations o WHERE o.checkpoint_id=c.id AND o.phase!='settled')) ORDER BY c.session_id")?.query_map(rusqlite::params![session], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
+        }).await
     }
     pub(crate) async fn reconcile_activation_controls(&self) -> Result<(), StoreError> {
-        self.validate_root()?;
         let commits = self.commits.clone();
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            let active:Vec<(String,String)>=sqlx::query_as("SELECT session_id,json_extract(checkpoint_json,'$.invocation') FROM native_approval_checkpoints WHERE active=1 AND revoked=0 AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=native_approval_checkpoints.session_id)").fetch_all(&mut *tx).await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            let active:Vec<(String,String)>=tx.prepare_cached("SELECT session_id,json_extract(checkpoint_json,'$.invocation') FROM native_approval_checkpoints WHERE active=1 AND revoked=0 AND NOT EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=native_approval_checkpoints.session_id)")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
             let mut changed_sessions=Vec::new();
             for (session,json) in active {
                 let invocation:Invocation=serde_json::from_str(&json)?;
-                if !permission_current(&mut tx,&invocation).await?
-                    && revoke_for_session(&mut tx,&session,now_millis()?).await?
+                if !permission_current(&tx,&invocation)?
+                    && revoke_for_session(&tx,&session,now_millis()?)?
                 {changed_sessions.push(session);}
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             for session in changed_sessions {commits.session(&session).metadata();commits.notice().activations();}Ok(())
-        })).await
+        }).await
     }
     pub(crate) async fn prepare_native_approval_recovery(
         &self,
     ) -> Result<HashSet<String>, StoreError> {
-        self.validate_root()?;
         let commits = self.commits.notice();
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            let checkpoints:Vec<(String,String)>=sqlx::query_as("SELECT checkpoint_json,pending_json FROM native_approval_checkpoints WHERE active=1").fetch_all(&mut *tx).await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            let checkpoints:Vec<(String,String)>=tx.prepare_cached("SELECT checkpoint_json,pending_json FROM native_approval_checkpoints WHERE active=1")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
             let checkpoints_empty = checkpoints.is_empty();
             let mut preserved=HashSet::new();
             for (json,pending) in checkpoints {
                 let checkpoint:ActivationCheckpoint=serde_json::from_str(&json)?;
                 if matches!(checkpoint.suspension, maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }) {
-                    if crate::model_retries::frontier(&mut tx, &checkpoint, false).await? {
-                        let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)").bind(&checkpoint.invocation.session_id).fetch_one(&mut *tx).await?;
-                        if blocked || !permission_current(&mut tx, &checkpoint.invocation).await? || crate::message_interrupts::fenced(&mut tx, &checkpoint.invocation.session_id, &checkpoint.invocation.run_id).await? {
-                            revoke_for_session(&mut tx, &checkpoint.invocation.session_id, now_millis()?).await?;
+                    if crate::model_retries::frontier(&tx, &checkpoint, false)? {
+                        let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)", rusqlite::params![&checkpoint.invocation.session_id], |row| row.get(0))?;
+                        if blocked || !permission_current(&tx, &checkpoint.invocation)? || crate::message_interrupts::fenced(&tx, &checkpoint.invocation.session_id, &checkpoint.invocation.run_id)? {
+                            revoke_for_session(&tx, &checkpoint.invocation.session_id, now_millis()?)?;
                         }
                         preserved.insert(checkpoint.invocation.invocation_id);
                     } else {
-                        sqlx::query("UPDATE native_approval_checkpoints SET active=0 WHERE id=?").bind(&checkpoint.id).execute(&mut *tx).await?;
+                        tx.execute("UPDATE native_approval_checkpoints SET active=0 WHERE id=?", rusqlite::params![&checkpoint.id])?;
                     }
                     continue;
                 }
                 let mut pending:Vec<NativeApprovalPending>=serde_json::from_str(&pending)?;
-                sqlx::query("UPDATE native_approval_operations SET phase='settled',terminal_event_id=(SELECT event_id FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=native_approval_operations.operation_id AND e.kind='tool_settled') WHERE checkpoint_id=? AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=native_approval_operations.operation_id AND e.kind='tool_settled')")
-                    .bind(&checkpoint.invocation.invocation_id).bind(&checkpoint.id).bind(&checkpoint.invocation.invocation_id).execute(&mut *tx).await?;
-                let settled:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='settled'").bind(&checkpoint.id).fetch_all(&mut *tx).await?;
+                tx.execute("UPDATE native_approval_operations SET phase='settled',terminal_event_id=(SELECT event_id FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=native_approval_operations.operation_id AND e.kind='tool_settled') WHERE checkpoint_id=? AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id=? AND e.operation_id=native_approval_operations.operation_id AND e.kind='tool_settled')", rusqlite::params![&checkpoint.invocation.invocation_id, &checkpoint.id, &checkpoint.invocation.invocation_id])?;
+                let settled:Vec<String>=tx.prepare_cached("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='settled'")?.query_map(rusqlite::params![&checkpoint.id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
                 pending.retain(|item|!settled.contains(&item.operation_id));
-                let started:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase='started')").bind(&checkpoint.id).fetch_one(&mut *tx).await?;
-                let advanced:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND sequence>? AND kind IN ('model_requested','executor_started','invocation_ended'))").bind(&checkpoint.invocation.invocation_id).bind(checkpoint.through as i64).fetch_one(&mut *tx).await?;
+                let started:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase='started')", rusqlite::params![&checkpoint.id], |row| row.get(0))?;
+                let advanced:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND sequence>? AND kind IN ('model_requested','executor_started','invocation_ended'))", rusqlite::params![&checkpoint.invocation.invocation_id, checkpoint.through as i64], |row| row.get(0))?;
                 let valid=!started && !advanced && if pending.is_empty() {
-                    let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call'))").bind(&checkpoint.invocation.invocation_id).fetch_one(&mut *tx).await?; !unsettled
-                } else {frontier(&mut tx,&checkpoint,&pending,false,false).await?};
+                    let unsettled:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call'))", rusqlite::params![&checkpoint.invocation.invocation_id], |row| row.get(0))?; !unsettled
+                } else {frontier(&tx,&checkpoint,&pending,false,false)?};
                 if valid {
-                    let retired:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?)").bind(&checkpoint.invocation.session_id).fetch_one(&mut *tx).await?;
-                    if retired || !permission_current(&mut tx,&checkpoint.invocation).await? || crate::message_interrupts::fenced(&mut tx,&checkpoint.invocation.session_id,&checkpoint.invocation.run_id).await? {
-                        revoke_for_session(&mut tx,&checkpoint.invocation.session_id,now_millis()?).await?;
+                    let retired:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?)", rusqlite::params![&checkpoint.invocation.session_id], |row| row.get(0))?;
+                    if retired || !permission_current(&tx,&checkpoint.invocation)? || crate::message_interrupts::fenced(&tx,&checkpoint.invocation.session_id,&checkpoint.invocation.run_id)? {
+                        revoke_for_session(&tx,&checkpoint.invocation.session_id,now_millis()?)?;
                     }
-                    sqlx::query("UPDATE native_approval_operations SET phase='waiting',claim=NULL,host_epoch=NULL WHERE checkpoint_id=? AND phase='claimed'").bind(&checkpoint.id).execute(&mut *tx).await?;
+                    tx.execute("UPDATE native_approval_operations SET phase='waiting',claim=NULL,host_epoch=NULL WHERE checkpoint_id=? AND phase='claimed'", rusqlite::params![&checkpoint.id])?;
                     preserved.insert(checkpoint.invocation.invocation_id);
-                } else {sqlx::query("UPDATE native_approval_checkpoints SET active=0 WHERE id=?").bind(&checkpoint.id).execute(&mut *tx).await?;}
+                } else {tx.execute("UPDATE native_approval_checkpoints SET active=0 WHERE id=?", rusqlite::params![&checkpoint.id])?;}
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;if !checkpoints_empty {commits.activations();}Ok(preserved)
-        })).await
+            tx.commit().map_err(StoreError::CommitUnknown)?;if !checkpoints_empty {commits.activations();}Ok(preserved)
+        }).await
     }
     pub async fn native_approval_dispatch(
         &self,
         pending: &NativeApprovalPending,
     ) -> Result<StoredEvent, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&pending.invocation.session_id)?;
         let pending = pending.clone();
-        self.connection.read(move |db|Box::pin(async move {
-            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&pending.dispatch.event_id).bind(&pending.invocation.invocation_id).bind(&pending.operation_id).fetch_one(db).await?;
+        self.connection.read(move |db|{
+            let (sequence,json):(i64,String)=db.query_row("SELECT sequence,event_header FROM runtime_events WHERE event_id=? AND invocation_id=? AND operation_id=? AND kind='tool_dispatched'", rusqlite::params![&pending.dispatch.event_id, &pending.invocation.invocation_id, &pending.operation_id], |row| Ok((row.get(0)?, row.get(1)?,)))?;
             let event:RuntimeEvent=serde_json::from_str(&json)?;
             if event.invocation!=pending.invocation || crate::sequence_number(sequence)?!=pending.dispatch.sequence {return Err(StoreError::EventConflict)}
             Ok(StoredEvent{sequence:pending.dispatch.sequence,event})
-        })).await
+        }).await
     }
 }
 
-pub(crate) async fn retire_terminal(
-    tx: &mut SqliteConnection,
-    invocation: &Invocation,
-) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM native_approval_operations WHERE checkpoint_id IN (SELECT id FROM native_approval_checkpoints WHERE invocation_id=?)").bind(&invocation.invocation_id).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM native_approval_checkpoints WHERE invocation_id=?")
-        .bind(&invocation.invocation_id)
-        .execute(tx)
-        .await?;
+pub(crate) fn retire_terminal(tx: &Connection, invocation: &Invocation) -> Result<(), StoreError> {
+    tx.execute("DELETE FROM native_approval_operations WHERE checkpoint_id IN (SELECT id FROM native_approval_checkpoints WHERE invocation_id=?)", rusqlite::params![&invocation.invocation_id])?;
+    tx.execute(
+        "DELETE FROM native_approval_checkpoints WHERE invocation_id=?",
+        rusqlite::params![&invocation.invocation_id],
+    )?;
     Ok(())
 }
 
@@ -560,21 +525,20 @@ pub(crate) fn now_millis() -> Result<u64, StoreError> {
     u64::try_from(elapsed.as_millis())
         .map_err(|_| invalid("native approval lifecycle timestamp exhausted"))
 }
-pub(crate) async fn revoke_for_session(
-    tx: &mut SqliteConnection,
+pub(crate) fn revoke_for_session(
+    tx: &Connection,
     session: &str,
     now: u64,
 ) -> Result<bool, StoreError> {
-    let json:Option<String>=sqlx::query_scalar("SELECT json_extract(checkpoint_json,'$.invocation') FROM native_approval_checkpoints WHERE session_id=? AND active=1").bind(session).fetch_optional(&mut *tx).await?;
+    let json:Option<String>=tx.query_row("SELECT json_extract(checkpoint_json,'$.invocation') FROM native_approval_checkpoints WHERE session_id=? AND active=1", rusqlite::params![session], |row| row.get(0)).optional()?;
     let Some(json) = json else { return Ok(false) };
     let invocation: Invocation = serde_json::from_str(&json)?;
-    sqlx::query("UPDATE native_approval_checkpoints SET revoked=1 WHERE session_id=? AND active=1")
-        .bind(session)
-        .execute(&mut *tx)
-        .await?;
+    tx.execute(
+        "UPDATE native_approval_checkpoints SET revoked=1 WHERE session_id=? AND active=1",
+        rusqlite::params![session],
+    )?;
     let reason =
-        if crate::message_interrupts::fenced(tx, &invocation.session_id, &invocation.run_id).await?
-        {
+        if crate::message_interrupts::fenced(tx, &invocation.session_id, &invocation.run_id)? {
             maka_agent_facts::interaction::ClosureReason::TurnStopped
         } else {
             maka_agent_facts::interaction::ClosureReason::ProducerCancelled
@@ -586,18 +550,17 @@ pub(crate) async fn revoke_for_session(
             reason,
             committed_at: now,
         },
-    )
-    .await?;
+    )?;
     Ok(true)
 }
 
 /// The retirement owner holds exclusive Session Work admission through commit.
 /// Only untouched waits can be settled here; resume ownership is never inferred dead.
-pub(crate) async fn settle_retiring_waits(
-    tx: &mut SqliteConnection,
+pub(crate) fn settle_retiring_waits(
+    tx: &Connection,
     session: &str,
 ) -> Result<Option<u64>, StoreError> {
-    let row:Option<(String,String)>=sqlx::query_as("SELECT checkpoint_json,pending_json FROM native_approval_checkpoints WHERE session_id=? AND active=1").bind(session).fetch_optional(&mut *tx).await?;
+    let row:Option<(String,String)>=tx.query_row("SELECT checkpoint_json,pending_json FROM native_approval_checkpoints WHERE session_id=? AND active=1", rusqlite::params![session], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
     let Some((json, pending)) = row else {
         return Ok(None);
     };
@@ -606,34 +569,33 @@ pub(crate) async fn settle_retiring_waits(
         checkpoint.suspension,
         maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }
     ) {
-        if !crate::model_retries::frontier(tx, &checkpoint, false).await? {
+        if !crate::model_retries::frontier(tx, &checkpoint, false)? {
             return Err(StoreError::SessionBusy);
         }
         return crate::model_retries::cancel_in_transaction(tx, &checkpoint, "session_retired")
-            .await
             .map(Some);
     }
 
-    let owned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase IN ('claimed','started'))").bind(&checkpoint.id).fetch_one(&mut *tx).await?;
+    let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations WHERE checkpoint_id=? AND phase IN ('claimed','started'))", rusqlite::params![&checkpoint.id], |row| row.get(0))?;
     if owned {
         return Err(StoreError::SessionBusy);
     }
     let mut pending: Vec<NativeApprovalPending> = serde_json::from_str(&pending)?;
-    let waiting:Vec<String>=sqlx::query_scalar("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='waiting'").bind(&checkpoint.id).fetch_all(&mut *tx).await?;
+    let waiting:Vec<String>=tx.prepare_cached("SELECT operation_id FROM native_approval_operations WHERE checkpoint_id=? AND phase='waiting'")?.query_map(rusqlite::params![&checkpoint.id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
     pending.retain(|item| waiting.contains(&item.operation_id));
     if pending.is_empty() {
-        let other:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call'))").bind(&checkpoint.invocation.invocation_id).fetch_one(&mut *tx).await?;
+        let other:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id=? AND kind IN ('model','tool','call'))", rusqlite::params![&checkpoint.invocation.invocation_id], |row| row.get(0))?;
         if other {
             return Err(StoreError::SessionBusy);
         }
-    } else if !frontier(tx, &checkpoint, &pending, false, false).await? {
+    } else if !frontier(tx, &checkpoint, &pending, false, false)? {
         return Err(StoreError::SessionBusy);
     }
-    let advanced:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND sequence>? AND kind IN ('model_requested','executor_started','invocation_ended'))").bind(&checkpoint.invocation.invocation_id).bind(checkpoint.through as i64).fetch_one(&mut *tx).await?;
+    let advanced:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND sequence>? AND kind IN ('model_requested','executor_started','invocation_ended'))", rusqlite::params![&checkpoint.invocation.invocation_id, checkpoint.through as i64], |row| row.get(0))?;
     if advanced {
         return Err(StoreError::SessionBusy);
     }
-    revoke_for_session(tx, session, now_millis()?).await?;
+    revoke_for_session(tx, session, now_millis()?)?;
     let mut writes = Vec::new();
     for item in pending {
         let mut event = RuntimeEvent::new(
@@ -651,7 +613,7 @@ pub(crate) async fn settle_retiring_waits(
         );
         let write = maka_agent_facts::event::EventWrite::plain(event)
             .map_err(|error| invalid(&error.to_string()))?;
-        EventLog::append_in_transaction(tx, &write).await?;
+        EventLog::append_in_transaction(tx, &write)?;
         writes.push(write);
     }
     let mut event = RuntimeEvent::new(
@@ -668,9 +630,9 @@ pub(crate) async fn settle_retiring_waits(
     );
     let write = maka_agent_facts::event::EventWrite::plain(event)
         .map_err(|error| invalid(&error.to_string()))?;
-    let appended = EventLog::append_in_transaction(tx, &write).await?;
+    let appended = EventLog::append_in_transaction(tx, &write)?;
     writes.push(write);
-    crate::context::validate_batch(tx, &writes).await?;
+    crate::context::validate_batch(tx, &writes)?;
     let sequence = match appended {
         crate::append::AppendResult::Existing(sequence)
         | crate::append::AppendResult::Inserted(sequence)
@@ -679,15 +641,11 @@ pub(crate) async fn settle_retiring_waits(
     Ok(Some(sequence))
 }
 
-pub(crate) async fn append_settlement(
-    tx: &mut SqliteConnection,
-    event: &RuntimeEvent,
-) -> Result<bool, StoreError> {
+pub(crate) fn append_settlement(tx: &Connection, event: &RuntimeEvent) -> Result<bool, StoreError> {
     let Fact::ToolSettled { operation_id, .. } = &event.fact else {
         return Ok(false);
     };
-    let changed = sqlx::query("UPDATE native_approval_operations SET phase='settled',terminal_event_id=? WHERE checkpoint_id=(SELECT id FROM native_approval_checkpoints WHERE invocation_id=? AND active=1) AND operation_id=?")
-        .bind(&event.id).bind(&event.invocation.invocation_id).bind(operation_id).execute(tx).await?.rows_affected();
+    let changed = tx.execute("UPDATE native_approval_operations SET phase='settled',terminal_event_id=? WHERE checkpoint_id=(SELECT id FROM native_approval_checkpoints WHERE invocation_id=? AND active=1) AND operation_id=?", rusqlite::params![&event.id, &event.invocation.invocation_id, operation_id])?;
     Ok(changed > 0)
 }
 
@@ -701,73 +659,64 @@ impl EventLog {
         claim: &str,
         host_epoch: &str,
     ) -> Result<bool, StoreError> {
-        #[derive(sqlx::FromRow)]
         struct ClaimRow {
             phase: String,
             claim: Option<String>,
             host_epoch: Option<String>,
             start_id: Option<String>,
         }
-        self.validate_root()?;
         self.check_bound_session(&receipt.invocation.session_id)?;
         let commits = self.commits.session(&receipt.invocation.session_id);
         let receipt = receipt.clone();
         let operation = operation.to_owned();
         let claim = claim.to_owned();
         let host_epoch = host_epoch.to_owned();
-        self.connection.run(move |db|Box::pin(async move {
-            let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-            if !live(&mut tx,&receipt).await? {return Ok(false)}
-            let state=sqlx::query_as::<_,ClaimRow>("SELECT phase,claim,host_epoch,start_id FROM native_approval_operations WHERE checkpoint_id=? AND operation_id=?").bind(&receipt.checkpoint_id).bind(&operation).fetch_optional(&mut *tx).await?;
+        self.connection.run(move |db|{
+            let tx=rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            if !live(&tx,&receipt)? {return Ok(false)}
+            let state=tx.query_row("SELECT phase,claim,host_epoch,start_id FROM native_approval_operations WHERE checkpoint_id=? AND operation_id=?", rusqlite::params![&receipt.checkpoint_id, &operation], |row| Ok(ClaimRow { phase: row.get(0)?, claim: row.get(1)?, host_epoch: row.get(2)?, start_id: row.get(3)? })).optional()?;
             let Some(state)=state else {return Ok(false)};
             let already_waiting=state.phase=="waiting" && state.claim.is_none() && state.host_epoch.is_none() && state.start_id.is_none();
             if !already_waiting && (state.phase!="claimed" || state.claim.as_deref()!=Some(claim.as_str()) || state.host_epoch.as_deref()!=Some(host_epoch.as_str()) || state.start_id.is_some()) {return Ok(false)}
-            let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)").bind(&receipt.invocation.session_id).fetch_one(&mut *tx).await?;
-            if blocked || crate::message_interrupts::fenced(&mut tx,&receipt.invocation.session_id,&receipt.invocation.run_id).await? {return Ok(false)}
-            let revoked:bool=sqlx::query_scalar("SELECT revoked FROM native_approval_checkpoints WHERE id=?").bind(&receipt.checkpoint_id).fetch_one(&mut *tx).await?;
-            if revoked || !permission_current(&mut tx,&receipt.invocation).await? {
-                revoke_for_session(&mut tx,&receipt.invocation.session_id,now_millis()?).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();return Ok(false)
+            let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 UNION ALL SELECT 1 FROM session_control WHERE id=?1 AND archived=1)", rusqlite::params![&receipt.invocation.session_id], |row| row.get(0))?;
+            if blocked || crate::message_interrupts::fenced(&tx,&receipt.invocation.session_id,&receipt.invocation.run_id)? {return Ok(false)}
+            let revoked:bool=tx.query_row("SELECT revoked FROM native_approval_checkpoints WHERE id=?", rusqlite::params![&receipt.checkpoint_id], |row| row.get(0))?;
+            if revoked || !permission_current(&tx,&receipt.invocation)? {
+                revoke_for_session(&tx,&receipt.invocation.session_id,now_millis()?)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;commits.metadata();commits.activations();return Ok(false)
             }
-            let settled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_settled')").bind(&receipt.invocation.invocation_id).bind(&operation).fetch_one(&mut *tx).await?;
+            let settled:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_settled')", rusqlite::params![&receipt.invocation.invocation_id, &operation], |row| row.get(0))?;
             if settled {return Ok(false)}
             if already_waiting {return Ok(true)}
-            let changed=sqlx::query("UPDATE native_approval_operations SET phase='waiting',claim=NULL,host_epoch=NULL WHERE checkpoint_id=? AND operation_id=? AND phase='claimed' AND claim=? AND host_epoch=? AND start_id IS NULL")
-                .bind(&receipt.checkpoint_id).bind(&operation).bind(&claim).bind(&host_epoch).execute(&mut *tx).await?.rows_affected();
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;if changed==1 {commits.metadata();commits.activations();}Ok(changed==1)
-        })).await
+            let changed=tx.execute("UPDATE native_approval_operations SET phase='waiting',claim=NULL,host_epoch=NULL WHERE checkpoint_id=? AND operation_id=? AND phase='claimed' AND claim=? AND host_epoch=? AND start_id IS NULL", rusqlite::params![&receipt.checkpoint_id, &operation, &claim, &host_epoch])?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;if changed==1 {commits.metadata();commits.activations();}Ok(changed==1)
+        }).await
     }
 }
 
-pub(crate) async fn append_model_request(
-    tx: &mut SqliteConnection,
+pub(crate) fn append_model_request(
+    tx: &Connection,
     write: &maka_agent_facts::event::EventWrite,
 ) -> Result<(), StoreError> {
     let event = write.event();
     if !matches!(event.fact, Fact::ModelRequested { .. }) {
         return Ok(());
     }
-    crate::model_retries::consume(tx, write).await?;
-    let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c JOIN native_approval_operations o ON o.checkpoint_id=c.id WHERE c.invocation_id=? AND c.active=1 AND o.phase!='settled')").bind(&event.invocation.invocation_id).fetch_one(&mut *tx).await?;
+    crate::model_retries::consume(tx, write)?;
+    let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints c JOIN native_approval_operations o ON o.checkpoint_id=c.id WHERE c.invocation_id=? AND c.active=1 AND o.phase!='settled')", rusqlite::params![&event.invocation.invocation_id], |row| row.get(0))?;
     if pending {
         return Err(invalid(
             "cannot advance a native approval checkpoint with unsettled tools",
         ));
     }
-    sqlx::query(
+    tx.execute(
         "UPDATE native_approval_checkpoints SET active=0 WHERE invocation_id=? AND active=1",
-    )
-    .bind(&event.invocation.invocation_id)
-    .execute(tx)
-    .await?;
+        rusqlite::params![&event.invocation.invocation_id],
+    )?;
     Ok(())
 }
 
 /// Changes to this request can make an existing parked wait runnable.
-pub(crate) async fn waits_for_interaction(
-    tx: &mut SqliteConnection,
-    request: &str,
-) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1 AND o.phase='waiting')")
-        .bind(request).fetch_one(tx).await?)
+pub(crate) fn waits_for_interaction(tx: &Connection, request: &str) -> Result<bool, StoreError> {
+    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM native_approval_operations o JOIN native_approval_checkpoints c ON c.id=o.checkpoint_id WHERE o.interaction_id=? AND c.active=1 AND o.phase='waiting')", rusqlite::params![request], |row| row.get(0))?)
 }

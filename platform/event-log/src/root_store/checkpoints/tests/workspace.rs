@@ -360,7 +360,7 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
         .unwrap()
         .unwrap();
     let log = handle.session.scoped().await.unwrap();
-    log.connection.run(|db|Box::pin(async move {sqlx::raw_sql("CREATE TRIGGER reject_restore BEFORE UPDATE ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'reject receipt'); END;").execute(db).await?;Ok(())})).await.unwrap();
+    log.connection.run(|db|{db.execute_batch("CREATE TRIGGER reject_restore BEFORE UPDATE ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'reject receipt'); END;")?;Ok(())}).await.unwrap();
     drop(log);
     assert!(
         commit_restore(&handle, operation.clone(), &configuration, 2)
@@ -377,12 +377,8 @@ async fn restore_receipt_is_atomic_with_binding_and_survives_later_source_change
     let log = handle.session.scoped().await.unwrap();
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("DROP TRIGGER reject_restore")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            db.execute("DROP TRIGGER reject_restore", rusqlite::params![])?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -583,10 +579,10 @@ async fn restore_cannot_commit_a_copy_without_a_durable_completion_record() {
     let (store, handle, _, mut operation, _, _) = restore_fixture(directory.path()).await;
     operation.operation = Uuid::new_v4();
     let log = handle.session.scoped().await.unwrap();
-    log.connection.run(|db|Box::pin(async move {
-        sqlx::raw_sql("CREATE TRIGGER reject_preparation BEFORE UPDATE OF directory_identity_json ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'copy completion not recorded'); END;").execute(db).await?;
+    log.connection.run(|db|{
+        db.execute_batch("CREATE TRIGGER reject_preparation BEFORE UPDATE OF directory_identity_json ON checkpoint_workspace_restores BEGIN SELECT RAISE(ABORT,'copy completion not recorded'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     drop(log);
     assert!(
         handle

@@ -1360,7 +1360,7 @@ async fn cleanup_case(panic: bool) {
             "resources_retained",
         )
     } else {
-        ("queue_advance_failed", "store_sqlx", "operation_failed")
+        ("queue_advance_failed", "store_sqlite", "operation_failed")
     };
     let event = log
         .lines()

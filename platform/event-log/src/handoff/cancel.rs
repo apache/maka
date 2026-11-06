@@ -25,14 +25,12 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
     /// Settle an unclaimed seal without loading a provider or replaying effects.
     /// If another actor already claimed it, return the current physical owner;
     /// stopping that live execution remains the caller's responsibility.
     pub async fn cancel_handoff(&self, source: &Invocation) -> Result<TurnBoundary, StoreError> {
-        self.validate_root()?;
         for id in [
             &source.session_id,
             &source.turn_id,
@@ -45,33 +43,33 @@ impl EventLog {
         let commits = self.commits.session(&source.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let (boundary, sequence) = apply(&mut tx, &source).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    if let Some(sequence) = sequence {
-                        commits.publish(sequence);
-                    }
-                    Ok(boundary)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let (boundary, sequence) = apply(&tx, &source)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                if let Some(sequence) = sequence {
+                    commits.publish(sequence);
+                }
+                Ok(boundary)
             })
             .await
     }
 }
 
-pub(crate) async fn apply(
-    tx: &mut SqliteConnection,
+pub(crate) fn apply(
+    tx: &rusqlite::Connection,
     source: &Invocation,
 ) -> Result<(TurnBoundary, Option<u64>), StoreError> {
-    crate::recovery::require_local(tx, &source.invocation_id).await?;
+    crate::recovery::require_local(tx, &source.invocation_id)?;
     let evidence = crate::run_source::read(
         tx,
         &source.session_id,
         &source.run_id,
         &source.invocation_id,
         i64::MAX,
-    )
-    .await?;
+    )?;
     if evidence.boundary.invocation != *source {
         return Err(super::invalid("handoff cancellation source changed"));
     }
@@ -84,11 +82,9 @@ pub(crate) async fn apply(
             "handoff cancellation requires a sealed pause",
         ));
     };
-    let claimed: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened')"
-            ).bind(&pause.intent.successor_invocation_id).fetch_one(&mut *tx).await?;
+    let claimed: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened')")?.query_row(rusqlite::params![&pause.intent.successor_invocation_id], |row| row.get(0))?;
     if claimed {
-        return Ok((super::owner(tx, source).await?, None));
+        return Ok((super::owner(tx, source)?, None));
     }
     let opening = &evidence.opening;
     let Fact::InvocationOpened {
@@ -102,7 +98,7 @@ pub(crate) async fn apply(
     };
     let base = match input {
         InvocationInput::Message { .. } => {
-            crate::context::frozen::fresh_base(tx, source, opening.sequence).await?
+            crate::context::frozen::fresh_base(tx, source, opening.sequence)?
         }
         InvocationInput::Handoff { claim, .. } | InvocationInput::Continuation { claim, .. } => {
             claim.base.clone()
@@ -141,13 +137,13 @@ pub(crate) async fn apply(
     .map_err(|e| super::invalid(&e.to_string()))?;
     let mut last = 0;
     for write in &writes {
-        last = match EventLog::append_in_transaction(tx, write).await? {
+        last = match EventLog::append_in_transaction(tx, write)? {
             crate::append::AppendResult::Existing(sequence)
             | crate::append::AppendResult::Inserted(sequence)
             | crate::append::AppendResult::ActivationChanged(sequence) => sequence,
         };
     }
-    crate::context::validate_batch(tx, &writes).await?;
-    let boundary = crate::turns::project(tx, opening).await?;
+    crate::context::validate_batch(tx, &writes)?;
+    let boundary = crate::turns::project(tx, opening)?;
     Ok((boundary, Some(last)))
 }

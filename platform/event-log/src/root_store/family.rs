@@ -21,6 +21,7 @@
 use super::routes::Creation;
 use super::*;
 use crate::sessions::{PluginSession, SessionCopy, SessionCopyResult};
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -438,11 +439,10 @@ pub(super) async fn commit(
     store
         .connection
         .run(|db| {
-            Box::pin(async move {
-                let tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                tx.rollback().await?;
-                Ok(())
-            })
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
+            tx.rollback()?;
+            Ok(())
         })
         .await?;
     Ok(rejection)
@@ -534,9 +534,9 @@ impl RootStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let pending: Vec<String> = self.log.connection.read(|db| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT DISTINCT json_extract(command,'$.stage') FROM session_creations WHERE ready=0 AND json_extract(command,'$.kind')='bundle'").fetch_all(db).await?)
-        })).await?;
+        let pending: Vec<String> = self.log.connection.read(|db| {
+            Ok(db.prepare_cached("SELECT DISTINCT json_extract(command,'$.stage') FROM session_creations WHERE ready=0 AND json_extract(command,'$.kind')='bundle'")?.query_map(rusqlite::params![], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
+        }).await?;
         let pending: std::collections::HashSet<_> = pending.into_iter().collect();
         for entry in entries {
             let entry = entry?;
@@ -567,9 +567,9 @@ impl RootStore {
         self.require_open()?;
         crate::sessions::validate_id(id)?;
         let id = id.to_owned();
-        let row: Option<(String, String, String, Option<String>)> = self.log.connection.read(move |db| Box::pin(async move {
-            Ok(sqlx::query_as("SELECT r.creation_id,c.fingerprint,c.command,r.failure FROM session_creations r JOIN session_creations c ON c.session_id=r.creation_id WHERE r.session_id=? AND r.visible=1").bind(id).fetch_optional(db).await?)
-        })).await?;
+        let row: Option<(String, String, String, Option<String>)> = self.log.connection.read(move |db| {
+            Ok(db.query_row("SELECT r.creation_id,c.fingerprint,c.command,r.failure FROM session_creations r JOIN session_creations c ON c.session_id=r.creation_id WHERE r.session_id=? AND r.visible=1", rusqlite::params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?)
+        }).await?;
         let Some((id, fingerprint, command, failure)) = row else {
             return Ok(false);
         };
@@ -611,9 +611,9 @@ impl RootStore {
     ) -> Result<Option<crate::bundle::ImportReceipt>, StoreError> {
         self.require_open()?;
         let query_digest = digest.to_owned();
-        let id: Option<String> = self.log.connection.read(move |db| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT session_id FROM session_creations WHERE session_id=creation_id AND json_extract(command,'$.kind')='bundle' AND json_extract(command,'$.digest')=?").bind(query_digest).fetch_optional(db).await?)
-        })).await?;
+        let id: Option<String> = self.log.connection.read(move |db| {
+            Ok(db.query_row("SELECT session_id FROM session_creations WHERE session_id=creation_id AND json_extract(command,'$.kind')='bundle' AND json_extract(command,'$.digest')=?", rusqlite::params![query_digest], |row| row.get(0)).optional()?)
+        }).await?;
         let Some(id) = id else { return Ok(None) };
         match self.recover_target(&id).await? {
             true => {
@@ -662,19 +662,17 @@ async fn committed_receipt(store: &EventLog, command: &Creation) -> Result<bool,
         ),
         _ => return Ok(false),
     };
-    store.connection.read(move |db| Box::pin(async move {
+    store.connection.read(move |db| {
         if let Some((source, count, configuration)) = receipt {
-            let imported: Option<(String, i64, String)> = sqlx::query_as("SELECT source_json,records,configuration FROM session_imports WHERE session_id=? AND state='published'")
-                .bind(&id).fetch_optional(&mut *db).await?;
+            let imported: Option<(String, i64, String)> = db.query_row("SELECT source_json,records,configuration FROM session_imports WHERE session_id=? AND state='published'", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
             let Some((stored_source, stored_count, stored_configuration)) = imported else { return Ok(false) };
             if stored_source != source || stored_count != count || serde_json::from_str::<Value>(&stored_configuration)? != configuration { return Ok(false); }
         }
-        let stored: Option<(String,String,String,bool,Option<String>)> = sqlx::query_as("SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?")
-            .bind(&id).fetch_optional(&mut *db).await?;
+        let stored: Option<(String,String,String,bool,Option<String>)> = db.query_row("SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
         Ok(match (stored, expected_origin) {
             (None, None) => true,
             (Some((package,scope,fingerprint,managed,authority)), Some(origin)) => package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint && managed == origin.managed && authority == origin.authority_session_id,
             _ => false,
         })
-    })).await
+    }).await
 }

@@ -18,7 +18,7 @@
  */
 
 use crate::{EventLog, StoreError, message_resolution::MessageExecution};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 
 pub struct AssistantExcerpt {
     pub text: String,
@@ -58,7 +58,6 @@ impl EventLog {
         offset: u64,
         answer_invocation: Option<&str>,
     ) -> Result<MessageObservation, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         match &origin {
             WorkOrigin::Message(id) | WorkOrigin::Invocation(id) => {
@@ -77,55 +76,52 @@ impl EventLog {
         let answer_invocation = answer_invocation.map(str::to_owned);
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let execution = match origin {
-                        WorkOrigin::Message(message) => {
-                            crate::message_resolution::owner::execution(&mut tx, &session, &message)
-                                .await?
-                        }
-                        WorkOrigin::Invocation(invocation) => {
-                            let opening: Option<String> = sqlx::query_scalar(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let execution = match origin {
+                    WorkOrigin::Message(message) => {
+                        crate::message_resolution::owner::execution(&tx, &session, &message)?
+                    }
+                    WorkOrigin::Invocation(invocation) => {
+                        let opening: Option<String> = tx
+                            .prepare_cached(
                                 "SELECT event_header
                          FROM runtime_events WHERE invocation_id = ?1 AND kind = 'invocation_opened'
                          AND json_extract(event_header, '$.invocation.session_id') = ?2",
-                            )
-                            .bind(invocation)
-                            .bind(&session)
-                            .fetch_optional(&mut *tx)
-                            .await?;
-                            match opening {
-                                None => MessageExecution::Missing,
-                                Some(opening) => {
-                                    let opening: maka_agent_facts::event::RuntimeEvent =
-                                        serde_json::from_str(&opening)?;
-                                    MessageExecution::Owned(Box::new(
-                                        crate::message_resolution::owner::lineage(
-                                            &mut tx,
-                                            &opening.invocation,
-                                        )
-                                        .await?,
-                                    ))
-                                }
+                            )?
+                            .query_row(rusqlite::params![invocation, &session], |row| row.get(0))
+                            .optional()?;
+                        match opening {
+                            None => MessageExecution::Missing,
+                            Some(opening) => {
+                                let opening: maka_agent_facts::event::RuntimeEvent =
+                                    serde_json::from_str(&opening)?;
+                                MessageExecution::Owned(Box::new(
+                                    crate::message_resolution::owner::lineage(
+                                        &tx,
+                                        &opening.invocation,
+                                    )?,
+                                ))
                             }
                         }
-                    };
-                    observe(
-                        &mut tx,
-                        &session,
-                        execution,
-                        offset,
-                        answer_invocation.as_deref(),
-                    )
-                    .await
-                })
+                    }
+                };
+                observe(
+                    &tx,
+                    &session,
+                    execution,
+                    offset,
+                    answer_invocation.as_deref(),
+                )
             })
             .await
     }
 }
 
-async fn observe(
-    tx: &mut SqliteConnection,
+fn observe(
+    tx: &rusqlite::Connection,
     session: &str,
     execution: MessageExecution,
     offset: u64,
@@ -138,8 +134,7 @@ async fn observe(
         {
             // Do not hydrate model/tool bodies or scan another Run's output.
             // Blob slicing preserves NUL and bounds bytes, not characters.
-            let page: Option<(Vec<u8>, i64)> = sqlx::query_as(
-                        "SELECT substr(CAST(text AS BLOB), ?2, 16388), length(CAST(text AS BLOB)) FROM (
+            let page: Option<(Option<Vec<u8>>, i64)> = tx.prepare_cached("SELECT substr(CAST(text AS BLOB), ?2, 16388), length(CAST(text AS BLOB)) FROM (
                             SELECT completed.sequence, (
                                 SELECT group_concat(text, '') FROM (
                                     SELECT json_extract(delta.event_header, '$.fact.output.text') AS text
@@ -175,14 +170,24 @@ async fn observe(
                             ) AS text
                             FROM runtime_events event WHERE invocation_id = ?1 AND kind = 'model_completed'
                         ) WHERE text IS NOT NULL AND trim(text) != ''
-                        ORDER BY sequence DESC LIMIT 1"
-                    ).bind(&boundary.invocation.invocation_id).bind(offset as i64 + 1).fetch_optional(&mut *tx).await?;
+                        ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![&boundary.invocation.invocation_id,offset as i64 + 1], |row| Ok((row.get(0)?,row.get(1)?,))).optional()?;
             page.map(|(bytes, total)| {
                 if offset > total as u64 {
                     return Err(StoreError::InvalidTransition(
                         "answer cursor exceeds answer length".into(),
                     ));
                 }
+                let bytes = match bytes {
+                    Some(bytes) => bytes,
+                    None if offset == total as u64 => Vec::new(),
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "answer slice is missing before its end",
+                        )
+                        .into());
+                    }
+                };
                 let text = match std::str::from_utf8(&bytes) {
                     Ok(text) => text,
                     Err(error) if error.error_len().is_none() && error.valid_up_to() > 0 => {
@@ -209,8 +214,7 @@ async fn observe(
         MessageExecution::Owned(boundary) | MessageExecution::Shared(boundary)
             if boundary.state.terminal_outcome().is_none() =>
         {
-            crate::interactions::pending(tx, session)
-                .await?
+            crate::interactions::pending(tx, session)?
                 .into_iter()
                 .filter(|record| {
                     record.turn_id == boundary.invocation.turn_id
@@ -223,11 +227,12 @@ async fn observe(
 
     let high_water = match &execution {
         MessageExecution::Owned(boundary) | MessageExecution::Shared(boundary) => {
-            let count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM runtime_events WHERE invocation_id = ?")
-                    .bind(&boundary.invocation.invocation_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            let count: i64 = tx
+                .prepare_cached("SELECT COUNT(*) FROM runtime_events WHERE invocation_id = ?")?
+                .query_row(
+                    rusqlite::params![&boundary.invocation.invocation_id],
+                    |row| row.get(0),
+                )?;
             count as u64
         }
         _ => 0,

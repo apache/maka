@@ -719,7 +719,7 @@ async fn uncertain_durable_settlement_does_not_replay_effect_or_invent_cleanup_f
             );
         assert!(event.contains("ERROR"));
         assert!(event.contains("state_domain=") && event.contains(&reference.source.state_domain));
-        assert!(event.contains("cause=\"store_sqlx\""));
+        assert!(event.contains("cause=\"store_sqlite\""));
         assert!(event.contains("sql_code=1811"));
         for identity in [
             format!("operation_id={}", reference.operation),
@@ -983,33 +983,30 @@ impl Handler for CallerCheckedMutation {
         let release = self.release.clone();
         let fail_cleanup = self.fail_cleanup;
         Box::pin(async move {
-            use sqlx::Connection;
             let reference = context.operation().unwrap();
-            let mut connection = sqlx::SqliteConnection::connect_with(
-                &sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(journal_database(
-                        &database,
-                        "application_intents",
-                        reference.operation,
-                    ))
-                    .read_only(true),
-            )
+            let operation = reference.operation;
+            let saved: String = tokio::task::spawn_blocking(move || {
+                let connection = rusqlite::Connection::open_with_flags(
+                    journal_database(&database, "application_intents", operation),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|error| error.to_string())?;
+                connection
+                    .query_row(
+                        "SELECT reference_json FROM application_intents WHERE operation=?",
+                        [operation.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
             .await
-            .map_err(|e| e.to_string())?;
-            let saved: String = sqlx::query_scalar(
-                "SELECT reference_json FROM application_intents WHERE operation=?",
-            )
-            .bind(reference.operation.to_string())
-            .fetch_one(&mut connection)
-            .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())??;
             let saved: maka_plugin_core::operation::RecoveryRef =
                 serde_json::from_str(&saved).unwrap();
             assert_eq!(
                 &saved, reference,
                 "the separate caller Root committed the original reference before effects"
             );
-            connection.close().await.map_err(|e| e.to_string())?;
             started.add_permits(1);
             release.acquire().await.unwrap().forget();
             if fail_cleanup {

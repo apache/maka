@@ -49,6 +49,7 @@ pub mod message_interrupts;
 pub mod message_queue;
 pub mod message_resolution;
 pub mod message_sources;
+pub mod migration;
 mod model_items;
 pub mod observation;
 pub mod plugins;
@@ -84,8 +85,8 @@ use std::sync::Arc;
 
 mod writeback;
 
+use connection::OpenOptions;
 use connection::{ConnectionAuthority, OwnedConnection};
-use sqlx::sqlite::SqliteConnectOptions;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -159,22 +160,28 @@ pub enum StoreError {
     ReadCacheTransaction {
         #[source]
         cause: Box<StoreError>,
-        transaction: sqlx::Error,
+        transaction: rusqlite::Error,
     },
     #[error(transparent)]
     Projection(#[from] maka_presentation::ProjectionError),
     #[error("event log mutex poisoned")]
     Poisoned,
     #[error("event commit outcome unknown: {0}")]
-    CommitUnknown(sqlx::Error),
+    CommitUnknown(rusqlite::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error("database migration failed: {0}")]
+    Migration(String),
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
-    #[error(transparent)]
-    Migration(#[from] sqlx::migrate::MigrateError),
+    Shared(Arc<StoreError>),
+    #[error("{cause}; database rollback failed: {cleanup}")]
+    RollbackFailed {
+        #[source]
+        cause: Arc<StoreError>,
+        cleanup: rusqlite::Error,
+    },
     #[error("database initialization worker failed")]
     Initialization,
     #[error("database connection closed before accepting the operation")]
@@ -192,9 +199,20 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
 }
 
+impl StoreError {
+    /// Return the original cause of a failure shared by grouped writes.
+    pub fn underlying(&self) -> &Self {
+        match self {
+            Self::Shared(error) => error.underlying(),
+            Self::RollbackFailed { cause, .. } => cause.underlying(),
+            error => error,
+        }
+    }
+}
+
 pub struct EventLog {
     expected_session: Option<Arc<str>>,
-    // The independent owner drains SQLx and closes it before releasing its lease.
+    // The independent owner drains SQLite work and closes the connection before releasing its lease.
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
     commits: commits::CommitHub,
@@ -346,10 +364,7 @@ impl EventLog {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let options = match purpose {
-            OpenPurpose::Execution => SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true)
-                .query_planner_stability(true),
+            OpenPurpose::Execution => OpenOptions::file(&path).create(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
         let connection = OwnedConnection::open(
@@ -364,29 +379,21 @@ impl EventLog {
                     root: root_owner.clone(),
                 },
             },
-            move |connection| {
-                Box::pin(async move {
-                    match purpose {
-                        OpenPurpose::Execution => schema::initialize_connection(connection).await,
-                        OpenPurpose::ApplicationInspection => {
-                            application_inspection::initialize(connection).await
-                        }
-                    }
-                })
+            move |connection| match purpose {
+                OpenPurpose::Execution => schema::initialize_connection(connection),
+                OpenPurpose::ApplicationInspection => {
+                    application_inspection::initialize(connection)
+                }
             },
         )
         .await?;
         let high_water = connection
             .run(move |connection| {
-                Box::pin(async move {
-                    sequence_number(
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
-                        )
-                        .fetch_one(connection)
-                        .await?,
-                    )
-                })
+                sequence_number(connection.query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
+                    [],
+                    |row| row.get(0),
+                )?)
             })
             .await;
         let high_water = match high_water {

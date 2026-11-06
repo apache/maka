@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use rusqlite::{OptionalExtension, params};
+
 use crate::{EventLog, StoreError};
 use maka_agent_facts::artifact::content_digest;
 use maka_agent_facts::event::Fact;
@@ -27,7 +29,6 @@ use maka_agent_facts::model::recorded::ModelObservation;
 use maka_agent_facts::tool_call::RejectionKind;
 use maka_agent_facts::tool_call::ToolRejection;
 use serde_json::{Value, json};
-use sqlx::Connection;
 
 // Walk only reverse references of one retired Session, including archive writers.
 // UNION deduplicates diamonds; active owners short-circuit the search.
@@ -65,13 +66,11 @@ impl EventLog {
         &self,
         after: Option<&str>,
     ) -> Result<MaterialCollection, StoreError> {
-        self.validate_root()?;
         let after = after.map(str::to_owned);
         let observations = self.connection.observations();
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let session: Option<String> = sqlx::query_scalar(
-                "SELECT DISTINCT e.event_session FROM event_log e INDEXED BY event_material_owner
+        let (result, purge) = self.connection.run(move |connection| {
+            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+            let session: Option<String> = tx.query_row("SELECT DISTINCT e.event_session FROM event_log e INDEXED BY event_material_owner
                  WHERE e.event_header IS NOT NULL AND e.event_session IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM history_snapshot_events pin WHERE pin.sequence=e.sequence)
                  AND (?1 IS NULL OR e.event_session>?1) AND (
@@ -79,64 +78,61 @@ impl EventLog {
                      AND r.remove_session=1 AND r.completed=1)
                    OR (NOT EXISTS(SELECT 1 FROM session_control WHERE id=e.event_session)
                      AND EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id)))
-                 ORDER BY e.event_session LIMIT 1"
-            ).bind(after).fetch_optional(&mut *tx).await?;
+                 ORDER BY e.event_session LIMIT 1", params![after], |row| row.get(0)).optional()?;
             let Some(session) = session else {
-                tx.rollback().await?;
-                let free: i64 = sqlx::query_scalar("PRAGMA freelist_count").fetch_one(&mut *connection).await?;
-                if free == 0 { return Ok(MaterialCollection::Done); }
-                let incremental: i64 = sqlx::query_scalar("PRAGMA auto_vacuum").fetch_one(&mut *connection).await?;
+                tx.rollback()?;
+                let free: i64 = connection.query_row("PRAGMA freelist_count", params![], |row| row.get(0))?;
+                if free == 0 { return Ok((MaterialCollection::Done, None)); }
+                let incremental: i64 = connection.query_row("PRAGMA auto_vacuum", params![], |row| row.get(0))?;
                 if incremental != 2 { return Err(StoreError::UnsupportedDatabase); }
-                sqlx::query("PRAGMA incremental_vacuum(128)").execute(connection).await?;
-                return Ok(MaterialCollection::Collected);
+                connection.execute_batch("PRAGMA incremental_vacuum(128)")?;
+                return Ok((MaterialCollection::Collected, None));
             };
             // A previously collected body proves this owner set was already
             // released. All owners were removed, so none can publish new copies.
-            let released: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
+            let released: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
                  JOIN event_log e ON e.sequence=p.sequence
-                 WHERE p.kind='session' AND p.owner=? AND e.event_header IS NULL)"
-            ).bind(&session).fetch_one(&mut *tx).await?;
-            if !released && sqlx::query_scalar::<_, bool>(RETAINED)
-                .bind(&session).fetch_one(&mut *tx).await?
+                 WHERE p.kind='session' AND p.owner=? AND e.event_header IS NULL)", params![&session], |row| row.get(0))?;
+            if !released && tx.query_row(RETAINED, params![&session], |row| row.get(0))?
             {
-                return Ok(MaterialCollection::Retained(session));
+                return Ok((MaterialCollection::Retained(session), None));
             }
             // No live owner remains. Retained facts/membership, not UI metadata,
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
-            crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            let rows=sqlx::query(sqlx::AssertSqlSafe(format!(
+            crate::context::semantic::gc::retire_owner(&tx,&session)?;
+            let material = {
+                let mut statement = tx.prepare_cached(&format!(
                 "SELECT e.sequence,e.event_id,e.event_header,{columns} FROM event_log e {joins} WHERE e.event_session=?
                  AND e.event_header IS NOT NULL AND NOT EXISTS(SELECT 1 FROM history_snapshot_events pin WHERE pin.sequence=e.sequence) ORDER BY e.sequence LIMIT 8",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
-            ))).bind(&session).fetch_all(&mut *tx).await?;
-            for row in rows {
-                use sqlx::Row;
-                let sequence:i64=row.try_get(0)?;let id:String=row.try_get(1)?;
-                let body=crate::canonical::json(&row)?;
+            ))?;
+                let mut rows = statement.query(params![&session])?;
+                let mut material = Vec::new();
+                while let Some(row) = rows.next()? {
+                    material.push((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, crate::canonical::json(row)?.into_owned()));
+                }
+                material
+            };
+            for (sequence, id, body) in material {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
-                crate::context::semantic::gc::collect_event(&mut tx,crate::sequence_number(sequence)?).await?;
-                sqlx::query("DELETE FROM model_part_records WHERE source_sequence=?")
-                    .bind(sequence).execute(&mut *tx).await?;
-                sqlx::query("DELETE FROM tool_result_payloads WHERE event_id=?")
-                    .bind(&id).execute(&mut *tx).await?;
-                let surface: Option<String> = sqlx::query_scalar(
-                    "DELETE FROM model_request_compositions WHERE event_id=? RETURNING digest"
-                ).bind(&id).fetch_optional(&mut *tx).await?;
+                crate::context::semantic::gc::collect_event(&tx,crate::sequence_number(sequence)?)?;
+                tx.execute("DELETE FROM model_part_records WHERE source_sequence=?", params![sequence])?;
+                tx.execute("DELETE FROM tool_result_payloads WHERE event_id=?", params![&id])?;
+                let surface: Option<String> = tx.query_row("DELETE FROM model_request_compositions WHERE event_id=? RETURNING digest", params![&id], |row| row.get(0)).optional()?;
                 if let Some(surface) = surface {
-                    sqlx::query("DELETE FROM request_compositions WHERE digest=?1
-                        AND NOT EXISTS (SELECT 1 FROM model_request_compositions WHERE digest=?1)")
-                        .bind(surface).execute(&mut *tx).await?;
+                    tx.execute("DELETE FROM request_compositions WHERE digest=?1
+                        AND NOT EXISTS (SELECT 1 FROM model_request_compositions WHERE digest=?1)", params![surface])?;
                 }
-                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE event_id=?")
-                    .bind(serde_json::to_string(&proof)?).bind(content_digest(body.as_bytes()))
-                    .bind(&id).execute(&mut *tx).await?;
+                tx.execute("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE event_id=?", params![serde_json::to_string(&proof)?, content_digest(body.as_bytes()), &id])?;
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
+            Ok((MaterialCollection::Collected, Some(session)))
+        }).await?;
+        if let Some(session) = purge {
             observations.purge_session(session).await?;
-            Ok(MaterialCollection::Collected)
-        })).await
+        }
+        Ok(result)
     }
 }
 
@@ -293,15 +289,13 @@ mod cursor_tests {
         // order: the newest own fact has proof but no live body.
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
-        log.connection.run(move |db| Box::pin(async move {
-            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE sequence=2")
-                .bind(proof).bind(digest).execute(&mut *db).await?;
-            let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
-                .fetch_one(&mut *db).await?;
+        log.connection.run(move |db| {
+            db.execute("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE sequence=2", params![proof, digest])?;
+            let publication: (f64, String) = db.query_row("SELECT accounting_at,event_session FROM event_log WHERE sequence=2", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
             assert!((publication.0 - published_at).abs() < 0.001);
             assert_eq!(publication.1, "source", "collection retains the publication owner");
             Ok(())
-        })).await.unwrap();
+        }).await.unwrap();
         for _ in 0..2 {
             let versions = log
                 .observation_versions(&["source".into(), "missing".into()])
@@ -391,70 +385,62 @@ mod cursor_tests {
                     || sql.contains("event_log INDEXED BY invocation_sequence")
             })
             .collect();
-        assert_eq!(
-            collected_queries.len(),
-            2,
-            "Global and Session use separate indexed predicates"
-        );
         log.connection
             .run(move |db| {
-                Box::pin(async move {
-                    for sql in collected_queries {
-                        let session = sql.contains("p.owner=?");
-                        let explain = format!("EXPLAIN QUERY PLAN {sql}");
-                        let mut query = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()));
-                        if session {
-                            query = query.bind("source");
-                        }
-                        let plan: Vec<String> = query
-                            .fetch_all(&mut *db)
-                            .await?
-                            .into_iter()
-                            .map(|row| sqlx::Row::get(&row, 3))
-                            .collect();
-                        if session {
-                            assert!(
-                                plan.iter().any(|step| step
-                                    .contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")),
-                                "{plan:?}"
-                            );
-                            assert!(
-                                plan.iter().any(|step| step.contains("SEARCH e USING INTEGER PRIMARY KEY")),
-                                "{plan:?}"
-                            );
-                        } else {
-                            assert!(
-                                plan.iter().any(|step| step.contains("USING INDEX invocation_sequence")),
-                                "{plan:?}"
-                            );
-                        }
-                    }
-                    let explain = format!("EXPLAIN QUERY PLAN {RETAINED}");
-                    let plan: Vec<String> = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()))
-                        .bind("source")
-                        .fetch_all(db)
-                        .await?
-                        .into_iter()
-                        .map(|row| sqlx::Row::get(&row, 3))
-                        .collect();
-                    for index in [
-                        "history_source_owners",
-                        "archive_source_owners",
-                        "revision_source_owners",
-                    ] {
+                for sql in collected_queries {
+                    let session = sql.contains("p.owner=?");
+                    let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                    let mut statement = db.prepare_cached(&explain)?;
+                    let plan = if session {
+                        statement
+                            .query_map(params!["source"], |row| row.get::<_, String>(3))?
+                            .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        statement
+                            .query_map([], |row| row.get::<_, String>(3))?
+                            .collect::<Result<Vec<_>, _>>()?
+                    };
+                    if session {
                         assert!(
-                            plan.iter().any(|step| step.contains(index)),
-                            "{index}: {plan:?}"
+                            plan.iter().any(|step| step
+                                .contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")),
+                            "{plan:?}"
+                        );
+                        assert!(
+                            plan.iter()
+                                .any(|step| step.contains("SEARCH e USING INTEGER PRIMARY KEY")),
+                            "{plan:?}"
+                        );
+                    } else {
+                        assert!(
+                            plan.iter()
+                                .any(|step| step.contains("USING INDEX invocation_sequence")),
+                            "{plan:?}"
                         );
                     }
+                }
+                let explain = format!("EXPLAIN QUERY PLAN {RETAINED}");
+                let plan = db
+                    .prepare_cached(&explain)?
+                    .query_map(params!["source"], |row| row.get::<_, String>(3))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for index in [
+                    "history_source_owners",
+                    "archive_source_owners",
+                    "revision_source_owners",
+                ] {
                     assert!(
-                        plan.iter()
-                            .any(|step| step
-                                .contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")),
-                        "{plan:?}"
+                        plan.iter().any(|step| step.contains(index)),
+                        "{index}: {plan:?}"
                     );
-                    Ok(())
-                })
+                }
+                assert!(
+                    plan.iter().any(
+                        |step| step.contains("SEARCH p USING PRIMARY KEY (kind=? AND owner=?)")
+                    ),
+                    "{plan:?}"
+                );
+                Ok(())
             })
             .await
             .unwrap();

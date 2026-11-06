@@ -29,7 +29,6 @@ use maka_agent_facts::{
     tool_call::ToolCallIdentity,
     tool_output::{DurableToolProjection, ToolOutput, ToolSuccess},
 };
-use sqlx::Connection;
 
 fn opening(id: &str) -> RuntimeEvent {
     let mut event = RuntimeEvent::new(
@@ -99,16 +98,13 @@ async fn autocommit_is_rejected_before_any_canonical_insert() {
     let error = log
         .connection
         .run(|db| {
-            Box::pin(async move {
-                let event = opening("unowned");
-                insert(
-                    db,
-                    &event,
-                    serde_json::to_string(&event)?,
-                    Position::Admitted,
-                )
-                .await
-            })
+            let event = opening("unowned");
+            insert(
+                db,
+                &event,
+                serde_json::to_string(&event)?,
+                Position::Admitted,
+            )
         })
         .await
         .unwrap_err();
@@ -142,10 +138,8 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
         let log = EventLog::open(&path).await.unwrap();
         log.connection
             .run(move |db| {
-                Box::pin(async move {
-                    sqlx::raw_sql(trigger).execute(db).await?;
-                    Ok(())
-                })
+                db.execute_batch(trigger)?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -329,7 +323,7 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
     }
     let canonical: String = reopened
         .connection
-        .read_interruptible(|db| Box::pin(async move { crate::canonical::one(db, 6).await }))
+        .read_interruptible(|db| crate::canonical::one(db, 6))
         .await
         .unwrap();
     assert_eq!(canonical, expected_json);
@@ -354,20 +348,18 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
     imported
         .connection
         .run(move |db| {
-            Box::pin(async move {
-                let mut tx = db.begin().await?;
-                for (index, (event, json)) in rewritten.into_iter().enumerate() {
-                    insert(
-                        &mut tx,
-                        &event,
-                        json,
-                        Position::Imported(Some(41 + index as u64)),
-                    )
-                    .await?;
-                }
-                tx.commit().await?;
-                Ok(())
-            })
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            for (index, (event, json)) in rewritten.into_iter().enumerate() {
+                insert(
+                    &tx,
+                    &event,
+                    json,
+                    Position::Imported(Some(41 + index as u64)),
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -386,7 +378,7 @@ async fn canonical_tool_spans_preserve_projection_raw_and_replay_after_reopen_an
     );
     let stored_json: String = imported
         .connection
-        .read_interruptible(|db| Box::pin(async move { crate::canonical::one(db, 46).await }))
+        .read_interruptible(|db| crate::canonical::one(db, 46))
         .await
         .unwrap();
     assert_eq!(stored_json, imported_json);
@@ -402,24 +394,21 @@ async fn canonical_open_rejects_utf16_and_retains_utf8() {
         ("UTF-16be", "PRAGMA encoding='UTF-16be'"),
     ] {
         let path = dir.path().join(format!("{encoding}.sqlite"));
-        let mut db = sqlx::SqliteConnection::connect_with(
-            &sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true),
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(pragma).unwrap();
+        db.execute_batch("PRAGMA application_id=1296124754")
+            .unwrap();
+        crate::sqlite_functions::register(&db).unwrap();
+        crate::migration::run(
+            &db,
+            &[crate::migration::Migration {
+                version: 1,
+                description: "runtime",
+                sql: include_str!("../../../migrations/0001_runtime.sql"),
+            }],
         )
-        .await
         .unwrap();
-        sqlx::query(pragma).execute(&mut db).await.unwrap();
-        sqlx::query("PRAGMA application_id=1296124754")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        crate::sqlite_functions::register(&mut db).await.unwrap();
-        sqlx::migrate!("./migrations")
-            .run_direct(None, &mut db, false)
-            .await
-            .unwrap();
-        db.close().await.unwrap();
+        db.close().unwrap();
         match EventLog::open(&path).await {
             Ok(log) => {
                 assert_eq!(

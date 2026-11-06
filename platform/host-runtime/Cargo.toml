@@ -59,6 +59,7 @@ tempfile.workspace = true
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+rusqlite.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 tempfile.workspace = true
 sqlx.workspace = true

@@ -22,8 +22,8 @@ use super::{emit, read};
 use crate::StoreError;
 use maka_agent_facts::tool_call::ToolSettlement;
 use maka_presentation::{Content, ProjectionError, Row, ToolContent, ToolMetadata, TurnState};
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection as RawConnection, params};
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
@@ -50,20 +50,12 @@ impl Need<'_> {
 }
 
 /// Populate metadata in the caller's observation transaction and canonical snapshot.
-pub(crate) async fn ensure(
-    connection: &mut SqliteConnection,
+pub(crate) fn ensure(
+    connection: &Connection,
     session: &str,
     through: u64,
 ) -> Result<(), StoreError> {
-    let session = session.to_owned();
-    connection
-        .run_on_worker(move |handle| {
-            // SAFETY: the worker exclusively lends this handle; no borrowed value escapes.
-            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-            db.set_prepared_statement_cache_capacity(100);
-            ensure_on_handle(&db, &session, through)
-        })
-        .await?
+    ensure_on_handle(connection, session, through)
 }
 
 pub(crate) fn ensure_on_handle(
@@ -518,18 +510,12 @@ impl<'row> Metadata<'row> {
     }
 }
 
-pub(crate) async fn ensure_owner(
-    connection: &mut SqliteConnection,
+pub(crate) fn ensure_owner(
+    connection: &Connection,
     owner: super::HistoryOwner,
     through: u64,
 ) -> Result<(), StoreError> {
-    connection
-        .run_on_worker(move |handle| {
-            // SAFETY: the observation worker exclusively lends this handle.
-            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-            ensure_for(&db, &owner, through, Need::Directory)
-        })
-        .await?
+    ensure_for(connection, &owner, through, Need::Directory)
 }
 
 #[cfg(test)]

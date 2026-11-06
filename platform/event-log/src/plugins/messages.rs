@@ -26,7 +26,7 @@ use maka_agent_facts::message::MessageDisposition;
 use maka_agent_ports::execution::Enqueue;
 use maka_agent_ports::execution::MessageReceipt;
 use maka_capabilities::storage::Namespace;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 
 impl EventLog {
     /// Admission and stable package receipt are one transaction. The Host has
@@ -37,7 +37,6 @@ impl EventLog {
         request: Enqueue,
         pending: PendingMessageAdmission,
     ) -> Result<MessageReceipt, StoreError> {
-        self.validate_root()?;
         let digest = request.digest().map_err(|e| invalid(&e.to_string()))?;
         let disposition = match request.placement {
             maka_agent_facts::message::Placement::CurrentTurn => MessageDisposition::Steering,
@@ -58,10 +57,10 @@ impl EventLog {
         let commits = self.commits.session(&request.invocation.session_id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
                     if let Some(receipt) =
-                        read(&mut tx, &package, &scope, &request.invocation.session_id, &request.operation_id).await?
+                        read(&tx, &package, &scope, &request.invocation.session_id, &request.operation_id)?
                     {
                         if receipt.request_digest != digest {
                             return Err(StoreError::EventConflict);
@@ -73,31 +72,24 @@ impl EventLog {
                         message_id: pending.source.message.message_id.clone(),
                         request_digest: digest,
                     };
-                    if insert::insert(&mut tx, &pending, insert::Owner::Current)
-                        .await?
+                    if insert::insert(&tx, &pending, insert::Owner::Current)
+                        ?
                         .is_none()
                     {
                         return Err(StoreError::EventConflict);
                     }
-                    sqlx::query("INSERT INTO plugin_message_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)")
-                        .bind(package)
-                        .bind(scope)
-                        .bind(&request.invocation.session_id)
-                        .bind(request.operation_id)
-                        .bind(serde_json::to_string(&receipt)?)
-                        .execute(&mut *tx)
-                        .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    tx.execute("INSERT INTO plugin_message_receipts (package_id, scope_id, target_session_id, operation_id, receipt_json) VALUES (?, ?, ?, ?, ?)", rusqlite::params![package, scope, &request.invocation.session_id, request.operation_id, serde_json::to_string(&receipt)?])
+                        ?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
                     Ok(receipt)
-                })
+                }
             })
             .await
     }
     /// Canonical consumption and retraction serialize on the same transaction.
     /// A delivered message is deliberately left alone, even in a shared Run.
     pub async fn retract_plugin_message(&self, receipt: &MessageReceipt) -> Result<(), StoreError> {
-        self.validate_root()?;
         let session = receipt.invocation.session_id.clone();
         let message = receipt.message_id.clone();
         for id in [&session, &message] {
@@ -106,33 +98,33 @@ impl EventLog {
         let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let queue = crate::message_queue::read(&mut tx, &session).await?;
-                    if !queue
-                        .entries
-                        .iter()
-                        .any(|entry| entry.source.message.message_id == message)
-                    {
-                        return Ok(());
-                    }
-                    let change = crate::message_queue::edit::apply(
-                        &mut tx,
-                        &session,
-                        queue,
-                        crate::message_queue::QueueEdit::Retract {
-                            cancellation_id: format!("plugin-retract-{message}"),
-                            message_id: message,
-                        },
-                    )
-                    .await?;
-                    if change.changed {
-                        crate::message_queue::bump(&mut tx, &session).await?;
-                    }
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.metadata();
-                    Ok(())
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let queue = crate::message_queue::read(&tx, &session)?;
+                if !queue
+                    .entries
+                    .iter()
+                    .any(|entry| entry.source.message.message_id == message)
+                {
+                    return Ok(());
+                }
+                let change = crate::message_queue::edit::apply(
+                    &tx,
+                    &session,
+                    queue,
+                    crate::message_queue::QueueEdit::Retract {
+                        cancellation_id: format!("plugin-retract-{message}"),
+                        message_id: message,
+                    },
+                )?;
+                if change.changed {
+                    crate::message_queue::bump(&tx, &session)?;
+                }
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                commits.metadata();
+                Ok(())
             })
             .await
     }
@@ -142,7 +134,6 @@ impl EventLog {
         namespace: &Namespace,
         operation: &maka_agent_ports::execution::SessionOperation,
     ) -> Result<Option<MessageReceipt>, StoreError> {
-        self.validate_root()?;
         operation
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
@@ -152,7 +143,7 @@ impl EventLog {
         let operation = operation.clone();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
+                {
                     read(
                         connection,
                         &package,
@@ -160,29 +151,21 @@ impl EventLog {
                         &operation.session_id,
                         &operation.operation_id,
                     )
-                    .await
-                })
+                }
             })
             .await
     }
 }
-async fn read(
-    connection: &mut SqliteConnection,
+fn read(
+    connection: &Connection,
     package: &str,
     scope: &str,
     session: &str,
     operation: &str,
 ) -> Result<Option<MessageReceipt>, StoreError> {
-    let encoded: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
-         FROM plugin_message_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?",
-    )
-    .bind(package)
-    .bind(scope)
-    .bind(session)
-    .bind(operation)
-    .fetch_optional(connection)
-    .await?;
+    let encoded: Option<Option<String>> = connection.query_row("SELECT CASE WHEN length(CAST(receipt_json AS BLOB)) <= 4096 THEN receipt_json END
+         FROM plugin_message_receipts WHERE package_id = ? AND scope_id = ? AND target_session_id = ? AND operation_id = ?", rusqlite::params![package, scope, session, operation], |row| row.get(0)).optional()
+    ?;
     encoded
         .map(|encoded| {
             let receipt: MessageReceipt =

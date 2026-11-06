@@ -28,7 +28,7 @@ use maka_capabilities::storage::Mutation;
 use maka_capabilities::storage::Namespace;
 use maka_capabilities::storage::Record;
 use maka_capabilities::storage::validate_key;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeSet;
 
 impl EventLog {
@@ -37,16 +37,14 @@ impl EventLog {
         namespace: &Namespace,
         query: maka_capabilities::storage::Scan,
     ) -> Result<maka_capabilities::storage::Page, StoreError> {
-        self.validate_root()?;
         query
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
         let namespace = namespace.clone();
-        self.connection.read(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| {
             // Select key/size first: the page budget must bound decoding and
             // allocation as well as the serialized reply. Keep one overflow key.
-            let rows: Vec<(String, i64, Option<String>, bool)> = sqlx::query_as(
-                "WITH candidates AS (
+            let rows: Vec<(String, i64, Option<String>, bool)> = connection.prepare_cached("WITH candidates AS (
                     SELECT key, COALESCE(length(CAST(value_json AS BLOB)), 0) + length(CAST(key AS BLOB)) + 128 AS bytes
                     FROM plugin_data WHERE package_id = ?1 AND scope_id = ?2
                       AND key >= ?3 AND key > ?4 ORDER BY key LIMIT 65
@@ -58,10 +56,7 @@ impl EventLog {
                     bounded.position = 1 OR (bounded.position <= 64 AND bounded.total <= ?5)
                  FROM bounded JOIN plugin_data AS data
                    ON data.package_id = ?1 AND data.scope_id = ?2 AND data.key = bounded.key
-                 ORDER BY data.key"
-            ).bind(namespace.package()).bind(String::from(namespace.scope().clone()))
-                .bind(&query.prefix).bind(query.after.as_deref().unwrap_or(""))
-                .bind(MAX_PAGE_BYTES as i64).fetch_all(connection).await?;
+                 ORDER BY data.key")?.query_map(rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), &query.prefix, query.after.as_deref().unwrap_or(""), MAX_PAGE_BYTES as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<Result<Vec<_>, _>>()?;
             let mut entries: Vec<maka_capabilities::storage::Entry> = Vec::new();
             let mut next_after = None;
             for (key, revision, value, fits) in rows {
@@ -74,21 +69,18 @@ impl EventLog {
                 entries.push(maka_capabilities::storage::Entry { key, record: decode(revision, value)? });
             }
             Ok(maka_capabilities::storage::Page { entries, next_after })
-        })).await
+        }).await
     }
     pub async fn plugin_data(
         &self,
         namespace: &Namespace,
         key: &str,
     ) -> Result<Option<Record>, StoreError> {
-        self.validate_root()?;
         validate_key(key).map_err(|error| invalid(&error.to_string()))?;
         let namespace = namespace.clone();
         let key = key.to_owned();
         self.connection
-            .read(move |connection| {
-                Box::pin(async move { read(connection, &namespace, &key).await })
-            })
+            .read(move |connection| read(connection, &namespace, &key))
             .await
     }
 
@@ -98,7 +90,6 @@ impl EventLog {
         namespace: &Namespace,
         mutations: Vec<Mutation>,
     ) -> Result<Vec<Record>, StoreError> {
-        self.validate_root()?;
         if mutations.is_empty() {
             return Err(invalid("plugin data batch must not be empty"));
         }
@@ -120,11 +111,11 @@ impl EventLog {
         }
         let namespace = namespace.clone();
         let commits = self.commits.notice();
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+        self.connection.run(move |connection| {
+            let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
             let mut records = Vec::new();
             for (mutation, encoded) in mutations.into_iter().zip(encoded) {
-                let current = read(&mut tx, &namespace, &mutation.key).await?;
+                let current = read(&tx, &namespace, &mutation.key)?;
                 let actual = current.as_ref().map(|record| record.revision);
                 if actual != mutation.expected_revision {
                     return Err(StoreError::RevisionConflict {
@@ -134,28 +125,23 @@ impl EventLog {
                 }
                 let revision = actual.unwrap_or(0) + 1;
                 if revision > (1 << 53) - 1 { return Err(invalid("plugin data revision exhausted")); }
-                sqlx::query("INSERT INTO plugin_data (package_id, scope_id, key, revision, value_json) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(package_id, scope_id, key) DO UPDATE SET revision = excluded.revision, value_json = excluded.value_json")
-                    .bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(&mutation.key)
-                    .bind(revision as i64).bind(encoded).execute(&mut *tx).await?;
+                tx.execute("INSERT INTO plugin_data (package_id, scope_id, key, revision, value_json) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(package_id, scope_id, key) DO UPDATE SET revision = excluded.revision, value_json = excluded.value_json", rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), &mutation.key, revision as i64, encoded])?;
                 records.push(Record { revision, data: mutation.data });
             }
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            tx.commit().map_err(StoreError::CommitUnknown)?;
             commits.metadata();
             Ok(records)
-        })).await
+        }).await
     }
 }
 
-async fn read(
-    connection: &mut SqliteConnection,
+fn read(
+    connection: &Connection,
     namespace: &Namespace,
     key: &str,
 ) -> Result<Option<Record>, StoreError> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT revision, value_json FROM plugin_data WHERE package_id = ? AND scope_id = ? AND key = ?")
-        .bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(key)
-        .fetch_optional(connection).await?;
+    let row: Option<(i64, Option<String>)> = connection.query_row("SELECT revision, value_json FROM plugin_data WHERE package_id = ? AND scope_id = ? AND key = ?", rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), key], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
     row.map(|(revision, value)| decode(revision, value))
         .transpose()
 }

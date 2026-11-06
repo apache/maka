@@ -25,6 +25,7 @@ use crate::checkpoints::{
     Head, Manifest, ObjectRef, Publication, PublicationRequest, PublicationState, Request,
     Revision, Scope, invalid,
 };
+use rusqlite::OptionalExtension;
 use std::future::Future;
 mod journal;
 pub(in crate::root_store) mod load;
@@ -215,13 +216,13 @@ async fn checkout(
     let key = log
         .connection
         .read(move |db| {
-            Box::pin(async move {
-                sqlx::query_scalar("SELECT capture_key FROM history_snapshots WHERE digest=?")
-                    .bind(digest)
-                    .fetch_optional(db)
-                    .await?
-                    .ok_or(StoreError::MaterialCollected)
-            })
+            db.query_row(
+                "SELECT capture_key FROM history_snapshots WHERE digest=?",
+                rusqlite::params![digest],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::MaterialCollected)
         })
         .await?;
     let bundle = materialize_bundle(log, key, &manifest).await?;

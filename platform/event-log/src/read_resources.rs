@@ -19,7 +19,7 @@
 
 use crate::{EventLog, StoreError};
 use maka_agent_facts::read::ResourceAddress;
-use sqlx::Connection;
+use rusqlite::{Transaction, TransactionBehavior};
 
 impl EventLog {
     /// Resolve a locator in the reader's visible namespace, never across Sessions.
@@ -29,7 +29,6 @@ impl EventLog {
         session: &str,
         address: ResourceAddress,
     ) -> Result<Option<ResourceAddress>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         address
             .canonical_path()
@@ -65,8 +64,7 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
+                    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
                     for exact in [true, false] {
                         if !exact && address.id().contains('\0') {
                             return Ok(None);
@@ -92,14 +90,9 @@ impl EventLog {
                         } else {
                             format!("{query} AND {predicate} ORDER BY {column} LIMIT 2")
                         };
-                        let mut read =
-                            sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
-                                .bind(&session)
-                                .bind(address.id());
-                        if let Some(upper) = &upper {
-                            read = read.bind(upper);
-                        }
-                        let matches = read.fetch_all(&mut *tx).await?;
+                        let mut parameters = vec![session.as_str(), address.id()];
+                        if let Some(upper) = &upper { parameters.push(upper); }
+                        let matches = tx.prepare_cached(&sql)?.query_map(rusqlite::params_from_iter(parameters), |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
                         match matches.len() {
                             0 => {}
                             1 => {
@@ -111,7 +104,7 @@ impl EventLog {
                         }
                     }
                     Ok(None)
-                })
+
             })
             .await
     }

@@ -179,7 +179,18 @@ async fn failed_live_initializer_preserves_healthy_instances_and_later_revision_
     let (_dir, _namespaces, store) = store().await;
     tokio::time::timeout(Duration::from_secs(20), async {
         const INITIALIZER_SECRET: &str = "SECRET_REAL_JS_INITIALIZER_EXCEPTION";
-        let (mut capture, _log_guard) = log_capture();
+        use tracing_subscriber::{Layer, layer::SubscriberExt};
+        let mut capture = tempfile::tempfile().unwrap();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(capture.try_clone().unwrap())
+                .with_ansi(false)
+                .without_time()
+                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.is_event() && *metadata.level() <= tracing::Level::WARN
+                })),
+        );
+        let _log_guard = tracing::subscriber::set_default(subscriber);
         let provider = native_package();
         let consumer = consumer();
         let deployment = Uuid::new_v4();
@@ -334,7 +345,11 @@ async fn failed_live_initializer_preserves_healthy_instances_and_later_revision_
             })
             .expect("actual JavaScript initializer failure must retain a safe Host cause");
         assert!(event.contains("WARN"));
-        assert!(event.contains("state_domain=") && event.contains(&failed_identity.state_domain));
+        assert!(
+            event.contains("state_domain=") && event.contains(&failed_identity.state_domain),
+            "initializer evidence must identify the actual failed state domain {}: {event}\nfull capture: {log}",
+            failed_identity.state_domain,
+        );
         for identity in [
             format!("instance_id={:?}", id(1)),
             format!("deployment_id={}", failed_identity.deployment),

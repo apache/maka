@@ -26,7 +26,6 @@ use maka_event_log::{
     artifacts::{ArtifactDeletion, ArtifactReadScope},
 };
 use serde_json::json;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 fn artifact(id: &str, bytes: &[u8]) -> Artifact {
     Artifact {
@@ -201,17 +200,13 @@ async fn immutable_uploads_are_scoped_bounded_and_reopen_with_atomic_catalog_cha
     assert_eq!(log.prefix(1, 1024).await.unwrap().high_water, 0);
     log.close().await.unwrap();
 
-    let mut observer = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-        .await
-        .unwrap();
+    let observer = rusqlite::Connection::open(&path).unwrap();
     let stored: (String, Vec<u8>) =
-        sqlx::query_as("SELECT record_json, payload FROM artifacts JOIN contents USING(content_sha256) WHERE artifacts.id = 'first'")
-            .fetch_one(&mut observer)
-            .await
+        observer.query_row("SELECT record_json, payload FROM artifacts JOIN contents USING(content_sha256) WHERE artifacts.id = 'first'", rusqlite::params![], |row| Ok((row.get(0)?,row.get(1)?)))
             .unwrap();
     assert_eq!(serde_json::from_str::<Artifact>(&stored.0).unwrap(), first);
     assert_eq!(stored.1, bytes);
-    observer.close().await.unwrap();
+    observer.close().unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(
         log.list_artifacts("session", 0, 128)
@@ -249,25 +244,25 @@ async fn catalog_fault_rolls_back_payload_metadata_and_delete_as_one_commit() {
         .await
         .unwrap();
     let before = log.list_artifacts("session", 0, 128).await.unwrap();
-    let mut observer = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-        .await
-        .unwrap();
-    sqlx::raw_sql(
-        "CREATE TRIGGER reject_artifact_revision BEFORE INSERT ON artifact_catalog
+    let observer = rusqlite::Connection::open(&path).unwrap();
+    observer
+        .execute_batch(
+            "CREATE TRIGGER reject_artifact_revision BEFORE INSERT ON artifact_catalog
         BEGIN SELECT RAISE(ABORT, 'injected revision fault'); END;",
-    )
-    .execute(&mut observer)
-    .await
-    .unwrap();
+        )
+        .unwrap();
     let record = artifact("artifact", b"content");
     assert!(
         log.commit_artifact(record.clone(), b"content".to_vec())
             .await
             .is_err()
     );
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifacts")
-        .fetch_one(&mut observer)
-        .await
+    let count: i64 = observer
+        .query_row(
+            "SELECT COUNT(*) FROM artifacts",
+            rusqlite::params![],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(
         count, 0,
@@ -280,21 +275,19 @@ async fn catalog_fault_rolls_back_payload_metadata_and_delete_as_one_commit() {
             .revision,
         before.revision
     );
-    sqlx::raw_sql("DROP TRIGGER reject_artifact_revision")
-        .execute(&mut observer)
-        .await
+    observer
+        .execute_batch("DROP TRIGGER reject_artifact_revision")
         .unwrap();
     log.commit_artifact(record.clone(), b"content".to_vec())
         .await
         .unwrap();
     let committed = log.list_artifacts("session", 0, 128).await.unwrap();
-    sqlx::raw_sql(
-        "CREATE TRIGGER reject_artifact_revision BEFORE INSERT ON artifact_catalog
+    observer
+        .execute_batch(
+            "CREATE TRIGGER reject_artifact_revision BEFORE INSERT ON artifact_catalog
         BEGIN SELECT RAISE(ABORT, 'injected deletion revision fault'); END;",
-    )
-    .execute(&mut observer)
-    .await
-    .unwrap();
+        )
+        .unwrap();
     assert!(
         log.delete_user_artifact("session", "artifact")
             .await
@@ -322,7 +315,7 @@ async fn catalog_fault_rolls_back_payload_metadata_and_delete_as_one_commit() {
             .revision,
         committed.revision
     );
-    observer.close().await.unwrap();
+    observer.close().unwrap();
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(

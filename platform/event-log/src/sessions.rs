@@ -44,8 +44,8 @@ pub use execution::{CatalogMessage, SessionExecution, SessionExecutionState};
 pub(crate) use execution::{advance_revision, has_active_invocation};
 pub use metadata::SessionMutation;
 pub use read_state::SessionReadState;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::{EventLog, StoreError};
 
@@ -186,15 +186,15 @@ impl EventLog {
         id: &str,
         fingerprint: &str,
     ) -> Result<Option<SessionRecord<T>>, StoreError> {
-        self.validate_root()?;
         validate_id(id)?;
         let (id, fingerprint) = (id.to_owned(), fingerprint.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    probe(&mut tx, &id, &fingerprint).await
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                probe(&tx, &id, &fingerprint)
             })
             .await
     }
@@ -238,29 +238,27 @@ impl EventLog {
         now: u64,
         origin: Option<PluginSession>,
     ) -> Result<SessionRecord<T>, StoreError> {
-        self.validate_root()?;
         validate_id(id)?;
         validate_time(now)?;
         let configuration = serde_json::to_string(configuration)?;
         let (id, fingerprint) = (id.to_owned(), fingerprint.to_owned());
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    if let Some(record) = probe(&mut tx, &id, &fingerprint).await? {
-                        origin::check(&mut tx, &id, origin.as_ref()).await?;
-                        return Ok(record);
-                    }
-                    if let Some(origin) = &origin {
-                        origin::insert(&mut tx, origin).await?;
-                    }
-                    insert(&mut tx, &id, &fingerprint, &configuration, now).await?;
-                    let record = read(&mut tx, &id)
-                        .await?
-                        .ok_or(StoreError::SessionNotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(record)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                if let Some(record) = probe(&tx, &id, &fingerprint)? {
+                    origin::check(&tx, &id, origin.as_ref())?;
+                    return Ok(record);
+                }
+                if let Some(origin) = &origin {
+                    origin::insert(&tx, origin)?;
+                }
+                insert(&tx, &id, &fingerprint, &configuration, now)?;
+                let record = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(record)
             })
             .await
     }
@@ -269,21 +267,19 @@ impl EventLog {
     /// removing hides it before physical cleanup. This is not caller authorization
     /// or admission for new work, and does not decode the Session's metadata.
     pub async fn session_is_available(&self, id: &str) -> Result<bool, StoreError> {
-        self.validate_root()?;
         validate_id(id)?;
         let id = id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    Ok(sqlx::query_scalar(
+                {
+                    Ok(connection.query_row(
                         "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?1)
                          AND NOT EXISTS(SELECT 1 FROM session_retirements
                                         WHERE session_id = ?1 AND remove_session != 0)",
-                    )
-                    .bind(id)
-                    .fetch_one(connection)
-                    .await?)
-                })
+                        params![id],
+                        |row| row.get(0),
+                    )?)
+                }
             })
             .await
     }
@@ -292,21 +288,18 @@ impl EventLog {
         &self,
         id: &str,
     ) -> Result<Option<SessionRecord<T>>, StoreError> {
-        self.validate_root()?;
         validate_id(id)?;
         let id = id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    if removal::read(&mut tx, &id)
-                        .await?
-                        .is_some_and(SessionRetirement::removes)
-                    {
-                        return Ok(None);
-                    }
-                    read(&mut tx, &id).await
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                if removal::read(&tx, &id)?.is_some_and(SessionRetirement::removes) {
+                    return Ok(None);
+                }
+                read(&tx, &id)
             })
             .await
     }
@@ -346,8 +339,8 @@ impl EventLog {
     }
 }
 
-pub(crate) async fn insert(
-    tx: &mut SqliteConnection,
+pub(crate) fn insert(
+    tx: &rusqlite::Connection,
     id: &str,
     fingerprint: &str,
     configuration: &str,
@@ -360,8 +353,7 @@ pub(crate) async fn insert(
     // attachment epoch is stale, not an arithmetic error that poisons recovery.
     let configuration_value: serde_json::Value = serde_json::from_str(configuration)?;
     if let Some(reference) = crate::workspace_bindings::attached(&configuration_value)? {
-        let binding =
-            crate::workspace_bindings::read::<serde_json::Value>(tx, reference.id).await?;
+        let binding = crate::workspace_bindings::read::<serde_json::Value>(tx, reference.id)?;
         let rejection = match binding {
             None => Some(crate::root_store::CreationRejection::MissingWorkspaceBinding),
             Some(binding) if binding.reference() != reference => {
@@ -376,16 +368,17 @@ pub(crate) async fn insert(
             return Err(StoreError::SessionCreationRejected(rejection));
         }
     }
-    let reserved: Option<String> =
-        sqlx::query_scalar("SELECT fingerprint FROM plugin_sessions WHERE session_id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let reserved: Option<String> = tx
+        .query_row(
+            "SELECT fingerprint FROM plugin_sessions WHERE session_id = ?",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
     if reserved.is_some_and(|reserved| reserved != fingerprint) {
         return Err(StoreError::SessionConflict);
     }
-    let inserted = sqlx::query(
-        "INSERT INTO session_control
+    let inserted = tx.execute("INSERT INTO session_control
          (id, fingerprint, revision, created_at, updated_at, archived, configuration, catalog_activity_at)
          SELECT ?1, ?2, 1, ?3, ?4, 0, ?5, COALESCE((
              SELECT message_at FROM catalog_messages INDEXED BY catalog_latest_message
@@ -398,73 +391,74 @@ pub(crate) async fn insert(
              CROSS JOIN event_log e ON e.sequence=p.sequence
              JOIN imported_invocations i ON i.invocation_id=e.invocation_id
              WHERE p.kind='session' AND p.owner=?1)
-           AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ?1 AND state != 'published')",
-    )
-    .bind(id)
-    .bind(fingerprint)
-    .bind(now as i64)
-    .bind(now as i64)
-    .bind(configuration)
-    .execute(&mut *tx)
-    .await?;
-    if inserted.rows_affected() != 1 {
+           AND NOT EXISTS (SELECT 1 FROM session_imports WHERE session_id = ?1 AND state != 'published')", params![id, fingerprint, now as i64, now as i64, configuration])
+    ?;
+    if inserted != 1 {
         return Err(StoreError::SessionConflict);
     }
-    advance_catalog(tx).await
+    advance_catalog(tx)
 }
 
-pub(crate) async fn read<T: DeserializeOwned>(
-    connection: &mut SqliteConnection,
+pub(crate) fn read<T: DeserializeOwned>(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Option<SessionRecord<T>>, StoreError> {
-    let raw = sqlx::query(
-        "SELECT id, revision, created_at, updated_at, archived, configuration,
+    let raw = connection
+        .query_row(
+            "SELECT id, revision, created_at, updated_at, archived, configuration,
             (SELECT lineage_json FROM session_history_copies WHERE session_id = id),
             (SELECT state FROM session_history_copies WHERE session_id = id)
          FROM session_control WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&mut *connection)
-    .await?;
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()?;
     if let Some(row) = raw {
-        let configuration: String = row.try_get(5)?;
+        let configuration: String = row.5;
         let configuration_digest =
             maka_agent_facts::artifact::content_digest(configuration.as_bytes());
         let configuration_value: serde_json::Value = serde_json::from_str(&configuration)?;
         let workspace_binding =
-            crate::workspace_bindings::resolve(connection, &configuration_value).await?;
+            crate::workspace_bindings::resolve(connection, &configuration_value)?;
         let revision = crate::workspace_bindings::effective_revision(
-            number(&row, 1)?,
+            number(row.1)?,
             &configuration_value,
             workspace_binding.as_ref(),
         )?;
         let configuration = serde_json::from_value(configuration_value)?;
-        let lineage = row
-            .try_get::<Option<String>, _>(6)?
-            .map(|json| serde_json::from_str(&json))
-            .transpose()?;
+        let lineage = row.6.map(|json| serde_json::from_str(&json)).transpose()?;
         let copy_state = row
-            .try_get::<Option<String>, _>(7)?
+            .7
             .map(|state| state.parse().map_err(invalid))
             .transpose()?;
-        let execution = execution::read(connection, id).await?;
-        let last_message = execution::last_message(connection, id).await?;
-        let read_state = read_state::read(connection, id).await?;
-        let pending_since: Option<i64> = sqlx::query_scalar(
+        let execution = execution::read(connection, id)?;
+        let last_message = execution::last_message(connection, id)?;
+        let read_state = read_state::read(connection, id)?;
+        let pending_since: Option<i64> = connection.query_row(
             "SELECT MIN(created_at) FROM interaction_pending WHERE session_id = ?",
-        )
-        .bind(id)
-        .fetch_one(&mut *connection)
-        .await?;
+            params![id],
+            |row| row.get(0),
+        )?;
         let pending_interaction_since = pending_since
             .map(|time| u64::try_from(time).map_err(|_| invalid("invalid interaction timestamp")))
             .transpose()?;
         Ok(Some(SessionRecord {
-            id: row.try_get(0)?,
+            id: row.0,
             revision,
-            created_at: number(&row, 2)?,
-            updated_at: number(&row, 3)?,
-            archived: row.try_get(4)?,
+            created_at: number(row.2)?,
+            updated_at: number(row.3)?,
+            archived: row.4,
             configuration,
             workspace_binding,
             configuration_digest,
@@ -480,10 +474,8 @@ pub(crate) async fn read<T: DeserializeOwned>(
     }
 }
 
-pub(crate) async fn advance_catalog(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    if sqlx::query(
-        "UPDATE session_catalog_revision SET revision = revision + 1 WHERE singleton = 1 AND revision < ?",
-    ).bind(MAX_SAFE_INTEGER as i64).execute(connection).await?.rows_affected() != 1 {
+pub(crate) fn advance_catalog(connection: &rusqlite::Connection) -> Result<(), StoreError> {
+    if connection.execute("UPDATE session_catalog_revision SET revision = revision + 1 WHERE singleton = 1 AND revision < ?", params![MAX_SAFE_INTEGER as i64])? != 1 {
         return Err(invalid("session catalog revision exhausted"));
     }
     Ok(())
@@ -511,30 +503,31 @@ fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
 }
 
-fn number(row: &sqlx::sqlite::SqliteRow, column: usize) -> Result<u64, StoreError> {
-    let value: i64 = row.try_get(column)?;
+fn number(value: i64) -> Result<u64, StoreError> {
     if value < 0 || value > MAX_SAFE_INTEGER as i64 {
         return Err(invalid("stored session number exceeds safe integer range"));
     }
     Ok(value as u64)
 }
 
-async fn probe<T: DeserializeOwned>(
-    connection: &mut SqliteConnection,
+fn probe<T: DeserializeOwned>(
+    connection: &rusqlite::Connection,
     id: &str,
     fingerprint: &str,
 ) -> Result<Option<SessionRecord<T>>, StoreError> {
-    removal::require_accepting(connection, id).await?;
+    removal::require_accepting(connection, id)?;
     if fingerprint.is_empty() {
         return Err(invalid("invalid session fingerprint"));
     }
-    let previous: Option<String> =
-        sqlx::query_scalar("SELECT fingerprint FROM session_control WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let previous: Option<String> = connection
+        .query_row(
+            "SELECT fingerprint FROM session_control WHERE id = ?",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
     if previous.is_some_and(|previous| previous != fingerprint) {
         return Err(StoreError::SessionConflict);
     }
-    read(connection, id).await
+    read(connection, id)
 }

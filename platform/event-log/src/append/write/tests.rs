@@ -171,11 +171,9 @@ async fn gate(log: &Arc<EventLog>) -> (oneshot::Sender<()>, tokio::task::JoinHan
     let job = tokio::spawn(async move {
         log.connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    gate.await.unwrap();
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                gate.blocking_recv().unwrap();
+                Ok(())
             })
             .await
             .unwrap();
@@ -187,13 +185,11 @@ async fn gate(log: &Arc<EventLog>) -> (oneshot::Sender<()>, tokio::task::JoinHan
     (release, job)
 }
 
-async fn hook(log: &EventLog, callback: impl FnMut() -> bool + Send + 'static) {
+async fn hook(log: &EventLog, mut callback: impl FnMut() -> bool + Send + 'static) {
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                db.lock_handle().await?.set_commit_hook(callback);
-                Ok(())
-            })
+            db.commit_hook(Some(move || !callback())).unwrap();
+            Ok(())
         })
         .await
         .unwrap();
@@ -413,7 +409,7 @@ async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejectio
 }
 
 #[tokio::test]
-async fn savepoint_failures_abort_the_group_and_close_without_running_control() {
+async fn savepoint_failures_roll_back_the_group_and_allow_later_operations() {
     unsafe extern "C" fn deny_savepoint(
         mode: *mut std::ffi::c_void,
         action: std::ffi::c_int,
@@ -442,14 +438,13 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
         let log = open(&path).await;
         log.connection
             .run(move |db| {
-                Box::pin(async move {
-                    let mut handle = db.lock_handle().await?;
+                {
                     // SAFETY: static callback; mode is an integer tag, never dereferenced.
                     // The exclusive handle is borrowed only for installing SQLite's authorizer.
                     assert_eq!(
                         unsafe {
                             rusqlite::ffi::sqlite3_set_authorizer(
-                                handle.as_raw_handle().as_mut(),
+                                db.handle(),
                                 Some(deny_savepoint),
                                 mode as *mut std::ffi::c_void,
                             )
@@ -457,7 +452,7 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
                         rusqlite::ffi::SQLITE_OK
                     );
                     Ok(())
-                })
+                }
             })
             .await
             .unwrap();
@@ -474,10 +469,14 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
         assert!(futures_util::poll!(&mut a).is_pending());
         assert!(futures_util::poll!(&mut b).is_pending());
         assert!(futures_util::poll!(&mut c).is_pending());
-        let mut control = Box::pin(log.connection.run::<()>(|_| {
-            Box::pin(async {
-                panic!("failed savepoint must retire the owner before pending control")
-            })
+        let mut control = Box::pin(log.connection.run::<()>(|db| {
+            // SAFETY: this original connection owns the callback; removing it
+            // prevents the injected authorizer from affecting the recovery write.
+            let result = unsafe {
+                rusqlite::ffi::sqlite3_set_authorizer(db.handle(), None, std::ptr::null_mut())
+            };
+            assert_eq!(result, rusqlite::ffi::SQLITE_OK);
+            Ok(())
         }));
         assert!(futures_util::poll!(&mut control).is_pending());
         release.send(()).unwrap();
@@ -488,26 +487,24 @@ async fn savepoint_failures_abort_the_group_and_close_without_running_control() 
                 "outer rollback confirmed: {result:?}"
             );
         }
-        assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
-        log.connection.shutdown().await.unwrap();
+        control.await.unwrap();
         assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
-        let reopened = EventLog::open(&path).await.unwrap();
-        assert_eq!(reopened.append_batch(&first).await.unwrap(), [4]);
-        reopened.close().await.unwrap();
+        assert_eq!(log.append_batch(&first).await.unwrap(), [4]);
+        log.shutdown().await.unwrap();
+        assert_eq!(ids(&path), ["opened", "requested", "metadata", "first"]);
     }
 }
 
 #[tokio::test]
-async fn sqlite_automatic_rollback_is_not_falsely_reported_as_confirmed_rollback() {
+async fn sqlite_automatic_rollback_rejects_the_group_and_allows_later_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.sqlite");
     let log = open(&path).await;
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TEMP TRIGGER rollback_observation BEFORE INSERT ON event_log
-            WHEN NEW.event_id='poison' BEGIN SELECT RAISE(ROLLBACK, 'injected storage failure'); END;")
-            .execute(db).await?;
+    log.connection.run(|db| {
+        db.execute_batch("CREATE TEMP TRIGGER rollback_observation BEFORE INSERT ON event_log
+            WHEN NEW.event_id='poison' BEGIN SELECT RAISE(ROLLBACK, 'injected storage failure'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let (release, gate) = gate(&log).await;
     let first = [metadata("first", "one")];
     let poison = [metadata("poison", "two")];
@@ -520,22 +517,24 @@ async fn sqlite_automatic_rollback_is_not_falsely_reported_as_confirmed_rollback
     assert!(futures_util::poll!(&mut c).is_pending());
     release.send(()).unwrap();
     gate.await.unwrap();
-    assert!(matches!(a.await, Err(CommitError::OutcomeUnknown(_))));
-    assert!(matches!(b.await, Err(CommitError::OutcomeUnknown(_))));
-    assert!(
-        matches!(c.await, Err(CommitError::Rejected(_))),
-        "unstarted request has no uncertain write"
-    );
-    log.connection.shutdown().await.unwrap();
+    for result in [a.await, b.await, c.await] {
+        assert!(
+            matches!(result, Err(CommitError::Rejected(_))),
+            "automatic rollback confirmed: {result:?}"
+        );
+    }
     assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
+    assert_eq!(log.append_batch(&first).await.unwrap(), [4]);
+    assert_eq!(log.append_batch(&last).await.unwrap(), [5]);
+    log.connection.shutdown().await.unwrap();
+    assert_eq!(
+        ids(&path),
+        ["opened", "requested", "metadata", "first", "last"]
+    );
 }
 
 #[tokio::test]
 async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighbors() {
-    enum ControlAfterRollback {
-        RetiredObservation,
-        ReusableRun,
-    }
     let tool_poison = || {
         event(
             "poison",
@@ -549,34 +548,30 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             },
         )
     };
-    for (trigger, poison_event, control_after_rollback) in [
+    for (trigger, poison_event) in [
         (
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='session'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
             metadata("poison", "two"),
-            ControlAfterRollback::RetiredObservation,
         ),
         (
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='invocation'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
             metadata("poison", "two"),
-            ControlAfterRollback::RetiredObservation,
         ),
         (
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_obligations
          WHEN NEW.kind='tool' AND NEW.operation_id='poison'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
             tool_poison(),
-            ControlAfterRollback::ReusableRun,
         ),
         (
             "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_execution_work
          WHEN NEW.kind='tool' AND NEW.operation_id='poison'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
             tool_poison(),
-            ControlAfterRollback::ReusableRun,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -584,18 +579,17 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         let log = open(&path).await;
         log.connection
             .run(move |db| {
-                Box::pin(async move {
-                    sqlx::raw_sql(trigger).execute(db).await?;
-                    Ok(())
-                })
+                db.execute_batch(trigger)?;
+                Ok(())
             })
             .await
             .unwrap();
         let (release, blocked) = gate(&log).await;
         // Inspect the same typed receipts before EventSink intentionally maps
         // storage errors into its string-bearing CommitError API.
+        let first_event = metadata("first", "one");
         let mut first = Box::pin(log.connection.write(
-            WriteAppend::from_events(&[metadata("first", "one")]).unwrap(),
+            WriteAppend::from_events(std::slice::from_ref(&first_event)).unwrap(),
             log.commits.session("session"),
         ));
         let mut poison = Box::pin(log.connection.write(
@@ -612,10 +606,8 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
         let mut control = Box::pin(log.connection.run(move |_| {
-            Box::pin(async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }));
         assert!(futures_util::poll!(&mut control).is_pending());
         let mut commits = log.subscribe_commits();
@@ -623,46 +615,38 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
         release.send(()).unwrap();
         blocked.await.unwrap();
         for result in [first.await, poison.await, last.await] {
-            let StoreError::Sqlx(error) = result.unwrap_err() else {
-                panic!("projection must retain SQLx database family")
+            let error = result.unwrap_err();
+            let StoreError::Sqlite(error) = error.underlying() else {
+                panic!("projection must retain SQLite database error")
             };
-            let database = error
-                .as_database_error()
-                .expect("database error survived shared receipt");
-            let original = database
-                .as_error()
-                .source()
-                .and_then(|cause| cause.downcast_ref::<sqlx::sqlite::SqliteError>())
-                .expect("shared failure retains the original SQLite error");
-            assert_eq!(database.code(), sqlx::error::DatabaseError::code(original));
-            assert_eq!(database.message(), "projection storage fault");
+            let rusqlite::Error::SqliteFailure(code, message) = error else {
+                panic!("expected SQLite failure")
+            };
+            assert_eq!(code.code, rusqlite::ErrorCode::ConstraintViolation);
+            assert_eq!(message.as_deref(), Some("projection storage fault"));
         }
-        match control_after_rollback {
-            ControlAfterRollback::RetiredObservation => {
-                assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
-                assert_eq!(
-                    calls.load(Ordering::SeqCst),
-                    0,
-                    "failed observation owner must retire before pending control"
-                );
-            }
-            ControlAfterRollback::ReusableRun => {
-                control.await.unwrap();
-                assert_eq!(
-                    calls.load(Ordering::SeqCst),
-                    1,
-                    "confirmed Run rollback must permit the pending control"
-                );
-            }
-        }
+        control.await.unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "confirmed rollback must permit the pending control"
+        );
         assert!(!commits.has_changed().unwrap());
-        log.connection.shutdown().await.unwrap();
         assert_eq!(ids(&path), ["opened", "requested", "metadata"]);
+        assert_projection_positions(&path);
+        assert_eq!(
+            log.append_batch(std::slice::from_ref(&first_event))
+                .await
+                .unwrap(),
+            [4]
+        );
+        log.shutdown().await.unwrap();
+        assert_eq!(ids(&path), ["opened", "requested", "metadata", "first"]);
         assert_projection_positions(&path);
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(
             reopened
-                .append_batch(&[metadata("first", "one")])
+                .append_batch(std::slice::from_ref(&first_event))
                 .await
                 .unwrap(),
             [4]
@@ -768,20 +752,24 @@ async fn derived_tool_part_admission_work_is_independent_of_settled_history() {
         let work = log
             .connection
             .run(move |db| {
-                Box::pin(async move {
+                {
                     // Install inside this operation: the connection's cancellation
                     // handler is installed before it invokes this callback.
                     let steps = Arc::new(AtomicUsize::new(0));
                     let counter = steps.clone();
-                    db.lock_handle().await?.set_progress_handler(1, move || {
-                        counter.fetch_add(1, Ordering::Relaxed);
-                        true
-                    });
-                    let result = crate::model_items::validate(db, &candidate_event).await;
-                    db.lock_handle().await?.remove_progress_handler();
+                    db.progress_handler(
+                        1,
+                        Some(move || {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                            false
+                        }),
+                    )
+                    .unwrap();
+                    let result = crate::model_items::validate(db, &candidate_event);
+                    db.progress_handler(0, None::<fn() -> bool>).unwrap();
                     result?;
                     Ok(steps.load(Ordering::Relaxed))
-                })
+                }
             })
             .await
             .unwrap();

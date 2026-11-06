@@ -28,7 +28,7 @@ use maka_agent_facts::accounting::Summary;
 use maka_agent_facts::accounting::Tokens;
 use maka_agent_facts::accounting::ToolSummary;
 use maka_agent_facts::accounting::ToolTotals;
-use sqlx::{Connection, QueryBuilder, Row, Sqlite, sqlite::SqliteRow};
+use rusqlite::params;
 
 /// Same canonical fence as activity paging, without activity-only filters.
 pub struct Report {
@@ -76,21 +76,37 @@ impl EventLog {
         key_order: bool,
         totals_only: bool,
     ) -> Result<Report, StoreError> {
-        self.validate_root()?;
         query.validate()?;
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let through = query.fence(&mut tx).await?;
-                    let mut models = QueryBuilder::<Sqlite>::new("SELECT ");
-                    models.push(MODELS);
-                    query.restrict(&mut models, through);
-                    let model_row = models.build().fetch_one(&mut *tx).await?;
-                    let mut tools = QueryBuilder::<Sqlite>::new("SELECT ");
-                    tools.push(TOOLS);
-                    query.restrict(&mut tools, through);
-                    let tool_row = tools.build().fetch_one(&mut *tx).await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Deferred,
+                    )?;
+                    let through = query.fence(&tx)?;
+                    let model_totals = {
+                        let mut statement =
+                            tx.prepare_cached(&format!("SELECT {MODELS}{}", query.predicate()))?;
+                        let mut rows = statement.query(params![
+                            query.from,
+                            query.to,
+                            through as i64,
+                            query.session_id
+                        ])?;
+                        read_models(rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?)?
+                    };
+                    let tool_totals = {
+                        let mut statement =
+                            tx.prepare_cached(&format!("SELECT {TOOLS}{}", query.predicate()))?;
+                        let mut rows = statement.query(params![
+                            query.from,
+                            query.to,
+                            through as i64,
+                            query.session_id
+                        ])?;
+                        read_tools(rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?)?
+                    };
                     let selection = GroupSelection {
                         page,
                         after: after.as_ref(),
@@ -99,55 +115,49 @@ impl EventLog {
                     };
                     let mut summary = Summary {
                         pending: Pending {
-                            models: pending(&mut tx, &query, through, "model_usage", "started_at")
-                                .await?,
+                            models: pending(&tx, &query, through, "model_usage", "started_at")?,
                             tools: pending(
-                                &mut tx,
+                                &tx,
                                 &query,
                                 through,
                                 "tool_usage",
                                 "json_extract(result, '$.startedAt')",
-                            )
-                            .await?,
+                            )?,
                         },
-                        models: read_models(&model_row)?,
-                        tools: read_tools(&tool_row)?,
+                        models: model_totals,
+                        tools: tool_totals,
                         by_provider: groups(
-                            &mut tx,
+                            &tx,
                             &query,
                             through,
                             Group::ByProvider,
                             &selection,
-                        )
-                        .await?
-                        .iter()
-                        .map(|row| {
-                            Ok(ProviderSummary {
-                                provider_id: row.try_get("key")?,
-                                totals: read_models(row)?,
-                            })
-                        })
-                        .collect::<Result<_, StoreError>>()?,
-                        by_model: groups(&mut tx, &query, through, Group::ByModel, &selection)
-                            .await?
-                            .iter()
-                            .map(|row| {
-                                Ok(ModelSummary {
-                                    model_id: row.try_get("key")?,
+                            |row| {
+                                Ok(ProviderSummary {
+                                    provider_id: row.get("key")?,
                                     totals: read_models(row)?,
                                 })
-                            })
-                            .collect::<Result<_, StoreError>>()?,
-                        by_tool: groups(&mut tx, &query, through, Group::ByTool, &selection)
-                            .await?
-                            .iter()
-                            .map(|row| {
-                                Ok(ToolSummary {
-                                    name: row.try_get("key")?,
-                                    totals: read_tools(row)?,
+                            },
+                        )?,
+                        by_model: groups(
+                            &tx,
+                            &query,
+                            through,
+                            Group::ByModel,
+                            &selection,
+                            |row| {
+                                Ok(ModelSummary {
+                                    model_id: row.get("key")?,
+                                    totals: read_models(row)?,
                                 })
+                            },
+                        )?,
+                        by_tool: groups(&tx, &query, through, Group::ByTool, &selection, |row| {
+                            Ok(ToolSummary {
+                                name: row.get("key")?,
+                                totals: read_tools(row)?,
                             })
-                            .collect::<Result<_, StoreError>>()?,
+                        })?,
                     };
                     let mut next_offset = None;
                     if let Some((group, offset)) = page
@@ -178,13 +188,13 @@ impl EventLog {
                             next_offset = Some(offset + len as u64 - 1);
                         }
                     }
-                    tx.commit().await?;
+                    tx.commit()?;
                     Ok(Report {
                         through,
                         summary,
                         next_offset,
                     })
-                })
+                }
             })
             .await
     }
@@ -197,13 +207,14 @@ struct GroupSelection<'a> {
     totals_only: bool,
 }
 
-async fn groups(
-    connection: &mut sqlx::SqliteConnection,
+fn groups<T>(
+    connection: &rusqlite::Connection,
     query: &Query,
     through: u64,
     group: Group,
     selection: &GroupSelection<'_>,
-) -> Result<Vec<SqliteRow>, StoreError> {
+    read: impl Fn(&rusqlite::Row<'_>) -> Result<T, StoreError>,
+) -> Result<Vec<T>, StoreError> {
     let GroupSelection {
         page,
         after,
@@ -218,67 +229,64 @@ async fn groups(
     if totals_only || page.is_some_and(|(selected, _)| selected != group) {
         return Ok(vec![]);
     }
-    let mut sql = QueryBuilder::<Sqlite>::new("SELECT ");
-    // Bound the transferred identity before SQLite materializes the result row.
-    // An oversized group is rejected below; it is never silently coalesced.
-    sql.push("CASE WHEN length(CAST(")
-        .push(key)
-        .push(" AS BLOB)) <= 49152 THEN ")
-        .push(key)
-        .push(" END AS key, MAX(length(CAST(")
-        .push(key)
-        .push(" AS BLOB))) AS key_bytes, ")
-        .push(columns);
-    query.restrict(&mut sql, through);
+    let mut sql = format!(
+        "SELECT CASE WHEN length(CAST({key} AS BLOB)) <= 49152 THEN {key}
+        END AS key, MAX(length(CAST({key} AS BLOB))) AS key_bytes, {columns}{}",
+        query.predicate()
+    );
+    let mut values = vec![
+        rusqlite::types::Value::Real(query.from),
+        rusqlite::types::Value::Real(query.to),
+        rusqlite::types::Value::Integer(through as i64),
+        query
+            .session_id
+            .clone()
+            .map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text),
+    ];
     if let Some(after) = after {
-        sql.push(" AND ").push(key);
         if let Some(after) = after {
-            sql.push(" > ").push_bind(after.clone());
+            sql.push_str(&format!(" AND {key} > ?5"));
+            values.push(rusqlite::types::Value::Text(after.clone()));
         } else {
-            sql.push(" IS NOT NULL");
+            sql.push_str(&format!(" AND {key} IS NOT NULL"));
         }
     }
-    sql.push(if key_order {
+    sql.push_str(if key_order {
         " GROUP BY key ORDER BY key"
     } else {
         " GROUP BY key ORDER BY calls DESC, key"
     });
-    if page.is_some() {
-        sql.push(" LIMIT ").push_bind(33);
-    }
     if let Some((_, offset)) = page {
-        sql.push(" OFFSET ").push_bind(offset as i64);
+        sql.push_str(&format!(" LIMIT 33 OFFSET ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Integer(offset as i64));
     }
-    let rows = sql.build().fetch_all(connection).await?;
-    Ok(rows)
+    let mut statement = connection.prepare_cached(&sql)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+    let mut groups = Vec::new();
+    while let Some(row) = rows.next()? {
+        groups.push(read(row)?);
+    }
+    Ok(groups)
 }
 
-async fn pending(
-    connection: &mut sqlx::SqliteConnection,
+fn pending(
+    connection: &rusqlite::Connection,
     query: &Query,
     through: u64,
     table: &'static str,
     started: &'static str,
 ) -> Result<u64, StoreError> {
-    let mut sql = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS calls FROM ");
-    sql.push(table)
-        .push(" WHERE ")
-        .push(started)
-        .push(" >= ")
-        .push_bind(query.from)
-        .push(" AND ")
-        .push(started)
-        .push(" <= ")
-        .push_bind(query.to)
-        .push(" AND sequence <= ")
-        .push_bind(through as i64)
-        .push(" AND (completed_sequence IS NULL OR completed_sequence > ")
-        .push_bind(through as i64)
-        .push(")");
-    if let Some(session) = &query.session_id {
-        sql.push(" AND session_id = ").push_bind(session.clone());
-    }
-    count(&sql.build().fetch_one(connection).await?, "calls")
+    let count: i64 = connection.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM {table}
+        WHERE {started} >= ?1 AND {started} <= ?2 AND sequence <= ?3
+        AND (completed_sequence IS NULL OR completed_sequence > ?3)
+        AND (?4 IS NULL OR session_id = ?4)"
+        ),
+        params![query.from, query.to, through as i64, query.session_id],
+        |row| row.get(0),
+    )?;
+    checked_count(count)
 }
 
 const MODELS: &str = "COUNT(*) AS calls,
@@ -313,53 +321,57 @@ const TOOLS: &str = "COUNT(*) AS calls,
         THEN MAX(completed_at - json_extract(result, '$.startedAt'), 0.0) END) AS latency
     FROM tool_usage";
 
-fn read_models(row: &SqliteRow) -> Result<ModelTotals, StoreError> {
+fn read_models(row: &rusqlite::Row<'_>) -> Result<ModelTotals, StoreError> {
     Ok(ModelTotals {
         calls: count(row, "calls")?,
         success: count(row, "success")?,
         error: count(row, "error")?,
         aborted: count(row, "aborted")?,
         unknown: count(row, "unknown")?,
-        duration_ms: finite(row.try_get("duration")?)?,
+        duration_ms: finite(row.get("duration")?)?,
         input: tokens(row, "input", "input_missing")?,
         output: tokens(row, "output", "output_missing")?,
         cache_read: tokens(row, "cache_read", "cache_read_missing")?,
         cache_write: tokens(row, "cache_write", "cache_write_missing")?,
         reasoning: tokens(row, "reasoning", "reasoning_missing")?,
         cost: Cost {
-            known_usd: finite(row.try_get("usd")?)?,
+            known_usd: finite(row.get("usd")?)?,
             unvalued: count(row, "unvalued")?,
             unpriced: count(row, "unpriced")?,
         },
     })
 }
-fn read_tools(row: &SqliteRow) -> Result<ToolTotals, StoreError> {
+fn read_tools(row: &rusqlite::Row<'_>) -> Result<ToolTotals, StoreError> {
     Ok(ToolTotals {
         calls: count(row, "calls")?,
         success: count(row, "success")?,
         error: count(row, "error")?,
         unknown: count(row, "unknown")?,
         rejected: count(row, "rejected")?,
-        duration_ms: finite(row.try_get("duration")?)?,
+        duration_ms: finite(row.get("duration")?)?,
         mean_latency_ms: row
-            .try_get::<Option<f64>, _>("latency")?
+            .get::<_, Option<f64>>("latency")?
             .map(finite)
             .transpose()?,
     })
 }
 const MAX_NUMBER: u64 = (1 << 53) - 1;
 
-fn count(row: &SqliteRow, column: &str) -> Result<u64, StoreError> {
-    let value = crate::sequence_number(row.try_get(column)?)?;
+fn count(row: &rusqlite::Row<'_>, column: &str) -> Result<u64, StoreError> {
+    checked_count(row.get(column)?)
+}
+
+fn checked_count(value: i64) -> Result<u64, StoreError> {
+    let value = crate::sequence_number(value)?;
     if value > MAX_NUMBER {
         return Err(invalid("Usage aggregate exceeds exact integer capacity"));
     }
     Ok(value)
 }
-fn tokens(row: &SqliteRow, value: &str, missing: &str) -> Result<Tokens, StoreError> {
+fn tokens(row: &rusqlite::Row<'_>, value: &str, missing: &str) -> Result<Tokens, StoreError> {
     // SQLite's TOTAL avoids signed-integer overflow on provider u64 counters.
     // Only exact interoperable integer totals are exposed; overflow is not zero.
-    let known = finite(row.try_get(value)?)?;
+    let known = finite(row.get(value)?)?;
     if known > MAX_NUMBER as f64 || known.fract() != 0.0 {
         return Err(invalid("Usage aggregate exceeds exact integer capacity"));
     }

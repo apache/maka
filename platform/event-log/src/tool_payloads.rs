@@ -25,9 +25,8 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_output::ToolOutput;
 use maka_agent_facts::tool_output::decode_raw_tool_result;
-pub(crate) use material::encode;
+pub(crate) use material::{PreparedToolMaterial, encode};
 use rusqlite::{Connection as RawConnection, OptionalExtension};
-use sqlx::{Connection, SqliteConnection};
 
 use crate::{EventLog, StoreError};
 
@@ -80,63 +79,103 @@ pub(crate) fn verify_binding(event: &RuntimeEvent, bytes: Option<i64>) -> Result
     Ok(())
 }
 
-pub(crate) async fn insert(
-    connection: &mut SqliteConnection,
-    write: &EventWrite,
-) -> Result<(), StoreError> {
-    if let Fact::ToolSettled {
-        outcome: ToolOutcome::Succeeded { artifacts, .. },
-        ..
-    } = &write.event().fact
-        && *artifacts
-            != write
-                .projection_artifacts()
-                .iter()
-                .map(|a| a.evidence())
-                .collect::<Vec<_>>()
-    {
+pub(crate) struct PreparedToolWrite {
+    raw: Option<PreparedToolMaterial>,
+    artifacts: Vec<crate::artifacts::PreparedArtifact>,
+}
+
+fn projection_evidence(write: &EventWrite) -> &[maka_agent_facts::artifact::ArtifactEvidence] {
+    match &write.event().fact {
+        Fact::ToolSettled {
+            outcome: ToolOutcome::Succeeded { artifacts, .. },
+            ..
+        } => artifacts,
+        _ => &[],
+    }
+}
+
+pub(crate) fn prepare(write: &EventWrite) -> Result<PreparedToolWrite, StoreError> {
+    let raw = if let Some(bytes) = write.raw_payload() {
+        let Fact::ToolSettled {
+            outcome: ToolOutcome::Succeeded { raw, .. },
+            ..
+        } = &write.event().fact
+        else {
+            return Err(invalid());
+        };
+        Some(PreparedToolMaterial::new(bytes, &raw.digest)?)
+    } else {
+        None
+    };
+    let evidence = projection_evidence(write);
+    if evidence.len() != write.projection_artifacts().len() {
         return Err(invalid());
     }
-    if let Some(payload) = write.raw_payload() {
-        store_raw(connection, &write.event().id, payload).await?;
+    let artifacts = write
+        .projection_artifacts()
+        .iter()
+        .zip(evidence)
+        .map(|(pending, evidence)| {
+            let artifact = pending.artifact();
+            if artifact.source != ArtifactSource::ToolResultProjection
+                || artifact.session_id != write.event().invocation.session_id
+                || artifact.turn_id != write.event().invocation.turn_id
+            {
+                return Err(invalid());
+            }
+            crate::artifacts::PreparedArtifact::from_projection(pending, evidence)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(PreparedToolWrite { raw, artifacts })
+}
+
+pub(crate) fn insert_prepared(
+    connection: &rusqlite::Connection,
+    write: &EventWrite,
+    prepared: PreparedToolWrite,
+) -> Result<(), StoreError> {
+    if let Some(raw) = prepared.raw {
+        raw.store(connection, &write.event().id)?;
     }
-    for pending in write.projection_artifacts() {
-        let artifact = pending.artifact();
-        if artifact.source != ArtifactSource::ToolResultProjection
-            || artifact.session_id != write.event().invocation.session_id
-            || artifact.turn_id != write.event().invocation.turn_id
-        {
-            return Err(invalid());
-        }
-        crate::artifacts::commit_in_transaction(connection, artifact.clone(), pending.bytes())
-            .await?;
+    for (artifact, pending) in prepared
+        .artifacts
+        .into_iter()
+        .zip(write.projection_artifacts())
+    {
+        crate::artifacts::commit_prepared(connection, artifact, pending.bytes())?;
     }
     Ok(())
 }
 
-pub(crate) async fn verify_replay(
-    connection: &mut SqliteConnection,
+pub(crate) fn verify_replay(
+    connection: &rusqlite::Connection,
     write: &EventWrite,
 ) -> Result<(), StoreError> {
-    let equal: Option<bool> =
-        sqlx::query_scalar("SELECT raw_digest = ? FROM tool_result_payloads WHERE event_id = ?")
-            .bind(
-                write
-                    .raw_payload()
-                    .map(maka_agent_facts::artifact::content_digest),
-            )
-            .bind(&write.event().id)
-            .fetch_optional(&mut *connection)
-            .await?;
-    if match write.raw_payload() {
-        Some(_) => equal != Some(true),
-        None => equal.is_some(),
-    } {
+    let stored: Option<String> = connection
+        .prepare_cached("SELECT raw_digest FROM tool_result_payloads WHERE event_id = ?")?
+        .query_row([&write.event().id], |row| row.get(0))
+        .optional()?;
+    let expected = match &write.event().fact {
+        Fact::ToolSettled {
+            outcome: ToolOutcome::Succeeded { raw, .. },
+            ..
+        } if write.raw_payload().is_some() => Some(raw.digest.as_str()),
+        _ => None,
+    };
+    if stored.as_deref() != expected {
         return Err(StoreError::EventConflict);
     }
-    for pending in write.projection_artifacts() {
-        crate::artifacts::verify_projection_replay(connection, pending.artifact(), pending.bytes())
-            .await?;
+    for (pending, evidence) in write
+        .projection_artifacts()
+        .iter()
+        .zip(projection_evidence(write))
+    {
+        crate::artifacts::verify_projection_replay(
+            connection,
+            pending.artifact(),
+            pending.bytes(),
+            &evidence.digest,
+        )?;
     }
     Ok(())
 }
@@ -189,41 +228,37 @@ impl EventLog {
         session_id: &str,
         event_id: &str,
     ) -> Result<ToolOutput, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session_id)?;
         let (session_id, event_id) = (session_id.to_owned(), event_id.to_owned());
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+                    let row = tx.prepare_cached(&(format!(
                         "SELECT e.event_header,{} FROM runtime_events e {} WHERE e.event_id=? AND e.kind='tool_settled'
                          AND json_extract(e.event_header,'$.invocation.session_id')=?",
                         crate::canonical::COLUMNS, crate::canonical::JOINS
-                    ))).bind(event_id).bind(session_id).fetch_optional(&mut *tx).await?
+                    )))?.query_row(rusqlite::params![event_id, session_id], |row| Ok(crate::canonical::json(row).map(|v|v.into_owned()))).optional()?
                         .ok_or_else(invalid)?;
-                    let event = serde_json::from_str::<RuntimeEvent>(&crate::canonical::json(&row)?)?;
-                    let output = tx
-                        .run_on_worker(move |handle| {
-                            // SAFETY: exclusive callback-local non-owning connection;
-                            // raw payload and result are owned, no SQLite object escapes.
-                            let borrowed = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                            borrowed.set_prepared_statement_cache_capacity(100);
-                            resolve_in_transaction(&borrowed, &event)
-                        })
-                        .await??;
-                    tx.commit().await?;
+                    let event = serde_json::from_str::<RuntimeEvent>(&row?)?;
+                    let output = resolve_in_transaction(&tx, &event)?;
+                    tx.commit()?;
                     Ok(output)
-                })
+                }
             })
             .await
     }
 }
 
-pub(crate) async fn store_raw(
-    connection: &mut SqliteConnection,
+pub(crate) fn store_raw(
+    connection: &rusqlite::Connection,
     event: &str,
     bytes: &[u8],
 ) -> Result<(), StoreError> {
-    material::store(connection, event, bytes).await
+    material::store(
+        connection,
+        event,
+        bytes,
+        &maka_agent_facts::artifact::content_digest(bytes),
+    )
 }

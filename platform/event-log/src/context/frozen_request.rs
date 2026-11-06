@@ -26,7 +26,7 @@ use maka_agent_facts::{
     context::ModelPurpose,
     event::{Fact, Invocation, InvocationInput, RuntimeEvent, StoredEvent},
 };
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 /// Read evidence only; this value neither authorizes replay nor restores custody.
 pub struct FrozenModelRequest {
@@ -45,31 +45,31 @@ impl EventLog {
         invocation: &Invocation,
         event_id: &str,
     ) -> Result<FrozenModelRequest, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(&invocation.session_id)?;
         crate::sessions::validate_id(event_id)?;
         let invocation = invocation.clone();
         let event_id = event_id.to_owned();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let frozen = read_in_transaction(&mut tx, &invocation, &event_id).await?;
-                    tx.commit().await?;
-                    Ok(frozen)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let frozen = read_in_transaction(&tx, &invocation, &event_id)?;
+                tx.commit()?;
+                Ok(frozen)
             })
             .await
     }
 }
 
 /// Verify the original captured projection inside an activation ownership transaction.
-pub(crate) async fn read_in_transaction(
-    tx: &mut sqlx::SqliteConnection,
+pub(crate) fn read_in_transaction(
+    tx: &rusqlite::Connection,
     invocation: &Invocation,
     event_id: &str,
 ) -> Result<FrozenModelRequest, StoreError> {
-    let (sequence, mut request) = proof::by_id(&mut *tx, event_id).await?;
+    let (sequence, mut request) = proof::by_id(tx, event_id)?;
     if request.invocation != *invocation {
         return Err(invalid(
             "frozen request locator belongs to another invocation",
@@ -77,12 +77,11 @@ pub(crate) async fn read_in_transaction(
     }
     let sequence = if let Fact::ModelInterrupted { step_id, .. } = &request.fact {
         let (sequence, original) = proof::by_kind(
-            &mut *tx,
+            tx,
             &invocation.invocation_id,
             "model_requested",
             Some(step_id),
-        )
-        .await?;
+        )?;
         request = original;
         sequence
     } else {
@@ -109,29 +108,22 @@ pub(crate) async fn read_in_transaction(
     if request.invocation != *invocation || captured >= sequence || *source_high_water > captured {
         return Err(invalid("frozen request has an invalid source capture"));
     }
-    let (_, opening) = proof::by_kind(
-        &mut *tx,
-        &invocation.invocation_id,
-        "invocation_opened",
-        None,
-    )
-    .await?;
+    let (_, opening) = proof::by_kind(tx, &invocation.invocation_id, "invocation_opened", None)?;
     if opening.invocation != *invocation {
         return Err(invalid("frozen request opening identity changed"));
     }
-    let selection = Selection::for_opening(&mut *tx, &opening).await?;
+    let selection = Selection::for_opening(tx, &opening)?;
     if selection.scope != *source_scope {
         return Err(invalid("frozen request scope differs from opening"));
     }
     let mut view = read::selected_view_at(
-        &mut *tx,
+        tx,
         &selection,
         *source_high_water,
         captured + 1,
         source_capture.prior_unknown,
         captured,
-    )
-    .await?;
+    )?;
     if view.source_evidence.digest != *source_digest
         || Some(&view.effective_source_digest) != effective_source_digest.as_ref()
         || view.baseline.as_ref().map(|baseline| &baseline.event_id) != checkpoint_event_id.as_ref()
@@ -153,14 +145,12 @@ pub(crate) async fn read_in_transaction(
         route: route_identity.clone(),
         model: model_id.clone(),
     });
-    let digest: String =
-        sqlx::query_scalar("SELECT digest FROM model_request_compositions WHERE event_id=?")
-            .bind(&request.id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
-    let composition = crate::composition::read(&mut *tx, &digest)
-        .await?
+    let digest: String = tx
+        .prepare_cached("SELECT digest FROM model_request_compositions WHERE event_id=?")?
+        .query_row(rusqlite::params![&request.id], |row| row.get(0))
+        .optional()?
+        .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
+    let composition = crate::composition::read(tx, &digest)?
         .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
     Ok(FrozenModelRequest {
         request: StoredEvent {

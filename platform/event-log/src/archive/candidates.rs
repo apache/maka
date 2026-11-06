@@ -23,7 +23,7 @@ use crate::{
     context::{read, safety, selection::Selection},
 };
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 impl EventLog {
     pub async fn prepare_prune_candidates(
@@ -34,37 +34,34 @@ impl EventLog {
         max_bytes: usize,
         cursor: Option<&PruneCursor>,
     ) -> Result<PruneCandidates, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if max_candidates > 10_000 || max_bytes > 32 * 1024 * 1024 {
             return Err(StoreError::PrefixTooLarge);
         }
         let (session, current) = (session.to_owned(), current.map(str::to_owned));
         let cursor = cursor.cloned();
-        self.connection.read_interruptible(move |connection| Box::pin(async move {
-            let mut tx = connection.begin().await?;
+        self.connection.read_interruptible(move |connection| {
+            let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
             if let Some(id) = &current {
-                let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE invocation_id=? AND kind='invocation_opened'
-                    AND json_extract(event_header,'$.invocation.session_id')=? AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended'))")
-                    .bind(id).bind(&session).fetch_one(&mut *tx).await?;
+                let live: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE invocation_id=? AND kind='invocation_opened'
+                    AND json_extract(event_header,'$.invocation.session_id')=? AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended'))", rusqlite::params![id, &session], |row| row.get(0))?;
                 if !live { return Err(StoreError::InvalidTransition("prune source invocation is not live".into())); }
-                safety::settled_boundary(&mut tx, id, i64::MAX as u64).await?;
+                safety::settled_boundary(&tx, id, i64::MAX as u64)?;
             }
-            safety::require_safe(&mut tx, &session, current.as_deref()).await?;
+            safety::require_safe(&tx, &session, current.as_deref())?;
             let mut output = PruneCandidates { candidates: Vec::new(), next: None, through: 0 };
             // The admission preflight checks safety without materializing history.
             if max_candidates > 0 {
                 let selection = if let Some(id) = &current {
-                    let json: String = sqlx::query_scalar("SELECT event_header FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'")
-                        .bind(id).fetch_one(&mut *tx).await?;
+                    let json: String = tx.query_row("SELECT event_header FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'", rusqlite::params![id], |row| row.get(0))?;
                     let opening: RuntimeEvent = serde_json::from_str(&json)?;
-                    Selection::for_opening(&mut tx, &opening).await?
+                    Selection::for_opening(&tx, &opening)?
                 } else {
                     Selection::session(&session)
                 };
-                let baseline = read::latest_selected(&mut tx, &selection, i64::MAX as u64).await?;
+                let baseline = read::latest_selected(&tx, &selection, i64::MAX as u64)?;
                 let covered = baseline.as_ref().map_or(0, |b| b.checkpoint.covered_through);
-                let through = selection.high_water(&mut tx, i64::MAX as u64).await?;
+                let through = selection.high_water(&tx, i64::MAX as u64)?;
                 let (fence, after) = match cursor {
                     None => (through, covered),
                     Some(PruneCursor::After(after)) => (through, after),
@@ -74,16 +71,16 @@ impl EventLog {
                     return Err(StoreError::InvalidTransition("invalid prune scan fence".into()));
                 }
                 output.through = fence;
-                scan(&mut tx, &selection, fence, after.max(covered), max_candidates, max_bytes, &mut output).await?;
+                scan(&tx, &selection, fence, after.max(covered), max_candidates, max_bytes, &mut output)?;
             }
-            tx.commit().await?;
+            tx.commit()?;
             Ok(output)
-        })).await
+        }).await
     }
 }
 
-async fn scan(
-    connection: &mut SqliteConnection,
+fn scan(
+    connection: &Connection,
     selection: &Selection,
     through: u64,
     after_sequence: u64,
@@ -115,14 +112,19 @@ async fn scan(
     let mut used = 0_usize;
     // Merge the indexed branches into bounded metadata, stopping at the page.
     // Keep the cursor at the last admitted result.
-    let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
-        .bind(after)
-        .bind(session)
-        .bind(through as i64)
-        .bind(&selection.lineage)
-        .bind((max_candidates + 1) as i64)
-        .fetch_all(&mut *connection)
-        .await?;
+    let rows: Vec<(i64, String, i64)> = connection
+        .prepare_cached(&query)?
+        .query_map(
+            rusqlite::params![
+                after,
+                session,
+                through as i64,
+                &selection.lineage,
+                (max_candidates + 1) as i64
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
     for (sequence, id, bytes) in rows {
         if output.candidates.len() >= max_candidates
             || (!output.candidates.is_empty() && bytes as usize > max_bytes.saturating_sub(used))
@@ -133,9 +135,7 @@ async fn scan(
             });
             break;
         }
-        let target = target::read(connection, session, &id)
-            .await?
-            .ok_or(super::ArchiveError::Corrupt)?;
+        let target = target::read(connection, session, &id)?.ok_or(super::ArchiveError::Corrupt)?;
         let candidate = PruneCandidate {
             event_id: target.event_id,
             tool_call_id: target.call.tool_call_id,

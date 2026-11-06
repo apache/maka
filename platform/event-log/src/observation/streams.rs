@@ -22,6 +22,7 @@ use crate::{
     turns::{InvocationState, TurnBoundary},
 };
 use maka_agent_facts::model::TextKind;
+use rusqlite::OptionalExtension;
 
 /// Active executor stream identity and replay start.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,8 +35,8 @@ pub struct AssistantStreamSeed {
     pub text_kind: TextKind,
 }
 
-pub(crate) async fn read(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read(
+    connection: &rusqlite::Connection,
     root: Option<&TurnBoundary>,
 ) -> Result<Vec<AssistantStreamSeed>, StoreError> {
     let Some(root) = root else {
@@ -49,15 +50,13 @@ pub(crate) async fn read(
     {
         return Ok(Vec::new());
     }
-    let external: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT sequence, json_extract(event_header, '$.fact.output.messageId') FROM runtime_events started
+    let external: Vec<(i64, String)> = connection.prepare_cached("SELECT sequence, json_extract(event_header, '$.fact.output.messageId') FROM runtime_events started
          WHERE invocation_id = ?1 AND kind = 'executor_observed'
          AND json_extract(event_header, '$.fact.output.type')='message_start'
          AND NOT EXISTS(SELECT 1 FROM runtime_events done WHERE done.invocation_id = started.invocation_id
              AND done.kind='executor_observed'
              AND json_extract(done.event_header, '$.fact.output.messageId')=json_extract(started.event_header, '$.fact.output.messageId')
-             AND json_extract(done.event_header, '$.fact.output.type')='message_end')"
-    ).bind(&root.invocation.invocation_id).fetch_all(&mut *connection).await?;
+             AND json_extract(done.event_header, '$.fact.output.type')='message_end')")?.query_map(rusqlite::params![&root.invocation.invocation_id], |row| Ok((row.get(0)?,row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
     let mut streams = Vec::new();
     for (sequence, message) in external {
         let sequence = crate::sequence_number(sequence)?;
@@ -90,8 +89,8 @@ pub struct CompactionProgress {
 }
 
 /// Display status from the same committed snapshot as the session observation.
-pub(super) async fn compacting(
-    connection: &mut sqlx::SqliteConnection,
+pub(super) fn compacting(
+    connection: &rusqlite::Connection,
     root: Option<&TurnBoundary>,
 ) -> Result<Option<CompactionProgress>, StoreError> {
     let Some(root) = root else {
@@ -104,19 +103,13 @@ pub(super) async fn compacting(
         root.input,
         maka_agent_facts::input::InvocationInput::ContextCompact { .. }
     ) {
-        sqlx::query_as(
-            "SELECT opening.event_id, catalog_time(json_extract(opening.event_header, '$.recorded_at'))
+        connection.prepare_cached("SELECT opening.event_id, catalog_time(json_extract(opening.event_header, '$.recorded_at'))
              FROM runtime_events opening WHERE opening.event_id = ?
              AND NOT EXISTS (SELECT 1 FROM runtime_events checkpoint
                  WHERE checkpoint.invocation_id = opening.invocation_id
-                 AND checkpoint.kind = 'context_checkpoint_recorded')",
-        )
-        .bind(&root.opening_event_id)
-        .fetch_optional(connection)
-        .await?
+                 AND checkpoint.kind = 'context_checkpoint_recorded')")?.query_row(rusqlite::params![&root.opening_event_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?
     } else {
-        sqlx::query_as(
-            "WITH waiting AS MATERIALIZED (
+        connection.prepare_cached("WITH waiting AS MATERIALIZED (
                  SELECT sequence FROM event_log INDEXED BY context_compaction_waiting
                  WHERE invocation_id = ?1 AND kind = 'context_compaction_waiting'
                  AND event_header IS NOT NULL
@@ -143,11 +136,7 @@ pub(super) async fn compacting(
                AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
                    WHERE boundary.invocation_id = ?1 AND boundary.sequence > first.sequence
                    AND boundary.kind = 'context_checkpoint_recorded')
-             ORDER BY first.sequence LIMIT 1",
-        )
-        .bind(&root.invocation.invocation_id)
-        .fetch_optional(connection)
-        .await?
+             ORDER BY first.sequence LIMIT 1")?.query_row(rusqlite::params![&root.invocation.invocation_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?
     };
     progress
         .map(|(id, started)| {

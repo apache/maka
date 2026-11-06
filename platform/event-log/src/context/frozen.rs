@@ -29,7 +29,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::LogScope;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 
 impl EventLog {
     /// Source identity before a fresh Run, without materializing its history.
@@ -37,7 +37,6 @@ impl EventLog {
         &self,
         invocation: &Invocation,
     ) -> Result<SourceEvidence, StoreError> {
-        self.validate_root()?;
         for id in [
             &invocation.session_id,
             &invocation.turn_id,
@@ -49,35 +48,31 @@ impl EventLog {
         let invocation = invocation.clone();
         self.connection
             .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
                     let selected = crate::turns::run_invocation(
-                        &mut tx,
+                        &tx,
                         &invocation.session_id,
                         &invocation.run_id,
-                    )
-                    .await?;
+                    )?;
                     if selected.as_deref() != Some(&invocation.invocation_id) {
                         return Err(invalid("base Run identity is missing or changed"));
                     }
-                    let row:Option<(i64,String,Option<String>)>=sqlx::query_as("SELECT opening_sequence,identity_json,parent_invocation_id FROM context_source_lineages WHERE invocation_id=?")
-                        .bind(&invocation.invocation_id).fetch_optional(&mut *tx).await?;
+                    let row:Option<(i64,String,Option<String>)>=tx.prepare_cached("SELECT opening_sequence,identity_json,parent_invocation_id FROM context_source_lineages WHERE invocation_id=?")?.query_row(rusqlite::params![&invocation.invocation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,))).optional()?;
                     let Some((sequence,identity,parent))=row else {return Err(invalid("Session base requires an exact fresh Message opening"));};
                     if parent.is_some() || serde_json::from_str::<Invocation>(&identity)?!=invocation {
                         return Err(invalid("Session base requires an exact fresh Message opening"));
                     }
                     let high =
-                        evidence::high_water(&mut tx, &invocation.session_id, sequence)
-                            .await?;
+                        evidence::high_water(&tx, &invocation.session_id, sequence)?;
                     if high > 0 {
-                        safety::closed_boundary(&mut tx, &invocation.session_id, high).await?;
+                        safety::closed_boundary(&tx, &invocation.session_id, high)?;
                     }
-                    safety::require_safe_through(&mut tx, &invocation.session_id, None, high)
-                        .await?;
-                    let source = evidence::evidence(&mut tx, &invocation.session_id, high).await?;
-                    tx.commit().await?;
+                    safety::require_safe_through(&tx, &invocation.session_id, None, high)?;
+                    let source = evidence::evidence(&tx, &invocation.session_id, high)?;
+                    tx.commit()?;
                     Ok(source)
-                })
+                }
             })
             .await
     }
@@ -90,7 +85,6 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<ModelContextSource, StoreError> {
-        self.validate_root()?;
         for id in [
             &invocation.session_id,
             &invocation.turn_id,
@@ -102,51 +96,41 @@ impl EventLog {
         let invocation = invocation.clone();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let selected = crate::turns::run_invocation(
-                        &mut tx,
-                        &invocation.session_id,
-                        &invocation.run_id,
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let selected =
+                    crate::turns::run_invocation(&tx, &invocation.session_id, &invocation.run_id)?;
+                if selected.as_deref() != Some(&invocation.invocation_id) {
+                    return Err(invalid("base Run identity is missing or changed"));
+                }
+                let (sequence, opening) =
+                    proof::by_kind(&tx, &invocation.invocation_id, "invocation_opened", None)?;
+                if opening.invocation != invocation
+                    || !matches!(
+                        opening.fact,
+                        Fact::InvocationOpened {
+                            input: InvocationInput::Message { .. },
+                            ..
+                        }
                     )
-                    .await?;
-                    if selected.as_deref() != Some(&invocation.invocation_id) {
-                        return Err(invalid("base Run identity is missing or changed"));
-                    }
-                    let (sequence, opening) = proof::by_kind(
-                        &mut tx,
-                        &invocation.invocation_id,
-                        "invocation_opened",
-                        None,
-                    )
-                    .await?;
-                    if opening.invocation != invocation
-                        || !matches!(
-                            opening.fact,
-                            Fact::InvocationOpened {
-                                input: InvocationInput::Message { .. },
-                                ..
-                            }
-                        )
-                    {
-                        return Err(invalid(
-                            "Session base requires an exact fresh Message opening",
-                        ));
-                    }
-                    let high_water =
-                        evidence::high_water(&mut tx, &invocation.session_id, sequence as i64)
-                            .await?;
-                    let source = closed(
-                        &mut tx,
-                        &invocation.session_id,
-                        high_water,
-                        max_events,
-                        max_bytes,
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok(source)
-                })
+                {
+                    return Err(invalid(
+                        "Session base requires an exact fresh Message opening",
+                    ));
+                }
+                let high_water =
+                    evidence::high_water(&tx, &invocation.session_id, sequence as i64)?;
+                let source = closed(
+                    &tx,
+                    &invocation.session_id,
+                    high_water,
+                    max_events,
+                    max_bytes,
+                )?;
+                tx.commit()?;
+                Ok(source)
             })
             .await
     }
@@ -160,7 +144,6 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<ModelContextSource, StoreError> {
-        self.validate_root()?;
         let session = match &expected.scope {
             LogScope::Session { id } | LogScope::Lineage { session_id: id, .. } => id,
             LogScope::Root => {
@@ -180,25 +163,24 @@ impl EventLog {
         );
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let selection = Selection::resolve(&mut tx, &scope).await?;
-                    let source =
-                        closed_selected(&mut tx, &selection, high_water, max_events, max_bytes)
-                            .await?;
-                    if source.source_evidence.digest != digest {
-                        return Err(invalid("frozen Session context source changed"));
-                    }
-                    tx.commit().await?;
-                    Ok(source)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let selection = Selection::resolve(&tx, &scope)?;
+                let source = closed_selected(&tx, &selection, high_water, max_events, max_bytes)?;
+                if source.source_evidence.digest != digest {
+                    return Err(invalid("frozen Session context source changed"));
+                }
+                tx.commit()?;
+                Ok(source)
             })
             .await
     }
 }
 
-async fn closed(
-    connection: &mut SqliteConnection,
+fn closed(
+    connection: &rusqlite::Connection,
     session: &str,
     high_water: u64,
     max_events: usize,
@@ -211,11 +193,10 @@ async fn closed(
         max_events,
         max_bytes,
     )
-    .await
 }
 
-pub(super) async fn closed_selected(
-    connection: &mut SqliteConnection,
+pub(super) fn closed_selected(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     high_water: u64,
     max_events: usize,
@@ -226,10 +207,10 @@ pub(super) async fn closed_selected(
         .as_deref()
         .ok_or_else(|| invalid("context requires a Session"))?;
     if high_water > 0 {
-        safety::closed_boundary(connection, session, high_water).await?;
+        safety::closed_boundary(connection, session, high_water)?;
     }
-    safety::require_safe_through(connection, session, None, high_water).await?;
-    let latest_main = latest_main::read_selected(connection, selection, high_water).await?;
+    safety::require_safe_through(connection, session, None, high_water)?;
+    let latest_main = latest_main::read_selected(connection, selection, high_water)?;
     read::materialize_selected(
         connection,
         selection,
@@ -239,32 +220,29 @@ pub(super) async fn closed_selected(
         max_bytes,
         latest_main,
     )
-    .await
 }
 
-pub(crate) async fn verify_base(
-    connection: &mut SqliteConnection,
+pub(crate) fn verify_base(
+    connection: &rusqlite::Connection,
     invocation: &Invocation,
     opening_sequence: u64,
     expected: &maka_agent_facts::continuation::SessionBase,
 ) -> Result<(), StoreError> {
-    if fresh_base(connection, invocation, opening_sequence).await? != *expected {
+    if fresh_base(connection, invocation, opening_sequence)? != *expected {
         return Err(invalid("continuation's fresh Session base changed"));
     }
     Ok(())
 }
 
-pub(crate) async fn fresh_base(
-    connection: &mut SqliteConnection,
+pub(crate) fn fresh_base(
+    connection: &rusqlite::Connection,
     invocation: &Invocation,
     opening_sequence: u64,
 ) -> Result<maka_agent_facts::continuation::SessionBase, StoreError> {
     let session = &invocation.session_id;
-    let through = evidence::high_water(connection, session, opening_sequence as i64).await?;
+    let through = evidence::high_water(connection, session, opening_sequence as i64)?;
     Ok(maka_agent_facts::continuation::SessionBase {
         high_water: through,
-        digest: evidence::evidence(connection, session, through)
-            .await?
-            .digest,
+        digest: evidence::evidence(connection, session, through)?.digest,
     })
 }

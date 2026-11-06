@@ -30,13 +30,13 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_output::decode_raw_tool_result;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 
-pub(super) async fn tool(
-    staged: &mut SqliteConnection,
+pub(super) fn tool(
+    staged: &Connection,
     event: &RuntimeEvent,
 ) -> Result<Option<Vec<u8>>, StoreError> {
-    let Some((number, descriptor)) = descriptor(staged, &event.id, "tool_result").await? else {
+    let Some((number, descriptor)) = descriptor(staged, &event.id, "tool_result")? else {
         return Ok(None);
     };
     let Fact::ToolSettled {
@@ -49,7 +49,7 @@ pub(super) async fn tool(
     if raw.bytes != descriptor.bytes() || raw.digest != descriptor.digest() {
         return Err(invalid("tool blob differs from its original event"));
     }
-    let payload = payload(staged, number, &descriptor).await?;
+    let payload = payload(staged, number, &descriptor)?;
     let output = decode_raw_tool_result(&payload, raw).map_err(invalid)?;
     if serde_json::to_vec(&output)? != payload {
         return Err(invalid(
@@ -59,47 +59,43 @@ pub(super) async fn tool(
     Ok(Some(payload))
 }
 
-pub(super) async fn composition(
-    staged: &mut SqliteConnection,
-    db: &mut SqliteConnection,
+pub(super) fn composition(
+    staged: &Connection,
+    db: &Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
-    let material = descriptor(staged, &event.id, "composition").await?;
+    let material = descriptor(staged, &event.id, "composition")?;
     crate::composition::validate_retry(
         db,
         event,
         material.as_ref().map(|(_, descriptor)| descriptor.digest()),
-    )
-    .await?;
+    )?;
     let Some((number, descriptor)) = material else {
         return Ok(());
     };
     if !matches!(event.fact, Fact::ModelRequested { .. }) {
         return Err(invalid("composition belongs to a non-request event"));
     }
-    let bytes = payload(staged, number, &descriptor).await?;
+    let bytes = payload(staged, number, &descriptor)?;
     let surface: RequestComposition = serde_json::from_slice(&bytes)?;
     if surface.clone().freeze().map_err(invalid)?.digest() != descriptor.digest() {
         return Err(invalid("composition is not the frozen request surface"));
     }
-    crate::composition::store(db, descriptor.digest(), &surface, bytes.len()).await?;
-    sqlx::query("INSERT INTO model_request_compositions(event_id,digest) VALUES(?,?)")
-        .bind(&event.id)
-        .bind(descriptor.digest())
-        .execute(db)
-        .await?;
+    crate::composition::store(db, descriptor.digest(), &surface, bytes.len())?;
+    db.execute(
+        "INSERT INTO model_request_compositions(event_id,digest) VALUES(?,?)",
+        params![&event.id, descriptor.digest()],
+    )?;
     Ok(())
 }
 
-async fn descriptor(
-    staged: &mut SqliteConnection,
+fn descriptor(
+    staged: &Connection,
     event: &str,
     resource: &str,
 ) -> Result<Option<(i64, Blob)>, StoreError> {
-    let row: Option<(i64,String)> = sqlx::query_as(
-        "SELECT number,record_json FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource')=?
-         AND json_extract(record_json,'$.event_id')=?"
-    ).bind(resource).bind(event).fetch_optional(staged).await?;
+    let row: Option<(i64,String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource')=?
+         AND json_extract(record_json,'$.event_id')=?")?.query_row(params![resource, event], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
     row.map(|(number, json)| {
         let Record::Blob(blob) = serde_json::from_str(&json)? else {
             unreachable!()
@@ -109,42 +105,28 @@ async fn descriptor(
     .transpose()
 }
 
-pub(super) async fn check_bindings(
-    staged: &mut SqliteConnection,
-    db: &mut SqliteConnection,
-) -> Result<(), StoreError> {
-    let expected: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource') IN ('tool_result','composition')"
-    ).fetch_one(&mut *staged).await?;
-    let installed: i64 = sqlx::query_scalar(
-        "SELECT (SELECT COUNT(*) FROM tool_result_payloads)+(SELECT COUNT(*) FROM model_request_compositions)"
-    ).fetch_one(&mut *db).await?;
+pub(super) fn check_bindings(staged: &Connection, db: &Connection) -> Result<(), StoreError> {
+    let expected: i64 = staged.prepare_cached("SELECT COUNT(*) FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource') IN ('tool_result','composition')")?.query_row(params![], |row| row.get(0))?;
+    let installed: i64 = db.prepare_cached("SELECT (SELECT COUNT(*) FROM tool_result_payloads)+(SELECT COUNT(*) FROM model_request_compositions)")?.query_row(params![], |row| row.get(0))?;
     if expected != installed {
         return Err(invalid("bundle contains unbound event payloads"));
     }
-    let expected: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM frames WHERE kind IN ('member','revision_source')",
-    )
-    .fetch_one(staged)
-    .await?;
-    let installed: i64 = sqlx::query_scalar(
-        "SELECT (SELECT COUNT(*) FROM session_history_members)+(SELECT COUNT(*) FROM session_revision_sources)"
-    ).fetch_one(&mut *db).await?;
+    let expected: i64 = staged
+        .prepare_cached("SELECT COUNT(*) FROM frames WHERE kind IN ('member','revision_source')")?
+        .query_row(params![], |row| row.get(0))?;
+    let installed: i64 = db.prepare_cached("SELECT (SELECT COUNT(*) FROM session_history_members)+(SELECT COUNT(*) FROM session_revision_sources)")?.query_row(params![], |row| row.get(0))?;
     if expected != installed {
         return Err(invalid("bundle contains history without its copy"));
     }
-    let invalid_pin: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_history_members h JOIN runtime_events t ON t.sequence=h.sequence
+    let invalid_pin: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_history_members h JOIN runtime_events t ON t.sequence=h.sequence
          LEFT JOIN runtime_events a ON a.sequence=h.archive_sequence
          WHERE t.event_session=h.session_id OR (h.archive_sequence IS NOT NULL AND
            (a.kind IS NOT 'tool_result_archived' OR a.sequence<=t.sequence OR
-            json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') IS NOT t.event_id)))"
-    ).fetch_one(&mut *db).await?;
+            json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') IS NOT t.event_id)))")?.query_row(params![], |row| row.get(0))?;
     if invalid_pin {
         return Err(invalid("copy has a self member or mismatched archive pin"));
     }
-    let changed_projection: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_history_members h
+    let changed_projection: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_history_members h
          JOIN session_history_copies c ON c.session_id=h.session_id
          JOIN runtime_events target ON target.sequence=h.sequence
          LEFT JOIN session_history_members parent ON parent.session_id=c.source_session_id AND parent.sequence=h.sequence
@@ -152,17 +134,14 @@ pub(super) async fn check_bindings(
             (SELECT a.sequence FROM runtime_events a WHERE a.kind='tool_result_archived'
              AND a.event_session=c.source_session_id AND a.sequence<=c.observed_through
              AND json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id')=target.event_id),
-            parent.archive_sequence))"
-    ).fetch_one(&mut *db).await?;
+            parent.archive_sequence))")?.query_row(params![], |row| row.get(0))?;
     if changed_projection {
         return Err(invalid(
             "copy archive pin differs from its source projection",
         ));
     }
-    let premature: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_history_copies c JOIN runtime_events e ON e.event_session=c.session_id
-         WHERE e.sequence<=c.observed_through OR c.state!='committed')"
-    ).fetch_one(db).await?;
+    let premature: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_history_copies c JOIN runtime_events e ON e.event_session=c.session_id
+         WHERE e.sequence<=c.observed_through OR c.state!='committed')")?.query_row(params![], |row| row.get(0))?;
     if premature {
         return Err(invalid("copy has work before its creation or retention"));
     }

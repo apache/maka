@@ -18,11 +18,9 @@
  */
 
 use super::{EventLog, Page, Query, StoreError, invalid};
-use maka_agent_facts::accounting::ActivityKind;
-use maka_agent_facts::accounting::ActivityStatus;
-use maka_agent_facts::accounting::Selection;
+use maka_agent_facts::accounting::{ActivityKind, ActivityStatus, Selection};
+use rusqlite::params;
 use serde::Serialize;
-use sqlx::{Connection, QueryBuilder, sqlite::SqliteRow};
 
 pub(super) enum View {
     Models,
@@ -48,31 +46,34 @@ impl View {
             }
         }
     }
-
-    fn restrict(&self, sql: &mut QueryBuilder<sqlx::Sqlite>, query: &Query, through: u64) {
-        query.restrict(sql, through);
-        if let Self::Activity(selection) = self {
-            if let Some(kind) = selection.kind {
-                sql.push(" AND kind = ").push_bind(match kind {
+    fn filters(&self) -> (Option<&'static str>, Option<&'static str>, &str) {
+        match self {
+            Self::Models | Self::Tools => (None, None, ""),
+            Self::Activity(selection) => (
+                selection.kind.map(|kind| match kind {
                     ActivityKind::Model => "model",
                     ActivityKind::Tool => "tool",
-                });
-            }
-            if let Some(status) = selection.status {
-                sql.push(" AND status = ").push_bind(match status {
+                }),
+                selection.status.map(|status| match status {
                     ActivityStatus::Success => "success",
                     ActivityStatus::Error => "error",
                     ActivityStatus::Aborted => "aborted",
                     ActivityStatus::Unknown => "unknown",
                     ActivityStatus::Rejected => "rejected",
-                });
-            }
-            if !selection.search.is_empty() {
-                sql.push(" AND instr(lower(search), lower(")
-                    .push_bind(selection.search.clone())
-                    .push(")) > 0");
-            }
+                }),
+                &selection.search,
+            ),
         }
+    }
+    fn predicate(&self, query: &Query) -> String {
+        let mut predicate = query.predicate();
+        if matches!(self, Self::Activity(_)) {
+            predicate.push_str(" AND (?5 IS NULL OR kind = ?5) AND (?6 IS NULL OR status = ?6) AND instr(lower(search), lower(?7)) > 0");
+        } else {
+            // Keep a fixed parameter layout for all closed views.
+            predicate.push_str(" AND ?5 IS NULL AND ?6 IS NULL AND ?7 = ''");
+        }
+        predicate
     }
 }
 
@@ -82,55 +83,34 @@ pub(super) async fn page<T: Serialize + Send + 'static>(
     offset: u64,
     limit: u32,
     view: View,
-    read: fn(&SqliteRow) -> Result<T, StoreError>,
+    read: fn(&rusqlite::Row<'_>) -> Result<T, StoreError>,
 ) -> Result<Page<T>, StoreError> {
     log.validate_root()?;
     query.validate()?;
     if offset > i64::MAX as u64 || limit == 0 {
         return Err(invalid("invalid Usage page"));
     }
-    log.connection
-        .read(move |connection| {
-            Box::pin(async move {
-                let mut tx = connection.begin().await?;
-                let through = query.fence(&mut tx).await?;
-                // Only closed internal view/column identifiers are interpolated.
-                let mut count = QueryBuilder::new("SELECT COUNT(*) FROM ");
-                count.push(view.table());
-                view.restrict(&mut count, &query, through);
-                let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
-                let mut select = QueryBuilder::new("SELECT ");
-                select
-                    .push(view.columns())
-                    .push(" FROM ")
-                    .push(view.table());
-                view.restrict(&mut select, &query, through);
-                select
-                    .push(" ORDER BY completed_at DESC, sequence DESC LIMIT ")
-                    .push_bind(limit)
-                    .push(" OFFSET ")
-                    .push_bind(offset as i64);
-                let rows = select.build().fetch_all(&mut *tx).await?;
-                let mut attempts = Vec::with_capacity(rows.len());
-                for row in &rows {
-                    attempts.push(read(row)?);
-                }
-                let total = crate::sequence_number(total)?;
-                let end = offset + attempts.len() as u64;
-                tx.commit().await?;
-                Ok(Page {
-                    through,
-                    attempts,
-                    total,
-                    next_offset: (end < total).then_some(end),
-                })
-            })
-        })
-        .await
+    log.connection.read(move |connection| {
+        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+        let through = query.fence(&tx)?;
+        let (kind, status, search) = view.filters();
+        let predicate = view.predicate(&query);
+        let total: i64 = tx.query_row(&format!("SELECT COUNT(*) FROM {}{predicate}", view.table()),
+            params![query.from, query.to, through as i64, query.session_id, kind, status, search], |row| row.get(0))?;
+        let attempts = {
+            let mut statement = tx.prepare_cached(&format!("SELECT {} FROM {}{predicate} ORDER BY completed_at DESC, sequence DESC LIMIT ?8 OFFSET ?9", view.columns(), view.table()))?;
+            let mut rows = statement.query(params![query.from, query.to, through as i64, query.session_id, kind, status, search, limit, offset as i64])?;
+            let mut attempts = Vec::new();
+            while let Some(row) = rows.next()? { attempts.push(read(row)?); }
+            attempts
+        };
+        let total = crate::sequence_number(total)?;
+        let end = offset + attempts.len() as u64;
+        tx.commit()?;
+        Ok(Page { through, attempts, total, next_offset: (end < total).then_some(end) })
+    }).await
 }
 
-/// Each partition's contribution to the Root's bounded keyset merge. The first
-/// query captures its own settlement fence in the same read transaction.
 pub(crate) async fn activity_after(
     log: &EventLog,
     query: Query,
@@ -142,41 +122,57 @@ pub(crate) async fn activity_after(
     selection.validate().map_err(invalid)?;
     log.connection
         .read(move |connection| {
-            Box::pin(async move {
-                let mut tx = connection.begin().await?;
-                let through = query.fence(&mut tx).await?;
-                let view = View::Activity(selection);
-                let mut count = QueryBuilder::new("SELECT COUNT(*) FROM usage_activity");
-                view.restrict(&mut count, &query, through);
-                let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
-                let mut select = QueryBuilder::new("SELECT ");
-                select.push(view.columns()).push(" FROM usage_activity");
-                view.restrict(&mut select, &query, through);
-                if let Some(after) = after {
-                    select
-                        .push(" AND (completed_at < ")
-                        .push_bind(after.completed_at);
-                    select
-                        .push(" OR (completed_at = ")
-                        .push_bind(after.completed_at)
-                        .push(" AND event_id > ")
-                        .push_bind(after.request_id)
-                        .push(")");
-                    select.push(")");
+            let tx = rusqlite::Transaction::new_unchecked(
+                connection,
+                rusqlite::TransactionBehavior::Deferred,
+            )?;
+            let through = query.fence(&tx)?;
+            let view = View::Activity(selection);
+            let (kind, status, search) = view.filters();
+            let predicate = view.predicate(&query);
+            let total: i64 = tx.query_row(
+                &format!("SELECT COUNT(*) FROM usage_activity{predicate}"),
+                params![
+                    query.from,
+                    query.to,
+                    through as i64,
+                    query.session_id,
+                    kind,
+                    status,
+                    search
+                ],
+                |row| row.get(0),
+            )?;
+            let attempts = {
+                let mut statement = tx.prepare_cached(&format!(
+                    "SELECT {} FROM usage_activity{predicate}
+                AND (?8 IS NULL OR completed_at < ?8 OR (completed_at = ?8 AND event_id > ?9))
+                ORDER BY completed_at DESC, event_id LIMIT 33",
+                    view.columns()
+                ))?;
+                let mut rows = statement.query(params![
+                    query.from,
+                    query.to,
+                    through as i64,
+                    query.session_id,
+                    kind,
+                    status,
+                    search,
+                    after.as_ref().map(|after| after.completed_at),
+                    after.as_ref().map(|after| after.request_id.as_str())
+                ])?;
+                let mut attempts = Vec::new();
+                while let Some(row) = rows.next()? {
+                    attempts.push(super::read_activity(row)?);
                 }
-                select.push(" ORDER BY completed_at DESC, event_id LIMIT 33");
-                let rows = select.build().fetch_all(&mut *tx).await?;
-                let attempts = rows
-                    .iter()
-                    .map(super::read_activity)
-                    .collect::<Result<Vec<_>, _>>()?;
-                tx.commit().await?;
-                Ok(Page {
-                    through,
-                    attempts,
-                    total: crate::sequence_number(total)?,
-                    next_offset: None,
-                })
+                attempts
+            };
+            tx.commit()?;
+            Ok(Page {
+                through,
+                attempts,
+                total: crate::sequence_number(total)?,
+                next_offset: None,
             })
         })
         .await

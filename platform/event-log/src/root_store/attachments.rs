@@ -22,6 +22,7 @@ use super::*;
 use maka_agent_facts::attachment::{AttachmentRef, StorageRef};
 use maka_agent_ports::execution::CopyAttachment;
 use maka_capabilities::storage::Namespace;
+use rusqlite::OptionalExtension;
 
 impl RootStore {
     pub async fn copy_plugin_attachment(
@@ -126,17 +127,16 @@ impl RootStore {
                 .scoped(Arc::new((sessions.clone(), execution_custody.clone())))
                 .connection
                 .read(move |connection| {
-                    Box::pin(async move {
-                        let configuration: Option<String> = sqlx::query_scalar(
+                    let configuration: Option<String> = connection
+                        .query_row(
                             "SELECT configuration FROM session_control WHERE id=?",
+                            rusqlite::params![session],
+                            |row| row.get(0),
                         )
-                        .bind(session)
-                        .fetch_optional(connection)
-                        .await?;
-                        crate::workspace_bindings::attached(&serde_json::from_str(
-                            &configuration.ok_or(StoreError::SessionNotFound)?,
-                        )?)
-                    })
+                        .optional()?;
+                    crate::workspace_bindings::attached(&serde_json::from_str(
+                        &configuration.ok_or(StoreError::SessionNotFound)?,
+                    )?)
                 })
                 .await?;
             if is_target {

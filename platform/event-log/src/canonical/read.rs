@@ -20,7 +20,6 @@
 //! Canonical reads resolve immutable bodies within the selected event snapshot.
 use super::recipe::{Recipe, Slot};
 use crate::StoreError;
-use sqlx::{Row, sqlite::SqliteRow};
 use std::{borrow::Cow, io};
 
 // Full-event queries bind their selected event as e. Metadata-only queries do
@@ -95,32 +94,8 @@ fn material<'a>(fields: Fields<'a>) -> Result<(Recipe<'a>, Option<&'a [u8]>), St
         _ => Err(invalid("canonical slot or body is missing joined metadata")),
     }
 }
-pub(crate) fn json(row: &SqliteRow) -> Result<Cow<'_, str>, StoreError> {
-    let header = row.try_get("event_header")?;
-    let length = row.try_get("canonical_length")?;
-    let reference: Option<i64> = row.try_get("canonical_body_reference")?;
-    // Presence comes from the event reference, not its joined body. A dangling
-    // body reference must take the complete validation path and fail.
-    if reference.is_none() {
-        return reconstruct(Fields {
-            header,
-            length,
-            reference,
-            offset: None,
-            body: None,
-            raw_bytes: None,
-            payload: None,
-        });
-    }
-    reconstruct(Fields {
-        header,
-        length,
-        reference,
-        offset: row.try_get("canonical_offset")?,
-        body: row.try_get("canonical_body_id")?,
-        raw_bytes: row.try_get("canonical_raw_bytes")?,
-        payload: row.try_get("canonical_payload")?,
-    })
+pub(crate) fn json<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, str>, StoreError> {
+    json_on_handle(row)
 }
 pub(crate) fn json_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Cow<'a, str>, StoreError> {
     reconstruct(fields_on_handle(row)?)
@@ -200,17 +175,12 @@ fn fields_on_handle<'a>(row: &'a rusqlite::Row<'_>) -> Result<Fields<'a>, StoreE
     }
     Ok(fields)
 }
-pub(crate) async fn one(
-    connection: &mut sqlx::SqliteConnection,
-    sequence: u64,
-) -> Result<String, StoreError> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT e.event_header,{COLUMNS} FROM event_log e {JOINS} WHERE e.sequence=?"
-    )))
-    .bind(sequence as i64)
-    .fetch_one(connection)
-    .await?;
-    Ok(json(&row)?.into_owned())
+pub(crate) fn one(connection: &rusqlite::Connection, sequence: u64) -> Result<String, StoreError> {
+    connection
+        .prepare_cached(&format!(
+            "SELECT e.event_header,{COLUMNS} FROM event_log e {JOINS} WHERE e.sequence=?"
+        ))?
+        .query_row([sequence as i64], |row| Ok(json(row).map(Cow::into_owned)))?
 }
 
 #[cfg(test)]

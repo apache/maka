@@ -30,24 +30,20 @@ use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::{Row, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension, params};
 
-pub(super) async fn validate(
-    staged: &mut SqliteConnection,
-    original: &mut SqliteConnection,
+pub(super) fn validate(
+    staged: &Connection,
+    original: &Connection,
     inventory: &Inventory,
     positions: Option<&crate::bundle::relocation::Positions>,
 ) -> Result<(), StoreError> {
-    sqlx::query("DELETE FROM referenced_mappings")
-        .execute(&mut *staged)
-        .await?;
+    staged.execute("DELETE FROM referenced_mappings", params![])?;
     let mut after = 0i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT number,record_json FROM frames WHERE number>? AND
+        let row: Option<(i64, String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE number>? AND
              ((kind='blob' AND json_extract(record_json,'$.resource')='artifact') OR kind='history_artifact')
-             ORDER BY number LIMIT 1"
-        ).bind(after).fetch_optional(&mut *staged).await?;
+             ORDER BY number LIMIT 1")?.query_row(params![after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         let Some((number, json)) = row else { break };
         match serde_json::from_str(&json)? {
             Record::Blob(Blob::Artifact {
@@ -62,7 +58,7 @@ pub(super) async fn validate(
                         Some(positions) => positions.event(source)?,
                         None => source,
                     };
-                    frozen_witness(staged, original, &metadata, sequence).await?;
+                    frozen_witness(staged, original, &metadata, sequence)?;
                 }
             }
             Record::HistoryArtifact {
@@ -83,7 +79,7 @@ pub(super) async fn validate(
                         "bundle history Artifact identity differs from its provenance",
                     ));
                 }
-                if descriptor(staged, &session, &artifact).await?.is_none() {
+                if descriptor(staged, &session, &artifact)?.is_none() {
                     return Err(invalid("bundle history mapping lacks its owned Artifact"));
                 }
             }
@@ -96,7 +92,7 @@ pub(super) async fn validate(
         loop {
             // Bound each ownership branch before merging so every cursor step
             // sorts at most three candidates instead of the remaining history.
-            let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            let row = original.prepare_cached(&format!(
                 "SELECT selected.sequence,selected.revision,selected.inherited,e.event_header,{} FROM (SELECT sequence,revision,inherited FROM (
                      SELECT e.sequence,0 AS revision,0 AS inherited FROM runtime_events e
                      WHERE (e.event_header IS NOT NULL AND e.event_session=?1) AND e.sequence>?2
@@ -114,12 +110,11 @@ pub(super) async fn validate(
                      ORDER BY r.sequence LIMIT 1)
                  ORDER BY sequence,revision LIMIT 1) selected JOIN runtime_events e ON e.sequence=selected.sequence {}",
                 crate::canonical::COLUMNS, crate::canonical::JOINS
-            ))).bind(&session.id).bind(after.0).bind(after.1).fetch_optional(&mut *original).await?;
-            let Some(row) = row else { break };
-            let sequence: i64 = row.try_get("sequence")?;
-            let revision: bool = row.try_get("revision")?;
-            let inherited: bool = row.try_get("inherited")?;
-            let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
+            ))?.query_row(params![&session.id, after.0, after.1], |row| Ok((row.get::<_, i64>("sequence")?, row.get::<_, bool>("revision")?, row.get::<_, bool>("inherited")?, crate::canonical::json(row).map(|json| json.into_owned())))).optional()?;
+            let Some((sequence, revision, inherited, json)) = row else {
+                break;
+            };
+            let event: RuntimeEvent = serde_json::from_str(&json?)?;
             let refs = if revision {
                 references::revision(&event)?
                     .into_iter()
@@ -129,18 +124,18 @@ pub(super) async fn validate(
                 references::from_event(&event)
             };
             for (reference, attachment) in refs {
-                reference_material(staged, &session.id, inherited, reference, attachment).await?;
+                reference_material(staged, &session.id, inherited, reference, attachment)?;
             }
-            generated(staged, &session.id, inherited, &event).await?;
+            generated(staged, &session.id, inherited, &event)?;
             after = (sequence, revision);
         }
     }
-    let unbound: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM frames f WHERE f.kind='history_artifact'
+    let unbound: bool = staged
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM frames f WHERE f.kind='history_artifact'
          AND NOT EXISTS(SELECT 1 FROM referenced_mappings r WHERE r.frame=f.number))",
-    )
-    .fetch_one(staged)
-    .await?;
+        )?
+        .query_row(params![], |row| row.get(0))?;
     if unbound {
         return Err(invalid(
             "bundle history mapping lacks a typed copied reference",
@@ -149,9 +144,9 @@ pub(super) async fn validate(
     Ok(())
 }
 
-async fn frozen_witness(
-    staged: &mut SqliteConnection,
-    original: &mut SqliteConnection,
+fn frozen_witness(
+    staged: &Connection,
+    original: &Connection,
     artifact: &Artifact,
     sequence: u64,
 ) -> Result<(), StoreError> {
@@ -164,13 +159,12 @@ async fn frozen_witness(
     }
     // A proof-only event's existence is insufficient. Membership belongs to the
     // exact artifact owner; a copied owner resolves only its validated mapping.
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let (inherited, json) = original.prepare_cached(&format!(
         "SELECT e.inherited,e.event_header,{} FROM session_history_events e {} WHERE e.owner_session_id=? AND e.sequence=?",
         crate::canonical::COLUMNS, crate::canonical::JOINS
-    ))).bind(&artifact.session_id).bind(sequence as i64).fetch_optional(&mut *original).await?
+    ))?.query_row(params![&artifact.session_id, sequence as i64], |row| Ok((row.get::<_, bool>("inherited")?, crate::canonical::json(row).map(|json| json.into_owned())))).optional()?
         .ok_or_else(|| invalid("bundle media witness is outside its owner history"))?;
-    let inherited: bool = row.try_get("inherited")?;
-    let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
+    let event: RuntimeEvent = serde_json::from_str(&json?)?;
     let Fact::ToolSettled {
         outcome:
             ToolOutcome::Succeeded {
@@ -206,12 +200,9 @@ async fn frozen_witness(
             continue;
         }
         let matches = if inherited {
-            sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM frames WHERE kind='history_artifact'
+            staged.prepare_cached("SELECT EXISTS(SELECT 1 FROM frames WHERE kind='history_artifact'
                  AND json_extract(record_json,'$.session')=? AND json_extract(record_json,'$.artifact')=?
-                 AND json_extract(record_json,'$.source_session')=? AND json_extract(record_json,'$.source_artifact')=?)",
-            ).bind(&artifact.session_id).bind(&artifact.id).bind(session_id).bind(relative_path)
-                .fetch_one(&mut *staged).await?
+                 AND json_extract(record_json,'$.source_session')=? AND json_extract(record_json,'$.source_artifact')=?)")?.query_row(params![&artifact.session_id, &artifact.id, session_id, relative_path], |row| row.get(0))?
         } else {
             session_id == &artifact.session_id && relative_path == &artifact.id
         };
@@ -224,8 +215,8 @@ async fn frozen_witness(
     ))
 }
 
-async fn reference_material(
-    staged: &mut SqliteConnection,
+fn reference_material(
+    staged: &Connection,
     owner: &str,
     inherited: bool,
     reference: &StorageRef,
@@ -241,25 +232,22 @@ async fn reference_material(
         return Ok(());
     };
     let artifact = if inherited {
-        let mapping: Option<(i64, String)> = sqlx::query_as(
-            "SELECT number,json_extract(record_json,'$.artifact') FROM frames WHERE kind='history_artifact'
+        let mapping: Option<(i64, String)> = staged.prepare_cached("SELECT number,json_extract(record_json,'$.artifact') FROM frames WHERE kind='history_artifact'
              AND json_extract(record_json,'$.session')=? AND json_extract(record_json,'$.source_session')=?
-             AND json_extract(record_json,'$.source_artifact')=?"
-        ).bind(owner).bind(session_id).bind(relative_path).fetch_optional(&mut *staged).await?;
+             AND json_extract(record_json,'$.source_artifact')=?")?.query_row(params![owner, session_id, relative_path], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         let (frame, id) = mapping
             .ok_or_else(|| invalid("bundle copied reference lacks its retained Artifact"))?;
-        sqlx::query("INSERT INTO referenced_mappings(frame) VALUES(?) ON CONFLICT DO NOTHING")
-            .bind(frame)
-            .execute(&mut *staged)
-            .await?;
-        descriptor(staged, owner, &id)
-            .await?
+        staged.execute(
+            "INSERT INTO referenced_mappings(frame) VALUES(?) ON CONFLICT DO NOTHING",
+            params![frame],
+        )?;
+        descriptor(staged, owner, &id)?
             .ok_or_else(|| invalid("bundle history mapping lacks its owned Artifact"))?
             .0
     } else if session_id == owner {
         // Users may delete ordinary uploads while their immutable references
         // remain in history. Preserve that absence instead of inventing bytes.
-        let Some((artifact, _)) = descriptor(staged, owner, relative_path).await? else {
+        let Some((artifact, _)) = descriptor(staged, owner, relative_path)? else {
             return Ok(());
         };
         artifact
@@ -272,15 +260,13 @@ async fn reference_material(
     Ok(())
 }
 
-async fn descriptor(
-    staged: &mut SqliteConnection,
+fn descriptor(
+    staged: &Connection,
     session: &str,
     id: &str,
 ) -> Result<Option<(Artifact, String)>, StoreError> {
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT record_json FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource')='artifact'
-         AND json_extract(record_json,'$.metadata.sessionId')=? AND json_extract(record_json,'$.metadata.id')=?"
-    ).bind(session).bind(id).fetch_optional(staged).await?;
+    let row: Option<String> = staged.prepare_cached("SELECT record_json FROM frames WHERE kind='blob' AND json_extract(record_json,'$.resource')='artifact'
+         AND json_extract(record_json,'$.metadata.sessionId')=? AND json_extract(record_json,'$.metadata.id')=?")?.query_row(params![session, id], |row| row.get(0)).optional()?;
     row.map(|json| {
         let Record::Blob(Blob::Artifact {
             metadata, digest, ..
@@ -293,8 +279,8 @@ async fn descriptor(
     .transpose()
 }
 
-async fn generated(
-    staged: &mut SqliteConnection,
+fn generated(
+    staged: &Connection,
     owner: &str,
     inherited: bool,
     event: &RuntimeEvent,
@@ -318,18 +304,14 @@ async fn generated(
     };
     for evidence in artifacts {
         let id = if inherited {
-            sqlx::query_scalar(
-                "SELECT json_extract(record_json,'$.artifact') FROM frames WHERE kind='history_artifact'
+            staged.prepare_cached("SELECT json_extract(record_json,'$.artifact') FROM frames WHERE kind='history_artifact'
                  AND json_extract(record_json,'$.session')=? AND json_extract(record_json,'$.source_session')=?
-                 AND json_extract(record_json,'$.source_artifact')=?"
-            ).bind(owner).bind(&event.invocation.session_id).bind(&evidence.id)
-                .fetch_optional(&mut *staged).await?
+                 AND json_extract(record_json,'$.source_artifact')=?")?.query_row(params![owner, &event.invocation.session_id, &evidence.id], |row| row.get(0)).optional()?
                 .ok_or_else(|| invalid("bundle generated Artifact has no copied ownership"))?
         } else {
             evidence.id.clone()
         };
-        let (artifact, digest) = descriptor(staged, owner, &id)
-            .await?
+        let (artifact, digest) = descriptor(staged, owner, &id)?
             .ok_or_else(|| invalid("bundle lacks generated tool material"))?;
         let mime_matches = matches!(model_projection, DurableToolProjection::Content { parts } if parts.iter().any(|part|
             part.media().is_some_and(|(reference, mime)|

@@ -20,27 +20,25 @@
 use super::selection::Selection;
 use super::{SourceEvidence, invalid};
 use crate::{StoreError, sequence_number};
-use sqlx::SqliteConnection;
 
 mod roots;
 pub(crate) use roots::{RootDigest, record, register};
 
 /// The same scoped identity as complete prefix(), using committed source progress.
-pub(super) async fn evidence(
-    connection: &mut SqliteConnection,
+pub(super) fn evidence(
+    connection: &rusqlite::Connection,
     session: &str,
     through: u64,
 ) -> Result<SourceEvidence, StoreError> {
-    selected(connection, &Selection::session(session), through).await
+    selected(connection, &Selection::session(session), through)
 }
 
-pub(crate) async fn selected(
-    connection: &mut SqliteConnection,
+pub(crate) fn selected(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     through: u64,
 ) -> Result<SourceEvidence, StoreError> {
-    let digest = digests(connection, selection, &[through])
-        .await?
+    let digest = digests(connection, selection, &[through])?
         .pop()
         .expect("one requested prefix");
     Ok(SourceEvidence {
@@ -52,8 +50,8 @@ pub(crate) async fn selected(
 
 /// Resolve exact selected source boundaries from indexed durable prefixes.
 /// Each boundary must select a complete row (or the empty prefix at zero).
-pub(super) async fn digests(
-    connection: &mut SqliteConnection,
+pub(super) fn digests(
+    connection: &rusqlite::Connection,
     selection: &Selection,
     throughs: &[u64],
 ) -> Result<Vec<String>, StoreError> {
@@ -64,13 +62,12 @@ pub(super) async fn digests(
     let scope = serde_json::to_vec(&selection.scope)?;
     for through in throughs {
         let cut = i64::try_from(*through).map_err(|_| invalid("source cut overflow"))?;
-        let digest: String = sqlx::query_scalar("SELECT context_source_identity(?,?,?,?)")
-            .bind(&selection.session)
-            .bind(&selection.lineage)
-            .bind(&scope)
-            .bind(cut)
-            .fetch_one(&mut *connection)
-            .await?;
+        let digest: String = connection
+            .prepare_cached("SELECT context_source_identity(?,?,?,?)")?
+            .query_row(
+                rusqlite::params![&selection.session, &selection.lineage, &scope, cut],
+                |row| row.get(0),
+            )?;
         result.push(
             serde_json::from_str::<Result<String, String>>(&digest)?
                 .map_err(StoreError::InvalidTransition)?,
@@ -79,12 +76,10 @@ pub(super) async fn digests(
     Ok(result)
 }
 
-pub(super) async fn high_water(
-    connection: &mut SqliteConnection,
+pub(super) fn high_water(
+    connection: &rusqlite::Connection,
     session: &str,
     before: i64,
 ) -> Result<u64, StoreError> {
-    Selection::session(session)
-        .high_water(connection, sequence_number(before.saturating_sub(1))?)
-        .await
+    Selection::session(session).high_water(connection, sequence_number(before.saturating_sub(1))?)
 }

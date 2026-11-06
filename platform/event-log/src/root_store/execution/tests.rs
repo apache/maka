@@ -332,12 +332,11 @@ async fn unconfirmed_child_keeps_other_sessions_available_and_retains_shutdown_c
     admitted
         .connection
         .run(|connection| {
-            Box::pin(async move {
-                sqlx::query("UPDATE session_control SET updated_at=42 WHERE id='session'")
-                    .execute(connection)
-                    .await?;
-                Ok(())
-            })
+            connection.execute(
+                "UPDATE session_control SET updated_at=42 WHERE id='session'",
+                rusqlite::params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();

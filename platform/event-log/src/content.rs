@@ -19,45 +19,24 @@
 
 //! Immutable bytes are shared; domain bindings retain ownership and access policy.
 use crate::StoreError;
-use sqlx::{SqliteConnection, sqlite::SqliteWorkerConnection};
+use rusqlite::OptionalExtension;
 
 const INSERT: &str = "INSERT INTO contents(content_sha256,payload) VALUES(?,?) ON CONFLICT(content_sha256) DO NOTHING RETURNING id";
 const READ_ID: &str = "SELECT id FROM contents WHERE content_sha256=?";
 
-pub(crate) async fn put(
-    connection: &mut SqliteConnection,
+pub(crate) fn put(
+    connection: &rusqlite::Connection,
     digest: &str,
     bytes: &[u8],
 ) -> Result<i64, StoreError> {
-    if let Some(id) = sqlx::query_scalar(INSERT)
-        .bind(digest)
-        .bind(bytes)
-        .fetch_optional(&mut *connection)
-        .await?
+    if let Some(id) = connection
+        .prepare_cached(READ_ID)?
+        .query_row([digest], |row| row.get(0))
+        .optional()?
     {
         return Ok(id);
     }
-    Ok(sqlx::query_scalar(READ_ID)
-        .bind(digest)
-        .fetch_one(connection)
-        .await?)
-}
-
-pub(crate) async fn put_on_worker(
-    connection: &mut SqliteWorkerConnection<'_>,
-    digest: &str,
-    bytes: &[u8],
-) -> Result<i64, StoreError> {
-    if let Some(id) = sqlx::query_scalar(INSERT)
-        .bind(digest)
-        .bind(bytes)
-        .fetch_optional(&mut *connection)
-        .await?
-    {
-        return Ok(id);
-    }
-    Ok(sqlx::query_scalar(READ_ID)
-        .bind(digest)
-        .fetch_one(connection)
-        .await?)
+    Ok(connection
+        .prepare_cached(INSERT)?
+        .query_row(rusqlite::params![digest, bytes], |row| row.get(0))?)
 }

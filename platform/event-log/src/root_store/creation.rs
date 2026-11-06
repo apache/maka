@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -106,23 +107,21 @@ impl crate::writeback::Statement for WriteCreation {
     type Output = ();
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<()>, StoreError>> {
-        Box::pin(async move {
+        connection: &SqliteConnection,
+    ) -> Result<crate::writeback::Prepared<()>, StoreError> {
+        {
             let command = super::routes::Creation::Session {
                 configuration: self.configuration.clone(),
                 created_at: self.now,
             };
-            if let Some((fingerprint,encoded))=sqlx::query_as::<_,(String,String)>(
-                "SELECT fingerprint,command FROM session_creations WHERE session_id=? AND session_id=creation_id"
-            ).bind(&self.id).fetch_optional(&mut *connection).await? {
+            if let Some((fingerprint,encoded))=connection.query_row("SELECT fingerprint,command FROM session_creations WHERE session_id=? AND session_id=creation_id", rusqlite::params![&self.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional()? {
                 let previous:super::routes::Creation=serde_json::from_str(&encoded)?;
                 if fingerprint!=self.fingerprint || previous.identity()?!=command.identity()? {
                     return Err(StoreError::SessionCreationRejected(CreationRejection::IdentityConflict));
                 }
                 return Ok(prepared((),false));
             }
-            match crate::sessions::removal::require_accepting(connection, &self.id).await {
+            match crate::sessions::removal::require_accepting(connection, &self.id) {
                 Ok(()) => {}
                 Err(StoreError::SessionRetired) => {
                     return Err(StoreError::SessionCreationRejected(
@@ -137,13 +136,9 @@ impl crate::writeback::Statement for WriteCreation {
                 &self.fingerprint,
                 &serde_json::to_string(&self.configuration)?,
                 self.now,
-            )
-            .await
-            {
+            ) {
                 Ok(()) => {
-                    sqlx::query("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?1,?1,?2,?3,1,1)")
-                        .bind(&self.id).bind(&self.fingerprint).bind(serde_json::to_string(&command)?)
-                        .execute(connection).await?;
+                    connection.execute("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?1,?1,?2,?3,1,1)", rusqlite::params![&self.id, &self.fingerprint, serde_json::to_string(&command)?])?;
                     Ok(prepared((), true))
                 }
                 Err(StoreError::SessionConflict) => Err(StoreError::SessionCreationRejected(
@@ -151,7 +146,7 @@ impl crate::writeback::Statement for WriteCreation {
                 )),
                 Err(error) => Err(error),
             }
-        })
+        }
     }
     fn committed(value: ()) -> Self::Output {
         value
@@ -175,27 +170,20 @@ impl crate::writeback::Statement for WriteReservation {
     type Output = Self::Value;
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<Self::Value>, StoreError>>
-    {
-        Box::pin(async move {
-            if let Some(row) = sqlx::query(
+        connection: &SqliteConnection,
+    ) -> Result<crate::writeback::Prepared<Self::Value>, StoreError> {
+        {
+            if let Some((creation_id, fingerprint, command, failure)) = connection.query_row(
                 "SELECT creation_id,fingerprint,command,failure FROM session_creations WHERE session_id=?",
-            )
-            .bind(&self.id)
-            .fetch_optional(&mut *connection)
-            .await?
-            {
-                if row.get::<&str, _>("creation_id") != self.id {
+                rusqlite::params![&self.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?)),
+            ).optional()? {
+                if creation_id != self.id { return Err(StoreError::SessionConflict); }
+                let previous: super::routes::Creation = serde_json::from_str(&command)?;
+                if fingerprint != self.fingerprint || previous.identity()? != self.command.identity()? {
                     return Err(StoreError::SessionConflict);
                 }
-                let previous: super::routes::Creation = serde_json::from_str(row.get("command"))?;
-                if row.get::<&str, _>("fingerprint") != self.fingerprint
-                    || previous.identity()? != self.command.identity()?
-                {
-                    return Err(StoreError::SessionConflict);
-                }
-                if let Some(failure) = row.get::<Option<String>, _>("failure") {
+                if let Some(failure) = failure {
                     return Err(StoreError::SessionCreationRejected(serde_json::from_str(&failure)?));
                 }
                 return Ok(prepared(
@@ -213,17 +201,15 @@ impl crate::writeback::Statement for WriteReservation {
                     }
                     _ => true,
                 };
-                let occupied: bool = sqlx::query_scalar(
+                let occupied: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=?)",
-                )
-                .bind(&member)
-                .fetch_one(&mut *connection)
-                .await?;
+                    rusqlite::params![&member],
+                    |row| row.get(0),
+                )?;
                 if occupied {
                     return Err(StoreError::SessionConflict);
                 }
-                sqlx::query("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?,?,?,?,0,?)")
-                    .bind(&member).bind(&self.id).bind(&self.fingerprint).bind((member == self.id).then_some(&encoded)).bind(visible).execute(&mut *connection).await?;
+                connection.execute("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?,?,?,?,0,?)", rusqlite::params![&member, &self.id, &self.fingerprint, (member == self.id).then_some(&encoded), visible])?;
             }
             Ok(prepared(
                 ReservedCreation {
@@ -231,7 +217,7 @@ impl crate::writeback::Statement for WriteReservation {
                 },
                 true,
             ))
-        })
+        }
     }
     fn committed(value: Self::Value) -> Self::Output {
         value
@@ -253,37 +239,26 @@ impl crate::writeback::Statement for WritePublication {
     type Output = ();
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<()>, StoreError>> {
-        Box::pin(async move {
+        connection: &SqliteConnection,
+    ) -> Result<crate::writeback::Prepared<()>, StoreError> {
+        {
             let changed = if let Some(rejection) = self.rejection {
-                sqlx::query(
-                    "UPDATE session_creations SET ready=2,failure=? WHERE creation_id=? AND ready=0",
-                )
-                .bind(serde_json::to_string(&rejection)?)
-                .bind(&self.id)
-                .execute(&mut *connection)
-                .await?
-                .rows_affected()
+                connection.execute("UPDATE session_creations SET ready=2,failure=? WHERE creation_id=? AND ready=0", rusqlite::params![serde_json::to_string(&rejection)?, &self.id])?
+
                     != 0
             } else {
-                let newly_visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_creations WHERE creation_id=? AND ready=0 AND visible=1)")
-                    .bind(&self.id).fetch_one(&mut *connection).await?;
-                let changed = sqlx::query(
+                let newly_visible: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM session_creations WHERE creation_id=? AND ready=0 AND visible=1)", rusqlite::params![&self.id], |row| row.get(0))?;
+                let changed = connection.execute(
                     "UPDATE session_creations SET ready=1 WHERE creation_id=? AND ready=0",
-                )
-                .bind(&self.id)
-                .execute(&mut *connection)
-                .await?
-                .rows_affected()
-                    != 0;
+                    rusqlite::params![&self.id],
+                )? != 0;
                 if newly_visible {
-                    crate::sessions::advance_catalog(connection).await?;
+                    crate::sessions::advance_catalog(connection)?;
                 }
                 changed
             };
             Ok(prepared((), changed))
-        })
+        }
     }
     fn committed(value: ()) -> Self::Output {
         value

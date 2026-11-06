@@ -89,7 +89,7 @@ async fn sample(
         .map(|stats| {
             json!({
                 "writer": connection_metrics(stats.writer),
-                "readers": stats.readers.map(|reader| reader.map(connection_metrics)),
+                "readers": stats.readers.into_iter().map(|reader| reader.map(connection_metrics)).collect::<Vec<_>>(),
             })
         })
         .collect();

@@ -22,7 +22,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 
 mod evidence;
 pub(crate) use evidence::validate as validate_history;
@@ -39,12 +39,11 @@ pub struct PendingHandoff {
 
 impl EventLog {
     pub async fn pending_handoffs(&self, after: u64) -> Result<Vec<PendingHandoff>, StoreError> {
-        self.validate_root()?;
         let after = i64::try_from(after).map_err(|_| invalid("invalid handoff cursor"))?;
         self.connection
             .read(move |tx| {
-                Box::pin(async move {
-                    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+                let rows: Vec<(i64, String, String)> = tx
+                    .prepare_cached(
                         "SELECT pause.sequence, json_extract(pause.event_header,'$.invocation'),
                    json_extract(pause.event_header,'$.fact.outcome.pause.intent.host_epoch')
                  FROM local_runtime_events pause
@@ -57,31 +56,30 @@ impl EventLog {
                      AND successor.invocation_id=json_extract(pause.event_header,
                        '$.fact.outcome.pause.intent.successor_invocation_id'))
                  ORDER BY pause.sequence LIMIT 64",
-                    )
-                    .bind(after)
-                    .fetch_all(tx)
-                    .await?;
-                    rows.into_iter()
-                        .map(|(sequence, invocation, host_epoch)| {
-                            Ok(PendingHandoff {
-                                sequence: sequence as u64,
-                                invocation: serde_json::from_str(&invocation)?,
-                                host_epoch,
-                            })
+                    )?
+                    .query_map(rusqlite::params![after], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows.into_iter()
+                    .map(|(sequence, invocation, host_epoch)| {
+                        Ok(PendingHandoff {
+                            sequence: sequence as u64,
+                            invocation: serde_json::from_str(&invocation)?,
+                            host_epoch,
                         })
-                        .collect()
-                })
+                    })
+                    .collect()
             })
             .await
     }
 
     /// Ordinary queued work cannot cross an unclaimed cooperative seal.
     pub async fn has_pending_handoff(&self, session: &str) -> Result<bool, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .read(move |tx| Box::pin(async move { Ok(reservation(tx, &session).await?.is_some()) }))
+            .read(move |tx| Ok(reservation(tx, &session)?.is_some()))
             .await
     }
 
@@ -91,7 +89,6 @@ impl EventLog {
         invocation: &maka_agent_facts::event::Invocation,
         pause: &maka_agent_facts::handoff::HandoffPause,
     ) -> Result<(), StoreError> {
-        self.validate_root()?;
         let event = RuntimeEvent::new(
             invocation.clone(),
             Fact::InvocationEnded {
@@ -102,22 +99,22 @@ impl EventLog {
         );
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    crate::recovery::require_local(&mut tx, &event.invocation.invocation_id)
-                        .await?;
-                    validate_history(&mut tx, &event).await?;
-                    validate_admission(&mut tx, &event).await?;
-                    tx.commit().await?;
-                    Ok(())
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                crate::recovery::require_local(&tx, &event.invocation.invocation_id)?;
+                validate_history(&tx, &event)?;
+                validate_admission(&tx, &event)?;
+                tx.commit()?;
+                Ok(())
             })
             .await
     }
 }
 
-pub(crate) async fn validate_admission(
-    tx: &mut SqliteConnection,
+pub(crate) fn validate_admission(
+    tx: &rusqlite::Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     if let Fact::InvocationOpened { input, .. } = &event.fact {
@@ -133,16 +130,14 @@ pub(crate) async fn validate_admission(
             &event.invocation.invocation_id,
             input.inherited_claim().map(|claim| claim.id.as_str()),
             source,
-        )
-        .await?
-        {
+        )? {
             return Err(invalid("opening would steal a reserved handoff identity"));
         }
         // Admission permits one physical owner per Session. A paused owner
         // blocks the next opening, so only the latest opening can reserve it.
-        let reserved = reservation(tx, &event.invocation.session_id).await?;
+        let reserved = reservation(tx, &event.invocation.session_id)?;
         if let InvocationInput::Handoff { claim, .. } = input {
-            crate::recovery::require_local(tx, &claim.source.invocation.invocation_id).await?;
+            crate::recovery::require_local(tx, &claim.source.invocation.invocation_id)?;
             if reserved.as_deref() != Some(&claim.source.invocation.invocation_id) {
                 return Err(invalid(
                     "handoff does not own the pending Session reservation",
@@ -161,48 +156,39 @@ pub(crate) async fn validate_admission(
     else {
         return Ok(());
     };
-    crate::interactions::lifecycle::require_closed(tx, &event.invocation).await?;
+    crate::interactions::lifecycle::require_closed(tx, &event.invocation)?;
     if reservation_conflict(
         tx,
         &pause.intent.successor_run_id,
         &pause.intent.successor_invocation_id,
         Some(&pause.intent.claim_id),
         None,
-    )
-    .await?
-    {
+    )? {
         return Err(invalid("handoff successor identity is already reserved"));
     }
     Ok(())
 }
 
-async fn reservation(
-    tx: &mut SqliteConnection,
-    session: &str,
-) -> Result<Option<String>, StoreError> {
-    Ok(sqlx::query_scalar(
-        "SELECT pause.invocation_id FROM local_runtime_events pause
+fn reservation(tx: &rusqlite::Connection, session: &str) -> Result<Option<String>, StoreError> {
+    Ok(tx.prepare_cached("SELECT pause.invocation_id FROM local_runtime_events pause
          WHERE pause.kind='invocation_ended' AND json_extract(pause.event_header,'$.fact.outcome.kind')='handoff_paused'
          AND pause.invocation_id=(SELECT invocation_id FROM local_runtime_events WHERE kind='invocation_opened'
-           AND json_extract(event_header,'$.invocation.session_id')=? ORDER BY sequence DESC LIMIT 1)"
-    ).bind(session).fetch_optional(tx).await?)
+           AND json_extract(event_header,'$.invocation.session_id')=? ORDER BY sequence DESC LIMIT 1)")?.query_row(rusqlite::params![session], |row| row.get(0)).optional()?)
 }
 
-pub(crate) async fn reservation_conflict(
-    tx: &mut SqliteConnection,
+pub(crate) fn reservation_conflict(
+    tx: &rusqlite::Connection,
     run: &str,
     invocation: &str,
     claim: Option<&str>,
     source: Option<&str>,
 ) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar(
-        "WITH reservations AS NOT MATERIALIZED (SELECT event_header FROM local_runtime_events
+    Ok(tx.prepare_cached("WITH reservations AS NOT MATERIALIZED (SELECT event_header FROM local_runtime_events
          WHERE kind='invocation_ended' AND json_extract(event_header,'$.fact.outcome.kind')='handoff_paused'
          AND (?4 IS NULL OR invocation_id != ?4))
          SELECT EXISTS(SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.successor_run_id')=?1
            UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.successor_invocation_id')=?2
-           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.claim_id')=?3)",
-    ).bind(run).bind(invocation).bind(claim).bind(source).fetch_one(tx).await?)
+           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.claim_id')=?3)")?.query_row(rusqlite::params![run,invocation,claim,source], |row| row.get(0))?)
 }
 
 fn invalid(message: &str) -> StoreError {

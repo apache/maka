@@ -33,8 +33,8 @@ async fn open() -> (tempfile::TempDir, RootStore) {
     (dir, root)
 }
 async fn admit(log: &EventLog, model: String, tokens: u64) {
-    log.connection.run(move |connection| Box::pin(async move {
-        let mut tx = connection.begin().await?;
+    log.connection.run(move |connection| {
+        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
         let id = Uuid::new_v4();
         let source = Uuid::new_v4();
         let records = [
@@ -43,14 +43,14 @@ async fn admit(log: &EventLog, model: String, tokens: u64) {
             (Uuid::new_v4(), "auxiliary_model_settled", json!({"request_id":id,"outcome":"success","completed_at":{"secs_since_epoch":2,"nanos_since_epoch":0}})),
         ];
         for (id, kind, event) in records {
-            crate::canonical_insert::insert(crate::canonical_insert::Record {
+            crate::canonical_insert::insert(&tx, crate::canonical_insert::Record {
                 sequence: None, event_id: &id.to_string(), invocation_id: None,
                 kind, operation_id: None, json: &event.to_string(),
-            }).execute(&mut *tx).await?;
+            })?;
         }
-        tx.commit().await?;
+        tx.commit()?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
 }
 fn query() -> UsageQuery {
     UsageQuery {

@@ -27,7 +27,6 @@ use maka_agent_facts::{
 };
 use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, params};
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::SqliteWorkerConnection;
 
 const NATIVE: &str = "SELECT sequence,hash,ordinal FROM context_source_prefixes WHERE kind=? AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1";
 
@@ -188,18 +187,18 @@ fn session_prefix(db: &Connection, owner: &str, cut: i64) -> rusqlite::Result<Pr
     }
     Ok(base)
 }
-async fn native_on_worker(
-    db: &mut SqliteWorkerConnection<'_>,
+fn native_record(
+    db: &rusqlite::Connection,
     kind: &str,
     owner: &str,
     cut: i64,
 ) -> Result<Prefix, StoreError> {
-    let row: Option<(i64, Vec<u8>, i64)> = sqlx::query_as(NATIVE)
-        .bind(kind)
-        .bind(owner)
-        .bind(cut)
-        .fetch_optional(db)
-        .await?;
+    let row: Option<(i64, Vec<u8>, i64)> = db
+        .prepare_cached(NATIVE)?
+        .query_row(rusqlite::params![kind, owner, cut], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?;
     Ok(
         row.map_or_else(Prefix::empty, |(high, hash, count)| Prefix {
             high,
@@ -209,8 +208,8 @@ async fn native_on_worker(
     )
 }
 
-pub(crate) async fn record(
-    db: &mut SqliteWorkerConnection<'_>,
+pub(crate) fn record(
+    db: &rusqlite::Connection,
     stored: &StoredEvent,
     canonical_json: &str,
 ) -> Result<(), StoreError> {
@@ -224,7 +223,7 @@ pub(crate) async fn record(
         ("session", event.invocation.session_id.as_str()),
         ("invocation", event.invocation.invocation_id.as_str()),
     ] {
-        let previous = native_on_worker(db, kind, owner, i64::MAX).await?;
+        let previous = native_record(db, kind, owner, i64::MAX)?;
         if previous.high >= sequence {
             return Err(rusqlite::Error::InvalidParameterName(
                 "source append is not monotonic".into(),
@@ -235,30 +234,24 @@ pub(crate) async fn record(
             b"maka.source.chain.v1\0",
             &[&previous.hash, &sequence.to_be_bytes(), &leaf],
         );
-        sqlx::query("INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)")
-            .bind(kind)
-            .bind(owner)
-            .bind(sequence)
-            .bind(next)
-            .bind(previous.count + 1)
-            .execute(&mut *db)
-            .await?;
+        db.prepare_cached("INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)")?
+            .execute(rusqlite::params![
+                kind,
+                owner,
+                sequence,
+                next,
+                previous.count + 1
+            ])?;
     }
     match &event.fact {
-        Fact::InvocationOpened { input, .. } => record_lineage(db, stored, input).await?,
-        Fact::ToolResultArchived { placeholder } => {
-            record_archive(db, stored, placeholder, &leaf).await?
-        }
+        Fact::InvocationOpened { input, .. } => record_lineage(db, stored, input)?,
+        Fact::ToolResultArchived { placeholder } => record_archive(db, stored, placeholder, &leaf)?,
         _ => {}
     }
     Ok(())
 }
 
-async fn session_high(
-    db: &mut SqliteWorkerConnection<'_>,
-    session: &str,
-    through: i64,
-) -> Result<i64, StoreError> {
+fn session_high(db: &rusqlite::Connection, session: &str, through: i64) -> Result<i64, StoreError> {
     let mut owner = session.to_owned();
     let mut cut = through;
     let mut high = 0;
@@ -267,10 +260,8 @@ async fn session_high(
         if !seen.insert(owner.clone()) {
             return Err(rusqlite::Error::InvalidParameterName("source copy cycle".into()).into());
         }
-        high = high.max(native_on_worker(db, "session", &owner, cut).await?.high);
-        let copy: Option<(String, i64, Option<i64>, bool)> = sqlx::query_as(
-            "SELECT source,through_sequence,base_high,base_hash IS NOT NULL FROM context_source_copies WHERE owner=?",
-        ).bind(&owner).fetch_optional(&mut *db).await?;
+        high = high.max(native_record(db, "session", &owner, cut)?.high);
+        let copy: Option<(String, i64, Option<i64>, bool)> = db.prepare_cached("SELECT source,through_sequence,base_high,base_hash IS NOT NULL FROM context_source_copies WHERE owner=?")?.query_row(rusqlite::params![&owner], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,))).optional()?;
         let Some((source, through, pinned_high, pinned_hash)) = copy else {
             return Ok(high);
         };
@@ -486,8 +477,8 @@ fn identity(
     Ok(format!("sha256:{}", hex::encode(state.finalize())))
 }
 
-async fn record_lineage(
-    db: &mut SqliteWorkerConnection<'_>,
+fn record_lineage(
+    db: &rusqlite::Connection,
     stored: &StoredEvent,
     input: &InvocationInput,
 ) -> Result<(), StoreError> {
@@ -496,19 +487,18 @@ async fn record_lineage(
     let (parent, base, through, root) = if matches!(input, InvocationInput::Message { .. }) {
         (
             None,
-            session_high(db, &event.invocation.session_id, sequence - 1).await?,
+            session_high(db, &event.invocation.session_id, sequence - 1)?,
             0,
             Sha256::digest(b"maka.source.lineage.empty.v1\0").to_vec(),
         )
     } else if let Some(claim) = input.inherited_claim() {
         let parent = claim.source.invocation.invocation_id.as_str();
-        let prior: Vec<u8> = sqlx::query_scalar(
-            "SELECT ancestry_hash FROM context_source_lineages WHERE invocation_id=?",
-        )
-        .bind(parent)
-        .fetch_one(&mut *db)
-        .await?;
-        let part = native_on_worker(db, "invocation", parent, sequence - 1).await?;
+        let prior: Vec<u8> = db
+            .prepare_cached(
+                "SELECT ancestry_hash FROM context_source_lineages WHERE invocation_id=?",
+            )?
+            .query_row(rusqlite::params![parent], |row| row.get(0))?;
+        let part = native_record(db, "invocation", parent, sequence - 1)?;
         let root = hash(
             b"maka.source.lineage.link.v1\0",
             &[&prior, parent.as_bytes(), &part.hash],
@@ -518,45 +508,44 @@ async fn record_lineage(
         return Ok(());
     };
     let identity = serde_json::to_string(&event.invocation)?;
-    sqlx::query("INSERT INTO context_source_lineages VALUES(?,?,?,?,?,?,?)")
-        .bind(&event.invocation.invocation_id)
-        .bind(parent)
-        .bind(base)
-        .bind(through)
-        .bind(root)
-        .bind(sequence)
-        .bind(identity)
-        .execute(db)
-        .await?;
+    db.prepare_cached("INSERT INTO context_source_lineages VALUES(?,?,?,?,?,?,?)")?
+        .execute(rusqlite::params![
+            &event.invocation.invocation_id,
+            parent,
+            base,
+            through,
+            root,
+            sequence,
+            identity
+        ])?;
     Ok(())
 }
 
-async fn record_archive(
-    db: &mut SqliteWorkerConnection<'_>,
+fn record_archive(
+    db: &rusqlite::Connection,
     stored: &StoredEvent,
     placeholder: &maka_agent_facts::archive::ArchivedPlaceholder,
     leaf: &[u8],
 ) -> Result<(), StoreError> {
     let event = &stored.event;
     let (target, invocation, identity, operation, is_error): (i64, String, String, String, bool) =
-        sqlx::query_as("SELECT sequence,invocation_id,json_extract(event_header,'$.invocation'),operation_id,
-           json_extract(event_header,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?")
-            .bind(&placeholder.identity.runtime_event_id).fetch_one(&mut *db).await?;
+        db.prepare_cached("SELECT sequence,invocation_id,json_extract(event_header,'$.invocation'),operation_id,
+           json_extract(event_header,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?")?.query_row(rusqlite::params![&placeholder.identity.runtime_event_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,)))?;
     let encoded = serde_json::to_string(placeholder)?;
-    sqlx::query("INSERT INTO context_archive_records VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(stored.sequence as i64)
-        .bind(&event.invocation.session_id)
-        .bind(&event.invocation.invocation_id)
-        .bind(target)
-        .bind(invocation)
-        .bind(&placeholder.identity.runtime_event_id)
-        .bind(leaf)
-        .bind(encoded)
-        .bind(identity)
-        .bind(operation)
-        .bind(is_error)
-        .execute(db)
-        .await?;
+    db.prepare_cached("INSERT INTO context_archive_records VALUES(?,?,?,?,?,?,?,?,?,?,?)")?
+        .execute(rusqlite::params![
+            stored.sequence as i64,
+            &event.invocation.session_id,
+            &event.invocation.invocation_id,
+            target,
+            invocation,
+            &placeholder.identity.runtime_event_id,
+            leaf,
+            encoded,
+            identity,
+            operation,
+            is_error
+        ])?;
     Ok(())
 }
 

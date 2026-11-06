@@ -20,8 +20,8 @@
 //! One Root authority and one transactional runtime database.
 
 use crate::{EventLog, OpenPurpose, StoreError, root, sessions::SessionRecord};
+use rusqlite::{Connection as SqliteConnection, OptionalExtension};
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::{Connection, Row, SqliteConnection};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -267,11 +267,10 @@ async fn pin_sessions(
         .read(sessions.iter().cloned().map(gates::Key::Session))
         .await?;
     let ids = sessions.to_vec();
-    let mut bindings = owner.connection.read(move |connection| Box::pin(async move {
+    let mut bindings = owner.connection.read(move |connection| {
         let mut binding_ids = Vec::new();
         for session in ids {
-            let reference: Option<Option<String>> = sqlx::query_scalar("SELECT json_extract(configuration,'$.workspace') FROM session_control WHERE id=?")
-                .bind(session).fetch_optional(&mut *connection).await?;
+            let reference: Option<Option<String>> = connection.query_row("SELECT json_extract(configuration,'$.workspace') FROM session_control WHERE id=?", rusqlite::params![session], |row| row.get(0)).optional()?;
             if let Some(Some(reference)) = reference {
                 let reference: maka_agent_facts::workspace::BindingRef = serde_json::from_str(&reference)?;
                 reference.validate().map_err(|error| StoreError::InvalidTransition(error.into()))?;
@@ -279,7 +278,7 @@ async fn pin_sessions(
             }
         }
         Ok(binding_ids)
-    })).await?;
+    }).await?;
     bindings.extend(additional.iter().map(|reference| reference.id));
     let binding_pins = gates
         .read(bindings.into_iter().map(gates::Key::Binding))

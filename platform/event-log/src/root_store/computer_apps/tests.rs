@@ -889,11 +889,11 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
     let blocking = tokio::spawn(async move {
         log.connection
             .run(move |_connection| {
-                Box::pin(async move {
-                    let _ = entered.send(());
-                    released.await.map_err(|_| StoreError::OperationUnknown)?;
-                    Ok(())
-                })
+                let _ = entered.send(());
+                released
+                    .blocking_recv()
+                    .map_err(|_| StoreError::OperationUnknown)?;
+                Ok(())
             })
             .await
     });

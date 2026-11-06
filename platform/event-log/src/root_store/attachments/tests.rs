@@ -93,14 +93,13 @@ async fn count(target: &SessionStore) -> i64 {
         .unwrap()
         .connection
         .read(move |connection| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar("SELECT count(*) FROM artifacts WHERE session_id=?")
-                        .bind(session_id)
-                        .fetch_one(connection)
-                        .await?,
-                )
-            })
+            {
+                Ok(connection.query_row(
+                    "SELECT count(*) FROM artifacts WHERE session_id=?",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )?)
+            }
         })
         .await
         .unwrap()
@@ -167,11 +166,9 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
         owner
             .connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    released.await.unwrap();
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                released.blocking_recv().unwrap();
+                Ok(())
             })
             .await
             .unwrap();
@@ -201,7 +198,7 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
         .owner()
         .unwrap()
         .connection
-        .run(|_| Box::pin(async { Ok(()) }))
+        .run(|_| Ok(()))
         .await
         .unwrap();
     assert_eq!(count(&target).await, 1);
@@ -389,14 +386,13 @@ async fn cross_session_image_freezes_at_target_consumption_and_survives_bundle()
             .owner()
             .unwrap()
             .connection
-            .read(move |db| Box::pin(async move {
-                Ok(sqlx::query_scalar::<_, Option<i64>>(
+            .read(move |db| {
+                Ok(db.query_row(
                     "SELECT canonical_at FROM artifacts WHERE id=?",
-                )
-                .bind(artifact_id)
-                .fetch_one(db)
-                .await?)
-            }))
+                    rusqlite::params![artifact_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )?)
+            })
             .await
             .unwrap(),
         None
@@ -425,24 +421,13 @@ async fn cross_session_image_freezes_at_target_consumption_and_survives_bundle()
         .unwrap()
         .connection
         .read(move |db| {
-            Box::pin(async move {
-                let frozen: Option<i64> =
-                    sqlx::query_scalar("SELECT canonical_at FROM artifacts WHERE id=?")
-                        .bind(&relative_path)
-                        .fetch_one(&mut *db)
-                        .await?;
-                assert_eq!(frozen, Some(11));
-                crate::artifacts::read_image(
-                    db,
-                    &session_id,
-                    &relative_path,
-                    "image/gif",
-                    0,
-                    1024,
-                    11,
-                )
-                .await
-            })
+            let frozen: Option<i64> = db.query_row(
+                "SELECT canonical_at FROM artifacts WHERE id=?",
+                rusqlite::params![&relative_path],
+                |row| row.get(0),
+            )?;
+            assert_eq!(frozen, Some(11));
+            crate::artifacts::read_image(db, &session_id, &relative_path, "image/gif", 0, 1024, 11)
         })
         .await
         .unwrap();
@@ -498,10 +483,9 @@ fn owned_parts(
 }
 
 async fn physical_content(session: &SessionStore) -> (i64, i64, i64) {
-    session.owner().unwrap().connection.read(|db| Box::pin(async move {
-        Ok(sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM contents")
-            .fetch_one(db).await?)
-    })).await.unwrap()
+    session.owner().unwrap().connection.read(|db| {
+        Ok(db.query_row("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM contents", rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+    }).await.unwrap()
 }
 
 #[tokio::test]
@@ -628,13 +612,7 @@ async fn deleting_the_last_upload_reference_automatically_returns_database_pages
     let owner = source.owner().unwrap();
     let pages_before: i64 = owner
         .connection
-        .read(|db| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar("PRAGMA page_count")
-                    .fetch_one(db)
-                    .await?)
-            })
-        })
+        .read(|db| Ok(db.query_row("PRAGMA page_count", rusqlite::params![], |row| row.get(0))?))
         .await
         .unwrap();
     assert_eq!(
@@ -649,15 +627,13 @@ async fn deleting_the_last_upload_reference_automatically_returns_database_pages
             let (pages, free): (i64, i64) = owner
                 .connection
                 .read(|db| {
-                    Box::pin(async move {
-                        let pages = sqlx::query_scalar("PRAGMA page_count")
-                            .fetch_one(&mut *db)
-                            .await?;
-                        let free = sqlx::query_scalar("PRAGMA freelist_count")
-                            .fetch_one(db)
-                            .await?;
-                        Ok((pages, free))
-                    })
+                    let pages =
+                        db.query_row("PRAGMA page_count", rusqlite::params![], |row| row.get(0))?;
+                    let free =
+                        db.query_row("PRAGMA freelist_count", rusqlite::params![], |row| {
+                            row.get(0)
+                        })?;
+                    Ok((pages, free))
                 })
                 .await
                 .unwrap();

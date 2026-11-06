@@ -229,12 +229,11 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         .log
         .connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("UPDATE session_control SET revision=2 WHERE id='source'")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            db.execute(
+                "UPDATE session_control SET revision=2 WHERE id='source'",
+                rusqlite::params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -400,15 +399,11 @@ async fn creation_blocks_relocation(import: bool) {
     let (release, gate) = std::sync::mpsc::channel();
     let blocking = tokio::spawn(async move {
         log.connection
-            .run(move |db| {
-                Box::pin(async move {
-                    db.run_with_connection(move |_| {
-                        entered.send(()).unwrap();
-                        gate.recv_timeout(Duration::from_secs(30)).unwrap();
-                    })
-                    .await?;
-                    Ok(())
-                })
+            .run(move |_| {
+                entered.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(30)).unwrap();
+
+                Ok(())
             })
             .await
     });

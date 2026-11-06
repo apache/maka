@@ -19,7 +19,6 @@
 
 use super::{ModelContextSource, latest_main, read, safety, selection::Selection};
 use crate::{EventLog, StoreError, sequence_number};
-use sqlx::{Connection, SqliteConnection};
 
 /// Logical Turn cuts are resolved against canonical facts, not presentation rows.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,7 +62,6 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<HistoryCapture, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if expected_revision == 0 || expected_revision > 9_007_199_254_740_991 {
             return Err(invalid("source revision must be a positive safe integer"));
@@ -74,57 +72,49 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let actual =
-                        crate::workspace_bindings::current_session_revision(&mut tx, &session)
-                            .await?
-                            .ok_or(StoreError::SessionNotFound)?;
-                    if actual != expected_revision {
-                        return Ok(HistoryCapture::SourceRevisionConflict {
-                            expected: expected_revision,
-                            actual,
-                        });
-                    }
-                    let observed: i64 =
-                        sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-                            .fetch_one(&mut *tx)
-                            .await?;
-                    let through = resolve_cut(&mut tx, &session, &cut, observed).await?;
-                    safety::require_safe_through(&mut tx, &session, None, through).await?;
-                    let selection = Selection::session(&session);
-                    let archives_before = sequence_number(observed)?.saturating_add(1);
-                    let latest = latest_main::read_selected_at(
-                        &mut tx,
-                        &selection,
-                        through,
-                        archives_before,
-                    )
-                    .await?;
-                    let context = read::materialize_selected(
-                        &mut tx,
-                        &selection,
-                        through,
-                        archives_before,
-                        max_events,
-                        max_bytes,
-                        latest,
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok(HistoryCapture::Captured(Box::new(FrozenSessionHistory {
-                        source_revision: actual,
-                        observed_through: sequence_number(observed)?,
-                        context,
-                    })))
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let actual = crate::workspace_bindings::current_session_revision(&tx, &session)?
+                    .ok_or(StoreError::SessionNotFound)?;
+                if actual != expected_revision {
+                    return Ok(HistoryCapture::SourceRevisionConflict {
+                        expected: expected_revision,
+                        actual,
+                    });
+                }
+                let observed: i64 = tx
+                    .prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
+                    .query_row(rusqlite::params![], |row| row.get(0))?;
+                let through = resolve_cut(&tx, &session, &cut, observed)?;
+                safety::require_safe_through(&tx, &session, None, through)?;
+                let selection = Selection::session(&session);
+                let archives_before = sequence_number(observed)?.saturating_add(1);
+                let latest =
+                    latest_main::read_selected_at(&tx, &selection, through, archives_before)?;
+                let context = read::materialize_selected(
+                    &tx,
+                    &selection,
+                    through,
+                    archives_before,
+                    max_events,
+                    max_bytes,
+                    latest,
+                )?;
+                tx.commit()?;
+                Ok(HistoryCapture::Captured(Box::new(FrozenSessionHistory {
+                    source_revision: actual,
+                    observed_through: sequence_number(observed)?,
+                    context,
+                })))
             })
             .await
     }
 }
 
-pub(crate) async fn resolve_cut(
-    connection: &mut SqliteConnection,
+pub(crate) fn resolve_cut(
+    connection: &rusqlite::Connection,
     session: &str,
     cut: &HistoryCut,
     observed: i64,
@@ -133,8 +123,7 @@ pub(crate) async fn resolve_cut(
         HistoryCut::Empty => 0,
         HistoryCut::End => observed,
         HistoryCut::BeforeTurn(turn) | HistoryCut::ThroughTurn(turn) => {
-            let (first, last): (Option<i64>, Option<i64>) = sqlx::query_as(
-                "SELECT MIN(sequence),MAX(sequence) FROM session_history_events
+            let (first, last): (Option<i64>, Option<i64>) = connection.prepare_cached("SELECT MIN(sequence),MAX(sequence) FROM session_history_events
                  WHERE owner_session_id = ?1
                    AND json_extract(event_header,'$.invocation.turn_id') = ?2
                    AND sequence <= ?3
@@ -143,13 +132,7 @@ pub(crate) async fn resolve_cut(
                          AND json_extract(opening.event_header,'$.fact.input.kind') IN ('message','continuation','handoff')))
                          AND opening.owner_session_id = ?1
                          AND json_extract(opening.event_header,'$.invocation.turn_id') = ?2
-                         AND opening.sequence <= ?3)",
-            )
-            .bind(session)
-            .bind(turn)
-            .bind(observed)
-            .fetch_one(&mut *connection)
-            .await?;
+                         AND opening.sequence <= ?3)")?.query_row(rusqlite::params![session,turn,observed], |row| Ok((row.get(0)?,row.get(1)?,)))?;
             let (first, last) = first.zip(last).ok_or(StoreError::HistoryTurnMissing)?;
             match cut {
                 HistoryCut::BeforeTurn(_) => first - 1,
@@ -158,23 +141,20 @@ pub(crate) async fn resolve_cut(
             }
         }
     };
-    let crossing: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_history_events
+    let crossing: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM session_history_events
          WHERE owner_session_id = ?1 AND sequence <= ?2
          GROUP BY json_extract(event_header,'$.invocation.turn_id')
          HAVING MIN(sequence) <= ?3 AND MAX(sequence) > ?3)",
-    )
-    .bind(session)
-    .bind(observed)
-    .bind(limit)
-    .fetch_one(&mut *connection)
-    .await?;
+        )?
+        .query_row(rusqlite::params![session, observed, limit], |row| {
+            row.get(0)
+        })?;
     if crossing {
         return Err(StoreError::HistoryTurnSplit);
     }
-    Selection::session(session)
-        .high_water(connection, sequence_number(limit)?)
-        .await
+    Selection::session(session).high_water(connection, sequence_number(limit)?)
 }
 
 fn invalid(message: &str) -> StoreError {

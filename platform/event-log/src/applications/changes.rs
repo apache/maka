@@ -20,7 +20,7 @@
 //! Deployment-head observations from the same owned store; no grants or package copies.
 use super::{EventLog, StoreError, invalid};
 use maka_plugin_core::deployment::DeploymentRef;
-use sqlx::Row;
+use rusqlite::{OptionalExtension, params};
 use std::sync::{Arc, Weak};
 
 /// A coalescing cursor, not composition authority. The committed SQL head is
@@ -61,25 +61,25 @@ impl EventLog {
         }
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let row =
-                        sqlx::query("SELECT revision FROM application_deployments WHERE id = ?")
-                            .bind(deployment.to_string())
-                            .fetch_optional(connection)
-                            .await?;
-                    let Some(row) = row else {
-                        return Ok(None);
-                    };
-                    let revision = u64::try_from(row.try_get::<i64, _>("revision")?)
-                        .map_err(|_| invalid("invalid stored application revision"))?;
-                    let source = DeploymentRef {
-                        state_domain,
-                        deployment,
-                        revision,
-                    };
-                    source.validate().map_err(invalid)?;
-                    Ok(Some(source))
-                })
+                let revision = connection
+                    .query_row(
+                        "SELECT revision FROM application_deployments WHERE id = ?",
+                        params![deployment.to_string()],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                let Some(revision) = revision else {
+                    return Ok(None);
+                };
+                let revision = u64::try_from(revision)
+                    .map_err(|_| invalid("invalid stored application revision"))?;
+                let source = DeploymentRef {
+                    state_domain,
+                    deployment,
+                    revision,
+                };
+                source.validate().map_err(invalid)?;
+                Ok(Some(source))
             })
             .await
     }

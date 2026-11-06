@@ -121,13 +121,11 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
     let count = store
         .connection
         .run(|conn| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM application_packages")
-                        .fetch_one(conn)
-                        .await?,
-                )
-            })
+            Ok(conn.query_row(
+                "SELECT count(*) FROM application_packages",
+                params![],
+                |row| row.get::<_, i64>(0),
+            )?)
         })
         .await
         .unwrap();
@@ -199,15 +197,11 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     store
         .connection
         .run(|conn| {
-            Box::pin(async move {
-                sqlx::raw_sql("DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;").execute(&mut *conn).await?;
-                sqlx::query(
-                    "UPDATE contents SET payload = X'00' WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
-                )
-                .execute(conn)
-                .await?;
+
+                conn.execute_batch("DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;")?;
+                conn.execute("UPDATE contents SET payload = X'00' WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')", params![])?;
                 Ok(())
-            })
+
         })
         .await
         .unwrap();
@@ -238,14 +232,11 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     let revision = store
         .connection
         .run(move |conn| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar::<_, i64>(
-                    "SELECT revision FROM application_deployments WHERE id = ?",
-                )
-                .bind(id.to_string())
-                .fetch_one(conn)
-                .await?)
-            })
+            Ok(conn.query_row(
+                "SELECT revision FROM application_deployments WHERE id = ?",
+                params![id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )?)
         })
         .await
         .unwrap();
@@ -271,15 +262,11 @@ async fn stored_package_paths_types_and_immutable_digests_are_checked() {
         store
             .connection
             .run(move |conn| {
-                Box::pin(async move {
-                    sqlx::raw_sql(
-                        "DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;",
-                    )
-                    .execute(&mut *conn)
-                    .await?;
-                    sqlx::query(corruption).execute(conn).await?;
-                    Ok(())
-                })
+                conn.execute_batch(
+                    "DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;",
+                )?;
+                conn.execute(corruption, params![])?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -347,18 +334,11 @@ async fn single_package_load_does_not_read_or_validate_sibling_packages() {
     store
         .connection
         .run(move |conn| {
-            Box::pin(async move {
-                sqlx::query("INSERT INTO contents(content_sha256,payload) VALUES('sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d',X'00')")
-                    .execute(&mut *conn).await?;
-                sqlx::query(
-                    "UPDATE application_package_files SET content_id=last_insert_rowid() WHERE id = ? AND revision = ? AND path = 'host.mjs'",
-                )
-                .bind(corrupted_id)
-                .bind(corrupted_revision)
-                .execute(conn)
-                .await?;
+
+                conn.execute("INSERT INTO contents(content_sha256,payload) VALUES('sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d',X'00')", params![])?;
+                conn.execute("UPDATE application_package_files SET content_id=last_insert_rowid() WHERE id = ? AND revision = ? AND path = 'host.mjs'", params![corrupted_id, corrupted_revision])?;
                 Ok(())
-            })
+
         })
         .await
         .unwrap();
@@ -462,11 +442,11 @@ async fn metadata_snapshot_never_materializes_package_payloads() {
     assert!(original.len() < 4096);
     // A payload that cannot be loaded still must not enter metadata reads. This
     // tests the physical DAO boundary, not a profiler estimate or source string.
-    store.connection.run(|connection| Box::pin(async move {
-        sqlx::query("DROP TRIGGER content_immutable").execute(&mut *connection).await?;
-        sqlx::query("UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')").execute(connection).await?;
+    store.connection.run(|connection| {
+        connection.execute("DROP TRIGGER content_immutable", params![])?;
+        connection.execute("UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')", params![])?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     assert_eq!(
         serde_json::to_vec(
             &store

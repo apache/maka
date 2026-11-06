@@ -18,6 +18,8 @@
  */
 
 //! Mixed Session writes, history/catalog reads, attachments and checkpoints.
+//! Default payloads repeat; `--content-pattern unique` gives every tool call distinct
+//! content at the same requested byte length.
 use maka_agent_facts::{
     event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
     tool_call::ToolCallIdentity,
@@ -69,6 +71,71 @@ fn disk(path: &std::path::Path) -> u64 {
         })
         .sum()
 }
+fn resource_summary(stats: &maka_event_log::connection::SqliteResourceStats) -> Value {
+    json!({
+        "cache_bytes": stats.cache_bytes,
+        "schema_bytes": stats.schema_bytes,
+        "statement_bytes": stats.statement_bytes,
+        "cached_statements": stats.cached_statements,
+        "cache_hits": stats.cache_hits,
+        "cache_misses": stats.cache_misses,
+        "cache_spills": stats.cache_spills,
+        "live_statement_runs": stats.statements.iter().map(|s| i64::from(s.runs)).sum::<i64>(),
+        "live_statement_vm_steps": stats.statements.iter().map(|s| i64::from(s.vm_steps)).sum::<i64>(),
+        "live_statement_reprepares": stats.statements.iter().map(|s| i64::from(s.reprepares)).sum::<i64>(),
+    })
+}
+
+fn resource_summaries(
+    resources: &[maka_event_log::connection::ConnectionResourceStats],
+) -> Vec<Value> {
+    resources.iter().map(|owner| json!({
+        "writer": resource_summary(&owner.writer),
+        "readers": owner.readers.iter().map(|reader| reader.as_ref().map(resource_summary)).collect::<Vec<_>>(),
+    })).collect()
+}
+
+struct ProcessUsage {
+    user_ms: f64,
+    system_ms: f64,
+    voluntary_switches: i64,
+    involuntary_switches: i64,
+    peak_rss_native_units: i64,
+}
+fn process_usage() -> Option<ProcessUsage> {
+    #[cfg(unix)]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        // SAFETY: getrusage initializes the complete result when it succeeds.
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } == 0 {
+            // SAFETY: the successful call initialized usage.
+            let usage = unsafe { usage.assume_init() };
+            let milliseconds =
+                |time: libc::timeval| time.tv_sec as f64 * 1000.0 + time.tv_usec as f64 / 1000.0;
+            return Some(ProcessUsage {
+                user_ms: milliseconds(usage.ru_utime),
+                system_ms: milliseconds(usage.ru_stime),
+                voluntary_switches: usage.ru_nvcsw,
+                involuntary_switches: usage.ru_nivcsw,
+                peak_rss_native_units: usage.ru_maxrss,
+            });
+        }
+    }
+    None
+}
+fn usage_delta(before: Option<ProcessUsage>, after: Option<ProcessUsage>) -> Value {
+    match (before, after) {
+        (Some(before), Some(after)) => json!({
+            "user_ms": after.user_ms - before.user_ms,
+            "system_ms": after.system_ms - before.system_ms,
+            "voluntary_context_switches": after.voluntary_switches - before.voluntary_switches,
+            "involuntary_context_switches": after.involuntary_switches - before.involuntary_switches,
+            "peak_rss_native_units": after.peak_rss_native_units,
+        }),
+        _ => Value::Null,
+    }
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
@@ -81,7 +148,19 @@ async fn main() -> Result<()> {
     let agents = count("--agents", 16);
     let calls = count("--calls", 20);
     let bytes = count("--bytes", 65536);
+    let content_pattern = args
+        .windows(2)
+        .find(|pair| pair[0] == "--content-pattern")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("repeated");
+    if !matches!(content_pattern, "repeated" | "unique") {
+        return Err("content pattern must be repeated or unique".into());
+    }
+    let unique = content_pattern == "unique";
     assert!(agents > 0 && calls > 0);
+    if unique && bytes < format!("agent-{}:call-{}:", agents - 1, calls - 1).len() {
+        return Err("unique content requires enough bytes for each agent/call identity".into());
+    }
     let directory = tempfile::tempdir()?;
     let owner = Arc::new(RootOwner::create(
         &directory.path().join("root"),
@@ -99,6 +178,7 @@ async fn main() -> Result<()> {
                 .await?,
         );
     }
+    let workload_resources_before = resource_summaries(&root.sqlite_resource_stats().await?);
     let done = Arc::new(AtomicBool::new(false));
     let reading = root.clone();
     let selected = sessions[0].clone();
@@ -139,6 +219,7 @@ async fn main() -> Result<()> {
     let text: Arc<str> = "Storage payload\n".repeat(bytes / 16 + 1)[..bytes]
         .to_owned()
         .into();
+    let usage_before = process_usage();
     let begin = Instant::now();
     let mut workers = Vec::with_capacity(agents);
     for (index, session) in sessions.iter().cloned().enumerate() {
@@ -187,7 +268,12 @@ async fn main() -> Result<()> {
                 session.append(&event(&invocation,Fact::ToolDispatched {
                     operation_id:operation.clone(),call:ToolCallIdentity::provider(step.clone(),step),name:"Read".into(),input:json!({}),presentation:None,title:None,
                 })).await?;
-                let result=EventWrite::tool_success(format!("result-{index}-{call}"),time,invocation.clone(),operation,ToolOutput::Text(text.to_string()).into())?.0;
+                let mut payload = text.to_string();
+                if unique {
+                    let identity = format!("agent-{index}:call-{call}:");
+                    payload.replace_range(..identity.len(), &identity);
+                }
+                let result=EventWrite::tool_success(format!("result-{index}-{call}"),time,invocation.clone(),operation,ToolOutput::Text(payload).into())?.0;
                 let start=Instant::now(); session.append(&result).await?; writes.push(sample(start));
             }
             session
@@ -206,8 +292,10 @@ async fn main() -> Result<()> {
         writes.extend(worker.await??);
     }
     let elapsed_ms = sample(begin);
+    let workload_process_usage = usage_delta(usage_before, process_usage());
     done.store(true, Ordering::Release);
     let (catalog, history, read_errors) = reader.await?;
+    let workload_resources_after = resource_summaries(&root.sqlite_resource_stats().await?);
     let payload = vec![17; 8 * 1024 * 1024];
     let start = Instant::now();
     sessions[0]
@@ -265,11 +353,22 @@ async fn main() -> Result<()> {
     }
     let load_ms = sample(start);
     let resources = root.sqlite_resource_stats().await?;
+    let sql_resources = resource_summaries(&resources);
+    let sqlite_connections: usize = resources
+        .iter()
+        .map(|owner| {
+            1 + owner
+                .readers
+                .iter()
+                .filter(|reader| reader.is_some())
+                .count()
+        })
+        .sum();
     root.shutdown().await?;
     let failed = !read_errors.is_empty();
     println!(
         "{}",
-        json!({"agents":agents,"calls_per_agent":calls,"requested_bytes":bytes,"write_elapsed_ms":elapsed_ms,"tool_settlements":distribution(writes),"catalog":distribution(catalog),"history":distribution(history),"read_errors":read_errors,"artifact_ms":artifact_ms,"checkpoint_ms":checkpoint_ms,"three_loads_ms":load_ms,"sql_owners":resources.len(),"disk_bytes":disk(&directory.path().join("root")),"profile":if cfg!(debug_assertions){"debug"}else{"release"}})
+        json!({"fixture_sha256":maka_agent_facts::artifact::content_digest(include_bytes!("runtime_concurrency_bench.rs")),"workload_sql_resources_before":workload_resources_before,"workload_sql_resources_after":workload_resources_after,"agents":agents,"calls_per_agent":calls,"requested_bytes":bytes,"content_pattern":content_pattern,"write_elapsed_ms":elapsed_ms,"settlements_per_second":agents as f64 * calls as f64 * 1000.0 / elapsed_ms,"workload_process_usage":workload_process_usage,"tool_settlements":distribution(writes),"catalog":distribution(catalog),"history":distribution(history),"read_errors":read_errors,"artifact_ms":artifact_ms,"checkpoint_ms":checkpoint_ms,"three_loads_ms":load_ms,"sql_owners":resources.len(),"sqlite_connections":sqlite_connections,"sql_resources":sql_resources,"disk_bytes":disk(&directory.path().join("root")),"profile":if cfg!(debug_assertions){"debug"}else{"release"}})
     );
     if failed {
         return Err("concurrent history/catalog read failed".into());

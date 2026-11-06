@@ -22,7 +22,7 @@
 use crate::{EventLog, StoreError};
 use maka_agent_facts::{attachment::AttachmentRef, history::RowPosition};
 use maka_agent_ports::session::history::Role;
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -350,7 +350,7 @@ fn hit(
     })
 }
 
-fn fence(db: &RawConnection) -> Result<u64, StoreError> {
+fn fence(db: &Connection) -> Result<u64, StoreError> {
     crate::sequence_number(
         db.prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
             .query_row([], |row| row.get(0))?,
@@ -375,7 +375,7 @@ fn invalid(reason: &str) -> StoreError {
 }
 
 fn search_on_handle(
-    db: &RawConnection,
+    db: &Connection,
     prefix: &str,
     input: SearchQuery,
     through: u64,
@@ -492,7 +492,7 @@ fn search_on_handle(
 
 #[allow(clippy::too_many_arguments)]
 fn context_on_handle(
-    db: &RawConnection,
+    db: &Connection,
     prefix: &str,
     session: &str,
     message: &str,
@@ -651,7 +651,6 @@ impl EventLog {
         input: SearchQuery,
         cancellation: CancellationToken,
     ) -> Result<SearchBatch, StoreError> {
-        self.validate_root()?;
         let operation = self.search_published_fenced(prefix, input, cancellation.clone());
         tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result}
     }
@@ -664,15 +663,7 @@ impl EventLog {
     ) -> Result<SearchBatch, StoreError> {
         let through = self
             .connection
-            .read_interruptible(|connection| {
-                Box::pin(async move {
-                    let sequence: i64 =
-                        sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-                            .fetch_one(connection)
-                            .await?;
-                    crate::sequence_number(sequence)
-                })
-            })
+            .read_interruptible(|connection| fence(connection))
             .await?;
         self.search_published_through(prefix, input, through, cancellation)
             .await
@@ -689,32 +680,21 @@ impl EventLog {
         let stop = cancellation.clone();
         let operation = self.connection.observe(move |connection| {
             crate::transcript::bodycache::run(connection, move |tx| {
-                Box::pin(async move {
-                    tx.run_on_worker(move |handle| {
-                        // SAFETY: the observation worker exclusively owns this callback-local handle.
-                        let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                        if through > fence(&db)? {
-                            return Err(invalid("history search fence exceeds committed history"));
-                        }
-                        for session in maintenance::visible_sessions(
-                            &db,
-                            &prefix,
-                            input.session_id.as_deref(),
-                            &stop,
-                        )? {
-                            match maintenance::ensure_session(&db, &session, through, &stop) {
-                                Ok(()) | Err(StoreError::TranscriptSource { .. }) => {}
-                                Err(error) => return Err(error),
-                            }
-                        }
-                        search_on_handle(&db, &prefix, input, through, &stop)
-                    })
-                    .await?
-                })
+                if through > fence(tx)? {
+                    return Err(invalid("history search fence exceeds committed history"));
+                }
+                for session in
+                    maintenance::visible_sessions(tx, &prefix, input.session_id.as_deref(), &stop)?
+                {
+                    match maintenance::ensure_session(tx, &session, through, &stop) {
+                        Ok(()) | Err(StoreError::TranscriptSource { .. }) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                search_on_handle(tx, &prefix, input, through, &stop)
             })
         });
         let result = tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result};
-        self.validate_root()?;
         result
     }
 
@@ -730,21 +710,12 @@ impl EventLog {
         exclude: Option<ExcludedTurnTail>,
         cancellation: CancellationToken,
     ) -> Result<SearchContext, StoreError> {
-        self.validate_root()?;
         let stop = cancellation.clone();
         let read = self.connection.observe(move |db| {
             crate::transcript::bodycache::run(db, move |tx| {
-                Box::pin(async move {
-                    tx.run_on_worker(move |handle| {
-                        // SAFETY: callback-local exclusive borrow; all returned history values are owned.
-                        let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                        context_on_handle(
-                            &db, &prefix, &session, &message, before, after, through, exclude,
-                            &stop,
-                        )
-                    })
-                    .await?
-                })
+                context_on_handle(
+                    tx, &prefix, &session, &message, before, after, through, exclude, &stop,
+                )
             })
         });
         tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=read=>result}

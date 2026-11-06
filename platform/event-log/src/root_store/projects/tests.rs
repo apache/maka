@@ -72,14 +72,13 @@ async fn raw(session: &SessionStore) -> (i64, String) {
         .unwrap()
         .connection
         .read(move |connection| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_as("SELECT revision,configuration FROM session_control WHERE id=?")
-                        .bind(id)
-                        .fetch_one(connection)
-                        .await?,
-                )
-            })
+            {
+                Ok(connection.query_row(
+                    "SELECT revision,configuration FROM session_control WHERE id=?",
+                    rusqlite::params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            }
         })
         .await
         .unwrap()
@@ -211,11 +210,9 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
         owner
             .connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    released.await.unwrap();
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                released.blocking_recv().unwrap();
+                Ok(())
             })
             .await
             .unwrap();
@@ -241,12 +238,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
     release.send(()).unwrap();
     blocker.await.unwrap();
     // This queued barrier completes only after the cancelled commit's job exits.
-    store
-        .log
-        .connection
-        .run(|_| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap();
+    store.log.connection.run(|_| Ok(())).await.unwrap();
     assert!(store.project_mutations.try_lock().is_ok());
     assert!(
         store

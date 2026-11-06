@@ -19,9 +19,9 @@
 
 use super::{BundleError, StagedBundle, relocation::Positions};
 use crate::{EventLog, StoreError};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::Connection;
 use std::collections::BTreeMap;
 
 mod collision;
@@ -42,10 +42,9 @@ impl EventLog {
         digest: &str,
         binding_fingerprint: &str,
     ) -> Result<Option<ImportReceipt>, StoreError> {
-        self.validate_root()?;
         let (digest, binding) = (digest.to_owned(), binding_fingerprint.to_owned());
         self.connection
-            .read(move |db| Box::pin(async move { receipt(db, &digest, &binding).await }))
+            .read(move |db| receipt(db, &digest, &binding))
             .await
     }
 
@@ -58,7 +57,6 @@ impl EventLog {
         binding_fingerprint: &str,
         configurations: BTreeMap<String, T>,
     ) -> Result<ImportReceipt, BundleError> {
-        self.validate_root()?;
         if !maka_agent_facts::archive::valid_projection_digest(binding_fingerprint) {
             return Err(invalid("invalid bundle binding fingerprint").into());
         }
@@ -79,65 +77,58 @@ impl EventLog {
         let commits = self
             .commits
             .sessions(configurations.keys().map(String::as_str));
+        let source = staged.database.into_temporary_connection().await?;
+        let summary = staged.summary;
         self.connection
             .run(move |db| {
-                Box::pin(async move {
-                    let result = async {
-                        let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-                        if let Some(receipt) =
-                            receipt(&mut tx, &staged.summary.digest, &binding_digest).await?
-                        {
-                            return Ok(receipt);
-                        }
-                        collision::check(&mut staged.database, &mut tx).await?;
-                        let offset = crate::sequence_number(
-                            sqlx::query_scalar::<_, i64>(
-                                "SELECT COALESCE(MAX(sequence),0) FROM event_log",
-                            )
-                            .fetch_one(&mut *tx)
-                            .await?,
-                        )?;
-                        let positions = Positions::read(&mut staged.database, offset).await?;
-                        let mut relocated =
-                            super::validation::prepare(&mut staged.database, Some(&positions))
-                                .await?;
-                        let receipt = ImportReceipt {
-                            bundle_digest: staged.summary.digest.clone(),
-                            root_session_id: staged.summary.inventory.root_session_id.clone(),
-                            session_ids: staged
-                                .summary
-                                .inventory
-                                .sessions
-                                .iter()
-                                .map(|s| s.id.clone())
-                                .collect(),
-                        };
-                        let published = publish::all(
-                            &mut tx,
-                            &mut staged.database,
-                            &mut relocated,
-                            &receipt,
-                            &binding_digest,
-                            &configurations,
-                            &positions,
-                        )
-                        .await;
-                        relocated.close().await?;
-                        published?;
-                        tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                        commits.publish(positions.high_water());
-                        Ok(receipt)
+                let result = (|| {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        db,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
+                    if let Some(receipt) = receipt(&tx, &summary.digest, &binding_digest)? {
+                        return Ok(receipt);
                     }
-                    .await;
-                    let closed = staged.database.close().await;
-                    // A close failure after commit is recoverable by the same receipt;
-                    // it cannot trigger a second publication.
-                    match (result, closed) {
-                        (Ok(receipt), Ok(())) => Ok(receipt),
-                        (Err(error), _) => Err(error),
-                        (_, Err(error)) => Err(error.into()),
-                    }
-                })
+                    collision::check(&source, &tx)?;
+                    let offset = crate::sequence_number(tx.query_row(
+                        "SELECT COALESCE(MAX(sequence),0) FROM event_log",
+                        [],
+                        |row| row.get(0),
+                    )?)?;
+                    let positions = Positions::read(&source, offset)?;
+                    let relocated = super::validation::prepare(&source, Some(&positions))?;
+                    let receipt = ImportReceipt {
+                        bundle_digest: summary.digest,
+                        root_session_id: summary.inventory.root_session_id,
+                        session_ids: summary
+                            .inventory
+                            .sessions
+                            .into_iter()
+                            .map(|s| s.id)
+                            .collect(),
+                    };
+                    let published = publish::all(
+                        &tx,
+                        &source,
+                        &relocated,
+                        &receipt,
+                        &binding_digest,
+                        &configurations,
+                        &positions,
+                    );
+                    relocated
+                        .close()
+                        .map_err(|(_, error)| StoreError::from(error))?;
+                    published?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
+                    commits.publish(positions.high_water());
+                    Ok(receipt)
+                })();
+                let closed = source.close().map_err(|(_, error)| StoreError::from(error));
+                match (result, closed) {
+                    (Ok(receipt), Ok(())) => Ok(receipt),
+                    (Err(error), _) | (_, Err(error)) => Err(error),
+                }
             })
             .await
             .map_err(Into::into)
@@ -148,17 +139,19 @@ fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
 }
 
-async fn receipt(
-    db: &mut sqlx::SqliteConnection,
+fn receipt(
+    db: &rusqlite::Connection,
     digest: &str,
     binding: &str,
 ) -> Result<Option<ImportReceipt>, StoreError> {
-    let prior: Option<(String, String)> = sqlx::query_as(
-        "SELECT binding_digest,receipt_json FROM session_bundle_imports WHERE digest=?",
-    )
-    .bind(digest)
-    .fetch_optional(db)
-    .await?;
+    let prior: Option<(String, String)> = db
+        .prepare_cached(
+            "SELECT binding_digest,receipt_json FROM session_bundle_imports WHERE digest=?",
+        )?
+        .query_row(rusqlite::params![digest], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
     prior
         .map(|(expected, json)| {
             if expected != binding {

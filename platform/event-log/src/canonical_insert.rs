@@ -19,7 +19,7 @@
 
 //! One publication boundary derives indexed metadata from the original JSON.
 
-use sqlx::{Sqlite, query::Query, sqlite::SqliteArguments};
+use crate::StoreError;
 
 pub(crate) struct Record<'json> {
     pub sequence: Option<i64>,
@@ -37,17 +37,21 @@ pub(crate) struct BodyReference {
     pub json_bytes: i64,
 }
 
-pub(crate) fn insert(record: Record<'_>) -> Query<'_, Sqlite, SqliteArguments> {
+pub(crate) fn insert(
+    connection: &rusqlite::Connection,
+    record: Record<'_>,
+) -> Result<usize, StoreError> {
     let bytes = record.json.len();
-    insert_header(record, bytes, None)
+    insert_header(connection, record, bytes, None)
 }
 
 pub(crate) fn insert_header(
+    connection: &rusqlite::Connection,
     record: Record<'_>,
     canonical_bytes: usize,
     body: Option<BodyReference>,
-) -> Query<'_, Sqlite, SqliteArguments> {
-    sqlx::query(
+) -> Result<usize, StoreError> {
+    Ok(connection.prepare_cached(
         "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_header,canonical_bytes,body_id,header_offset,body_json_bytes,
                                accounting_at,accounting_usage,invocation_model,accounting_tool,event_session)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,
@@ -78,15 +82,5 @@ pub(crate) fn insert_header(
                 'outcome', json_extract(COALESCE(?6, NULL), '$.fact.outcome.kind'))
         END,
             json_extract(COALESCE(?6, NULL), '$.invocation.session_id'));",
-    )
-    .bind(record.sequence)
-    .bind(record.event_id)
-    .bind(record.invocation_id)
-    .bind(record.kind)
-    .bind(record.operation_id)
-    .bind(record.json)
-    .bind(canonical_bytes as i64)
-    .bind(body.map(|body| body.id))
-    .bind(body.map(|body| body.offset))
-    .bind(body.map(|body| body.json_bytes))
+    )?.execute(rusqlite::params![record.sequence,record.event_id,record.invocation_id,record.kind,record.operation_id,record.json,canonical_bytes as i64,body.map(|body| body.id),body.map(|body| body.offset),body.map(|body| body.json_bytes)] )?)
 }

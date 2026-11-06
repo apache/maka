@@ -20,10 +20,9 @@
 //! Bounded safe projections of original execution and auxiliary facts.
 
 use crate::{EventLog, StoreError};
-use futures_util::TryStreamExt;
 use maka_agent_facts::diagnostics::DiagnosticDetail;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, Row};
 use std::time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +47,6 @@ impl EventLog {
         max_entries: usize,
         max_bytes: usize,
     ) -> Result<Page, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         if max_entries == 0 || max_bytes == 0 || (before.is_some() && through.is_none()) {
             return Err(invalid("invalid diagnostic page bounds"));
@@ -60,54 +58,56 @@ impl EventLog {
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let high_water = crate::observation::high_water(&mut tx).await?;
-                    let through = through.unwrap_or(high_water);
-                    validate_bounds(through, before, high_water)?;
-                    let mut entries: Vec<Record> = Vec::new();
-                    let mut more = false;
-                    {
-                        let mut rows = sqlx::query(RECORDS)
-                            .bind(session)
-                            .bind(through as i64)
-                            .bind(before.map(|n| n as i64))
-                            .bind(row_limit)
-                            .fetch(&mut *tx);
-                        while let Some(row) = rows.try_next().await? {
-                            let json: &str = row.try_get(0)?;
-                            if entries.len() == max_entries
-                                || (!entries.is_empty() && json.len() > max_bytes)
-                            {
-                                more = true;
-                                break;
-                            }
-                            entries.push(serde_json::from_str(json)?);
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let high_water = crate::observation::high_water(&tx)?;
+                let through = through.unwrap_or(high_water);
+                validate_bounds(through, before, high_water)?;
+                let mut entries: Vec<Record> = Vec::new();
+                let mut more = false;
+                {
+                    let mut rows_statement = tx.prepare_cached(RECORDS)?;
+                    let mut rows = rows_statement.query(rusqlite::params![
+                        session,
+                        through as i64,
+                        before.map(|n| n as i64),
+                        row_limit
+                    ])?;
+                    while let Some(row) = rows.next()? {
+                        let json: String = row.get(0)?;
+                        if entries.len() == max_entries
+                            || (!entries.is_empty() && json.len() > max_bytes)
+                        {
+                            more = true;
+                            break;
                         }
+                        entries.push(serde_json::from_str(&json)?);
                     }
-                    let mut page = Page {
-                        through,
-                        entries,
-                        next_before: None,
+                }
+                let mut page = Page {
+                    through,
+                    entries,
+                    next_before: None,
+                };
+                loop {
+                    page.next_before = if more {
+                        page.entries.last().map(|entry| entry.sequence)
+                    } else {
+                        None
                     };
-                    loop {
-                        page.next_before = if more {
-                            page.entries.last().map(|entry| entry.sequence)
-                        } else {
-                            None
-                        };
-                        if serde_json::to_vec(&page)?.len() <= max_bytes {
-                            break;
-                        }
-                        if page.entries.len() <= 1 {
-                            break;
-                        }
-                        page.entries.pop();
-                        more = true;
+                    if serde_json::to_vec(&page)?.len() <= max_bytes {
+                        break;
                     }
-                    tx.commit().await?;
-                    Ok(page)
-                })
+                    if page.entries.len() <= 1 {
+                        break;
+                    }
+                    page.entries.pop();
+                    more = true;
+                }
+                tx.commit()?;
+                Ok(page)
             })
             .await
     }
@@ -117,23 +117,22 @@ impl EventLog {
         session: &str,
         through: u64,
     ) -> Result<Option<u64>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let high_water = crate::observation::high_water(&mut tx).await?;
-                    validate_bounds(through, None, high_water)?;
-                    let sequence: Option<i64> = sqlx::query_scalar(LATEST)
-                        .bind(session)
-                        .bind(through as i64)
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                    tx.commit().await?;
-                    sequence.map(crate::sequence_number).transpose()
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let high_water = crate::observation::high_water(&tx)?;
+                validate_bounds(through, None, high_water)?;
+                let sequence: Option<i64> = tx
+                    .prepare_cached(LATEST)?
+                    .query_row(rusqlite::params![session, through as i64], |row| row.get(0))
+                    .optional()?;
+                tx.commit()?;
+                sequence.map(crate::sequence_number).transpose()
             })
             .await
     }
@@ -177,39 +176,34 @@ mod tests {
             .unwrap();
         log.connection
             .read(|connection| {
-                Box::pin(async move {
-                    for (query, paged) in [(RECORDS, true), (LATEST, false)] {
-                        let explain = format!("EXPLAIN QUERY PLAN {query}");
-                        let query = sqlx::query(sqlx::AssertSqlSafe(explain.as_str()))
-                            .bind("session")
-                            .bind(100i64);
-                        let rows = if paged {
-                            query
-                                .bind(None::<i64>)
-                                .bind(33i64)
-                                .fetch_all(&mut *connection)
-                                .await?
-                        } else {
-                            query.fetch_all(&mut *connection).await?
-                        };
-                        let plan = rows
-                            .iter()
-                            .map(|row| row.get::<String, _>(3))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        assert!(
-                            plan.contains(
-                                "SEARCH event_log USING INDEX diagnostic_session_sequence"
-                            ),
-                            "{plan}"
-                        );
-                        assert!(
-                            !plan.contains("SCAN event_log") && !plan.contains("USE TEMP B-TREE"),
-                            "{plan}"
-                        );
-                    }
-                    Ok(())
-                })
+                for (query, paged) in [(RECORDS, true), (LATEST, false)] {
+                    let explain = format!("EXPLAIN QUERY PLAN {query}");
+                    let mut statement = connection.prepare_cached(&explain)?;
+                    let rows = if paged {
+                        statement
+                            .query_map(
+                                rusqlite::params!["session", 100i64, None::<i64>, 33i64],
+                                |row| row.get::<_, String>(3),
+                            )?
+                            .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        statement
+                            .query_map(rusqlite::params!["session", 100i64], |row| {
+                                row.get::<_, String>(3)
+                            })?
+                            .collect::<Result<Vec<_>, _>>()?
+                    };
+                    let plan = rows.join("\n");
+                    assert!(
+                        plan.contains("SEARCH event_log USING INDEX diagnostic_session_sequence"),
+                        "{plan}"
+                    );
+                    assert!(
+                        !plan.contains("SCAN event_log") && !plan.contains("USE TEMP B-TREE"),
+                        "{plan}"
+                    );
+                }
+                Ok(())
             })
             .await
             .unwrap();

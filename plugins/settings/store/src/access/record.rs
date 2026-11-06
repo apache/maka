@@ -20,8 +20,8 @@
 use crate::{ConfigError, Result};
 use maka_agent_facts::access::CapabilityOwnerIdentity;
 use maka_agent_facts::access::ManagedPrincipalKind;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use sqlx::SqliteConnection;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -134,11 +134,11 @@ pub(super) fn validate(value: &AccessCredential) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn load(tx: &mut SqliteConnection) -> Result<Vec<AccessCredential>> {
-    let documents: Vec<String> =
-        sqlx::query_scalar("SELECT document FROM access_credentials ORDER BY credential_id")
-            .fetch_all(tx)
-            .await?;
+pub(super) fn load(tx: &Connection) -> Result<Vec<AccessCredential>> {
+    let documents: Vec<String> = tx
+        .prepare_cached("SELECT document FROM access_credentials ORDER BY credential_id")?
+        .query_map(rusqlite::params![], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     documents
         .iter()
         .map(|s| {
@@ -149,7 +149,7 @@ pub(super) async fn load(tx: &mut SqliteConnection) -> Result<Vec<AccessCredenti
         .collect()
 }
 /// Replaces the private document set inside the caller's immediate transaction.
-pub(super) async fn save(tx: &mut SqliteConnection, records: &[AccessCredential]) -> Result<()> {
+pub(super) fn save(tx: &Connection, records: &[AccessCredential]) -> Result<()> {
     let documents: Vec<String> = records
         .iter()
         .map(|c| {
@@ -157,14 +157,12 @@ pub(super) async fn save(tx: &mut SqliteConnection, records: &[AccessCredential]
             Ok(serde_json::to_string(c)?)
         })
         .collect::<Result<_>>()?;
-    sqlx::query("DELETE FROM access_credentials")
-        .execute(&mut *tx)
-        .await?;
+    tx.execute("DELETE FROM access_credentials", rusqlite::params![])?;
     for document in documents {
-        sqlx::query("INSERT INTO access_credentials (document) VALUES (?)")
-            .bind(document)
-            .execute(&mut *tx)
-            .await?;
+        tx.execute(
+            "INSERT INTO access_credentials (document) VALUES (?)",
+            rusqlite::params![document],
+        )?;
     }
     Ok(())
 }

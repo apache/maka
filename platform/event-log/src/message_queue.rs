@@ -21,8 +21,8 @@
 use crate::{EventLog, StoreError, message_admissions::PendingMessageAdmission};
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::input::MessageInput;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, SqliteConnection};
 
 pub(crate) mod edit;
 mod receipts;
@@ -77,40 +77,37 @@ impl EventLog {
         session: &str,
         message: &str,
     ) -> Result<MessageDelivery, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(session)?;
         let session = session.to_owned();
         let message = message.to_owned();
-        self.connection.read(move |db| Box::pin(async move {
-            let state: String = sqlx::query_scalar("SELECT CASE WHEN EXISTS(SELECT 1 FROM message_cancellations WHERE session_id=?1 AND message_id=?2) THEN 'cancelled' WHEN EXISTS(SELECT 1 FROM message_sources WHERE session_id=?1 AND message_id=?2) THEN 'delivered' ELSE 'unknown' END")
-                .bind(session).bind(message).fetch_one(db).await?;
+        self.connection.read(move |db| {
+            let state: String = db.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM message_cancellations WHERE session_id=?1 AND message_id=?2) THEN 'cancelled' WHEN EXISTS(SELECT 1 FROM message_sources WHERE session_id=?1 AND message_id=?2) THEN 'delivered' ELSE 'unknown' END", rusqlite::params![session, message], |row| row.get(0))?;
             Ok(match state.as_str() {
                 "cancelled" => MessageDelivery::Cancelled,
                 "delivered" => MessageDelivery::Delivered,
                 _ => MessageDelivery::Unknown,
             })
-        })).await
+        }).await
     }
 
     /// Read the control revision without loading the potentially large pending bodies.
     pub async fn message_queue_revision(&self, session: &str) -> Result<u64, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .read(move |connection| Box::pin(async move { revision(connection, &session).await }))
+            .read(move |connection| revision(connection, &session))
             .await
     }
     pub async fn message_queue(&self, session: &str) -> Result<MessageQueue, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    read(&mut tx, &session).await
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                read(&tx, &session)
             })
             .await
     }
@@ -125,7 +122,6 @@ impl EventLog {
         edit: QueueEdit,
         command: QueueCommand,
     ) -> Result<QueueReceipt, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         command.validate()?;
         if command.kind != edit.command_kind() {
@@ -135,23 +131,28 @@ impl EventLog {
         let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    if let Some(receipt) = receipts::read(&mut tx, &session, &command).await? {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
+                    if let Some(receipt) = receipts::read(&tx, &session, &command)? {
                         return Ok(receipt);
                     }
-                    let previous = read(&mut tx, &session).await?;
+                    let previous = read(&tx, &session)?;
                     if previous.revision != expected_revision {
                         return Err(StoreError::RevisionConflict {
                             expected: expected_revision.to_string(),
                             actual: previous.revision.to_string(),
                         });
                     }
-                    let archived: Option<bool> =
-                        sqlx::query_scalar("SELECT archived FROM session_control WHERE id = ?")
-                            .bind(&session)
-                            .fetch_optional(&mut *tx)
-                            .await?;
+                    let archived: Option<bool> = tx
+                        .query_row(
+                            "SELECT archived FROM session_control WHERE id = ?",
+                            rusqlite::params![&session],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
                     match archived {
                         None => return Err(StoreError::SessionNotFound),
                         Some(true) => {
@@ -161,9 +162,9 @@ impl EventLog {
                         }
                         Some(false) => {}
                     }
-                    let mut change = edit::apply(&mut tx, &session, previous, edit).await?;
+                    let mut change = edit::apply(&tx, &session, previous, edit)?;
                     if change.changed {
-                        change.result.queue.revision = bump(&mut tx, &session).await?;
+                        change.result.queue.revision = bump(&tx, &session)?;
                     }
                     let receipt = QueueReceipt {
                         revision: change.result.queue.revision,
@@ -173,15 +174,15 @@ impl EventLog {
                             Vec::new()
                         },
                     };
-                    receipts::insert(&mut tx, &session, &command, &receipt).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    receipts::insert(&tx, &session, &command, &receipt)?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     if change.changed {
                         // A wakeup is not a new execution fact. The same high-water is
                         // enough to refresh a projection whose queue control changed.
                         commits.metadata();
                     }
                     Ok(receipt)
-                })
+                }
             })
             .await
     }
@@ -191,65 +192,50 @@ impl EventLog {
         session: &str,
         message: &str,
     ) -> Result<bool, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(message)?;
         let session = session.to_owned();
         let message = message.to_owned();
         self.connection
-            .read(move |connection| {
-                Box::pin(async move { cancelled(connection, &session, &message).await })
-            })
+            .read(move |connection| cancelled(connection, &session, &message))
             .await
     }
 }
 
-pub(crate) async fn read(
-    connection: &mut SqliteConnection,
-    session: &str,
-) -> Result<MessageQueue, StoreError> {
+pub(crate) fn read(connection: &Connection, session: &str) -> Result<MessageQueue, StoreError> {
     Ok(MessageQueue {
-        revision: revision(connection, session).await?,
-        entries: crate::message_admissions::pending(connection, session).await?,
+        revision: revision(connection, session)?,
+        entries: crate::message_admissions::pending(connection, session)?,
     })
 }
-pub(super) async fn revision(
-    connection: &mut SqliteConnection,
-    session: &str,
-) -> Result<u64, StoreError> {
-    let revision: Option<i64> =
-        sqlx::query_scalar("SELECT revision FROM message_queue_state WHERE session_id = ?")
-            .bind(session)
-            .fetch_optional(connection)
-            .await?;
+pub(super) fn revision(connection: &Connection, session: &str) -> Result<u64, StoreError> {
+    let revision: Option<i64> = connection
+        .query_row(
+            "SELECT revision FROM message_queue_state WHERE session_id = ?",
+            rusqlite::params![session],
+            |row| row.get(0),
+        )
+        .optional()?;
     u64::try_from(revision.unwrap_or(0)).map_err(|_| invalid("invalid queue revision"))
 }
-pub(crate) async fn bump(
-    connection: &mut SqliteConnection,
-    session: &str,
-) -> Result<u64, StoreError> {
-    let next = revision(connection, session)
-        .await?
+pub(crate) fn bump(connection: &Connection, session: &str) -> Result<u64, StoreError> {
+    let next = revision(connection, session)?
         .checked_add(1)
         .filter(|n| *n <= maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER)
         .ok_or_else(|| invalid("message queue revision exhausted"))?;
-    sqlx::query(
+    connection.execute(
         "INSERT INTO message_queue_state(session_id, revision) VALUES (?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision",
-    )
-    .bind(session)
-    .bind(next as i64)
-    .execute(connection)
-    .await?;
+        rusqlite::params![session, next as i64],
+    )?;
     Ok(next)
 }
-pub(crate) async fn cancelled(
-    connection: &mut SqliteConnection,
+pub(crate) fn cancelled(
+    connection: &Connection,
     session: &str,
     message: &str,
 ) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM message_cancellations WHERE session_id = ? AND message_id = ?)")
-        .bind(session).bind(message).fetch_one(connection).await?)
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM message_cancellations WHERE session_id = ? AND message_id = ?)", rusqlite::params![session, message], |row| row.get(0))?)
 }
 fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())

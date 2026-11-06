@@ -22,8 +22,8 @@ use super::{evidence, read};
 use crate::StoreError;
 use maka_agent_facts::event::{Fact, ToolOutcome};
 use maka_presentation::{InvocationView, Row};
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::sqlite::SqliteWorkerConnection;
+use rusqlite::OptionalExtension;
+use rusqlite::{Connection as RawConnection, params};
 
 pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR NOT EXISTS (SELECT 1 FROM runtime_events opening
                        WHERE opening.invocation_id = e.invocation_id
@@ -54,22 +54,19 @@ pub(super) const ELIGIBLE: &str = r#"(e.kind = 'context_checkpoint_recorded' OR 
                                  AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message','continuation','handoff')))
                        OR (e.kind = 'executor_observed' AND json_extract(e.event_header, '$.fact.output.type') IN ('message_end','tool_start','tool_result')))"#;
 
-pub(super) async fn source_for_owner_on_worker(
-    connection: &mut SqliteWorkerConnection<'_>,
+pub(super) fn source_for_owner_on_worker(
+    connection: &rusqlite::Connection,
     owner: &super::HistoryOwner,
     source: u64,
 ) -> Result<Vec<Row>, StoreError> {
     let session = owner.key();
     let sequence = read::sql_number(source)?;
-    // Reuse the original SQLx statement cache across bounded page callbacks.
-    // Projection still borrows the same connection and transaction below.
     let sql = candidate_sql();
-    let candidate: Option<(String, Option<String>, String)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(sequence)
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let candidate: Option<(String, Option<String>, String)> = connection
+        .query_row(sql.as_str(), rusqlite::params![sequence, session], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?;
     let Some(candidate) = candidate else {
         return Ok(Vec::new());
     };
@@ -82,15 +79,15 @@ pub(super) async fn source_for_owner_on_worker(
     ) {
         Projection::Tool
     } else {
-        Projection::Evidence(
-            evidence::selected_on_worker(connection, &invocation, step.as_deref(), sequence, true)
-                .await?,
-        )
+        Projection::Evidence(evidence::selected_on_worker(
+            connection,
+            &invocation,
+            step.as_deref(),
+            sequence,
+            true,
+        )?)
     };
-    // SAFETY: exclusive worker-local borrow; no handle-backed values escape.
-    let db = unsafe { RawConnection::from_handle(connection.as_raw_handle().as_ptr()) }?;
-    db.set_prepared_statement_cache_capacity(100);
-    project_source(&db, owner, sequence, projection)
+    project_source(connection, owner, sequence, projection)
 }
 
 fn candidate_sql() -> String {

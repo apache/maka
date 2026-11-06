@@ -21,9 +21,9 @@
 //! permission evidence captures immutable stamps instead of following this pointer.
 use crate::{EventLog, StoreError};
 use maka_agent_facts::workspace::{BindingRef, BindingStamp, PermissionBasis};
+use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use sqlx::{Row, SqliteConnection};
 
 const MAX: u64 = maka_agent_facts::interaction::MAX_SAFE_INTEGER;
 
@@ -73,7 +73,6 @@ impl EventLog {
         owner_scope: &str,
         workspace: &T,
     ) -> Result<BindingRef, StoreError> {
-        self.validate_root()?;
         if owner_scope.is_empty() {
             return Err(invalid("workspace owner scope is empty"));
         }
@@ -95,9 +94,8 @@ impl EventLog {
         &self,
         id: uuid::Uuid,
     ) -> Result<Option<WorkspaceBinding<T>>, StoreError> {
-        self.validate_root()?;
         self.connection
-            .read(move |connection| Box::pin(async move { read(connection, id).await }))
+            .read(move |connection| read(connection, id))
             .await
     }
 }
@@ -114,44 +112,37 @@ impl crate::writeback::Statement for WriteAttachment {
 
     fn execute(
         self,
-        connection: &mut SqliteConnection,
-    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<BindingRef>, StoreError>>
-    {
-        Box::pin(async move {
+        connection: &rusqlite::Connection,
+    ) -> Result<crate::writeback::Prepared<BindingRef>, StoreError> {
+        {
             let Self {
                 owner_scope,
                 workspace,
                 digest,
             } = self;
-            let existing: Option<String> = sqlx::query_scalar(
-                "SELECT id FROM workspace_bindings
-                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1",
-            ).bind(&owner_scope).bind(&digest).bind(&workspace).fetch_optional(&mut *connection).await?;
+            let existing: Option<String> = connection.query_row("SELECT id FROM workspace_bindings
+                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1", params![&owner_scope, &digest, &workspace], |row| row.get(0)).optional()?;
             let changed = existing.is_none();
             let id = match existing {
                 Some(id) => uuid::Uuid::parse_str(&id)
                     .map_err(|_| invalid("invalid workspace binding ID"))?,
                 None => {
                     let id = uuid::Uuid::new_v4();
-                    sqlx::query("INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)")
-                        .bind(id.to_string())
-                        .bind(owner_scope)
-                        .bind(digest)
-                        .bind(workspace)
-                        .execute(&mut *connection)
-                        .await?;
+                    connection.execute(
+                        "INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)",
+                        params![id.to_string(), owner_scope, digest, workspace],
+                    )?;
                     id
                 }
             };
-            let binding = read::<Value>(connection, id)
-                .await?
+            let binding = read::<Value>(connection, id)?
                 .ok_or_else(|| invalid("workspace binding disappeared"))?;
             Ok(crate::writeback::Prepared {
                 value: binding.reference(),
                 changed,
                 notification: crate::writeback::Notification::None,
             })
-        })
+        }
     }
 
     fn committed(value: BindingRef) -> BindingRef {
@@ -163,24 +154,19 @@ impl crate::writeback::Statement for WriteAttachment {
     }
 }
 
-pub(crate) async fn read<T: DeserializeOwned>(
-    connection: &mut SqliteConnection,
+pub(crate) fn read<T: DeserializeOwned>(
+    connection: &rusqlite::Connection,
     id: uuid::Uuid,
 ) -> Result<Option<WorkspaceBinding<T>>, StoreError> {
-    let row = sqlx::query(
-        "SELECT workspace_json,permission_epoch,metadata_epoch FROM workspace_bindings WHERE id=?",
-    )
-    .bind(id.to_string())
-    .fetch_optional(connection)
-    .await?;
+    let row = connection.query_row("SELECT workspace_json,permission_epoch,metadata_epoch FROM workspace_bindings WHERE id=?",params![id.to_string()],|row| Ok((row.get::<_, String>(0)?,row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,))).optional()
+    ?;
     row.map(|row| {
         let binding = WorkspaceBinding {
             id,
-            workspace: serde_json::from_str(&row.try_get::<String, _>(0)?)?,
-            permission_epoch: u64::try_from(row.try_get::<i64, _>(1)?)
+            workspace: serde_json::from_str(&row.0)?,
+            permission_epoch: u64::try_from(row.1)
                 .map_err(|_| invalid("invalid permission epoch"))?,
-            metadata_epoch: u64::try_from(row.try_get::<i64, _>(2)?)
-                .map_err(|_| invalid("invalid metadata epoch"))?,
+            metadata_epoch: u64::try_from(row.2).map_err(|_| invalid("invalid metadata epoch"))?,
         };
         binding.reference().validate().map_err(invalid)?;
         Ok(binding)
@@ -201,15 +187,14 @@ pub(crate) fn attached(configuration: &Value) -> Result<Option<BindingRef>, Stor
         .transpose()
 }
 
-pub(crate) async fn resolve(
-    connection: &mut SqliteConnection,
+pub(crate) fn resolve(
+    connection: &rusqlite::Connection,
     configuration: &Value,
 ) -> Result<Option<WorkspaceBinding>, StoreError> {
     let Some(reference) = attached(configuration)? else {
         return Ok(None);
     };
-    let binding = read(connection, reference.id)
-        .await?
+    let binding = read(connection, reference.id)?
         .ok_or_else(|| invalid("Session workspace binding does not exist"))?;
     reference
         .session_revision(0, binding.metadata_epoch)
@@ -235,20 +220,22 @@ pub(crate) fn effective_revision(
 }
 
 /// Lightweight effective CAS token; no execution/history projection is needed.
-pub(crate) async fn current_session_revision(
-    connection: &mut SqliteConnection,
+pub(crate) fn current_session_revision(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<Option<u64>, StoreError> {
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT revision,configuration FROM session_control WHERE id=?")
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let row: Option<(i64, String)> = connection
+        .query_row(
+            "SELECT revision,configuration FROM session_control WHERE id=?",
+            params![session],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
     let Some((local, encoded)) = row else {
         return Ok(None);
     };
     let configuration = serde_json::from_str(&encoded)?;
-    let binding = resolve(connection, &configuration).await?;
+    let binding = resolve(connection, &configuration)?;
     effective_revision(
         u64::try_from(local).map_err(|_| invalid("invalid Session revision"))?,
         &configuration,
@@ -276,38 +263,38 @@ pub(crate) fn effective_boundary(
 }
 
 /// Called inside the same transaction as grant/T1 verification.
-pub(crate) async fn permission_basis(
-    connection: &mut SqliteConnection,
+pub(crate) fn permission_basis(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<Option<PermissionBasis>, StoreError> {
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT configuration FROM session_control WHERE id=? AND archived=0")
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT configuration FROM session_control WHERE id=? AND archived=0",
+            params![session],
+            |row| row.get(0),
+        )
+        .optional()?;
     let Some(raw) = raw else {
         return Ok(None);
     };
     let configuration = serde_json::from_str(&raw)?;
-    let Some(binding) = resolve(connection, &configuration).await? else {
+    let Some(binding) = resolve(connection, &configuration)? else {
         return Ok(None);
     };
     effective_boundary(&configuration, &binding).map(Some)
 }
 
-pub(crate) async fn full_access(
-    connection: &mut SqliteConnection,
+pub(crate) fn full_access(
+    connection: &rusqlite::Connection,
     session: &str,
     basis: &PermissionBasis,
 ) -> Result<bool, StoreError> {
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT configuration FROM session_control WHERE id=? AND archived=0 AND json_extract(configuration,'$.permissions.access')='danger_full_access'",
-    ).bind(session).fetch_optional(&mut *connection).await?;
+    let raw: Option<String> = connection.query_row("SELECT configuration FROM session_control WHERE id=? AND archived=0 AND json_extract(configuration,'$.permissions.access')='danger_full_access'", params![session], |row| row.get(0)).optional()?;
     let Some(raw) = raw else {
         return Ok(false);
     };
     let configuration = serde_json::from_str(&raw)?;
-    let Some(binding) = resolve(connection, &configuration).await? else {
+    let Some(binding) = resolve(connection, &configuration)? else {
         return Ok(false);
     };
     Ok(effective_boundary(&configuration, &binding)? == *basis)
@@ -327,13 +314,12 @@ pub(crate) fn normalize(
     Ok(())
 }
 
-pub(crate) async fn require_current_reference(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_current_reference(
+    connection: &rusqlite::Connection,
     configuration: &Value,
 ) -> Result<(), StoreError> {
     if let Some(reference) = attached(configuration)? {
-        let binding = resolve(connection, configuration)
-            .await?
+        let binding = resolve(connection, configuration)?
             .ok_or_else(|| invalid("workspace binding is missing"))?;
         if reference != binding.reference() {
             return Err(invalid("workspace attachment changed before commit"));
@@ -344,8 +330,8 @@ pub(crate) async fn require_current_reference(
 }
 
 /// Check one indexed maximum per counter, never enumerate member Sessions.
-pub(crate) async fn require_headroom(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_headroom(
+    connection: &rusqlite::Connection,
     id: uuid::Uuid,
     permission: u64,
     metadata: u64,
@@ -360,10 +346,9 @@ pub(crate) async fn require_headroom(
             permission,
         ),
     ] {
-        let offset: Option<i64> = sqlx::query_scalar(query)
-            .bind(id.to_string())
-            .fetch_optional(&mut *connection)
-            .await?;
+        let offset: Option<i64> = connection
+            .query_row(query, params![id.to_string()], |row| row.get(0))
+            .optional()?;
         if offset.is_some_and(|offset| {
             offset
                 .checked_add(epoch as i64)
@@ -377,15 +362,14 @@ pub(crate) async fn require_headroom(
     Ok(())
 }
 
-pub(crate) async fn replace(
-    connection: &mut SqliteConnection,
+pub(crate) fn replace(
+    connection: &rusqlite::Connection,
     id: uuid::Uuid,
     workspace: Value,
     permission_changed: bool,
 ) -> Result<(), StoreError> {
-    let current = read::<Value>(connection, id)
-        .await?
-        .ok_or_else(|| invalid("workspace binding disappeared"))?;
+    let current =
+        read::<Value>(connection, id)?.ok_or_else(|| invalid("workspace binding disappeared"))?;
     let metadata = current
         .metadata_epoch
         .checked_add(1)
@@ -396,11 +380,9 @@ pub(crate) async fn replace(
         .checked_add(u64::from(permission_changed))
         .filter(|value| *value <= MAX)
         .ok_or_else(|| invalid("workspace permission epoch exhausted"))?;
-    require_headroom(connection, id, permission, metadata).await?;
+    require_headroom(connection, id, permission, metadata)?;
     let (workspace, digest) = canonical(workspace)?;
-    sqlx::query("UPDATE workspace_bindings SET workspace_json=?,selection_digest=?,permission_epoch=?,metadata_epoch=? WHERE id=?")
-        .bind(workspace).bind(digest).bind(permission as i64).bind(metadata as i64).bind(id.to_string())
-        .execute(connection).await?;
+    connection.execute("UPDATE workspace_bindings SET workspace_json=?,selection_digest=?,permission_epoch=?,metadata_epoch=? WHERE id=?", params![workspace, digest, permission as i64, metadata as i64, id.to_string()])?;
     Ok(())
 }
 

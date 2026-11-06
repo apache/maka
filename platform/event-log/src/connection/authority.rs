@@ -26,6 +26,7 @@ use crate::{
 
 /// Authority retained until the database worker has actually closed.
 pub enum ConnectionAuthority {
+    Temporary,
     Writer {
         lease: Arc<FileLease>,
         root: Option<Arc<RootOwner>>,
@@ -40,6 +41,7 @@ pub enum ConnectionAuthority {
 impl ConnectionAuthority {
     pub(super) fn validate(&self) -> Result<(), StoreError> {
         let root = match self {
+            Self::Temporary => None,
             Self::Writer { root, lease } => {
                 lease.validate()?;
                 root.as_ref()
@@ -60,8 +62,8 @@ impl ConnectionAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection::OpenOptions;
     use crate::connection::OwnedConnection;
-    use sqlx::sqlite::SqliteConnectOptions;
 
     #[tokio::test]
     async fn root_authority_is_retained_and_validated_for_each_job() {
@@ -75,25 +77,25 @@ mod tests {
         let root = Arc::new(RootOwner::create(&path, &namespaces).unwrap());
         let retained = Arc::downgrade(&root);
         let owner = OwnedConnection::open(
-            SqliteConnectOptions::new().in_memory(true),
+            OpenOptions::memory(),
             ConnectionAuthority::Root(root),
-            |_| Box::pin(async { Ok(()) }),
+            |_| Ok(()),
         )
         .await
         .unwrap();
         assert!(retained.upgrade().is_some());
-        owner.run(|_| Box::pin(async { Ok(()) })).await.unwrap();
-        owner.read(|_| Box::pin(async { Ok(()) })).await.unwrap();
+        owner.run(|_| Ok(())).await.unwrap();
+        owner.read(|_| Ok(())).await.unwrap();
         std::fs::remove_file(path.join(ROOT_MARKER)).unwrap();
         assert!(matches!(
             owner
-                .run::<()>(|_| Box::pin(async { panic!("invalid root must not execute a job") }))
+                .run::<()>(|_| panic!("invalid root must not execute a job"))
                 .await,
             Err(StoreError::Io(_))
         ));
         assert!(matches!(
             owner
-                .read::<()>(|_| Box::pin(async { panic!("invalid root must not execute a read") }))
+                .read::<()>(|_| panic!("invalid root must not execute a read"))
                 .await,
             Err(StoreError::Io(_))
         ));

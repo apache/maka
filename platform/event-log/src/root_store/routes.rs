@@ -135,10 +135,9 @@ impl RootStore {
         crate::sessions::validate_id(id)?;
         let id = id.to_owned();
         let query_id = id.clone();
-        let available: bool = self.log.connection.read(move |connection| Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=? AND ready=1 AND visible=1)")
-                .bind(query_id).fetch_one(connection).await?)
-        })).await?;
+        let available: bool = self.log.connection.read(move |connection| {
+            Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=? AND ready=1 AND visible=1)", rusqlite::params![query_id], |row| row.get(0))?)
+        }).await?;
         if !available {
             return Err(StoreError::SessionNotFound);
         }
@@ -229,14 +228,13 @@ impl RootStore {
             .log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    Ok(sqlx::query_as(
+                {
+                    Ok(db.query_row(
                         "SELECT ready,failure FROM session_creations WHERE session_id=?",
-                    )
-                    .bind(query_id)
-                    .fetch_one(db)
-                    .await?)
-                })
+                        rusqlite::params![query_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                }
             })
             .await?;
         if ready == 1 {
@@ -271,10 +269,9 @@ impl RootStore {
 
     pub(super) async fn recover_creations(&self) -> Result<(), StoreError> {
         loop {
-            let page: Vec<(String, String, String)> = self.log.connection.read(|connection| Box::pin(async move {
-                Ok(sqlx::query_as("SELECT session_id, fingerprint, command FROM session_creations WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")
-                    .fetch_all(connection).await?)
-            })).await?;
+            let page: Vec<(String, String, String)> = self.log.connection.read(|connection| {
+                Ok(connection.prepare_cached("SELECT session_id, fingerprint, command FROM session_creations WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?)
+            }).await?;
             if page.is_empty() {
                 self.cleanup_stages().await?;
                 return Ok(());

@@ -35,11 +35,9 @@ async fn hold_writer(
     let writer = tokio::spawn(async move {
         log.connection
             .run(move |_| {
-                Box::pin(async move {
-                    entered.send(()).unwrap();
-                    let _ = released.await;
-                    Ok(())
-                })
+                entered.send(()).unwrap();
+                let _ = released.blocking_recv();
+                Ok(())
             })
             .await
     });

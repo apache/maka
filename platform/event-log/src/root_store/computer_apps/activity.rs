@@ -22,7 +22,6 @@
 use super::*;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::interaction::{ComputerAppActivity, ComputerAppDisplay};
-use sqlx::{Row, sqlite::SqliteRow};
 
 pub(super) fn instance_key(
     target: &GrantTarget,
@@ -38,8 +37,8 @@ pub(super) fn instance_key(
     ))?)
 }
 
-pub(crate) async fn require_computer_app_running(
-    connection: &mut SqliteConnection,
+pub(crate) fn require_computer_app_running(
+    connection: &SqliteConnection,
     invocation: &Invocation,
     target: &GrantTarget,
     display: &ComputerAppDisplay,
@@ -49,16 +48,14 @@ pub(crate) async fn require_computer_app_running(
         &invocation.session_id,
         &invocation.turn_id,
         &instance_key(target, display)?,
-    )
-    .await?
-    {
+    )? {
         return Err(StoreError::PermissionRevoked);
     }
     Ok(())
 }
 
-pub(crate) async fn record_computer_app_activity(
-    connection: &mut SqliteConnection,
+pub(crate) fn record_computer_app_activity(
+    connection: &SqliteConnection,
     event: &RuntimeEvent,
     target: &GrantTarget,
     display: &ComputerAppDisplay,
@@ -73,29 +70,28 @@ pub(crate) async fn record_computer_app_activity(
         display: display.clone(),
     };
     activity.validate().map_err(invalid)?;
-    sqlx::query(
+    connection.execute(
         "INSERT INTO computer_app_turn_activity VALUES(?,?,?,?,?,?)
         ON CONFLICT(session_id,turn_id,app_key) DO NOTHING",
-    )
-    .bind(&activity.invocation.session_id)
-    .bind(&activity.invocation.turn_id)
-    .bind(instance_key(target, display)?)
-    .bind(&event.id)
-    .bind(operation_id)
-    .bind(encode(&activity)?)
-    .execute(connection)
-    .await?;
+        rusqlite::params![
+            &activity.invocation.session_id,
+            &activity.invocation.turn_id,
+            instance_key(target, display)?,
+            &event.id,
+            operation_id,
+            encode(&activity)?
+        ],
+    )?;
     Ok(())
 }
 
-pub(super) async fn stopped(
-    connection: &mut SqliteConnection,
+pub(super) fn stopped(
+    connection: &SqliteConnection,
     session: &str,
     turn: &str,
     key: &str,
 ) -> Result<bool, StoreError> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM computer_app_turn_stops WHERE session_id=? AND turn_id=? AND app_key=?)")
-        .bind(session).bind(turn).bind(key).fetch_one(connection).await?)
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM computer_app_turn_stops WHERE session_id=? AND turn_id=? AND app_key=?)", rusqlite::params![session, turn, key], |row| row.get(0))?)
 }
 
 // Every selector keeps its original dispatched event, even after that action
@@ -109,20 +105,32 @@ macro_rules! activity_rows {
     FROM computer_app_turn_activity app JOIN event_log source ON source.event_id=app.source_event", $tail) };
 }
 
-fn activity(row: SqliteRow) -> Result<(ComputerAppActivity, bool), StoreError> {
-    let activity: ComputerAppActivity = decode(row.try_get(4)?)?;
+fn activity(
+    row: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        bool,
+    ),
+) -> Result<(ComputerAppActivity, bool), StoreError> {
+    let activity: ComputerAppActivity = decode(&row.4)?;
     activity.validate().map_err(invalid)?;
-    if activity.invocation.session_id != row.try_get::<String, _>(0)?
-        || activity.invocation.turn_id != row.try_get::<String, _>(1)?
-        || instance_key(&activity.target, &activity.display)? != row.try_get::<String, _>(2)?
-        || activity.operation_id != row.try_get::<String, _>(3)?
-        || activity.invocation.invocation_id != row.try_get::<String, _>(5)?
-        || row.try_get::<String, _>(6)? != "tool_dispatched"
-        || activity.operation_id != row.try_get::<String, _>(7)?
+    if activity.invocation.session_id != row.0
+        || activity.invocation.turn_id != row.1
+        || instance_key(&activity.target, &activity.display)? != row.2
+        || activity.operation_id != row.3
+        || activity.invocation.invocation_id != row.5
+        || row.6 != "tool_dispatched"
+        || activity.operation_id != row.7
     {
         return Err(invalid("native app activity lost its original source"));
     }
-    Ok((activity, row.try_get(8)?))
+    Ok((activity, row.8))
 }
 
 impl SessionStore {
@@ -139,15 +147,14 @@ impl SessionStore {
             .await?
             .connection
             .read(move |connection| {
-                Box::pin(async move {
+                {
                     stopped(
                         connection,
                         &invocation.session_id,
                         &invocation.turn_id,
                         &key,
                     )
-                    .await
-                })
+                }
             })
             .await
     }
@@ -162,28 +169,43 @@ impl SessionStore {
             .await?
             .connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let Some(current) = turns::read(&mut tx, &session, None).await? else {
-                        return Ok(Vec::new());
-                    };
-                    if current.state.terminal_outcome().is_some() {
-                        return Ok(Vec::new());
-                    }
-                    let rows = sqlx::query(activity_rows!(
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let Some(current) = turns::read(&tx, &session, None)? else {
+                    return Ok(Vec::new());
+                };
+                if current.state.terminal_outcome().is_some() {
+                    return Ok(Vec::new());
+                }
+                let rows = tx
+                    .prepare_cached(activity_rows!(
                         " WHERE app.session_id=? AND app.turn_id=? ORDER BY app.app_key"
-                    ))
-                    .bind(&session)
-                    .bind(&current.invocation.turn_id)
-                    .fetch_all(&mut *tx)
-                    .await?;
-                    let result = rows
-                        .into_iter()
-                        .map(activity)
-                        .collect::<Result<Vec<_>, _>>()?;
-                    tx.commit().await?;
-                    Ok(result)
-                })
+                    ))?
+                    .query_map(
+                        rusqlite::params![&session, &current.invocation.turn_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                                row.get(8)?,
+                            ))
+                        },
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result = rows
+                    .into_iter()
+                    .map(activity)
+                    .collect::<Result<Vec<_>, _>>()?;
+                tx.commit()?;
+                Ok(result)
             })
             .await
     }
@@ -203,73 +225,83 @@ impl SessionStore {
         let notice = log.commits.session(&session);
         log.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let Some(current) = turns::read(&mut tx, &session, None).await? else {
-                        return Ok(false);
-                    };
-                    if current.state.terminal_outcome().is_some() {
-                        return Ok(false);
-                    }
-                    let row = sqlx::query(activity_rows!(
-                        " WHERE app.session_id=? AND app.operation_id=?"
-                    ))
-                    .bind(&session)
-                    .bind(operation)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    let Some(row) = row else {
-                        return Ok(false);
-                    };
-                    let (selected, already_stopped) = activity(row)?;
-                    if selected.invocation.turn_id != current.invocation.turn_id {
-                        return Ok(false);
-                    }
-                    if already_stopped {
-                        return Ok(true);
-                    }
-                    let key = instance_key(&selected.target, &selected.display)?;
-                    let ids: Vec<String> = sqlx::query_scalar(
-                        "SELECT request_id FROM interaction_pending WHERE session_id=?",
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let Some(current) = turns::read(&tx, &session, None)? else {
+                    return Ok(false);
+                };
+                if current.state.terminal_outcome().is_some() {
+                    return Ok(false);
+                }
+                let row = tx
+                    .query_row(
+                        activity_rows!(" WHERE app.session_id=? AND app.operation_id=?"),
+                        rusqlite::params![&session, operation],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                                row.get(7)?,
+                                row.get(8)?,
+                            ))
+                        },
                     )
-                    .bind(&current.invocation.session_id)
-                    .fetch_all(&mut *tx)
-                    .await?;
-                    let closure = InteractionOutcome::Closure {
-                        reason: ClosureReason::ProducerCancelled,
-                        committed_at: now,
-                    };
-                    for id in ids {
-                        let record = read(&mut tx, &id)
-                            .await?
-                            .ok_or_else(|| invalid("pending app request disappeared"))?;
-                        if record.turn_id != current.invocation.turn_id {
-                            continue;
-                        }
-                        if let InteractionRequest::ComputerApp {
-                            target, display, ..
-                        } = &record.request
-                            && instance_key(target, display)? == key
-                        {
-                            sqlx::query("INSERT INTO interaction_outcomes VALUES(?,?)")
-                                .bind(id)
-                                .bind(encode(&closure)?)
-                                .execute(&mut *tx)
-                                .await?;
-                        }
+                    .optional()?;
+                let Some(row) = row else {
+                    return Ok(false);
+                };
+                let (selected, already_stopped) = activity(row)?;
+                if selected.invocation.turn_id != current.invocation.turn_id {
+                    return Ok(false);
+                }
+                if already_stopped {
+                    return Ok(true);
+                }
+                let key = instance_key(&selected.target, &selected.display)?;
+                let ids: Vec<String> = tx
+                    .prepare_cached(
+                        "SELECT request_id FROM interaction_pending WHERE session_id=?",
+                    )?
+                    .query_map(rusqlite::params![&current.invocation.session_id], |row| {
+                        row.get(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let closure = InteractionOutcome::Closure {
+                    reason: ClosureReason::ProducerCancelled,
+                    committed_at: now,
+                };
+                for id in ids {
+                    let record = read(&tx, &id)?
+                        .ok_or_else(|| invalid("pending app request disappeared"))?;
+                    if record.turn_id != current.invocation.turn_id {
+                        continue;
                     }
-                    sqlx::query("INSERT INTO computer_app_turn_stops VALUES(?,?,?,?)")
-                        .bind(&session)
-                        .bind(&current.invocation.turn_id)
-                        .bind(key)
-                        .bind(now as i64)
-                        .execute(&mut *tx)
-                        .await?;
-                    crate::sessions::advance_revision(&mut tx, &session).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    notice.metadata();
-                    Ok(true)
-                })
+                    if let InteractionRequest::ComputerApp {
+                        target, display, ..
+                    } = &record.request
+                        && instance_key(target, display)? == key
+                    {
+                        tx.execute(
+                            "INSERT INTO interaction_outcomes VALUES(?,?)",
+                            rusqlite::params![id, encode(&closure)?],
+                        )?;
+                    }
+                }
+                tx.execute(
+                    "INSERT INTO computer_app_turn_stops VALUES(?,?,?,?)",
+                    rusqlite::params![&session, &current.invocation.turn_id, key, now as i64],
+                )?;
+                crate::sessions::advance_revision(&tx, &session)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                notice.metadata();
+                Ok(true)
             })
             .await
     }

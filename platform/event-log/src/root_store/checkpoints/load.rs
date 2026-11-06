@@ -22,7 +22,7 @@ use super::*;
 use crate::checkpoints::{LoadOperation, LoadRequest, LoadState, LoadedCheckpoint, load_key};
 use crate::transcript::{HistoryLimits, HistoryOwner};
 use maka_agent_ports::session::history::{HistoryView, Page, Position};
-use sqlx::Connection;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use uuid::Uuid;
 
 impl HistoryCheckpoints {
@@ -116,15 +116,13 @@ impl HistoryCheckpoints {
     ) -> Result<crate::artifacts::ArtifactPage, StoreError> {
         let offset = i64::try_from(offset).map_err(|_| StoreError::ArtifactOffset)?;
         let (log, capture, _, revision) = self.loaded(operation, &session).await?;
-        log.connection.read(move |db| Box::pin(async move {
-            let mut tx = db.begin().await?;
-            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=?")
-                .bind(&capture).bind(&session).fetch_one(&mut *tx).await?;
-            let rows: Vec<String> = sqlx::query_scalar("SELECT record_json FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=? ORDER BY json_extract(record_json,'$.createdAt') DESC,id ASC LIMIT 32 OFFSET ?")
-                .bind(capture).bind(session).bind(offset).fetch_all(&mut *tx).await?;
+        log.connection.read(move |db| {
+            let tx = Transaction::new_unchecked(db, TransactionBehavior::Deferred)?;
+            let total: i64 = tx.query_row("SELECT COUNT(*) FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=?", rusqlite::params![&capture, &session], |row| row.get(0))?;
+            let rows: Vec<String> = tx.prepare_cached("SELECT record_json FROM history_snapshot_artifacts WHERE capture_key=? AND session_id=? ORDER BY json_extract(record_json,'$.createdAt') DESC,id ASC LIMIT 32 OFFSET ?")?.query_map(rusqlite::params![capture, session, offset], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
             let records = rows.into_iter().map(|raw| serde_json::from_str(&raw)).collect::<Result<_,_>>()?;
             Ok(crate::artifacts::ArtifactPage { revision, records, total: total as u64 })
-        })).await
+        }).await
     }
 
     pub async fn stream_loaded_artifact<F, Fut>(
@@ -153,10 +151,9 @@ impl HistoryCheckpoints {
         loop {
             let (capture, session, artifact) = (capture.clone(), session.clone(), artifact.clone());
             let at = i64::try_from(offset).map_err(|_| StoreError::ArtifactOffset)?;
-            let row: Option<(String,i64,Vec<u8>)> = log.connection.read(move |db| Box::pin(async move {
-                Ok(sqlx::query_as("SELECT a.record_json,length(c.payload),substr(c.payload,?4+1,32768) FROM history_snapshot_artifacts a JOIN contents c USING(content_sha256) WHERE a.capture_key=?1 AND a.session_id=?2 AND a.id=?3")
-                    .bind(capture).bind(session).bind(artifact).bind(at).fetch_optional(db).await?)
-            })).await?;
+            let row: Option<(String,i64,Vec<u8>)> = log.connection.read(move |db| {
+                Ok(db.query_row("SELECT a.record_json,length(c.payload),substr(c.payload,?4+1,32768) FROM history_snapshot_artifacts a JOIN contents c USING(content_sha256) WHERE a.capture_key=?1 AND a.session_id=?2 AND a.id=?3", rusqlite::params![capture, session, artifact, at], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,))).optional()?)
+            }).await?;
             let Some((raw, total, bytes)) = row else {
                 return emit(None).await;
             };
@@ -208,13 +205,13 @@ impl HistoryCheckpoints {
         let capture = log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    sqlx::query_scalar("SELECT capture_key FROM history_snapshots WHERE digest=?")
-                        .bind(lookup)
-                        .fetch_optional(db)
-                        .await?
-                        .ok_or(StoreError::MaterialCollected)
-                })
+                db.query_row(
+                    "SELECT capture_key FROM history_snapshots WHERE digest=?",
+                    rusqlite::params![lookup],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(StoreError::MaterialCollected)
             })
             .await?;
         Ok((log, capture, *through, digest))
@@ -225,10 +222,10 @@ async fn read(
     log: &EventLog,
     key: String,
 ) -> Result<Option<(LoadRequest, LoadedCheckpoint)>, StoreError> {
-    log.connection.read(move |db|Box::pin(async move {
-        let row:Option<(String,String)>=sqlx::query_as("SELECT request_json,result_json FROM history_checkpoint_loads WHERE load_key=?").bind(key).fetch_optional(db).await?;
+    log.connection.read(move |db|{
+        let row:Option<(String,String)>=db.query_row("SELECT request_json,result_json FROM history_checkpoint_loads WHERE load_key=?", rusqlite::params![key], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
         row.map(|(request,result)|Ok((serde_json::from_str(&request)?,serde_json::from_str(&result)?))).transpose()
-    })).await
+    }).await
 }
 
 async fn claim(
@@ -237,21 +234,19 @@ async fn claim(
     head: Head,
     manifest: Manifest,
 ) -> Result<LoadedCheckpoint, StoreError> {
-    log.connection.run(move |db|Box::pin(async move {
-        let mut tx=db.begin_with("BEGIN IMMEDIATE").await?;
-        let current:Option<String>=sqlx::query_scalar("SELECT head_json FROM history_checkpoint_heads WHERE session_id=?").bind(&request.session_id).fetch_optional(&mut *tx).await?;
+    log.connection.run(move |db|{
+        let tx=Transaction::new_unchecked(db, TransactionBehavior::Immediate)?;
+        let current:Option<String>=tx.query_row("SELECT head_json FROM history_checkpoint_heads WHERE session_id=?", rusqlite::params![&request.session_id], |row| row.get(0)).optional()?;
         if current.as_deref().map(serde_json::from_str::<Head>).transpose()?.as_ref()!=Some(&head) {
             return Err(invalid("history checkpoint revision unavailable"));
         }
-        let through:i64=sqlx::query_scalar("SELECT c.through_sequence FROM history_snapshots s JOIN history_snapshot_captures c USING(capture_key) WHERE s.digest=?")
-            .bind(&head.manifest.digest).fetch_optional(&mut *tx).await?.ok_or(StoreError::MaterialCollected)?;
+        let through:i64=tx.query_row("SELECT c.through_sequence FROM history_snapshots s JOIN history_snapshot_captures c USING(capture_key) WHERE s.digest=?", rusqlite::params![&head.manifest.digest], |row| row.get(0)).optional()?.ok_or(StoreError::MaterialCollected)?;
         let value=LoadedCheckpoint { head, state:LoadState::Ready {
             session_ids:manifest.inventory.sessions.iter().map(|s|s.id.clone()).collect(),
             through:crate::sequence_number(through)?, workspace:manifest.workspace().cloned(), transfer_digest:manifest.transfer_digest
         }};
-        sqlx::query("INSERT INTO history_checkpoint_loads VALUES(?,?,?)")
-            .bind(request.key()?).bind(serde_json::to_string(&request)?).bind(serde_json::to_string(&value)?).execute(&mut *tx).await?;
-        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+        tx.execute("INSERT INTO history_checkpoint_loads VALUES(?,?,?)", rusqlite::params![request.key()?, serde_json::to_string(&request)?, serde_json::to_string(&value)?])?;
+        tx.commit().map_err(StoreError::CommitUnknown)?;
         Ok(value)
-    })).await
+    }).await
 }

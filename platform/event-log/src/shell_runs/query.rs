@@ -18,10 +18,9 @@
  */
 
 use crate::{EventLog, StoreError};
-use futures_util::TryStreamExt;
 use maka_presentation::shell::{ResourceUpdate, local_metadata, local_update};
+use rusqlite::params;
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, Row};
 
 /// A bounded page from one read transaction. The digest covers the projected
 /// scope (one resource for get, the whole session for list), not OS handles.
@@ -64,7 +63,6 @@ impl EventLog {
         provider_prefix: Option<&str>,
         compact: bool,
     ) -> Result<ShellResourcePage, StoreError> {
-        self.validate_root()?;
         maka_agent_facts::interaction::entity_id(session).map_err(super::invalid)?;
         if let Some(id) = id {
             maka_agent_facts::interaction::entity_id(id).map_err(super::invalid)?;
@@ -73,29 +71,32 @@ impl EventLog {
         let provider_prefix = provider_prefix.map(str::to_owned);
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let exists: bool = sqlx::query_scalar(
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Deferred,
+                    )?;
+                    let exists: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)",
-                    )
-                    .bind(&session)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                        params![&session],
+                        |row| row.get(0),
+                    )?;
                     if !exists {
                         return Err(StoreError::SessionNotFound);
                     }
-                    let mut rows = sqlx::query(
+                    let mut statement = tx.prepare_cached(
                         "SELECT id, record_json FROM shell_runs \
                      WHERE session_id = ? AND (? IS NULL OR id = ?) \
                      AND (? IS NULL OR substr(id, 1, length(?)) = ?) ORDER BY id",
-                    )
-                    .bind(&session)
-                    .bind(&id)
-                    .bind(&id)
-                    .bind(&provider_prefix)
-                    .bind(&provider_prefix)
-                    .bind(&provider_prefix)
-                    .fetch(&mut *tx);
+                    )?;
+                    let mut rows = statement.query(params![
+                        &session,
+                        &id,
+                        &id,
+                        &provider_prefix,
+                        &provider_prefix,
+                        &provider_prefix
+                    ])?;
                     let mut hash = Sha256::new();
                     hash.update(b"[");
                     let mut total = 0_u64;
@@ -104,11 +105,11 @@ impl EventLog {
                     // JSON-escaped source tool IDs belong to each serialized resource.
                     let mut page_bytes = 512;
                     let mut page_full = false;
-                    while let Some(row) = rows.try_next().await? {
+                    while let Some(row) = rows.next()? {
                         let record = super::decode(
-                            row.try_get("record_json")?,
+                            &row.get::<_, String>("record_json")?,
                             &session,
-                            row.try_get("id")?,
+                            &row.get::<_, String>("id")?,
                         )?;
                         let projected = if compact {
                             local_metadata(record)?
@@ -134,7 +135,8 @@ impl EventLog {
                         total += 1;
                     }
                     drop(rows);
-                    tx.rollback().await?;
+                    drop(statement);
+                    tx.rollback()?;
                     hash.update(b"]");
                     let next = offset.saturating_add(resources.len() as u64);
                     Ok(ShellResourcePage {
@@ -143,7 +145,7 @@ impl EventLog {
                         total,
                         next_offset: (next < total).then_some(next),
                     })
-                })
+                }
             })
             .await
     }

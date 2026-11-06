@@ -32,7 +32,6 @@ use maka_agent_facts::model::prompt_source::source::{
 };
 use maka_agent_facts::model::prompt_source::source::{SourceBacking as Backing, SourceLocator};
 use rusqlite::{Connection as RawConnection, OptionalExtension, params};
-use sqlx::Connection;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::sync::{Arc, Weak, atomic::AtomicU64};
@@ -218,7 +217,7 @@ pub struct ArtifactCapture {
 pub struct CapturedLocalResource {
     receipt: LocalReceipt,
 }
-/// Create only inside an accepted request-local worker callback.
+/// Create only inside an accepted database operation.
 pub fn create_request_file() -> std::io::Result<std::fs::File> {
     tempfile::tempfile()
 }
@@ -333,11 +332,7 @@ impl CapturedSource {
         let selection = Arc::new(selection);
         let selected = selection.clone();
         log.connection
-            .read(move |db| {
-                Box::pin(async move {
-                    available_at(db, &selected.session, selected.captured_through).await
-                })
-            })
+            .read(move |db| available_at(db, &selected.session, selected.captured_through))
             .await?;
         Ok(Self(Arc::new(Inner {
             log,
@@ -415,11 +410,10 @@ impl CapturedSource {
         }
         let selection = self.0.selection.clone();
         let domain = self.0.domain.clone();
-        self.0.log.connection.read(move |db| Box::pin(async move {
-            available_at(db, &selection.session, selection.captured_through).await?;
-            let mut tx = db.begin().await?;
-            let result = crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
-                with_raw(worker, |raw| {
+        self.0.log.connection.read(move |db| {
+            available_at(db, &selection.session, selection.captured_through)?;
+            let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            let result = (|| { let raw: &rusqlite::Connection = &tx;
                     let zero = RowPosition { source_sequence: 0, item_index: 0 };
                     let point = cursor.unwrap_or(SemanticCursor { order: zero, id: zero });
                     let query = rows_query(true)
@@ -428,7 +422,7 @@ impl CapturedSource {
                         .replace("json_extract(?13,'$.base')", "?15")
                         .replace("json_extract(?13,'$.current')", "?16")
                         .replace("SELECT r.row_json FROM", "SELECT r.rowid,r.source_sequence,r.source_index,r.revision,r.order_sequence,r.order_index,length(CAST(r.row_json AS BLOB)) AS bytes FROM");
-                    let mut statement = raw.prepare(&query)?;
+                    let mut statement = raw.prepare_cached(&query)?;
                     let mut records = statement.query(params![
                         &selection.session, selection.after as i64, selection.through as i64,
                         selection.captured_through as i64, selection.before.min(i64::MAX as u64) as i64,
@@ -461,11 +455,10 @@ impl CapturedSource {
                         count+=1; last=Some(SemanticCursor{order,id});
                     }
                     Ok(SourcePage{domain,buffer,count,next:more.then_some(last).flatten()})
-                })
-            })).await;
-            let closed = tx.rollback().await;
+                })();
+            let closed = tx.rollback();
             settle_read(result,closed)
-        })).await
+        }).await
     }
     pub fn describe_payload(&self, row: &CapturedRow) -> Result<Option<PayloadSource>, StoreError> {
         self.check(&row.domain)?;
@@ -479,18 +472,7 @@ impl CapturedSource {
         &self,
         operation: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
     ) -> Result<T, StoreError> {
-        self.0
-            .log
-            .connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    crate::connection::worker_query(connection, move |_worker| {
-                        Box::pin(async move { operation() })
-                    })
-                    .await
-                })
-            })
-            .await
+        self.0.log.connection.read(move |_| operation()).await
     }
     #[cfg(test)]
     pub(crate) async fn artifact_lookup_fixture(
@@ -506,24 +488,13 @@ impl CapturedSource {
             .log
             .connection
             .run(move |db| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "INSERT INTO context_semantic_fragments VALUES(0,?,'pieces',NULL,NULL,'null',?)",
-                    )
-                    .bind(index as i64)
-                    .bind(bytes as i64)
-                    .execute(&mut *db)
-                    .await?;
+                {
+                    db.execute("INSERT INTO context_semantic_fragments VALUES(0,?,'pieces',NULL,NULL,'null',?)", rusqlite::params![index as i64, bytes as i64])?;
                     for (piece, chunk) in json.chunks(32 * 1024).enumerate() {
-                        sqlx::query("INSERT INTO context_semantic_fragment_pieces VALUES(0,?,?,?)")
-                            .bind(index as i64)
-                            .bind(piece as i64)
-                            .bind(chunk)
-                            .execute(&mut *db)
-                            .await?;
+                        db.execute("INSERT INTO context_semantic_fragment_pieces VALUES(0,?,?,?)", rusqlite::params![index as i64, piece as i64, chunk])?;
                     }
                     Ok(())
-                })
+                }
             })
             .await
             .unwrap();
@@ -554,17 +525,13 @@ impl CapturedSource {
             .log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    let mut tx = db.begin().await?;
-                    let result = crate::connection::worker_query(&mut tx, move |worker| {
-                        Box::pin(async move {
-                            with_raw(worker, |raw| artifact_identity::validate(raw, &mut lookup))
-                        })
-                    })
-                    .await;
-                    let close = tx.rollback().await;
-                    settle_read(result, close)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    db,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = artifact_identity::validate(&tx, &mut lookup);
+                let close = tx.rollback();
+                settle_read(result, close)
             })
             .await
     }
@@ -579,10 +546,9 @@ impl CapturedSource {
         self.check(&lookup.source.domain)?;
         let selection = self.0.selection.clone();
         let domain = self.0.domain.clone();
-        self.0.log.connection.read(move |db| Box::pin(async move {
-            let mut tx = db.begin().await?;
-            let result = crate::connection::worker_query(&mut tx, move |worker| Box::pin(async move {
-                with_raw(worker, |raw| {
+        self.0.log.connection.read(move |db| {
+            let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            let result = (|| { let raw: &rusqlite::Connection = &tx;
                     let (rowid,alias_protected)=match artifact_identity::resolve(raw,&selection.session,&mut lookup)? {
                         ArtifactLookupResult::InvalidIdentity=>return Ok(ArtifactLookupResult::InvalidIdentity),
                         ArtifactLookupResult::Missing=>return Ok(ArtifactLookupResult::Missing),
@@ -611,11 +577,10 @@ impl CapturedSource {
                             consume(capture,metadata,body)
                         })
                     }).map(ArtifactLookupResult::Captured)
-                })
-            })).await;
-            let close = tx.rollback().await;
+                })();
+            let close = tx.rollback();
             settle_read(result,close)
-        })).await
+        }).await
     }
     pub async fn read_chunk<B: SourceBuffer>(
         &self,
@@ -629,27 +594,16 @@ impl CapturedSource {
             .log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    let mut tx = db.begin().await?;
-                    let result = crate::connection::worker_query(&mut tx, move |worker| {
-                        Box::pin(async move {
-                            let canonical = CanonicalRead::load(worker, &backing).await?;
-                            with_raw(worker, |raw| {
-                                read_chunk(
-                                    raw,
-                                    &backing,
-                                    position,
-                                    buffer,
-                                    None,
-                                    canonical.as_ref(),
-                                )
-                            })
-                        })
-                    })
-                    .await;
-                    let closed = tx.rollback().await;
-                    settle_read(result, closed)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    db,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = (|| {
+                    let canonical = CanonicalRead::load(&tx, &backing)?;
+                    read_chunk(&tx, &backing, position, buffer, None, canonical.as_ref())
+                })();
+                let closed = tx.rollback();
+                settle_read(result, closed)
             })
             .await
     }
@@ -665,82 +619,60 @@ impl CapturedSource {
             .log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    let mut tx = db.begin().await?;
-                    let result = crate::connection::worker_query(&mut tx, move |worker| {
-                        Box::pin(async move {
-                            let canonical = CanonicalRead::load(worker, &backing).await?;
-                            with_raw(worker, |raw| match backing {
-                                Backing::Row { rowid, bytes } => with_blob(
-                                    raw,
-                                    "context_semantic_rows",
-                                    "row_json",
-                                    rowid,
-                                    0,
-                                    bytes,
-                                    consume,
-                                ),
-                                Backing::Canonical { bytes, .. } => canonical
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        invalid("canonical source metadata was not resolved")
-                                    })?
-                                    .with_range(raw, 0, bytes, consume),
-                                Backing::Pieces { key, .. } => {
-                                    check_pieces(raw, key)?;
-                                    let mut reader = PieceReader {
-                                        raw,
-                                        key,
-                                        piece: 0,
-                                        offset: 0,
-                                        failed: None,
-                                    };
-                                    let result = consume(&mut reader);
-                                    match reader.failed {
-                                        Some(error) => Err(error),
-                                        None => result,
-                                    }
-                                }
-                                Backing::ArtifactMetadata {
-                                    rowid,
-                                    bytes,
-                                    payload_bytes,
-                                    digest,
-                                } => {
-                                    check_artifact(raw, rowid, payload_bytes, &digest)?;
-                                    with_blob(
-                                        raw,
-                                        "artifacts",
-                                        "record_json",
-                                        rowid,
-                                        0,
-                                        bytes,
-                                        consume,
-                                    )
-                                }
-                            })
-                        })
-                    })
-                    .await;
-                    let closed = tx.rollback().await;
-                    settle_read(result, closed)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    db,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = (|| {
+                    let raw: &rusqlite::Connection = &tx;
+                    let canonical = CanonicalRead::load(raw, &backing)?;
+                    match backing {
+                        Backing::Row { rowid, bytes } => with_blob(
+                            raw,
+                            "context_semantic_rows",
+                            "row_json",
+                            rowid,
+                            0,
+                            bytes,
+                            consume,
+                        ),
+                        Backing::Canonical { bytes, .. } => canonical
+                            .as_ref()
+                            .ok_or_else(|| invalid("canonical source metadata was not resolved"))?
+                            .with_range(raw, 0, bytes, consume),
+                        Backing::Pieces { key, .. } => {
+                            check_pieces(raw, key)?;
+                            let mut reader = PieceReader {
+                                raw,
+                                key,
+                                piece: 0,
+                                offset: 0,
+                                failed: None,
+                            };
+                            let result = consume(&mut reader);
+                            match reader.failed {
+                                Some(error) => Err(error),
+                                None => result,
+                            }
+                        }
+                        Backing::ArtifactMetadata {
+                            rowid,
+                            bytes,
+                            payload_bytes,
+                            digest,
+                        } => {
+                            check_artifact(raw, rowid, payload_bytes, &digest)?;
+                            with_blob(raw, "artifacts", "record_json", rowid, 0, bytes, consume)
+                        }
+                    }
+                })();
+                let closed = tx.rollback();
+                settle_read(result, closed)
             })
             .await
     }
 }
 
-pub(super) fn with_raw<T>(
-    worker: &mut sqlx::sqlite::SqliteWorkerConnection<'_>,
-    action: impl FnOnce(&RawConnection) -> Result<T, StoreError>,
-) -> Result<T, StoreError> {
-    // SAFETY: the original worker is exclusively borrowed; this non-owning
-    // wrapper and every Blob/statement close before returning to SQLx.
-    let raw = unsafe { RawConnection::from_handle(worker.as_raw_handle().as_ptr()) }?;
-    let result = action(&raw);
-    drop(raw);
-    result
-}
 fn row_payload(
     raw: &RawConnection,
     rowid: i64,
@@ -1235,27 +1167,23 @@ impl ByteCursor for CapturedByteCursor {
                 .log
                 .connection
                 .read(move |db| {
-                    Box::pin(async move {
-                        let mut tx = db.begin().await?;
-                        let result = crate::connection::worker_query(&mut tx, move |worker| {
-                            Box::pin(async move {
-                                let canonical = CanonicalRead::load(worker, &backing).await?;
-                                with_raw(worker, |raw| {
-                                    read_chunk(
-                                        raw,
-                                        &backing,
-                                        cursor,
-                                        buffer,
-                                        Some(usize::try_from(remaining).unwrap_or(usize::MAX)),
-                                        canonical.as_ref(),
-                                    )
-                                })
-                            })
-                        })
-                        .await;
-                        let close = tx.rollback().await;
-                        settle_read(result, close)
-                    })
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        db,
+                        rusqlite::TransactionBehavior::Deferred,
+                    )?;
+                    let result = (|| {
+                        let canonical = CanonicalRead::load(&tx, &backing)?;
+                        read_chunk(
+                            &tx,
+                            &backing,
+                            cursor,
+                            buffer,
+                            Some(usize::try_from(remaining).unwrap_or(usize::MAX)),
+                            canonical.as_ref(),
+                        )
+                    })();
+                    let close = tx.rollback();
+                    settle_read(result, close)
                 })
                 .await
                 .map_err(std::io::Error::other)?;
@@ -1277,7 +1205,7 @@ impl ByteCursor for CapturedByteCursor {
 
 fn settle_read<T>(
     result: Result<T, StoreError>,
-    closed: Result<(), sqlx::Error>,
+    closed: Result<(), rusqlite::Error>,
 ) -> Result<T, StoreError> {
     match (result, closed) {
         (result, Ok(())) => result,
@@ -1290,7 +1218,7 @@ fn settle_read<T>(
 #[derive(Debug)]
 struct ReadAndRollbackError {
     read: StoreError,
-    close: sqlx::Error,
+    close: rusqlite::Error,
 }
 impl std::fmt::Display for ReadAndRollbackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
