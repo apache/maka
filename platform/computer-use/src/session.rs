@@ -123,6 +123,7 @@ impl Session {
         input: Value,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Driver::invoke(
             &self.native,
@@ -131,6 +132,8 @@ impl Session {
             self.epoch,
             cancellation,
             language,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -141,6 +144,7 @@ impl Session {
         input: Value,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Driver::invoke_native_window_pixels(
             &self.native,
@@ -149,6 +153,8 @@ impl Session {
             self.epoch,
             cancellation,
             language,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -342,29 +348,18 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
-        #[cfg(target_os = "windows")]
-        {
-            crate::desktop::worker::native_owner::in_turn(
-                invocation,
-                self.invoke_in_turn(command, invocation, cancellation, language),
-            )
-            .await
+        let result = self
+            .invoke_in_turn(command, invocation, cancellation, language)
+            .await;
+        #[cfg(target_os = "macos")]
+        if let Err(error) = result {
+            return Err(
+                tokio::task::spawn_blocking(move || crate::macos::tcc::explain(error))
+                    .await
+                    .map_err(failed)?,
+            );
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let result = self
-                .invoke_in_turn(command, invocation, cancellation, language)
-                .await;
-            #[cfg(target_os = "macos")]
-            if let Err(error) = result {
-                return Err(
-                    tokio::task::spawn_blocking(move || crate::macos::tcc::explain(error))
-                        .await
-                        .map_err(failed)?,
-                );
-            }
-            result
-        }
+        result
     }
 
     async fn invoke_in_turn(
@@ -397,6 +392,7 @@ impl Session {
                         self.epoch,
                         cancellation,
                         language,
+                        invocation,
                     )
                     .await?;
                     self.audio = Some(completion);
@@ -431,7 +427,14 @@ impl Session {
             }
             Command::StopAudioRecording => {
                 let stopped = self
-                    .invoke_native("stop_audio_recording", json!({}), cancellation, language)
+                    .invoke_native(
+                        "stop_audio_recording",
+                        json!({}),
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
                     .await?;
                 self.audio = None;
                 Ok(stopped.structured_content.unwrap_or(Value::Null))
@@ -450,13 +453,28 @@ impl Session {
                     json!({"settings":cursor,"native":native,"browsers":self.browsers.cursor_state(&cursor, crate::browser::BrowserCall::new(invocation, cancellation, language)).await?}),
                 )
             }
-            Command::ListApps { .. } => self.apps(session, cancellation, language).await,
+            Command::ListApps { .. } => {
+                self.apps(
+                    session,
+                    cancellation,
+                    language,
+                    #[cfg(target_os = "windows")]
+                    invocation,
+                )
+                .await
+            }
             Command::ListWindows { .. } => Ok(json!(
-                self.windows(session, cancellation, language)
-                    .await?
-                    .iter()
-                    .map(window_info)
-                    .collect::<Vec<_>>()
+                self.windows(
+                    session,
+                    cancellation,
+                    language,
+                    #[cfg(target_os = "windows")]
+                    invocation,
+                )
+                .await?
+                .iter()
+                .map(window_info)
+                .collect::<Vec<_>>()
             )),
             Command::GetState { .. } => {
                 let (browsers, mut errors) = self.browsers.state().await;
@@ -464,7 +482,16 @@ impl Session {
                 if let Err(error) = crate::macos::require_desktop().await {
                     errors.push(error.to_string());
                 }
-                let apps = match self.apps(session, cancellation, language).await {
+                let apps = match self
+                    .apps(
+                        session,
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
+                    .await
+                {
                     Ok(apps) => apps,
                     Err(error) => {
                         errors.push(error.to_string());
@@ -480,12 +507,26 @@ impl Session {
                     ));
                 }
                 let apps: ListAppsOutput = decode(
-                    self.invoke_native("list_apps", json!({}), cancellation, language)
-                        .await?,
+                    self.invoke_native(
+                        "list_apps",
+                        json!({}),
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
+                    .await?,
                 )?;
                 let args = launch_args(&app, &apps.apps, language)?;
                 let launched = self
-                    .invoke_native("launch_app", args, cancellation, language)
+                    .invoke_native(
+                        "launch_app",
+                        args,
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
                     .await?;
                 Ok(launched.structured_content.unwrap_or(Value::Null))
             }
@@ -513,7 +554,15 @@ impl Session {
                     }
                     (target, None) => target,
                 };
-                let windows = self.windows(session, cancellation, language).await?;
+                let windows = self
+                    .windows(
+                        session,
+                        cancellation,
+                        language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
+                    )
+                    .await?;
                 #[cfg(target_os = "macos")]
                 let windows = if let Some(binding) = expected
                     .as_ref()
@@ -535,8 +584,15 @@ impl Session {
                         .collect(),
                     AppReference::Name(name) => {
                         let apps: ListAppsOutput = decode(
-                            self.invoke_native("list_apps", json!({}), cancellation, language)
-                                .await?,
+                            self.invoke_native(
+                                "list_apps",
+                                json!({}),
+                                cancellation,
+                                language,
+                                #[cfg(target_os = "windows")]
+                                invocation,
+                            )
+                            .await?,
                         )?;
                         #[cfg(target_os = "macos")]
                         let pids = {
@@ -598,14 +654,27 @@ impl Session {
                                 json!({"name":name})
                             };
                             let launched = self
-                                .invoke_native("launch_app", args, cancellation, language)
+                                .invoke_native(
+                                    "launch_app",
+                                    args,
+                                    cancellation,
+                                    language,
+                                    #[cfg(target_os = "windows")]
+                                    invocation,
+                                )
                                 .await?;
                             let pid=launched.structured_content.as_ref().and_then(|value| value["pid"].as_u64()).ok_or_else(|| ToolError::OutcomeUnknown(match language { Language::En => "launch requested but process identity unavailable; inspect inventory before retrying", Language::ZhCn => "已请求启动但无法获取进程标识；重试前请检查清单", Language::ZhTw => "已請求啟動但無法取得程序識別；重試前請檢查清單" }.into()))?;
-                            self.windows(session, cancellation, language)
-                                .await?
-                                .into_iter()
-                                .filter(|w| w.pid.map(u64::from) == Some(pid))
-                                .collect()
+                            self.windows(
+                                session,
+                                cancellation,
+                                language,
+                                #[cfg(target_os = "windows")]
+                                invocation,
+                            )
+                            .await?
+                            .into_iter()
+                            .filter(|w| w.pid.map(u64::from) == Some(pid))
+                            .collect()
                         } else {
                             selected
                         }
@@ -694,6 +763,8 @@ impl Session {
                         session,
                         cancellation,
                         language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
                     )
                     .await
                 {
@@ -729,6 +800,8 @@ impl Session {
                         session,
                         cancellation,
                         language,
+                        #[cfg(target_os = "windows")]
+                        invocation,
                     )
                     .await;
                 if result.is_err()
@@ -752,8 +825,16 @@ impl Session {
                 handle: Handle::App(handle),
                 action,
             } => {
-                self.action(&handle, action, session, cancellation, language)
-                    .await
+                self.action(
+                    &handle,
+                    action,
+                    session,
+                    cancellation,
+                    language,
+                    #[cfg(target_os = "windows")]
+                    invocation,
+                )
+                .await
             }
             command => self
                 .browsers
@@ -865,10 +946,18 @@ impl Session {
         _session: &str,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<Vec<WindowInfo>, ToolError> {
         let output: ListWindowsOutput = decode(
-            self.invoke_native("list_windows", json!({}), cancellation, language)
-                .await?,
+            self.invoke_native(
+                "list_windows",
+                json!({}),
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?,
         )?;
         Ok(output.windows)
     }
@@ -877,12 +966,28 @@ impl Session {
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<Value, ToolError> {
         let apps: ListAppsOutput = decode(
-            self.invoke_native("list_apps", json!({}), cancellation, language)
-                .await?,
+            self.invoke_native(
+                "list_apps",
+                json!({}),
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?,
         )?;
-        let windows = self.windows(session, cancellation, language).await?;
+        let windows = self
+            .windows(
+                session,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?;
         Ok(json!(apps.apps.into_iter().map(|app| json!({
             "id":app_id(&app), "displayName":app.name,
             "isRunning":app.running, "windows":windows.iter().filter(|w| w.pid == Some(app.pid)).map(window_info).collect::<Vec<_>>()
@@ -926,6 +1031,7 @@ impl Session {
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<WindowInfo, ToolError> {
         let target = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
@@ -959,7 +1065,15 @@ impl Session {
         let id = target.window.window_id;
         #[cfg(target_os = "macos")]
         let macos = target.macos.clone();
-        let windows = self.windows(session, cancellation, language).await?;
+        let windows = self
+            .windows(
+                session,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?;
         let Some(window) = windows
             .into_iter()
             .find(|w| w.pid == Some(pid) && w.window_id == id)
@@ -1047,8 +1161,17 @@ impl Session {
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<Value, ToolError> {
-        self.verify(handle, session, cancellation, language).await?;
+        self.verify(
+            handle,
+            session,
+            cancellation,
+            language,
+            #[cfg(target_os = "windows")]
+            invocation,
+        )
+        .await?;
         // A macOS observation always captures the window image.
         #[cfg(target_os = "macos")]
         tokio::task::spawn_blocking(|| {
@@ -1074,7 +1197,16 @@ impl Session {
         }
         crate::observation::settle(crate::observation::NATIVE_SETTLE, cancellation).await?;
         // The application may move or close during the settling window.
-        let window = self.verify(handle, session, cancellation, language).await?;
+        let window = self
+            .verify(
+                handle,
+                session,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?;
         #[cfg(target_os = "macos")]
         let prepared_capture = self
             .prepare_page_frame(handle, &window, cancellation)
@@ -1136,8 +1268,15 @@ impl Session {
                 arguments.as_object_mut().unwrap().remove("max_elements");
                 arguments["full_output"] = json!(true);
             }
-            self.invoke_native("get_window_state", arguments, cancellation, language)
-                .await?
+            self.invoke_native(
+                "get_window_state",
+                arguments,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?
         } else {
             CallResult {
                 content: vec![],
@@ -1200,7 +1339,14 @@ impl Session {
         if image.is_some()
             && !cfg!(target_os = "macos")
             && self
-                .verify(handle, session, cancellation, language)
+                .verify(
+                    handle,
+                    session,
+                    cancellation,
+                    language,
+                    #[cfg(target_os = "windows")]
+                    invocation,
+                )
                 .await?
                 .bounds
                 != window.bounds
@@ -1565,6 +1711,7 @@ impl Session {
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<Value, ToolError> {
         let action = match action {
             Action::LinuxClick { input } => {
@@ -1620,7 +1767,16 @@ impl Session {
         };
         let cursor = self.owner.cursor();
         validate_native_action(crate::desktop::local_platform(), &action)?;
-        let window = self.verify(handle, session, cancellation, language).await?;
+        let window = self
+            .verify(
+                handle,
+                session,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await?;
         #[cfg(target_os = "macos")]
         {
             use crate::macos::page_scroll::dispatch::{Operation, PointerAction};
@@ -1683,6 +1839,8 @@ impl Session {
                 &window,
                 cancellation,
                 language,
+                #[cfg(target_os = "windows")]
+                invocation,
             )
             .await
         } else {
@@ -1959,10 +2117,25 @@ impl Session {
         let native_window_pixels = cfg!(any(target_os = "linux", target_os = "macos"))
             && (args.get("x").is_some() || name == "drag");
         let result = if native_window_pixels {
-            self.invoke_native_window_pixels(name, args, cancellation, language)
-                .await
+            self.invoke_native_window_pixels(
+                name,
+                args,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await
         } else {
-            self.invoke_native(name, args, cancellation, language).await
+            self.invoke_native(
+                name,
+                args,
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                invocation,
+            )
+            .await
         };
         // Linux/Windows keep their image frame until another observation.
         // Retained element tokens are revalidated by Cua on each action.
@@ -2020,6 +2193,7 @@ impl Session {
         window: &WindowInfo,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<[f64; 2], ToolError> {
         #[cfg(not(target_os = "windows"))]
         let _ = cancellation;
@@ -2078,6 +2252,8 @@ impl Session {
                             }),
                             cancellation,
                             language,
+                            #[cfg(target_os = "windows")]
+                            invocation,
                         )
                         .await?;
                     let frame: cua_driver_contract::ElementFrame = serde_json::from_value(

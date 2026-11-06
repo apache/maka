@@ -220,31 +220,6 @@ pub(super) struct NativeObservation {
     pub persisted: Option<Result<(), ToolError>>,
 }
 
-#[derive(Clone)]
-struct NativeInvocationScope {
-    session: String,
-    turn: String,
-    operation_id: Option<String>,
-    observer: Option<Arc<dyn crate::NativeInterruptionObserver>>,
-}
-tokio::task_local! { static NATIVE_TURN: NativeInvocationScope; }
-pub(crate) async fn in_turn<T>(
-    invocation: &InvocationContext<'_>,
-    call: impl std::future::Future<Output = T>,
-) -> T {
-    NATIVE_TURN
-        .scope(
-            NativeInvocationScope {
-                session: invocation.session().into(),
-                turn: invocation.turn().into(),
-                operation_id: invocation.operation_id().map(str::to_owned),
-                observer: invocation.native_interruption_observer(),
-            },
-            call,
-        )
-        .await
-}
-
 struct Slot {
     initial_key: NativeKey,
     generation: NativeGeneration,
@@ -425,12 +400,8 @@ impl NativeOwner {
         audio: bool,
         cancellation: &CancellationToken,
         language: Language,
+        invocation: &InvocationContext<'_>,
     ) -> Result<NativeReply, ToolError> {
-        let scope = NATIVE_TURN
-            .try_with(Clone::clone)
-            .map_err(|_| ToolError::Failed("native owner has no trusted invocation turn".into()))?;
-        let session = scope.session.clone();
-        let turn = scope.turn.clone();
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Computer Use cancelled before native dispatch".into(),
@@ -439,9 +410,11 @@ impl NativeOwner {
         let operation = NativeOperation::parse(name)?;
         let key = NativeKey {
             epoch: epoch.to_string(),
-            session,
-            turn,
+            session: invocation.session().into(),
+            turn: invocation.turn().into(),
         };
+        let operation_id = invocation.operation_id().map(str::to_owned);
+        let observer = invocation.native_interruption_observer();
         let (slot, admission) = self.prepare(key.clone(), audio, expected).await?;
         let existing_source = slot.observation.borrow().source.clone();
         let existing_binding = existing_source
@@ -453,7 +426,7 @@ impl NativeOwner {
                 || binding.native_epoch() != key.epoch
         });
         let binding = if fresh_binding {
-            match (&scope.observer, &scope.operation_id) {
+            match (&observer, &operation_id) {
                 (Some(observer), Some(operation)) if !operation.is_empty() => {
                     if existing_source.is_some() {
                         // An unobserved first request already owns the physical
@@ -489,8 +462,8 @@ impl NativeOwner {
         };
         let source = super::connection::NativeCallSource {
             key: key.clone(),
-            operation_id: scope.operation_id.clone(),
-            observer: scope.observer.clone(),
+            operation_id: operation_id.clone(),
+            observer,
             binding,
         };
         if cancellation.is_cancelled() {
@@ -504,7 +477,7 @@ impl NativeOwner {
                 Request::NativeInvoke {
                     key,
                     operation,
-                    operation_id: scope.operation_id,
+                    operation_id,
                     arguments: input,
                     coordinate_frame,
                     language,
@@ -1434,9 +1407,8 @@ mod tests {
             None => context,
         };
         let cancellation = CancellationToken::new();
-        in_turn(
-            &context,
-            owner.invoke(
+        owner
+            .invoke(
                 "list_apps",
                 Value::Null,
                 epoch,
@@ -1445,9 +1417,9 @@ mod tests {
                 false,
                 &cancellation,
                 Language::En,
-            ),
-        )
-        .await
+                &context,
+            )
+            .await
     }
 
     async fn fixture_request(peer: &mut tokio::io::DuplexStream) -> (u64, Request) {
@@ -1466,6 +1438,80 @@ mod tests {
             id,
             result: Ok(serde_json::json!({ "text": text, "is_error": false, "error_code": null, "raw_json": "{}" })),
         }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawned_native_call_uses_explicit_host_identity_instead_of_guest_arguments() {
+        let ActorFixture {
+            owner,
+            slot,
+            epoch,
+            mut peer,
+            _exit,
+        } = actor_fixture();
+        *owner.current.lock().await = Some(slot.clone());
+        let observer = Arc::new(RecordedObserver::default());
+        let invocation = InvocationContext::new("fixture-session", "fixture-turn")
+            .with_operation_id("actual-host-operation".into())
+            .with_native_interruption_observer(observer.clone())
+            .capture();
+        let arguments = serde_json::json!({
+            "session": "guest-session",
+            "turn": "guest-turn",
+            "operation_id": "guest-operation",
+        });
+        let original = arguments.clone();
+        let call = tokio::spawn(async move {
+            let invocation = invocation.borrow();
+            owner
+                .invoke(
+                    "list_apps",
+                    arguments,
+                    epoch,
+                    None,
+                    NativeCoordinateFrame::Screenshot,
+                    false,
+                    &CancellationToken::new(),
+                    Language::En,
+                    &invocation,
+                )
+                .await
+        });
+        let (id, request) = fixture_request(&mut peer).await;
+        let Request::NativeInvoke {
+            key,
+            operation_id,
+            arguments,
+            ..
+        } = request
+        else {
+            panic!("expected the original native request")
+        };
+        assert_eq!(key.session, "fixture-session");
+        assert_eq!(key.turn, "fixture-turn");
+        assert_eq!(key.epoch, epoch.to_string());
+        assert_eq!(operation_id.as_deref(), Some("actual-host-operation"));
+        assert_eq!(arguments, original);
+        assert_eq!(*observer.0.lock().unwrap(), vec!["actual-host-operation"]);
+        fixture_response(&mut peer, id, "explicit native invocation completed").await;
+        assert_eq!(
+            call.await.unwrap().unwrap().result.text,
+            "explicit native invocation completed"
+        );
+        let connection = slot.connection.clone();
+        let close = tokio::spawn(async move { connection.close().await });
+        let (id, request) = fixture_request(&mut peer).await;
+        assert!(matches!(request, Request::Shutdown));
+        write(
+            &mut peer,
+            &WorkerFrame::Response {
+                id,
+                result: Ok(Value::Null),
+            },
+        )
+        .await
+        .unwrap();
+        close.await.unwrap().unwrap();
     }
 
     #[tokio::test]

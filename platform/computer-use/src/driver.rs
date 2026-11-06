@@ -194,6 +194,7 @@ impl Driver {
         expected: crate::desktop::worker::native_owner::NativeGeneration,
         cancellation: &CancellationToken,
         language: Language,
+        invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -204,29 +205,7 @@ impl Driver {
             language,
             NativeCoordinates::Captured,
             Some(expected),
-        )
-        .await
-    }
-
-    #[cfg(target_os = "windows")]
-    pub(crate) async fn invoke_native_window_pixels_in_generation(
-        driver: &Arc<Mutex<Self>>,
-        name: &str,
-        input: Value,
-        epoch: NativeEpochId,
-        expected: crate::desktop::worker::native_owner::NativeGeneration,
-        cancellation: &CancellationToken,
-        language: Language,
-    ) -> Result<CallResult, ToolError> {
-        Self::invoke_with_coordinates(
-            driver,
-            name,
-            input,
-            epoch,
-            cancellation,
-            language,
-            NativeCoordinates::WindowPixels,
-            Some(expected),
+            invocation,
         )
         .await
     }
@@ -243,6 +222,7 @@ impl Driver {
         ),
         cancellation: &CancellationToken,
         language: Language,
+        invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -253,6 +233,7 @@ impl Driver {
             language,
             NativeCoordinates::WindowFrame(expected.1),
             Some(expected.0),
+            invocation,
         )
         .await
     }
@@ -265,6 +246,7 @@ impl Driver {
         expected: crate::desktop::worker::native_owner::NativeGeneration,
         cancellation: &CancellationToken,
         language: Language,
+        invocation: &crate::InvocationContext<'_>,
     ) -> Result<WindowsObservationResult, ToolError> {
         let result = Self::invoke_windows(
             driver,
@@ -275,6 +257,7 @@ impl Driver {
             language,
             NativeCoordinates::RawWindowObservation,
             Some(expected),
+            invocation,
         )
         .await?;
         // Read the producer's commit before the ordinary error mapper discards
@@ -309,6 +292,7 @@ impl Driver {
         epoch: NativeEpochId,
         cancellation: &CancellationToken,
         language: Language,
+        invocation: &crate::InvocationContext<'_>,
     ) -> Result<(CallResult, AudioCompletion), ToolError> {
         let (owner, audio) = {
             let driver = driver.lock().await;
@@ -327,6 +311,7 @@ impl Driver {
                 audio,
                 cancellation,
                 language,
+                invocation,
             )
             .await?;
         let result = windows_native_result(reply.result, language)?;
@@ -772,6 +757,7 @@ impl Driver {
         epoch: NativeEpochId,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -783,6 +769,8 @@ impl Driver {
             NativeCoordinates::Captured,
             #[cfg(target_os = "windows")]
             None,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -794,6 +782,7 @@ impl Driver {
         epoch: NativeEpochId,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -805,6 +794,8 @@ impl Driver {
             NativeCoordinates::WindowPixels,
             #[cfg(target_os = "windows")]
             None,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -983,7 +974,10 @@ impl Driver {
         language: Language,
         coordinates: NativeCoordinates,
         expected_generation: Option<crate::desktop::worker::native_owner::NativeGeneration>,
+        invocation: &crate::InvocationContext<'_>,
     ) -> Result<crate::desktop::worker::native_owner::NativeResult, ToolError> {
+        use crate::desktop::worker::native_owner::NativeCoordinateFrame;
+
         if cancellation.is_cancelled() {
             return Err(ToolError::Failed(
                 "Computer Use cancelled before dispatch".into(),
@@ -996,24 +990,26 @@ impl Driver {
             }
             (driver.native_owner.clone(), driver.audio_enabled)
         };
-        Ok(owner
+        let coordinate_frame = match coordinates {
+            NativeCoordinates::Captured => NativeCoordinateFrame::Screenshot,
+            NativeCoordinates::WindowPixels => NativeCoordinateFrame::WindowPixels,
+            NativeCoordinates::WindowFrame(frame) => NativeCoordinateFrame::WindowFrame(frame),
+            NativeCoordinates::RawWindowObservation => NativeCoordinateFrame::RawWindowObservation,
+        };
+        let reply = owner
             .invoke(
                 name,
                 input,
                 epoch,
                 expected_generation,
-                match coordinates {
-                    NativeCoordinates::Captured => crate::desktop::worker::native_owner::NativeCoordinateFrame::Screenshot,
-                    NativeCoordinates::WindowPixels => crate::desktop::worker::native_owner::NativeCoordinateFrame::WindowPixels,
-                    NativeCoordinates::WindowFrame(frame) => crate::desktop::worker::native_owner::NativeCoordinateFrame::WindowFrame(frame),
-                    NativeCoordinates::RawWindowObservation => crate::desktop::worker::native_owner::NativeCoordinateFrame::RawWindowObservation,
-                },
+                coordinate_frame,
                 audio,
                 cancellation,
                 language,
+                invocation,
             )
-            .await?
-            .result)
+            .await?;
+        Ok(reply.result)
     }
 
     async fn invoke_with_coordinates(
@@ -1027,6 +1023,7 @@ impl Driver {
         #[cfg(target_os = "windows")] expected_generation: Option<
             crate::desktop::worker::native_owner::NativeGeneration,
         >,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         if ![
             "list_apps",
@@ -1072,6 +1069,7 @@ impl Driver {
             language,
             coordinates,
             expected_generation,
+            invocation,
         )
         .await?;
         #[cfg(not(target_os = "windows"))]
@@ -1734,6 +1732,8 @@ mod tests {
             expired_epoch,
             &CancellationToken::new(),
             Language::En,
+            #[cfg(target_os = "windows")]
+            &crate::InvocationContext::new("expiry-fixture", "fixture-turn"),
         )
         .await
         .unwrap_err()

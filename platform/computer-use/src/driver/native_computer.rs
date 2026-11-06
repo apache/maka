@@ -46,6 +46,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         window_pixels: bool,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -61,6 +62,8 @@ impl Driver {
             },
             #[cfg(target_os = "windows")]
             None,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
