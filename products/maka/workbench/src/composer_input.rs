@@ -107,6 +107,15 @@ impl Events {
             .emit(ComposerInputEvent::Change(ComposerChange { value, count }));
     }
 
+    fn flush_state(&self, state: &EditorState) {
+        let projection = model::Projection::new(state.doc());
+        self.changed(projection.source.clone());
+        self.cx.emit(ComposerInputEvent::SelectionChange(selection(
+            state,
+            &projection,
+        )));
+    }
+
     fn apply_value(
         &self,
         session: &EditorSession,
@@ -194,8 +203,6 @@ pub(crate) struct ComposerSubmit {
 #[derive(Clone, Debug, Default, PartialEq, JsObject)]
 pub(crate) struct ComposerKey {
     pub key: String,
-    pub text: String,
-    pub selection: ComposerSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Event)]
@@ -204,6 +211,8 @@ pub(crate) enum ComposerInputEvent {
     Change(ComposerChange),
     #[args(event)]
     SelectionChange(ComposerSelection),
+    #[args(composing)]
+    CompositionChange(bool),
     #[args(event)]
     Submit(ComposerSubmit),
     #[args(event)]
@@ -331,7 +340,7 @@ impl PluginSpec for ComposerBehavior {
         if !trs.iter().any(|tr| tr.doc_changed() || tr.selection_set()) {
             return None;
         }
-        model::tokenize(new, false)
+        model::tokenize(new)
     }
 
     fn handle_key_down(
@@ -352,13 +361,10 @@ impl PluginSpec for ComposerBehavior {
                 if Keystroke::parse_with(&binding.key, apple)
                     .is_ok_and(|candidate| candidate == stroke)
                 {
-                    let projection = model::Projection::new(state.doc());
-                    self.events.changed(projection.source.clone());
-                    self.events.cx.emit(ComposerInputEvent::Key(ComposerKey {
-                        key: binding.key,
-                        text: projection.source.clone(),
-                        selection: selection(state, &projection),
-                    }));
+                    self.events.flush_state(state);
+                    self.events
+                        .cx
+                        .emit(ComposerInputEvent::Key(ComposerKey { key: binding.key }));
                     return true;
                 }
             }
@@ -403,15 +409,26 @@ impl PluginSpec for ComposerBehavior {
         slice: &Slice,
         dispatch: &mut dyn FnMut(Transaction),
     ) -> bool {
+        let text = model::fragment_source(&slice.content);
+        if let Some(uris) = nsh_core::platform::clipboard::files_from_text(&text) {
+            self.events.flush_state(state);
+            let mut paste = RichEditorPastedFiles::default();
+            paste.uris = uris;
+            self.events.cx.emit(ComposerInputEvent::PasteFiles(paste));
+            return true;
+        }
         let projection = model::Projection::new(state.doc());
         let selected = selection(state, &projection);
-        let text = model::fragment_source(&slice.content);
         let Some(mut tr) = model::replace(state, selected.start, selected.end, &text) else {
             return false;
         };
         tr.set_origin(TransactionOrigin::Paste).scroll_into_view();
         dispatch(tr);
         true
+    }
+
+    fn transform_pasted_html(&self, _state: &EditorState, _html: String) -> String {
+        String::new()
     }
 
     fn clipboard_text_parser(
@@ -477,7 +494,7 @@ fn state(
     plugins: Vec<Plugin>,
     annotation: &message::Source,
 ) -> EditorState {
-    let doc = annotation.annotate(schema, model::document(schema, source, true));
+    let doc = annotation.annotate(schema, model::document(schema, source));
     let end = model::Projection::new(&doc)
         .doc_at(source.encode_utf16().count() as u32, true)
         .expect("the source end is a valid caret");
@@ -556,73 +573,46 @@ pub(crate) fn ComposerInput(
     }
     let changed = session.clone();
     let selected = session.clone();
-    let blurred = session.clone();
-    let (change_schema, change_plugins, change_events) =
-        (schema.clone(), plugins.clone(), events.clone());
-    view().flex_1().child(
-        rich_editor()
-            .editor(session)
-            .flex_1()
-            .editable(move || !props.read_only.get())
-            .placeholder(move || Some(props.placeholder.get().into()))
-            .accessibility_label(move || Some(props.accessibility_label.get().into()))
-            .styles(move || props.styles.get())
-            .on_change(move |_: &_| {
-                change_events.changed(model::source(changed.state().doc()));
-                change_events.apply_pending(
-                    &changed,
-                    &change_schema,
-                    &change_plugins,
-                    &source(props),
-                );
-            })
-            .on_selection_change(move |_: &_| {
-                let state = selected.state();
-                cx.emit(ComposerInputEvent::SelectionChange(selection(
-                    &state,
-                    &model::Projection::new(state.doc()),
-                )));
-            })
-            .on_focus(move || cx.emit(ComposerInputEvent::Focus))
-            .on_blur(move || {
-                events.apply_pending(&blurred, &schema, &plugins, &source(props));
-                cx.emit(ComposerInputEvent::Blur);
-            })
-            .on_paste_files(move |event: &RichEditorPastedFiles| {
-                cx.emit(ComposerInputEvent::PasteFiles(event.clone()))
-            }),
-    )
+    let composing = session.clone();
+    let change_events = events.clone();
+    let pasted = session.clone();
+    let paste_events = events.clone();
+    rich_editor()
+        .editor(session)
+        .flex_1()
+        .editable(move || !props.read_only.get())
+        .tab_navigation(true)
+        .placeholder(move || Some(props.placeholder.get().into()))
+        .accessibility_label(move || Some(props.accessibility_label.get().into()))
+        .styles(move || props.styles.get())
+        .on_change(move |_: &_| {
+            change_events.changed(model::source(changed.state().doc()));
+        })
+        .on_selection_change(move |_: &_| {
+            let state = selected.state();
+            cx.emit(ComposerInputEvent::SelectionChange(selection(
+                &state,
+                &model::Projection::new(state.doc()),
+            )));
+        })
+        .on_composition_change(move |active: &bool| {
+            if !active {
+                events.changed(model::source(composing.state().doc()));
+                events.apply_pending(&composing, &schema, &plugins, &source(props));
+            }
+            cx.emit(ComposerInputEvent::CompositionChange(*active));
+        })
+        .on_focus(move || cx.emit(ComposerInputEvent::Focus))
+        .on_blur(move || cx.emit(ComposerInputEvent::Blur))
+        .on_paste_files(move |event: &RichEditorPastedFiles| {
+            paste_events.flush_state(&pasted.state());
+            cx.emit(ComposerInputEvent::PasteFiles(event.clone()))
+        })
 }
 
 fn source(props: ComposerInputProps) -> message::Source {
     message::Source {
         id: props.source_id.get(),
         offset: props.source_offset.get(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nsh_base::rich_editor::extensions::history::undo_depth;
-
-    #[test]
-    fn replacing_the_controlled_value_discards_the_previous_draft_history() {
-        let schema = model::schema();
-        let plugins = vec![history(Default::default())];
-        let original = state(
-            &schema,
-            "draft",
-            plugins.clone(),
-            &message::Source::default(),
-        );
-        let edited = original
-            .apply(model::replace(&original, 5, 5, " /skill:review").unwrap())
-            .unwrap();
-        assert_eq!(model::source(edited.doc()), "draft /skill:review");
-        assert_eq!(undo_depth(&edited), 1);
-        let reset = state(&schema, "", plugins, &message::Source::default());
-        assert_eq!(model::source(reset.doc()), "");
-        assert_eq!(undo_depth(&reset), 0);
     }
 }

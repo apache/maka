@@ -308,6 +308,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
+      <Text accessibilityLabel={`Draft ${draft()}`}>{draft()}</Text>
       <Composer
         session={() => owner}
         active={() => true}

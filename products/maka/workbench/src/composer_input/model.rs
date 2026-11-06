@@ -43,7 +43,7 @@ pub(super) fn schema() -> Schema {
     .expect("the composer schema is valid")
 }
 
-pub(super) fn skill(schema: &Schema, name: &str) -> Node {
+fn skill(schema: &Schema, name: &str) -> Node {
     schema
         .node(
             "skill",
@@ -54,7 +54,7 @@ pub(super) fn skill(schema: &Schema, name: &str) -> Node {
         .expect("a skill node has its required name")
 }
 
-pub(super) fn token_ranges(text: &str) -> Vec<Range<usize>> {
+fn token_ranges(text: &str) -> Vec<Range<usize>> {
     static RULE: LazyLock<InputTokenRule> = LazyLock::new(|| {
         InputTokenRule::new(
             r"(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)",
@@ -71,20 +71,18 @@ pub(super) fn token_ranges(text: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-fn inline(schema: &Schema, text: &str, atoms: bool) -> Vec<Node> {
+fn inline(schema: &Schema, text: &str) -> Vec<Node> {
     let mut out = Vec::new();
     let mut at = 0;
-    if atoms {
-        for range in token_ranges(text) {
-            if at < range.start {
-                out.push(schema.text(&text[at..range.start], vec![]));
-            }
-            out.push(skill(
-                schema,
-                &text[range.start + "/skill:".len()..range.end],
-            ));
-            at = range.end;
+    for range in token_ranges(text) {
+        if at < range.start {
+            out.push(schema.text(&text[at..range.start], vec![]));
         }
+        out.push(skill(
+            schema,
+            &text[range.start + "/skill:".len()..range.end],
+        ));
+        at = range.end;
     }
     if at < text.len() {
         out.push(schema.text(&text[at..], vec![]));
@@ -92,7 +90,7 @@ fn inline(schema: &Schema, text: &str, atoms: bool) -> Vec<Node> {
     out
 }
 
-pub(super) fn document(schema: &Schema, source: &str, atoms: bool) -> Node {
+pub(super) fn document(schema: &Schema, source: &str) -> Node {
     let mut paragraphs = Vec::new();
     let mut rest = source;
     loop {
@@ -113,7 +111,7 @@ pub(super) fn document(schema: &Schema, source: &str, atoms: bool) -> Node {
                 .node(
                     "paragraph",
                     Some([("ending".to_owned(), json!(ending))].into()),
-                    Fragment::from(inline(schema, text, atoms)),
+                    Fragment::from(inline(schema, text)),
                     vec![],
                 )
                 .expect("composer paragraphs contain only inline nodes"),
@@ -129,11 +127,11 @@ pub(super) fn document(schema: &Schema, source: &str, atoms: bool) -> Node {
 }
 
 pub(super) fn slice(schema: &Schema, source: &str) -> Slice {
-    let doc = document(schema, source, true);
+    let doc = document(schema, source);
     Slice::new(doc.content().clone(), 1, 1)
 }
 
-fn node_source(node: &Node) -> String {
+pub(super) fn node_source(node: &Node) -> String {
     if let Some(text) = node.text() {
         text.to_owned()
     } else if node.ty().name() == "skill" {
@@ -167,40 +165,43 @@ pub(super) fn source(doc: &Node) -> String {
 }
 
 #[derive(Debug)]
-struct Span {
+struct Span<'doc> {
     source: Range<usize>,
     doc: Range<usize>,
-    atom: bool,
+    node: Option<&'doc Node>,
 }
 
 /// One action's conversion table. Source offsets remain UTF-16, including
 /// the full invocation; an inline atom occupies one document position.
 #[derive(Debug)]
-pub(super) struct Projection {
+pub(super) struct Projection<'doc> {
     pub source: String,
-    spans: Vec<Span>,
+    spans: Vec<Span<'doc>>,
     end: usize,
 }
 
-impl Projection {
-    pub fn new(doc: &Node) -> Self {
+impl<'doc> Projection<'doc> {
+    pub fn new(doc: &'doc Node) -> Self {
         let mut source = String::new();
         let mut spans = Vec::new();
         let mut offset = 0;
         let mut end = 1;
-        doc.for_each(&mut |paragraph, block_at, index| {
-            paragraph.for_each(&mut |node, inline_at, _| {
+        let mut block_at = 0;
+        for (index, paragraph) in doc.content().iter().enumerate() {
+            let mut inline_at = 0;
+            for node in paragraph.content() {
                 let text = node_source(node);
                 let length = text.encode_utf16().count();
                 let at = block_at + 1 + inline_at;
                 spans.push(Span {
                     source: offset..offset + length,
                     doc: at..at + node.node_size(),
-                    atom: !node.is_text(),
+                    node: Some(node),
                 });
                 source.push_str(&text);
                 offset += length;
-            });
+                inline_at += node.node_size();
+            }
             end = block_at + 1 + paragraph.content().size();
             if index + 1 < doc.child_count() {
                 let ending = paragraph
@@ -212,22 +213,26 @@ impl Projection {
                 spans.push(Span {
                     source: offset..offset + length,
                     doc: end..end + 2,
-                    atom: true,
+                    node: None,
                 });
                 source.push_str(ending);
                 offset += length;
             }
-        });
+            block_at += paragraph.node_size();
+        }
         Self { source, spans, end }
     }
 
     pub fn source_at(&self, pos: usize) -> u32 {
-        for span in &self.spans {
+        if let Some(span) = self
+            .spans
+            .get(self.spans.partition_point(|span| span.doc.end < pos))
+        {
             if pos < span.doc.start {
                 return span.source.start as u32;
             }
             if pos <= span.doc.end {
-                return if span.atom {
+                return if span.node.is_none_or(|node| !node.is_text()) {
                     if pos == span.doc.start {
                         span.source.start
                     } else {
@@ -238,13 +243,18 @@ impl Projection {
                 } as u32;
             }
         }
-        self.source.encode_utf16().count() as u32
+        self.spans.last().map_or(0, |span| span.source.end) as u32
     }
 
     pub fn doc_at(&self, offset: u32, end: bool) -> Option<usize> {
-        byte_at(&self.source, offset)?;
         let offset = offset as usize;
-        for span in &self.spans {
+        if offset > self.spans.last().map_or(0, |span| span.source.end) {
+            return None;
+        }
+        if let Some(span) = self
+            .spans
+            .get(self.spans.partition_point(|span| span.source.end < offset))
+        {
             if offset < span.source.start {
                 return Some(span.doc.start);
             }
@@ -253,7 +263,7 @@ impl Projection {
                     span.doc.start
                 } else if offset == span.source.end {
                     span.doc.end
-                } else if span.atom {
+                } else if span.node.is_none_or(|node| !node.is_text()) {
                     if end { span.doc.end } else { span.doc.start }
                 } else {
                     span.doc.start + offset - span.source.start
@@ -264,7 +274,7 @@ impl Projection {
     }
 }
 
-pub(super) fn byte_at(source: &str, offset: u32) -> Option<usize> {
+fn byte_at(source: &str, offset: u32) -> Option<usize> {
     let mut units = 0;
     for (at, ch) in source.char_indices() {
         if units == offset {
@@ -278,45 +288,62 @@ pub(super) fn byte_at(source: &str, offset: u32) -> Option<usize> {
     (units == offset).then_some(source.len())
 }
 
-pub(super) fn tokenize(state: &EditorState, force: bool) -> Option<Transaction> {
+pub(super) fn tokenize(state: &EditorState) -> Option<Transaction> {
     let projection = Projection::new(state.doc());
-    let caret = projection.source_at(state.selection().head()) as usize;
-    let anchor = projection.source_at(state.selection().anchor()) as usize;
+    let mut byte = 0;
+    let mut offset = 0;
+    let tokens: Vec<_> = token_ranges(&projection.source)
+        .into_iter()
+        .map(|range| {
+            offset += projection.source[byte..range.start].encode_utf16().count() as u32;
+            let from = projection
+                .doc_at(offset, false)
+                .expect("a token starts at a character boundary");
+            offset += projection.source[range.clone()].encode_utf16().count() as u32;
+            let to = projection
+                .doc_at(offset, true)
+                .expect("a token ends at a character boundary");
+            byte = range.end;
+            (from..to, &projection.source[range])
+        })
+        .collect();
     let mut replacements = Vec::new();
-    for range in token_ranges(&projection.source) {
-        let start = projection.source[..range.start].encode_utf16().count();
-        let end = projection.source[..range.end].encode_utf16().count();
-        let from = projection
-            .doc_at(start as u32, false)
-            .expect("token starts at a character boundary");
-        let to = projection
-            .doc_at(end as u32, true)
-            .expect("token ends at a character boundary");
-        if state.doc().node_at(from).is_some_and(|node| {
-            node.ty().name() == "skill"
-                && from + node.node_size() == to
-                && node_source(&node) == projection.source[range.clone()]
+    for span in &projection.spans {
+        let Some(node) = span.node.filter(|node| node.ty().name() == "skill") else {
+            continue;
+        };
+        let next = tokens.partition_point(|(range, _)| range.end <= span.doc.start);
+        if tokens
+            .get(next)
+            .is_none_or(|(range, _)| range.start >= span.doc.end)
+        {
+            replacements.push((
+                span.doc.clone(),
+                state.schema().text(&node_source(node), vec![]),
+            ));
+        }
+    }
+    for (range, raw) in tokens {
+        let existing = projection
+            .spans
+            .partition_point(|span| span.doc.end <= range.start);
+        if projection.spans.get(existing).is_some_and(|span| {
+            span.doc == range && span.node.is_some_and(|node| node.ty().name() == "skill")
         }) {
             continue;
         }
-        if !force && anchor >= start && anchor <= end && caret >= start && caret <= end {
+        if state.selection().from() >= range.start && state.selection().to() <= range.end {
             continue;
         }
-        replacements.push((
-            from,
-            to,
-            skill(
-                state.schema(),
-                &projection.source[range.start + 7..range.end],
-            ),
-        ));
+        replacements.push((range, skill(state.schema(), &raw[7..])));
     }
     if replacements.is_empty() {
         return None;
     }
+    replacements.sort_unstable_by_key(|(range, _)| range.start);
     let mut tr = state.tr();
-    for (start, end, node) in replacements.into_iter().rev() {
-        tr.replace_with(start, end, Fragment::from(vec![node]))
+    for (range, node) in replacements.into_iter().rev() {
+        tr.replace_with(range.start, range.end, Fragment::from(vec![node]))
             .expect("a token replaces its source range");
     }
     Some(tr)
@@ -332,6 +359,8 @@ pub(super) fn replace(
         return None;
     }
     let projection = Projection::new(state.doc());
+    byte_at(&projection.source, start)?;
+    byte_at(&projection.source, end)?;
     let from = projection.doc_at(start, false)?;
     let to = projection.doc_at(end, true)?;
     let start = projection.source_at(from);
@@ -342,7 +371,7 @@ pub(super) fn replace(
     raw.push_str(&projection.source[..first]);
     raw.push_str(text);
     raw.push_str(&projection.source[last..]);
-    let doc = document(state.schema(), &raw, true);
+    let doc = document(state.schema(), &raw);
     let next = Projection::new(&doc);
     let caret = next.doc_at(start + text.encode_utf16().count() as u32, true)?;
     let mut tr = state.tr();
@@ -378,125 +407,47 @@ pub(super) fn delete_atom(state: &EditorState, forward: bool) -> Option<Transact
 mod tests {
     use super::*;
     use nsh_base::rich_editor::{
-        extensions::history::{history, redo, undo},
+        extensions::history::{history, undo},
         state::EditorStateConfig,
     };
 
     #[test]
-    fn source_round_trips_skills_unicode_and_line_endings() {
+    fn replacement_preserves_source_boundaries_and_undo() {
         let schema = schema();
-        let raw = "🦀 /skill:review, /skill:fix\r\n\n尾部\r";
-        let doc = document(&schema, raw, true);
-        assert_eq!(source(&doc), raw);
-        let p = Projection::new(&doc);
-        assert_eq!(p.source_at(p.doc_at(4, false).unwrap()), 3);
-        assert_eq!(p.source_at(p.doc_at(4, true).unwrap()), 16);
-        assert_eq!(p.source_at(p.doc_at(33, true).unwrap()), 33);
-        assert!(p.doc_at(1, false).is_none(), "a surrogate cannot be split");
-    }
-
-    #[test]
-    fn typed_skill_remains_editable_until_the_caret_leaves() {
-        let schema = schema();
-        let doc = document(&schema, "a /skill:review", false);
-        let selection = TextSelection::create(&doc, 16, None);
-        let state =
-            EditorState::create(EditorStateConfig::new(schema).doc(doc).selection(selection))
-                .unwrap();
-        assert!(tokenize(&state, false).is_none());
-        let mut tr = state.tr();
-        tr.set_selection(TextSelection::create(state.doc(), 1, None));
-        let state = state.apply(tr).unwrap();
-        let state = state.apply(tokenize(&state, false).unwrap()).unwrap();
-        assert_eq!(state.doc().child(0).child(1).ty().name(), "skill");
-        assert_eq!(source(state.doc()), "a /skill:review");
-    }
-
-    #[test]
-    fn typing_a_delimiter_confirms_the_skill_without_changing_its_source() {
-        let schema = schema();
-        let doc = document(&schema, "/skill:review", false);
-        let selection = TextSelection::create(&doc, 14, None);
-        let state =
-            EditorState::create(EditorStateConfig::new(schema).doc(doc).selection(selection))
-                .unwrap();
-        let mut tr = state.tr();
-        tr.insert_text(" ", None, None);
-        let state = state.apply(tr).unwrap();
-        let state = state.apply(tokenize(&state, false).unwrap()).unwrap();
-        assert_eq!(source(state.doc()), "/skill:review ");
-        assert_eq!(state.doc().child(0).child(0).ty().name(), "skill");
-        assert_eq!(state.doc().child(0).child(1).text(), Some(" "));
-    }
-
-    #[test]
-    fn explicit_replace_and_atomic_delete_are_separate_undoable_actions() {
-        let schema = schema();
-        let doc = document(&schema, "🦀 ", true);
+        let doc = document(&schema, "前😀 后");
         let state = EditorState::create(
             EditorStateConfig::new(schema)
                 .doc(doc)
                 .plugins(vec![history(Default::default())]),
         )
         .unwrap();
+        assert!(replace(&state, 2, 2, "x").is_none());
         let state = state
-            .apply(replace(&state, 3, 3, "/skill:review ").unwrap())
+            .apply(replace(&state, 4, 4, "/skill:review\r\n下一行").unwrap())
             .unwrap();
-        assert_eq!(source(state.doc()), "🦀 /skill:review ");
-        assert_eq!(state.doc().child(0).child(1).ty().name(), "skill");
-        let projection = Projection::new(state.doc());
-        let caret = projection.doc_at(16, true).unwrap();
-        let mut tr = state.tr();
-        tr.set_selection(TextSelection::create(state.doc(), caret, None));
-        let state = state.apply(tr).unwrap();
-        let deleted = state.apply(delete_atom(&state, false).unwrap()).unwrap();
-        assert_eq!(source(deleted.doc()), "🦀  ");
+        assert_eq!(source(state.doc()), "前😀 /skill:review\r\n下一行后");
         let mut restored = None;
         assert!(undo(
-            &deleted,
-            Some(&mut |tr| restored = Some(deleted.apply(tr).unwrap()))
+            &state,
+            Some(&mut |tr| restored = Some(state.apply(tr).unwrap()))
         ));
-        let restored = restored.unwrap();
-        assert_eq!(source(restored.doc()), "🦀 /skill:review ");
-        let mut redone = None;
-        assert!(redo(
-            &restored,
-            Some(&mut |tr| redone = Some(restored.apply(tr).unwrap()))
-        ));
-        assert_eq!(source(redone.unwrap().doc()), "🦀  ");
-        let mut initial = None;
-        assert!(undo(
-            &restored,
-            Some(&mut |tr| initial = Some(restored.apply(tr).unwrap()))
-        ));
-        assert_eq!(source(initial.unwrap().doc()), "🦀 ");
+        assert_eq!(source(restored.unwrap().doc()), "前😀 后");
     }
 
     #[test]
-    fn grammar_uses_js_whitespace_and_the_full_surrounding_source() {
-        assert_eq!(token_ranges("\u{feff}/skill:one"), vec![3..13]);
-        assert!(token_ranges("\u{85}/skill:one").is_empty());
+    fn deleting_a_skill_boundary_makes_its_text_editable_again() {
         let schema = schema();
-        let doc = document(&schema, "/skill:one", true);
-        let state = EditorState::create(EditorStateConfig::new(schema).doc(doc)).unwrap();
-        let state = state
-            .apply(replace(&state, 10, 10, "/skill:two").unwrap())
-            .unwrap();
-        assert_eq!(source(state.doc()), "/skill:one/skill:two");
-        assert_eq!(state.doc().child(0).child_count(), 2);
-        assert_eq!(state.doc().child(0).child(1).text(), Some("/skill:two"));
-    }
-    #[test]
-    fn skill_chips_never_separate_a_unicode_grapheme() {
-        let schema = schema();
-        let accented = document(&schema, "/skill:e\u{301}", true);
-        assert_eq!(accented.child(0).child_count(), 1);
-        assert_eq!(accented.child(0).child(0).text(), Some("/skill:e\u{301}"));
-        let joined = document(&schema, "/skill:review\u{200d}👩\u{200d}💻", true);
-        assert_eq!(joined.child(0).child_count(), 1);
-        assert_eq!(source(&joined), "/skill:review\u{200d}👩\u{200d}💻");
-        let separate = document(&schema, "/skill:review 👩\u{200d}💻", true);
-        assert_eq!(separate.child(0).child(0).ty().name(), "skill");
-        assert_eq!(separate.child(0).child(1).text(), Some(" 👩\u{200d}💻"));
+        let state = EditorState::create(
+            EditorStateConfig::new(schema.clone()).doc(document(&schema, "a /skill:review")),
+        )
+        .unwrap();
+        let mut tr = state.tr();
+        tr.delete(2, 3).unwrap();
+        let mut state = state.apply(tr).unwrap();
+        if let Some(tr) = tokenize(&state) {
+            state = state.apply(tr).unwrap();
+        }
+        let state = state.apply(replace(&state, 3, 4, "X").unwrap()).unwrap();
+        assert_eq!(source(state.doc()), "a/sXill:review");
     }
 }

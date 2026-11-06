@@ -17,22 +17,14 @@
  * under the License.
  */
 
-import { ComposerInput } from 'maka/host';
+import { ComposerInput, type ComposerInputRef, type ComposerInputState } from 'maka/host';
 import { cleanup, effect, keymap, signal, untracked, View } from 'nsh';
-import type { Bounds, CaretEvent, InputRef, StyleProp, ViewRef, TextStyle } from 'nsh';
+import type { CaretEvent, StyleProp, TextStyle } from 'nsh';
 import type { ComposerEditor, EditorKeyOptions } from './ComposerEditor';
 import { lucide } from './lucide';
 import { C, bodyTextStyle } from './ui';
 
 type Selection = { start: number; end: number };
-type NativeEditor = {
-  focus(): void;
-  blur(): void;
-  status(): Promise<{ readonly composing: boolean; readonly selection: Selection }>;
-  caretBounds(): Promise<Bounds | null>;
-  contentHeight(): Promise<number | null>;
-  replaceRange: InputRef['replaceRange'];
-};
 type Props = {
   ref?(node: ComposerEditor): void;
   testID?: string;
@@ -60,11 +52,9 @@ type Binding = { key: string; action: () => void; options?: EditorKeyOptions };
 
 /** Product-owned plain-text composer; skills are inline atoms in the existing rich editor. */
 export function SkillInput(props: Props) {
-  const native = signal<NativeEditor | null>(null);
-  const scope = signal<ViewRef | null>(null);
-  const status = signal<{ readonly composing: boolean; readonly selection: Selection } | null>(
-    null,
-  );
+  const native = signal<ComposerInputRef | null>(null);
+  const status = signal<ComposerInputState | null>(null);
+  const composition = signal(false);
   const valueCount = signal(0);
   const height = signal(bodyTextStyle.lineHeight);
   let alive = true;
@@ -92,9 +82,9 @@ export function SkillInput(props: Props) {
     untracked(refreshKeys);
   });
   const bindKey = (key: string, action: () => void, options?: EditorKeyOptions) => {
-    const target = scope();
+    const target = native()?.node;
     // These keystrokes reach the native input instead of RichEditor's key table.
-    if (key === 'mod+v' || key === 'alt+v')
+    if (key === 'mod+v' || key === 'alt+v' || key === 'tab')
       return target
         ? keymap.bind(key, action, { when: 'always', within: target, ...options })
         : () => {};
@@ -128,15 +118,19 @@ export function SkillInput(props: Props) {
   });
   effect(() => {
     const node = native();
-    const anchor = scope();
     const state = status();
-    if (!node || !anchor || !state) return;
+    if (!node || !state) return;
     untracked(() => {
       props.ref?.({
-        anchor,
+        anchor: node.node,
         focus: () => node.focus(),
         blur: () => node.blur(),
-        composing: () => state.composing,
+        composing: () => {
+          if (!alive) return false;
+          // Subscribe to transitions while reading the native state for action guards.
+          composition();
+          return state.composing;
+        },
         replaceRange: (request) => node.replaceRange(request),
         bindKey,
       });
@@ -177,7 +171,6 @@ export function SkillInput(props: Props) {
   };
   return (
     <View
-      ref={(node) => scope.set(node)}
       style={[props.style, { height: height(), minHeight: bodyTextStyle.lineHeight }]}
       onFileDrop={props.onFileDrop}
       onFileDragEnter={props.onFileDragEnter}
@@ -215,6 +208,7 @@ export function SkillInput(props: Props) {
           props.onSelectionChange?.(event);
           caretMoved();
         }}
+        onCompositionChange={({ composing }) => composition.set(composing)}
         onSubmit={props.onSubmit}
         onKey={key}
         onPasteFiles={(event) =>

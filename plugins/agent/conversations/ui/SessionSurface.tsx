@@ -1576,6 +1576,8 @@ export function createConversationUi(
     for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
   });
   const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
+    if (input)
+      unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
     const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
     const bind = (key: string, action: () => void) => {
       const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);

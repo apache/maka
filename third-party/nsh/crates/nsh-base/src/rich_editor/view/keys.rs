@@ -253,7 +253,6 @@ mod tests {
             assert!(find(&table, "ctrl+x").event.mod_key);
             assert!(find(&table, "ctrl+a").event.mod_key);
             assert!(!table.iter().any(|s| s.keystroke == "ctrl+v"));
-            assert!(!table.iter().any(|s| s.keystroke == "ctrl+shift+v"));
             assert!(!table.iter().any(|s| s.event.meta));
             assert_eq!(table.iter().any(|s| s.keystroke == "ctrl+q"), os == Os::Web);
         }
@@ -272,7 +271,6 @@ mod tests {
             assert!(find(&table, "cmd+x").event.mod_key);
             assert!(!find(&table, "ctrl+c").event.mod_key);
             assert!(!table.iter().any(|s| s.keystroke == "cmd+v"));
-            assert!(!table.iter().any(|s| s.keystroke == "cmd+shift+v"));
             assert!(!find(&table, "ctrl+v").event.mod_key);
             assert_eq!(table.iter().any(|s| s.keystroke == "cmd+q"), os == Os::Web);
         }

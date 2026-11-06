@@ -23,19 +23,32 @@ use maka_app_client::{Client, Draft};
 
 const ORIGINAL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
 
-async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) -> bool) -> Draft {
+async fn stored_draft(
+    view: &mut AppView,
+    client: &Client,
+    session: &str,
+    expected: impl Fn(&Draft) -> bool,
+) -> Draft {
+    let mut observed = None;
     tokio::time::timeout(support::WAIT_TIMEOUT, async {
         loop {
-            if let Some(draft) = client.load_draft("agent", session, EDITOR).await.unwrap()
-                && expected(&draft)
-            {
-                return draft;
+            support::tick(view);
+            if let Some(draft) = client.load_draft("agent", session, EDITOR).await.unwrap() {
+                if expected(&draft) {
+                    return draft;
+                }
+                observed = Some(draft.text);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("the complete attachment draft did not commit")
+    .unwrap_or_else(|_| {
+        panic!(
+            "the complete attachment draft did not commit: {observed:?}; screen: {}",
+            view.snapshot()
+        )
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -50,13 +63,11 @@ async fn directory_path_paste_remains_text_in_an_existing_composer() {
     view.handle_event(Event::Paste("查看 ".into()));
     commit_native_events(&mut view).await;
     view.handle_event(Event::Paste(format!("'{}'", directory.display())));
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some(expected.as_str()))
+    commit_native_events(&mut view).await;
+    let draft = stored_draft(&mut view, &client, &fixture.session, |draft| {
+        draft.text == expected
     })
     .await;
-    let draft = stored_draft(&client, &fixture.session, |draft| draft.text == expected).await;
     assert!(draft.attachments.is_empty());
     drop(view);
     bindings.close().await.unwrap();
@@ -115,7 +126,8 @@ async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_chang
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
     wait_editable_composer(&mut view).await;
     view.handle_event(Event::Paste(format!("'{}'", path.display())));
-    let stored = stored_draft(&client, &fixture.session, |draft| {
+    commit_native_events(&mut view).await;
+    let stored = stored_draft(&mut view, &client, &fixture.session, |draft| {
         draft.attachments.len() == 1
     })
     .await;
@@ -124,15 +136,9 @@ async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_chang
     let dropped = fixture.directory.path().join("dropped image.png");
     std::fs::write(&dropped, &bytes).unwrap();
     wait_editable_composer(&mut view).await;
-    let composer = view.surface().focused().unwrap();
-    view.control().unwrap().dispatch_event(
-        composer,
-        nsh_core::EventKind::FileDrop,
-        nsh_core::EventPayload::FileDrop(vec![
-            reqwest::Url::from_file_path(&dropped).unwrap().into(),
-        ]),
-    );
-    let stored = stored_draft(&client, &fixture.session, |draft| {
+    view.handle_event(Event::Paste(format!("'{}'", dropped.display())));
+    commit_native_events(&mut view).await;
+    let stored = stored_draft(&mut view, &client, &fixture.session, |draft| {
         draft.attachments.len() == 2
     })
     .await;
@@ -177,7 +183,7 @@ async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_chang
     request.finish().await;
     fixture.idle(&client, &fixture.session).await;
     wait_view(&mut view, |screen| screen.contains("Attachment received")).await;
-    stored_draft(&client, &fixture.session, |draft| {
+    stored_draft(&mut view, &client, &fixture.session, |draft| {
         draft.attachments.is_empty() && draft.text.is_empty()
     })
     .await;

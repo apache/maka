@@ -27,52 +27,44 @@ import type { Row } from '../../app/history';
 mount(() => {
   const initial = '前😀 /skill:review 后';
   const draft = signal(initial);
-  const selected = signal({ start: 0, end: 0 });
+  const selection = signal({ start: 0, end: 0 });
   const submitted = signal('');
-  const height = signal(0);
   const ready = signal(false);
-  const appShortcut = signal(false);
-  keymap.bind('mod+n', () => appShortcut.set(true), { when: 'always' });
+  const shortcut = signal(false);
+  const released = signal(false);
   let editor: ComposerEditor | undefined;
+  keymap.bind('left', () => released.set(true), { when: 'always' });
+  keymap.bind('mod+n', () => shortcut.set(true), { when: 'always' });
   return (
     <View style={{ width: 600, gap: 8 }}>
-      <View
-        style={{ maxHeight: 144, minHeight: 24 }}
-        onLayout={({ bounds }) => height.set(bounds.size.height)}
-      >
-        <SkillInput
-          ref={(node) => {
-            editor = node;
-            node.bindKey('tab', () => {
-              if (node.composing()) return;
-              node.replaceRange({
-                start: selected().start,
-                end: selected().end,
-                text: '/skill:fix ',
-                expectedText: draft(),
-                expectedSelection: selected(),
-              });
-            });
-            ready.set(true);
-          }}
-          testID="draft-field"
-          accessibilityLabel="Draft"
-          value={draft()}
-          readonly={false}
-          autoFocus
-          placeholder="Message"
-          onChange={({ value }) => draft.set(value)}
-          onSelectionChange={(range) => selected.set(range)}
-          onSubmit={({ text }) => submitted.set(text)}
-          style={{ flexShrink: 1 }}
-        />
-      </View>
-      <Text>{`Source ${JSON.stringify(draft())}`}</Text>
-      <Text>{`Selection ${selected().start}:${selected().end}`}</Text>
+      <SkillInput
+        accessibilityLabel="Draft"
+        value={draft()}
+        readonly={false}
+        autoFocus
+        placeholder=""
+        ref={(node) => {
+          editor = node;
+          node.bindKey('mod+i', () =>
+            node.replaceRange({
+              ...selection(),
+              text: '/skill:fix ',
+              expectedText: draft(),
+              expectedSelection: selection(),
+            }),
+          );
+          ready.set(true);
+        }}
+        onChange={({ value }) => draft.set(value)}
+        onSelectionChange={(value) => selection.set(value)}
+        onSubmit={({ text }) => submitted.set(text)}
+      />
+      <Text>{`Draft ${JSON.stringify(draft())}`}</Text>
       <Text>{`Submitted ${JSON.stringify(submitted())}`}</Text>
-      <Text>{`Height ${height()}`}</Text>
-      <Text>{ready() ? 'Editor ready' : 'Starting editor'}</Text>
-      <Text>{appShortcut() ? 'App shortcut received' : 'App shortcut idle'}</Text>
+      <Text>{ready() ? 'Ready' : 'Starting'}</Text>
+      <Text>{ready() && editor?.composing() ? 'Composing' : 'Idle'}</Text>
+      <Text>{shortcut() ? 'Shortcut received' : 'Shortcut idle'}</Text>
+      <Text>{released() ? 'IME key released' : 'IME key held'}</Text>
       <Button
         accessibilityLabel="Reset"
         onPress={() => {
@@ -82,9 +74,7 @@ mount(() => {
       >
         <Text>Reset</Text>
       </Button>
-      <View style={{ width: 500 }}>
-        <SkillMessage row={() => ({ text: initial }) as Row} sourceId="fixture/message" />
-      </View>
+      <SkillMessage row={() => ({ text: initial }) as Row} sourceId="fixture/message" />
     </View>
   );
 });

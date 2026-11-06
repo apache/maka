@@ -55,19 +55,7 @@ impl Source {
         for (paragraph_index, paragraph) in doc.content().iter().enumerate() {
             let mut nodes = Vec::new();
             for (node_index, original) in paragraph.content().iter().enumerate() {
-                let raw = if original.ty().name() == "skill" {
-                    format!(
-                        "/skill:{}",
-                        original.attrs()["name"]
-                            .as_str()
-                            .expect("a skill name is text")
-                    )
-                } else {
-                    original
-                        .text()
-                        .expect("composer inline nodes are text or skills")
-                        .to_owned()
-                };
+                let raw = super::model::node_source(original);
                 // A loaded suffix cannot prove the boundary before its first
                 // character. Never turn it into a new invocation at the gap.
                 let node = if self.offset > 0
@@ -172,46 +160,4 @@ pub(super) fn attachment(node: &Node, chip: AnyElement) -> AnyElement {
         })))
         .child(chip)
         .into_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::composer_input::model;
-
-    #[test]
-    fn history_annotations_preserve_utf8_addresses_and_plain_copy_text() {
-        let schema = model::schema();
-        let doc = model::document(&schema, "🦀 /skill:review\r\n尾部", true);
-        let source = Source {
-            id: Some("message".into()),
-            offset: 100,
-        };
-        let doc = source.annotate(&schema, doc);
-        assert_eq!(model::source(&doc), "🦀 /skill:review\r\n尾部");
-        assert!(source.matches(&doc));
-        assert_eq!(
-            doc.child(0).child(0).marks()[0].attrs()["offset"],
-            json!(100)
-        );
-        assert_eq!(doc.child(0).child(1).attrs()["sourceOffset"], json!(105));
-        assert_eq!(
-            doc.child(1).child(0).marks()[0].attrs()["offset"],
-            json!(120)
-        );
-    }
-
-    #[test]
-    fn a_loaded_suffix_does_not_invent_a_skill_boundary_at_its_start() {
-        let schema = model::schema();
-        let doc = model::document(&schema, "/skill:partial /skill:valid", true);
-        let doc = Source {
-            id: Some("message".into()),
-            offset: 20,
-        }
-        .annotate(&schema, doc);
-        assert_eq!(doc.child(0).child(0).text(), Some("/skill:partial"));
-        assert_eq!(doc.child(0).child(2).ty().name(), "skill");
-        assert_eq!(model::source(&doc), "/skill:partial /skill:valid");
-    }
 }

@@ -639,13 +639,9 @@ export function createComposerCompletion(options: Options) {
     if (!target) return;
     const valid = () => current === read && owns(read);
     const unbind = [
-      target.bindKey(
-        'escape',
-        () => {
-          if (valid()) dismiss();
-        },
-        {},
-      ),
+      target.bindKey('escape', () => {
+        if (valid()) dismiss();
+      }),
     ];
     if (loading() || rows().some((item) => !item.disabled)) {
       unbind.push(
@@ -667,15 +663,11 @@ export function createComposerCompletion(options: Options) {
             repeat: true,
           },
         ),
-        target.bindKey(
-          'enter',
-          () => {
-            if (!valid()) return;
-            const item = rows()[index()];
-            if (item) accept(item.action);
-          },
-          {},
-        ),
+        target.bindKey('enter', () => {
+          if (!valid()) return;
+          const item = rows()[index()];
+          if (item) accept(item.action);
+        }),
       );
     }
     return () => unbind.forEach((remove) => remove());

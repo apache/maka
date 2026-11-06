@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn recycled_completion_cells_refresh_labels_and_press_actions() {
-        let mut registry = nsh_core::element::Registry::ui_set("maka/host");
+        let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
@@ -128,11 +128,10 @@ mod tests {
         app.wait_for("text:/2:skill:skill-15/").unwrap();
     }
 
-    fn skill_input_fixture() -> nsh_testing::Headless {
-        let mut registry = nsh_core::element::Registry::ui_set("maka/host");
+    #[test]
+    fn skills_edit_as_units_and_sent_messages_preserve_copy_and_shortcuts() {
+        let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
-        registry.register::<crate::composer_input::ComposerInput>();
-        registry.class::<crate::composer_input::ComposerInputState>();
         let sets = vec![nsh_base::registry(), registry];
         let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
             entry: std::path::Path::new("tests/fixtures/skill-input.tsx")
@@ -154,75 +153,78 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap();
-        app.wait_for("label:Draft").unwrap();
-        app.wait_for("text:Editor ready").unwrap();
-        app
-    }
-
-    #[test]
-    fn skill_input_edits_and_copies_invocations_as_whole_nodes() {
-        let mut app = skill_input_fixture();
-        app.wait_for("text:Selection 19:19").unwrap();
+        app.wait_for("text:Ready").unwrap();
         app.type_text("label:Draft", "").unwrap();
-        for key in ["mod+right", "left", "left", "left"] {
+        for key in ["left", "left", "left", "shift+right", "mod+c"] {
             app.press_key(key).unwrap();
         }
-        app.wait_for("text:Selection 4:4").unwrap();
-        app.press_key("shift+right").unwrap();
-        app.wait_for("text:Selection 4:17").unwrap();
-        app.press_key("mod+c").unwrap();
         assert_eq!(app.screen().clipboard(), Some("/skill:review"));
         app.press_key("backspace").unwrap();
-        app.wait_for(r#"text:Source "前😀  后""#).unwrap();
+        app.wait_for(r#"text:Draft "前😀  后""#).unwrap();
         app.press_key("mod+z").unwrap();
-        app.wait_for(r#"text:Source "前😀 /skill:review 后""#)
+        app.wait_for(r#"text:Draft "前😀 /skill:review 后""#)
             .unwrap();
         app.press_key("mod+a").unwrap();
-        app.press_key("mod+c").unwrap();
-        assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));
-        app.press_key("enter").unwrap();
-        app.wait_for(r#"text:Submitted "前😀 /skill:review 后""#)
+        let mut paste = nsh_core::PasteEvent::new("a\nb");
+        paste.html = "<pre>a\nb</pre>".into();
+        app.paste("label:Draft", &paste).unwrap();
+        app.wait_for(r#"text:Draft "a\nb""#).unwrap();
+        let input = app
+            .screen()
+            .commands()
+            .iter()
+            .rev()
+            .find_map(|(id, command)| matches!(command, nsh_core::Command::Focus).then_some(*id))
             .unwrap();
+        let compose = |app: &mut nsh_testing::Headless, active| {
+            app.engine().control().dispatch_event(
+                input,
+                nsh_core::EventKind::CompositionChange,
+                nsh_core::EventPayload::Map(vec![
+                    ("composing", nsh_core::PayloadValue::Bool(active)),
+                    ("text", nsh_core::PayloadValue::Str(String::new())),
+                ]),
+            );
+            app.wait_for(if active {
+                "text:Composing"
+            } else {
+                "text:Idle"
+            })
+            .unwrap();
+        };
+        compose(&mut app, true);
+        app.press_key("left").unwrap();
+        app.wait_for("text:IME key released").unwrap();
         app.press("label:Reset").unwrap();
-        app.wait_for(r#"text:Source """#).unwrap();
+        app.wait_for(r#"text:Draft """#).unwrap();
+        compose(&mut app, false);
         app.press_key("mod+z").unwrap();
-        assert!(app.shows("Source \"\""));
-        app.wait_for("text:Selection 0:0").unwrap();
-        app.press_key("tab").unwrap();
-        app.wait_for(r#"text:Source "/skill:fix ""#).unwrap();
-    }
-
-    #[test]
-    fn skill_input_paste_grows_the_viewport_and_message_selection_keeps_source() {
-        let mut app = skill_input_fixture();
-        app.type_text("label:Draft", "").unwrap();
+        assert!(app.shows("Draft \"\""));
+        app.press_key("mod+i").unwrap();
+        app.wait_for(r#"text:Draft "/skill:fix ""#).unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"text:Submitted "/skill:fix ""#).unwrap();
         app.press_key("mod+a").unwrap();
-        app.paste(
-            "label:Draft",
-            &nsh_core::PasteEvent::new(
-                "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n/skill:review",
-            ),
-        )
-        .unwrap();
-        assert_eq!(
-            app.screen()
-                .span_style("id:draft-field >> text:one")
-                .unwrap()
-                .line_height,
-            px(24.0)
+        app.paste("label:Draft", &nsh_core::PasteEvent::new("ab"))
+            .unwrap();
+        compose(&mut app, true);
+        app.press("label:Reset").unwrap();
+        app.wait_for(r#"text:Draft """#).unwrap();
+        app.engine().control().dispatch_event(
+            input,
+            nsh_core::EventKind::ChangeText,
+            nsh_core::EventPayload::Text {
+                text: "文".into(),
+                count: 0,
+            },
         );
-        app.wait_for("text:Height 144").unwrap();
-        app.press_key("mod+a").unwrap();
-        app.press_key("mod+c").unwrap();
-        assert_eq!(
-            app.screen().clipboard(),
-            Some("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n/skill:review")
-        );
+        compose(&mut app, false);
+        app.wait_for(r#"text:Draft "ab文""#).unwrap();
         app.type_text("label:前😀 /skill:review 后", "").unwrap();
         app.press_key("mod+a").unwrap();
         app.press_key("mod+c").unwrap();
         assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));
         app.press_key("mod+n").unwrap();
-        app.wait_for("text:App shortcut received").unwrap();
+        app.wait_for("text:Shortcut received").unwrap();
     }
 }

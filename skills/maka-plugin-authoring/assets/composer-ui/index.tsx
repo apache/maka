@@ -104,8 +104,8 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   editor.set(node);
                   input.attach({
                     focus: () => node.focus(),
-                    bindKey: (key, action) =>
-                      keymap.bind(key, action, { when: 'always', within: node }),
+                    bindKey: (key, action, options) =>
+                      keymap.bind(key, action, { when: 'always', within: node, ...options }),
                   });
                 }}
                 value={session.draft()}
