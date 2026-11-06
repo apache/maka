@@ -17,15 +17,14 @@
  * under the License.
  */
 import type {
-  InteractionRecord,
+  InteractionRequest,
   SystemPermissionGrant,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
-export type ComputerPermissionStatus = {
-  record: InteractionRecord;
-  grants: Array<{ grant: SystemPermissionGrant; effective: boolean }>;
-  requestable: boolean;
-};
+import type { Output } from './host';
+
+export type SystemPermissionRequest = Extract<InteractionRequest, { kind: 'system_permission' }>;
+export type ComputerPermissionStatus = Output<'agent', 'systemPermissionStatus'>;
 export type ComputerPermissionClient = {
   status(): Promise<ComputerPermissionStatus>;
   actions(): Promise<string[]>;
@@ -41,15 +40,8 @@ export type PermissionSetupState = {
   attempted: SystemPermissionGrant[];
   error: unknown | null;
 };
-export const nextPermission = (status: ComputerPermissionStatus | null) => {
-  if (!status || status.record.outcome || status.record.request.kind !== 'system_permission')
-    return null;
-  return (
-    status.record.request.grants.find(
-      (grant) => !status.grants.some((observed) => observed.grant === grant && observed.effective),
-    ) ?? null
-  );
-};
+export const nextPermission = (status: ComputerPermissionStatus | null) =>
+  status?.outcome ? null : (status?.grants.find((entry) => !entry.effective)?.grant ?? null);
 
 /** Owns one request's observation, never an OS permission decision. Dispose stops observation, not the Host call. */
 export function createComputerPermissionSetup(
@@ -79,12 +71,12 @@ export function createComputerPermissionSetup(
     state = { ...state, ...patch };
     changed(state);
   };
-  const pending = () => alive && !state.status?.record.outcome;
+  const pending = () => alive && !state.status?.outcome;
   const accept = (status: ComputerPermissionStatus) => {
     // A completed receipt wins over an older in-flight observation or TCC reply.
     if (!pending()) return;
     update({ status });
-    if (status.record.outcome) stop();
+    if (status.outcome) stop();
   };
   const poll = () => {
     stop();

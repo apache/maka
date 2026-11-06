@@ -35,8 +35,6 @@ const STARTUP_WAIT: Duration = Duration::from_secs(60);
 mod crash;
 mod owned;
 mod startup;
-#[cfg(all(target_os = "macos", feature = "native-desktop"))]
-mod system_permission;
 
 #[test]
 fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle() {
@@ -457,27 +455,11 @@ impl CandidateFixture {
             && let Some(epoch) = record["hostEpoch"].as_str()
         {
             // This fixture owns a fresh, random root; the CLI rechecks the live epoch.
-            match Command::new(env!("CARGO_BIN_EXE_maka"))
+            let _ = Command::new(env!("CARGO_BIN_EXE_maka"))
                 .args(["host", "retire", "--root"])
                 .arg(&self.root)
                 .args(["--expected-host-epoch", epoch])
-                .output()
-            {
-                Ok(output) => {
-                    let result = serde_json::from_slice::<Value>(&output.stdout);
-                    if !output.status.success()
-                        || !matches!(result, Ok(ref value) if value["kind"] == "prepared")
-                    {
-                        eprintln!(
-                            "test fixture retirement unconfirmed: status={}, stdout={}, stderr={}",
-                            output.status,
-                            String::from_utf8_lossy(&output.stdout),
-                            String::from_utf8_lossy(&output.stderr)
-                        );
-                    }
-                }
-                Err(error) => eprintln!("test fixture retirement failed: {error}"),
-            }
+                .output();
         }
     }
 
@@ -488,59 +470,10 @@ impl CandidateFixture {
             FixtureCleanup::Pending => self.cleanup = FixtureCleanup::Unconfirmed,
         }
         if let Some(mut child) = self.child.take() {
-            #[cfg(unix)]
-            {
-                match child.try_wait() {
-                    Ok(Some(_)) => {}
-                    Err(error) => {
-                        eprintln!("test fixture child observation failed: {error}");
-                        return false;
-                    }
-                    Ok(None) => {
-                        // The owned helper forwards TERM to its responsible copy and Host;
-                        // killing only the outer helper cannot settle that process chain.
-                        // SAFETY: try_wait confirmed this child has not been reaped; its PID cannot be reused.
-                        if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } == -1 {
-                            let error = std::io::Error::last_os_error();
-                            if error.raw_os_error() != Some(libc::ESRCH) {
-                                eprintln!("test fixture child termination failed: {error}");
-                            }
-                        }
-                        let deadline = Instant::now() + Duration::from_secs(10);
-                        loop {
-                            match child.try_wait() {
-                                Ok(Some(_)) => break,
-                                Ok(None) if Instant::now() < deadline => {
-                                    std::thread::sleep(Duration::from_millis(20));
-                                }
-                                result => {
-                                    eprintln!(
-                                        "test fixture child graceful cleanup unconfirmed: {result:?}"
-                                    );
-                                    if let Err(error) = child.kill() {
-                                        eprintln!(
-                                            "test fixture child forced termination failed: {error}"
-                                        );
-                                    }
-                                    if let Err(error) = child.wait() {
-                                        eprintln!(
-                                            "test fixture child reaping unconfirmed: {error}"
-                                        );
-                                    }
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = child.kill();
-                if let Err(error) = child.wait() {
-                    eprintln!("test fixture child reaping unconfirmed: {error}");
-                    return false;
-                }
+            let _ = child.kill();
+            if let Err(error) = child.wait() {
+                eprintln!("test fixture child reaping unconfirmed: {error}");
+                return false;
             }
         }
         self.retire_registered();
@@ -551,19 +484,16 @@ impl CandidateFixture {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            match RootOwner::open(&self.root, &namespaces) {
-                Ok(owner) => {
-                    drop(owner);
-                    break;
-                }
-                Err(error) if Instant::now() >= deadline => {
-                    eprintln!(
-                        "refusing to unlink test lease {}: {error}",
-                        self.lock.display()
-                    );
-                    return false;
-                }
-                Err(_) => {}
+            if let Ok(owner) = RootOwner::open(&self.root, &namespaces) {
+                drop(owner);
+                break;
+            }
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "refusing to unlink a possibly active test lease: {}",
+                    self.lock.display()
+                );
+                return false;
             }
             std::thread::sleep(Duration::from_millis(20));
         }

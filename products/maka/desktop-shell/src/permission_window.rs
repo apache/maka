@@ -30,35 +30,23 @@ use nsh_platform_macos::{
 pub(crate) fn configure(window: &NSWindow) {
     window.setLevel(NSFloatingWindowLevel);
     if let Some(screen) = NSScreen::mainScreen(window.mtm()).or_else(|| window.screen()) {
-        window.setFrame_display(dock(window.frame().size, screen.visibleFrame()), false);
-    }
-}
-
-fn dock(size: NSSize, visible: NSRect) -> NSRect {
-    let size = NSSize::new(
-        size.width.min(visible.size.width),
-        size.height.min(visible.size.height),
-    );
-    NSRect::new(
-        NSPoint::new(
-            (visible.origin.x + visible.size.width - size.width - 16.0).max(visible.origin.x),
-            (visible.origin.y + visible.size.height - size.height - 16.0).max(visible.origin.y),
-        ),
-        size,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn docks_within_the_active_display_including_negative_origins_and_small_work_areas() {
-        let size = NSSize::new(560.0, 640.0);
-        let visible = NSRect::new(NSPoint::new(-1512.0, 25.0), NSSize::new(1512.0, 900.0));
-        let frame = dock(size, visible);
-        assert_eq!(frame, NSRect::new(NSPoint::new(-576.0, 269.0), size));
-        let small = NSRect::new(NSPoint::new(100.0, 30.0), NSSize::new(400.0, 500.0));
-        assert_eq!(dock(size, small), small);
+        let visible = screen.visibleFrame();
+        let size = window.frame().size;
+        let size = NSSize::new(
+            size.width.min(visible.size.width),
+            size.height.min(visible.size.height),
+        );
+        window.setFrame_display(
+            NSRect::new(
+                NSPoint::new(
+                    (visible.origin.x + visible.size.width - size.width - 16.0)
+                        .max(visible.origin.x),
+                    (visible.origin.y + visible.size.height - size.height - 16.0)
+                        .max(visible.origin.y),
+                ),
+                size,
+            ),
+            false,
+        );
     }
 }

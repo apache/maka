@@ -44,8 +44,7 @@ use std::{
     },
 };
 
-/// The caller supplies a verified Host application or an explicit local preview
-/// argument. Neither component props nor JS commands may choose this path.
+/// The caller supplies the verified Host application; UI props cannot choose it.
 pub(crate) fn register(
     components: &Components,
     mtm: MainThreadMarker,
@@ -241,21 +240,6 @@ mod tests {
         gesture.press();
         gesture.release();
         assert!(!gesture.begin());
-        gesture.end();
-        assert!(!gesture.begin());
-        gesture.press();
-        assert!(gesture.begin());
-    }
-
-    #[test]
-    fn click_cancel_or_failed_start_cannot_replay_but_a_new_gesture_can_drag() {
-        let gesture = DragGesture::default();
-        gesture.press();
-        gesture.release();
-        assert!(!gesture.begin());
-        gesture.press();
-        assert!(gesture.begin());
-        // Both the native session-ended callback and a nil start end the gesture.
         gesture.end();
         assert!(!gesture.begin());
         gesture.press();

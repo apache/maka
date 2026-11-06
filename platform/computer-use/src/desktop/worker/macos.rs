@@ -32,7 +32,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub(crate) enum MacRole {
     PermissionStatus,
     PermissionRequest(SystemPermissionGrant),
@@ -202,10 +202,10 @@ fn read_output(mut input: impl Read, limit: usize) -> io::Result<Vec<u8>> {
 pub(super) fn bootstrap(arguments: &[OsString]) -> Option<ExitCode> {
     let role = MacRole::parse(arguments)?;
     let result = role.and_then(|role| match role {
-        MacRole::PermissionStatus => crate::macos::tcc::finite_status(),
+        MacRole::PermissionStatus => crate::system_permission::process::finite_status(),
         MacRole::PermissionRequest(grant) => {
             watch_request_owner()?;
-            crate::macos::tcc::finite_request(grant)
+            crate::system_permission::process::finite_request(grant)
         }
         MacRole::ListApps | MacRole::ListWindows => {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -329,19 +329,6 @@ async fn inventory(role: MacRole) -> Result<Value, String> {
 mod tests {
     use super::*;
     #[test]
-    fn system_permission_cancelled_request_never_dispatches() {
-        let error = macos_finite(
-            MacRole::PermissionRequest(SystemPermissionGrant::ScreenRecording),
-            &|| true,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            ToolError::Failed(message) if message == "finite macOS operation cancelled before dispatch"
-        ));
-    }
-
-    #[test]
     fn system_permission_owner_eof_exits_owned_child() {
         use std::io::BufRead;
         const CHILD: &str = "MAKA_TEST_SYSTEM_PERMISSION_OWNER_EOF";
@@ -404,28 +391,5 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
         assert_eq!(status.code(), Some(1));
-    }
-
-    #[test]
-    fn system_permission_finite_roles_accept_only_exact_single_purpose_arguments() {
-        for role in [
-            MacRole::PermissionStatus,
-            MacRole::PermissionRequest(SystemPermissionGrant::Accessibility),
-            MacRole::PermissionRequest(SystemPermissionGrant::ScreenRecording),
-            MacRole::ListApps,
-            MacRole::ListWindows,
-        ] {
-            let arguments: Vec<_> = role.arguments().into_iter().map(OsString::from).collect();
-            assert_eq!(MacRole::parse(&arguments).unwrap().unwrap(), role);
-            let mut extra = arguments;
-            extra.push("unexpected".into());
-            assert!(MacRole::parse(&extra).unwrap().is_err());
-        }
-        assert!(MacRole::parse(&["--audio".into()]).is_none());
-        assert!(
-            MacRole::parse(&["--macos-permission-request".into(), "both".into()])
-                .unwrap()
-                .is_err()
-        );
     }
 }

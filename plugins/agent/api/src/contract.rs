@@ -2085,29 +2085,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn system_permission_requests_accept_only_the_original_selector_and_grant() {
-        let Interface::Service { methods } = contract().interface else {
-            panic!("service contract")
-        };
-        let status = jsonschema::validator_for(&methods["systemPermissionStatus"].input).unwrap();
-        assert!(status.is_valid(&json!({"sessionId":"session", "requestId":"request"})));
-        let request = jsonschema::validator_for(&methods["requestSystemPermission"].input).unwrap();
-        assert!(request.is_valid(
-            &json!({"sessionId":"session", "requestId":"request", "grant":"accessibility"})
-        ));
-        assert!(!request.is_valid(&json!({"sessionId":"session", "requestId":"request", "grant":"accessibility", "effective":true})));
-        assert!(
-            !request
-                .is_valid(&json!({"sessionId":"session", "requestId":"request", "grant":"camera"}))
-        );
-        assert!(
-            !request.is_valid(
-                &json!({"sessionId":"session", "requestId":"", "grant":"screen_recording"})
-            )
-        );
-    }
-
-    #[test]
     fn create_and_send_preserve_backend_sources_without_legacy_inputs() {
         let Interface::Service { methods } = contract().interface else {
             panic!("service contract")

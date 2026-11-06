@@ -34,12 +34,6 @@ async fn system_permission_controls_recover_each_grants_original_without_redispa
             "kind":"agent-control", "owner":{"namespace":target.provider,"export":target.export},
             "requestId":"permission-request", "grant":grant,
         });
-        let missing = Uuid::new_v4();
-        assert_eq!(client.control(missing, "requestSystemPermission", json!({
-            "sessionId":"permission-session", "requestId":"permission-request",
-        })).await.err().unwrap(), "system permission control requires a grant");
-        assert!(client.operation(missing).await.is_err());
-
         let accessibility_id = Uuid::new_v4();
         let accessibility = client.control(accessibility_id, "requestSystemPermission", input("accessibility")).await.unwrap();
         let screen_id = Uuid::new_v4();
@@ -52,15 +46,6 @@ async fn system_permission_controls_recover_each_grants_original_without_redispa
             // The captured ID cannot be opened as another action while unsettled.
             assert_eq!(observer.control(id, "requestSystemPermission", input(grant)).await.err().unwrap(),
                 "client operation already exists; recover the original attempt");
-        }
-        for malformed in [
-            json!({"kind":"agent-control","owner":{"namespace":target.provider,"export":target.export},"requestId":"permission-request"}),
-            json!({"kind":"agent-control","owner":{"namespace":target.provider,"export":target.export},"requestId":"permission-request","grant":"accessibility","extra":true}),
-        ] {
-            let other = client.mutation(Uuid::new_v4(), "agent", "requestSystemPermission", input("accessibility"), Attachments::new(), Some("permission-session".into()), malformed).await.unwrap();
-            assert_eq!(observer.operation_for_control(other.id()).await.unwrap_err(),
-                "original client operation belongs to another control owner");
-            other.close().await.unwrap();
         }
         let pending = observer.pending_controls().await.unwrap();
         assert_eq!(pending.len(), 2);

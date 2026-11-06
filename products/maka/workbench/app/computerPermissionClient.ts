@@ -46,7 +46,7 @@ export function computerPermissionClient(
         operation.correlation.requestId === requestId;
       const originals = (await host.pendingControls()).filter(matches);
       for (const original of originals) await host.recoverControl(original.id);
-      if ((await host.systemPermissionStatus(sessionId, requestId)).record.outcome) return;
+      if ((await host.systemPermissionStatus(sessionId, requestId)).outcome) return;
       if ((await host.pendingControls()).some(matches)) throw new UiError('Syncing changes…');
       const result = settingsValue(
         (

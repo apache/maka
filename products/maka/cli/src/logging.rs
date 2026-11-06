@@ -20,39 +20,11 @@
 //! Process logging belongs to executable entry, before runtime/store startup.
 
 pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-    let permissions = std::env::var_os("MAKA_TRACE_SYSTEM_PERMISSIONS").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
     tracing_subscriber::fmt()
-        .with_max_level(if permissions {
-            tracing_subscriber::filter::LevelFilter::DEBUG
-        } else {
-            tracing_subscriber::filter::LevelFilter::WARN
-        })
+        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
         .with_ansi(false)
         .with_writer(std::io::stderr)
-        .finish()
-        .with(tracing_subscriber::filter::filter_fn(move |metadata| {
-            host_log_enabled(
-                metadata.target(),
-                &tracing_subscriber::filter::LevelFilter::from_level(*metadata.level()),
-                permissions,
-            )
-        }))
-        .try_init()?;
-    Ok(())
-}
-
-fn host_log_enabled(
-    target: &str,
-    level: &tracing_subscriber::filter::LevelFilter,
-    permissions: bool,
-) -> bool {
-    *level <= tracing_subscriber::filter::LevelFilter::WARN
-        || (permissions
-            && target == "maka_computer_use::system_permission"
-            && *level <= tracing_subscriber::filter::LevelFilter::DEBUG)
+        .try_init()
 }
 
 /// Task-owned passive extension RPC metadata only. The extension bootstrap precedes
@@ -172,30 +144,6 @@ pub(super) fn capture(file: std::fs::File) -> std::io::Result<()> {
 mod tests {
     use sqlx::{ConnectOptions, Connection};
     use std::{process::Command, time::Duration};
-
-    #[test]
-    fn system_permission_diagnostics_only_enable_the_exact_target() {
-        use tracing_subscriber::filter::LevelFilter as Level;
-        for enabled in [false, true] {
-            for target in [
-                "maka_computer_use::system_permission",
-                "maka_computer_use::system_permission_other",
-                "maka_computer_use::system_permission::other",
-                "sqlx::query",
-            ] {
-                assert!(super::host_log_enabled(target, &Level::WARN, enabled));
-                assert!(!super::host_log_enabled(target, &Level::TRACE, enabled));
-                assert_eq!(
-                    super::host_log_enabled(target, &Level::DEBUG, enabled),
-                    enabled && target == "maka_computer_use::system_permission"
-                );
-                assert_eq!(
-                    super::host_log_enabled(target, &Level::INFO, enabled),
-                    enabled && target == "maka_computer_use::system_permission"
-                );
-            }
-        }
-    }
 
     #[test]
     fn extension_rpc_phase_trace_reaches_stderr_without_other_targets_or_stdout() {

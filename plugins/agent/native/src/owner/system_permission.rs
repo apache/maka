@@ -19,61 +19,39 @@
 
 use super::Owner;
 use crate::contract::{
-    InteractionRead, RequestSystemPermission, SystemPermissionState, SystemPermissionStatus,
+    InteractionRead, RequestSystemPermission, SystemPermissionOutcome, SystemPermissionState,
+    SystemPermissionStatus,
 };
 use maka_agent_api::session::StoredSessionConfiguration;
-use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest, SystemPermissionGrant};
+use maka_agent_facts::interaction::{
+    InteractionOutcome, InteractionRecord, InteractionRequest, SystemPermissionGrant,
+};
 use maka_capabilities::call::Scope;
 use maka_computer_use::system_permission;
 use maka_event_log::turns::InvocationState;
 use std::sync::Arc;
 
-pub(super) trait Platform: Send + Sync + 'static {
-    fn supported(&self) -> bool;
-    fn missing(
-        &self,
-        grants: &[SystemPermissionGrant],
-    ) -> Result<Vec<SystemPermissionGrant>, String>;
-    fn request(
-        &self,
-        grant: SystemPermissionGrant,
-        cancelled: &(dyn Fn() -> bool + Sync),
-    ) -> Result<(), String>;
-}
-
-struct Native;
-impl Platform for Native {
-    fn supported(&self) -> bool {
-        system_permission::supported()
-    }
-    fn missing(
-        &self,
-        grants: &[SystemPermissionGrant],
-    ) -> Result<Vec<SystemPermissionGrant>, String> {
-        system_permission::missing(grants)
-    }
-    fn request(
-        &self,
-        grant: SystemPermissionGrant,
-        cancelled: &(dyn Fn() -> bool + Sync),
-    ) -> Result<(), String> {
-        system_permission::request(&[grant], cancelled)
-    }
-}
+type Missing = fn(&[SystemPermissionGrant]) -> Result<Vec<SystemPermissionGrant>, String>;
+type Request = fn(&[SystemPermissionGrant], &(dyn Fn() -> bool + Sync)) -> Result<(), String>;
 
 impl Owner {
     pub async fn system_permission_status(
         &self,
         input: InteractionRead,
     ) -> Result<SystemPermissionStatus, String> {
-        self.system_permission_status_with(input, Arc::new(Native))
-            .await
+        self.system_permission_status_with(
+            input,
+            system_permission::supported(),
+            system_permission::missing,
+        )
+        .await
     }
 
     pub(super) async fn system_permission_status_with(
         &self,
         input: InteractionRead,
-        platform: Arc<dyn Platform>,
+        supported: bool,
+        missing: Missing,
     ) -> Result<SystemPermissionStatus, String> {
         let record = self
             .interaction(&input.session_id, &input.request_id)
@@ -81,11 +59,10 @@ impl Owner {
         let InteractionRequest::SystemPermission { grants, .. } = &record.request else {
             return Err("agent_system_permission_request_required".into());
         };
-        let supported = platform.supported();
         let grants = grants.clone();
         let grants = tokio::task::spawn_blocking(move || {
             let missing = if supported {
-                platform.missing(&grants)?
+                missing(&grants)?
             } else {
                 grants.clone()
             };
@@ -107,8 +84,22 @@ impl Owner {
             .interaction(&input.session_id, &input.request_id)
             .await?;
         let requestable = supported && self.system_permission_requestable(&record).await?;
+        let outcome = match record.outcome {
+            None => None,
+            Some(InteractionOutcome::SystemPermissionGranted { committed_at }) => {
+                Some(SystemPermissionOutcome::SystemPermissionGranted { committed_at })
+            }
+            Some(InteractionOutcome::Closure {
+                reason,
+                committed_at,
+            }) => Some(SystemPermissionOutcome::Closure {
+                reason,
+                committed_at,
+            }),
+            Some(_) => return Err("agent_system_permission_outcome_invalid".into()),
+        };
         Ok(SystemPermissionStatus {
-            record,
+            outcome,
             grants,
             requestable,
         })
@@ -158,15 +149,23 @@ impl Owner {
         input: RequestSystemPermission,
         scope: &Scope,
     ) -> Result<SystemPermissionStatus, String> {
-        self.request_system_permission_with(input, scope, Arc::new(Native))
-            .await
+        self.request_system_permission_with(
+            input,
+            scope,
+            system_permission::supported(),
+            system_permission::missing,
+            system_permission::request,
+        )
+        .await
     }
 
     pub(super) async fn request_system_permission_with(
         self: &Arc<Self>,
         input: RequestSystemPermission,
         scope: &Scope,
-        platform: Arc<dyn Platform>,
+        supported: bool,
+        missing: Missing,
+        request: Request,
     ) -> Result<SystemPermissionStatus, String> {
         if scope.identity.agent().is_some() {
             return Err("agent_system_permission_human_action_required".into());
@@ -184,19 +183,18 @@ impl Owner {
                 if !grants.contains(&input.grant) {
                     return Err("agent_system_permission_grant_not_requested".into());
                 }
-                if !platform.supported() || !owner.system_permission_requestable(&record).await? {
+                if !supported || !owner.system_permission_requestable(&record).await? {
                     return Err("agent_system_permission_not_requestable".into());
                 }
                 if scope.cancellation.is_cancelled() {
                     return Err("agent_work_cancelled".into());
                 }
-                let request_platform = platform.clone();
                 let cancellation = scope.cancellation.clone();
                 let stopped = owner.stop.clone();
                 tokio::task::spawn_blocking(move || {
                     let cancelled = || cancellation.is_cancelled() || stopped.is_cancelled();
-                    if !request_platform.missing(&[input.grant])?.is_empty() {
-                        request_platform.request(input.grant, &cancelled)?;
+                    if !missing(&[input.grant])?.is_empty() {
+                        request(&[input.grant], &cancelled)?;
                     }
                     Ok::<_, String>(())
                 })
@@ -208,7 +206,8 @@ impl Owner {
                             session_id: input.session_id,
                             request_id: input.request_id,
                         },
-                        platform,
+                        supported,
+                        missing,
                     )
                     .await
             })

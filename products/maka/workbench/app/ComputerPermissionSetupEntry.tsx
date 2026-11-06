@@ -24,13 +24,14 @@ import { initializeAppearance } from './appearance';
 import { applyLanguagePreference, tr } from './locale';
 import { computerPermissionClient } from './computerPermissionClient';
 import { ComputerPermissionSetup } from './ComputerPermissionSetup';
+import type { SystemPermissionRequest } from './computerPermissionSetupState';
 import { C } from './ui';
 
 function ComputerPermissionSetupEntry() {
   initializeAppearance();
   const host = createHost(uiHost);
   const params = shell.params as {
-    systemPermission?: { sessionId?: string; requestId?: string };
+    systemPermission?: { sessionId: string; requestId: string; request: SystemPermissionRequest };
     nativeApplicationDrag?: boolean;
     languagePreference: { preference: LanguagePreference; revision: number };
   };
@@ -46,6 +47,7 @@ function ComputerPermissionSetupEntry() {
       <View class="flex-1 min-h-0" style={{ backgroundColor: C.background }}>
         <ComputerPermissionSetup
           client={computerPermissionClient(host, owner.sessionId, owner.requestId)}
+          request={owner.request}
           presentation="window"
           nativeApplicationDrag={params.nativeApplicationDrag === true}
           onClose={async () => {

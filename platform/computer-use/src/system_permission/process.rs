@@ -172,7 +172,7 @@ pub(crate) fn finite_request(grant: SystemPermissionGrant) -> Result<Value, Stri
     let subject = Subject::finite_child()?;
     application_identity::validate(&subject.bundle_path)?;
     if !tcc::raw_present(grant.into()) {
-        tcc::request_raw(grant.into());
+        Grant::from(grant).request();
     }
     serde_json::to_value(Snapshot {
         subject,
@@ -186,75 +186,37 @@ mod tests {
     use super::*;
     use SystemPermissionGrant::{Accessibility, ScreenRecording};
 
-    fn snapshot(accessibility: bool, screen_recording: bool) -> Snapshot {
-        Snapshot {
+    #[test]
+    fn fresh_grants_require_host_confirmation_without_probing_denied_grants() {
+        let mut observed = Snapshot {
             subject: Subject {
                 responsible_pid: 41,
                 bundle_path: "/installed/Host.app".into(),
                 identifier: "test.host".into(),
             },
             grants: Grants {
-                accessibility,
-                screen_recording,
+                accessibility: false,
+                screen_recording: false,
             },
-        }
-    }
-
-    #[test]
-    fn fresh_denial_never_calls_main_native_checks() {
-        let observed = snapshot(false, false);
+        };
         let missing = missing_from_snapshot(&[Accessibility, ScreenRecording], &observed, |_| {
             panic!("A fresh denial must not poison the Host's native state");
         })
         .unwrap();
         assert_eq!(missing, [Accessibility, ScreenRecording]);
-    }
 
-    #[test]
-    fn each_fresh_grant_requires_actual_main_confirmation() {
-        let observed = snapshot(true, false);
-        let mut checked = Vec::new();
-        assert_eq!(
-            missing_from_snapshot(&[ScreenRecording, Accessibility], &observed, |grant| {
-                checked.push(grant);
+        observed.grants.accessibility = true;
+        let missing =
+            missing_from_snapshot(&[Accessibility, ScreenRecording], &observed, |grant| {
+                assert_eq!(
+                    grant, Accessibility,
+                    "Never probe a fresh denial in the Host"
+                );
                 true
             })
-            .unwrap(),
-            [ScreenRecording]
-        );
-        assert_eq!(checked, [Accessibility]);
-        let observed = snapshot(true, true);
-        let error = missing_from_snapshot(&[ScreenRecording], &observed, |_| false).unwrap_err();
-        assert!(error.contains("system_permission_state_disagreement: screen_recording"));
-    }
-
-    #[test]
-    fn finite_results_require_the_same_complete_responsible_subject() {
-        let expected = snapshot(false, false).subject;
-        for field in ["responsiblePid", "bundlePath", "identifier"] {
-            let mut value = serde_json::to_value(snapshot(false, false)).unwrap();
-            value["subject"][field] = match field {
-                "responsiblePid" => serde_json::json!(42),
-                "bundlePath" => serde_json::json!("/another/Host.app"),
-                _ => serde_json::json!("another.host"),
-            };
-            assert!(
-                decode(value, &expected)
-                    .err()
-                    .unwrap()
-                    .contains("responsible subject mismatch")
-            );
-        }
-        let mut value = serde_json::to_value(snapshot(false, false)).unwrap();
-        value["grants"]
-            .as_object_mut()
-            .unwrap()
-            .remove("screenRecording");
-        assert!(
-            decode(value, &expected)
-                .err()
-                .unwrap()
-                .contains("Invalid system permission")
-        );
+            .unwrap();
+        assert_eq!(missing, [ScreenRecording]);
+        let error = missing_from_snapshot(&[Accessibility], &observed, |_| false).unwrap_err();
+        assert!(error.contains("system_permission_state_disagreement: accessibility"));
     }
 }

@@ -98,19 +98,7 @@ pub const fn supported() -> bool {
 pub fn missing(required: &[SystemPermissionGrant]) -> Result<Vec<SystemPermissionGrant>, String> {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
     {
-        let started = std::time::Instant::now();
-        let pid = std::process::id();
-        tracing::debug!(pid, ?required, "Native system permission preflight started");
-        let result = process::missing(required);
-        tracing::debug!(
-            pid,
-            ?required,
-            missing = ?result.as_ref().ok(),
-            ok = result.is_ok(),
-            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
-            "Native system permission preflight finished"
-        );
-        result
+        process::missing(required)
     }
     #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
     {

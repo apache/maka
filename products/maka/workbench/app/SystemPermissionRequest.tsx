@@ -17,10 +17,6 @@
  * under the License.
  */
 import { cleanup, effect, signal, Text, View } from 'nsh';
-import type {
-  InteractionRecord,
-  InteractionRequest,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { tr } from './locale';
 import { errorText, renderText } from './text';
 import { bodyTextStyle, C } from './ui';
@@ -28,17 +24,20 @@ import { useHost } from './host';
 import { computerPermissionClient } from './computerPermissionClient';
 import { ComputerPermissionSetup } from './ComputerPermissionSetup';
 import { PermissionButton } from './ComputerPermissionControls';
+import type {
+  ComputerPermissionStatus,
+  SystemPermissionRequest as PermissionRequest,
+} from './computerPermissionSetupState';
 export { systemPermissionName } from './ComputerPermissionSetup';
-export type SystemPermissionRequest = Extract<InteractionRequest, { kind: 'system_permission' }>;
 
 /** Desktop chat is a handoff, not another system-settings troubleshooting surface. */
 export function SystemPermissionRequest(props: {
-  request: SystemPermissionRequest;
+  request: PermissionRequest;
   sessionId: string;
   requestId: string;
   disabled?: boolean;
   onCancel(): void;
-  onRecord(record: InteractionRecord): void;
+  onOutcome(outcome: NonNullable<ComputerPermissionStatus['outcome']>): void;
 }) {
   const host = useHost();
   const client = computerPermissionClient(host, props.sessionId, props.requestId);
@@ -69,7 +68,12 @@ export function SystemPermissionRequest(props: {
     <If
       when={host.systemPermissionWindow}
       else={
-        <ComputerPermissionSetup client={client} presentation="inline" onRecord={props.onRecord} />
+        <ComputerPermissionSetup
+          client={client}
+          request={props.request}
+          presentation="inline"
+          onOutcome={props.onOutcome}
+        />
       }
     >
       <View class="gap-3">

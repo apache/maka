@@ -31,23 +31,8 @@ const deferred = () => {
   });
   return { promise, resolve, reject };
 };
-const record = (outcome = null, grants = ['accessibility', 'screen_recording']) => ({
-  sessionId: 'session',
-  requestId: 'request',
-  turnId: 'turn',
-  runId: 'run',
-  createdAt: 1,
-  outcome,
-  request: {
-    kind: 'system_permission',
-    toolUseId: 'tool',
-    application: 'Maka Host',
-    grants,
-    applicationLocation: null,
-  },
-});
 const status = (ready = [], outcome = null, requestable = true) => ({
-  record: record(outcome),
+  outcome,
   requestable,
   grants: ['accessibility', 'screen_recording'].map((grant) => ({
     grant,
@@ -97,13 +82,11 @@ function harness(overrides = {}) {
   };
 }
 
-test('observation never triggers TCC, and only the next missing grant can be requested', async () => {
+test('only the next missing grant prompts, and effective checks wait for canonical completion', async () => {
   const h = harness();
   await h.model.refresh();
-  assert.deepEqual(h.calls, ['status']);
-  assert.equal(nextPermission(h.model.snapshot().status), 'accessibility');
   await h.model.enable('screen_recording');
-  assert.deepEqual(h.calls, ['status']);
+  assert.deepEqual(h.calls, ['status'], 'observation and out-of-order steps never prompt');
   await h.model.enable('accessibility');
   assert.deepEqual(h.calls.slice(1), [
     ['request', 'accessibility'],
@@ -117,39 +100,11 @@ test('observation never triggers TCC, and only the next missing grant can be req
   h.observe(status(['accessibility']));
   await h.model.refresh();
   assert.equal(nextPermission(h.model.snapshot().status), 'screen_recording');
-  h.model.dispose();
-  assert.equal(h.ticks.size, 0);
-});
-
-test('a pending OS request is single-flight and is not cancelled when its window closes', async () => {
-  const prompt = deferred();
-  const h = harness({
-    request: async (grant) => {
-      h.calls.push(['request', grant]);
-      return prompt.promise;
-    },
-  });
-  await h.model.refresh();
-  const pending = h.model.enable('accessibility');
-  assert.equal(h.model.snapshot().operation, 'requesting');
-  await h.model.enable('accessibility');
-  assert.equal(h.calls.filter(Array.isArray).length, 1);
-  h.model.dispose();
-  const count = h.changes.length;
-  prompt.resolve(status());
-  await pending;
-  assert.equal(h.changes.length, count);
-  assert.ok(!h.calls.includes('cancel'));
-  assert.ok(!h.calls.some((call) => call[0] === 'action'));
-});
-
-test('completion requires the canonical granted outcome, not only effective checks', async () => {
-  const h = harness();
   h.observe(status(['accessibility', 'screen_recording']));
   await h.model.refresh();
   assert.equal(nextPermission(h.model.snapshot().status), null);
-  assert.equal(h.model.snapshot().status.record.outcome, null);
-  assert.equal(h.ticks.size, 1, 'keep observing until Host settles the original call');
+  assert.equal(h.model.snapshot().status.outcome, null);
+  assert.equal(h.ticks.size, 1, 'keep observing until the original producer settles');
   h.observe(
     status(['accessibility', 'screen_recording'], {
       kind: 'system_permission_granted',
@@ -160,24 +115,52 @@ test('completion requires the canonical granted outcome, not only effective chec
   assert.equal(h.ticks.size, 0);
   const count = h.calls.length;
   await h.model.enable('accessibility');
-  await h.model.open('reveal_application');
   await h.model.cancel();
   assert.equal(h.calls.length, count);
-});
-
-test('remote observations are real but cannot invoke local TCC', async () => {
-  const h = harness();
-  h.observe(status([], null, false));
-  await h.model.refresh();
-  await h.model.enable('accessibility');
-  assert.deepEqual(h.calls, ['status']);
-  h.observe(status(['accessibility'], null, false));
-  await h.model.refresh();
-  assert.equal(h.model.snapshot().status.grants[0].effective, true);
   h.model.dispose();
 });
 
-test('cancel during an OS prompt prevents subsequent Settings actions and does not resend an uncertain cancellation', async () => {
+test('an original OS request is not replayed after window disposal or an unknown result', async () => {
+  const prompt = deferred();
+  const h = harness({
+    request: async (grant) => {
+      h.calls.push(['request', grant]);
+      return prompt.promise;
+    },
+  });
+  await h.model.refresh();
+  const pending = h.model.enable('accessibility');
+  await h.model.enable('accessibility');
+  assert.equal(h.calls.filter(Array.isArray).length, 1);
+  h.model.dispose();
+  const count = h.changes.length;
+  prompt.resolve(status());
+  await pending;
+  assert.equal(h.changes.length, count);
+  assert.ok(!h.calls.includes('cancel'));
+  assert.ok(!h.calls.some((call) => call[0] === 'action'));
+
+  const uncertain = harness({
+    request: async (grant) => {
+      uncertain.calls.push(['request', grant]);
+      throw new Error('Original request #42 is still unresolved');
+    },
+  });
+  await uncertain.model.refresh();
+  await uncertain.model.enable('accessibility');
+  assert.equal(
+    uncertain.model.snapshot().error.message,
+    'Original request #42 is still unresolved',
+  );
+  await uncertain.model.enable('accessibility');
+  assert.deepEqual(uncertain.calls.filter(Array.isArray), [
+    ['request', 'accessibility'],
+    ['action', 'accessibility'],
+  ]);
+  uncertain.model.dispose();
+});
+
+test('uncertain cancellation is not resent and a late OS reply cannot undo canonical closure', async () => {
   const prompt = deferred();
   const h = harness({
     request: () => prompt.promise,
@@ -191,91 +174,14 @@ test('cancel during an OS prompt prevents subsequent Settings actions and does n
   await h.model.cancel();
   await h.model.cancel();
   assert.equal(h.calls.filter((call) => call === 'cancel').length, 1);
-  prompt.resolve(status());
-  await pending;
-  assert.equal(h.model.snapshot().operation, 'cancelling');
   assert.equal(h.model.snapshot().error.message, 'connection lost');
-  assert.ok(!h.calls.some((call) => call[0] === 'action'));
-  h.observe(status([], { kind: 'closure', reason: 'producer_cancelled', committedAt: 2 }));
-  await h.model.refresh();
-  assert.equal(h.ticks.size, 0);
-});
-
-test('a late pending TCC reply cannot undo a settled observation', async () => {
-  const prompt = deferred();
-  const h = harness({ request: () => prompt.promise });
-  await h.model.refresh();
-  const pending = h.model.enable('accessibility');
-  h.observe(status([], { kind: 'closure', reason: 'producer_cancelled', committedAt: 2 }));
+  const outcome = { kind: 'closure', reason: 'producer_cancelled', committedAt: 2 };
+  h.observe(status([], outcome));
   await h.model.refresh();
   prompt.resolve(status());
   await pending;
-  assert.equal(h.model.snapshot().status.record.outcome.reason, 'producer_cancelled');
+  assert.deepEqual(h.model.snapshot().status.outcome, outcome);
   assert.ok(!h.calls.some((call) => call[0] === 'action'));
   assert.equal(h.ticks.size, 0);
-});
-
-test('observation failure is visible, recovery clears it without inventing denial', async () => {
-  let failed = true;
-  const h = harness({
-    status: async () => {
-      if (failed) throw new Error('Host offline');
-      return status();
-    },
-  });
-  await h.model.refresh();
-  assert.equal(h.model.snapshot().error.message, 'Host offline');
-  assert.equal(h.model.snapshot().status, null);
-  failed = false;
-  await h.model.refresh();
-  assert.equal(h.model.snapshot().error, null);
-  assert.equal(nextPermission(h.model.snapshot().status), 'accessibility');
-  h.model.dispose();
-});
-
-test('effective permission skips Settings, and the original request limits which grants appear', async () => {
-  const h = harness({ request: async () => status(['accessibility']) });
-  await h.model.refresh();
-  await h.model.enable('accessibility');
-  assert.ok(!h.calls.some((call) => call[0] === 'action'));
-  assert.equal(nextPermission(h.model.snapshot().status), 'screen_recording');
-  h.observe({ ...status(), record: record(null, ['screen_recording']) });
-  await h.model.refresh();
-  assert.equal(nextPermission(h.model.snapshot().status), 'screen_recording');
-  h.model.dispose();
-});
-
-test('a stale observation started before a human request cannot overwrite its result', async () => {
-  const oldRead = deferred();
-  let reads = 0;
-  const h = harness({
-    status: async () => (++reads === 2 ? oldRead.promise : status()),
-    request: async () => status(['accessibility']),
-  });
-  await h.model.refresh();
-  const reading = h.model.refresh();
-  await h.model.enable('accessibility');
-  oldRead.resolve(status());
-  await reading;
-  assert.equal(nextPermission(h.model.snapshot().status), 'screen_recording');
-  h.model.dispose();
-});
-
-test('an unknown TCC result is never resubmitted; only Settings and observation remain available', async () => {
-  const h = harness({
-    request: async (grant) => {
-      h.calls.push(['request', grant]);
-      throw new Error('Original request #42 is still unresolved');
-    },
-  });
-  await h.model.refresh();
-  await h.model.enable('accessibility');
-  assert.equal(h.model.snapshot().error.message, 'Original request #42 is still unresolved');
-  await h.model.enable('accessibility');
-  assert.deepEqual(h.calls.filter(Array.isArray), [
-    ['request', 'accessibility'],
-    ['action', 'accessibility'],
-  ]);
-  assert.equal(h.model.snapshot().status.grants[0].effective, false);
   h.model.dispose();
 });

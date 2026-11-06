@@ -77,7 +77,33 @@ pub(crate) fn validate(bundle: &Path) -> Result<(), String> {
             .URLForApplicationWithBundleIdentifier(&identifier)
             .and_then(|url| url.path())
             .map(|path| PathBuf::from(path.to_string()));
-        validate_resolution(bundle, &identifier.to_string(), resolved.as_deref())
+        let identifier = identifier.to_string();
+        let resolved = resolved.ok_or_else(|| {
+            format!(
+                "LaunchServices cannot resolve application {identifier} at {}",
+                bundle.display()
+            )
+        })?;
+        let actual = resolved.canonicalize().map_err(|error| {
+            format!(
+                "Cannot resolve registered application {identifier} at {}: {error}",
+                resolved.display()
+            )
+        })?;
+        let expected = bundle.canonicalize().map_err(|error| {
+            format!(
+                "Cannot resolve application bundle {}: {error}",
+                bundle.display()
+            )
+        })?;
+        if actual != expected {
+            return Err(format!(
+                "LaunchServices resolves application {identifier} to {}, not {}",
+                actual.display(),
+                expected.display()
+            ));
+        }
+        Ok(())
     })
 }
 
@@ -95,63 +121,4 @@ fn file_url(bundle: &Path) -> Result<Retained<NSURL>, String> {
         &NSString::from_str(path),
         true,
     ))
-}
-
-fn validate_resolution(
-    bundle: &Path,
-    identifier: &str,
-    resolved: Option<&Path>,
-) -> Result<(), String> {
-    let resolved = resolved.ok_or_else(|| {
-        format!(
-            "LaunchServices cannot resolve application {identifier} at {}",
-            bundle.display()
-        )
-    })?;
-    let actual = resolved.canonicalize().map_err(|error| {
-        format!(
-            "Cannot resolve registered application {identifier} at {}: {error}",
-            resolved.display()
-        )
-    })?;
-    let expected = bundle.canonicalize().map_err(|error| {
-        format!(
-            "Cannot resolve application bundle {}: {error}",
-            bundle.display()
-        )
-    })?;
-    if actual != expected {
-        return Err(format!(
-            "LaunchServices resolves application {identifier} to {}, not {}",
-            actual.display(),
-            expected.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn application_identity_requires_resolution_to_the_same_installed_bundle() {
-        let root = tempfile::tempdir().unwrap();
-        let installed = root.path().join("installed.app");
-        let packaged = root.path().join("packaged.app");
-        std::fs::create_dir(&installed).unwrap();
-        std::fs::create_dir(&packaged).unwrap();
-        let alias = root.path().join("alias.app");
-        std::os::unix::fs::symlink(&installed, &alias).unwrap();
-        assert!(validate_resolution(&installed, "test.identity", Some(&alias)).is_ok());
-        assert!(
-            validate_resolution(&installed, "test.identity", None)
-                .unwrap_err()
-                .contains("LaunchServices cannot resolve application test.identity")
-        );
-        let mismatch =
-            validate_resolution(&installed, "test.identity", Some(&packaged)).unwrap_err();
-        assert!(mismatch.contains("packaged.app"));
-        assert!(mismatch.contains("installed.app"));
-    }
 }

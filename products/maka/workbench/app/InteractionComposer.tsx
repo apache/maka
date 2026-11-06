@@ -1080,9 +1080,10 @@ export function InteractionComposer({
                     requestId={requestId}
                     disabled={blocked()}
                     onCancel={answerBinding({ kind: 'system_permission_cancel' })}
-                    onRecord={(observed) => {
-                      if (alive && sameRecord(observed) && observed.outcome) {
-                        record.set(observed);
+                    onOutcome={(outcome) => {
+                      const current = record();
+                      if (alive && sameRecord(current)) {
+                        record.set({ ...current!, outcome });
                         pending.set(false);
                       }
                     }}

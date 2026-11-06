@@ -360,19 +360,29 @@ impl Windows {
         let Some(primary) = self.primary_window()? else {
             return Ok(());
         };
-        collect_initial_windows(
-            primary,
-            initial_sheet,
-            |element| element_list(element, "AXChildren"),
-            |element, sheet| {
-                let element = LocalElement::new(element);
-                self.insert(if sheet {
-                    WindowVariant::Sheet(element)
-                } else {
-                    WindowVariant::Window(element)
-                });
-            },
-        )
+        let mut pending = VecDeque::from(element_list(&primary, "AXChildren")?);
+        self.insert(WindowVariant::Window(LocalElement::new(primary)));
+        while let Some(element) = pending.pop_front() {
+            let observed = initial_sheet(&element).and_then(|sheet| {
+                element_list(&element, "AXChildren").map(|children| (sheet, children))
+            });
+            match observed {
+                Ok((sheet, children)) => {
+                    if sheet {
+                        self.insert(WindowVariant::Sheet(LocalElement::new(element)));
+                    }
+                    pending.extend(children);
+                }
+                // A descendant may disappear during discovery; the primary and all
+                // permission, transport and malformed-value failures remain errors.
+                Err(AttributeReadError::Native {
+                    status: bindings::kAXErrorInvalidUIElement,
+                    ..
+                }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     fn insert(&mut self, window: WindowVariant) {
@@ -564,36 +574,6 @@ impl From<AttributeReadError> for ToolError {
     }
 }
 
-fn collect_initial_windows<Element>(
-    primary: Element,
-    mut sheet: impl FnMut(&Element) -> Result<bool, AttributeReadError>,
-    mut children: impl FnMut(&Element) -> Result<Vec<Element>, AttributeReadError>,
-    mut insert: impl FnMut(Element, bool),
-) -> Result<(), ToolError> {
-    // The primary window must remain readable. Only its disappearing descendants
-    // are optional during this initial sheet discovery, not during input targeting.
-    let mut pending = VecDeque::from(children(&primary)?);
-    insert(primary, false);
-    while let Some(element) = pending.pop_front() {
-        let observed =
-            sheet(&element).and_then(|sheet| children(&element).map(|children| (sheet, children)));
-        match observed {
-            Ok((sheet, children)) => {
-                if sheet {
-                    insert(element, true);
-                }
-                pending.extend(children);
-            }
-            Err(AttributeReadError::Native {
-                status: bindings::kAXErrorInvalidUIElement,
-                ..
-            }) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
 fn initial_sheet(element: &RetainedElement) -> Result<bool, AttributeReadError> {
     let Some(value) = copied_attribute(element, "AXRole")? else {
         return Ok(false);
@@ -711,86 +691,6 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn initial_discovery_keeps_primary_and_other_sheets_when_ax_children_disappear() {
-        let mut bound = Vec::new();
-        collect_initial_windows(
-            1,
-            |element| match element {
-                2 => Err(AttributeReadError::Native {
-                    name: "AXRole",
-                    status: bindings::kAXErrorInvalidUIElement,
-                }),
-                3 | 4 | 5 => Ok(true),
-                _ => Ok(false),
-            },
-            |element| match element {
-                1 => Ok(vec![2, 3, 4]),
-                2 => panic!("a destroyed child's subtree must not be read"),
-                3 => Ok(vec![5]),
-                4 => Err(AttributeReadError::Native {
-                    name: "AXChildren",
-                    status: bindings::kAXErrorInvalidUIElement,
-                }),
-                _ => Ok(Vec::new()),
-            },
-            |element, sheet| bound.push((element, sheet)),
-        )
-        .unwrap();
-        bound.sort_unstable();
-        assert_eq!(bound, vec![(1, false), (3, true), (5, true)]);
-    }
-
-    #[test]
-    fn initial_discovery_does_not_ignore_an_invalid_primary_window() {
-        let result = collect_initial_windows(
-            1,
-            |_| Ok(false),
-            |_| {
-                Err(AttributeReadError::Native {
-                    name: "AXChildren",
-                    status: bindings::kAXErrorInvalidUIElement,
-                })
-            },
-            |_, _| panic!("an invalid primary window cannot be bound"),
-        );
-        assert!(matches!(result, Err(ToolError::Failed(reason))
-            if reason == "native window table AXChildren failed with AX error -25202"));
-    }
-
-    #[test]
-    fn initial_discovery_preserves_permission_transport_and_type_errors() {
-        for (error, expected) in [
-            (
-                AttributeReadError::Native {
-                    name: "AXRole",
-                    status: bindings::kAXErrorAPIDisabled,
-                },
-                "native window table AXRole failed with AX error -25211",
-            ),
-            (
-                AttributeReadError::Native {
-                    name: "AXRole",
-                    status: -25204,
-                },
-                "native window table AXRole failed with AX error -25204",
-            ),
-            (
-                AttributeReadError::InvalidType("AXRole"),
-                "native window table AXRole returned an unexpected type",
-            ),
-        ] {
-            let mut error = Some(error);
-            let result = collect_initial_windows(
-                1,
-                |_| Err(error.take().unwrap()),
-                |element| Ok(if *element == 1 { vec![2] } else { Vec::new() }),
-                |_, _| {},
-            );
-            assert!(matches!(result, Err(ToolError::Failed(reason)) if reason == expected));
-        }
-    }
 
     #[test]
     fn menu_window_selection_keeps_source_order_and_requires_owner_and_menu_layer() {

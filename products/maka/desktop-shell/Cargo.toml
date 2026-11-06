@@ -46,9 +46,3 @@ nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-wi
 nsh-platform-macos.workspace = true
 raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-maka-ui-support.workspace = true
-nsh-base.workspace = true
-nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-core.workspace = true

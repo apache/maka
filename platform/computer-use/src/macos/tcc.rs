@@ -27,8 +27,8 @@
 //!
 //! Status checks use only macOS preflight APIs. ScreenCaptureKit content
 //! enumeration can show an authorization dialog and must never be used to
-//! poll permissions. A grant may require restarting the Host to take effect;
-//! requesting it explicitly is separate from observing its status.
+//! poll permissions. Negative observations and explicit requests run in finite
+//! workers; the serving Host confirms only fresh positive observations.
 
 use maka_agent_facts::tools::ToolError;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,7 +64,7 @@ impl Grant {
         }
     }
 
-    fn request(self) {
+    pub(crate) fn request(self) {
         use platform_macos::permissions::status;
         match self {
             Self::Accessibility => {
@@ -112,37 +112,20 @@ pub(crate) fn raw_present(grant: Grant) -> bool {
 /// Requests one grant in a finite process; the budget belongs to this Host.
 pub(crate) fn ask(grant: Grant, cancelled: &(dyn Fn() -> bool + Sync)) -> Result<(), String> {
     let subject = crate::system_permission::process::Subject::current()?;
-    request_once(
-        grant.asked(),
-        || crate::system_permission::application_identity::validate(&subject.bundle_path),
-        || crate::system_permission::process::request(&subject, grant.into(), cancelled),
-    )
+    crate::system_permission::application_identity::validate(&subject.bundle_path)?;
+    request_once(grant.asked(), || {
+        crate::system_permission::process::request(&subject, grant.into(), cancelled)
+    })
 }
 
 fn request_once(
     asked: &AtomicBool,
-    validate: impl FnOnce() -> Result<(), String>,
     request: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    validate()?;
     if !asked.swap(true, Ordering::Relaxed) {
         request()?;
     }
     Ok(())
-}
-
-pub(crate) fn finite_status() -> Result<serde_json::Value, String> {
-    crate::system_permission::process::finite_status()
-}
-
-pub(crate) fn finite_request(
-    grant: maka_agent_facts::interaction::SystemPermissionGrant,
-) -> Result<serde_json::Value, String> {
-    crate::system_permission::process::finite_request(grant)
-}
-
-pub(crate) fn request_raw(grant: Grant) {
-    grant.request();
 }
 
 impl From<Grant> for maka_agent_facts::interaction::SystemPermissionGrant {
@@ -270,61 +253,14 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn invalid_application_identity_does_not_consume_the_request_or_emit_an_os_effect() {
-        let asked = AtomicBool::new(false);
-        let effects = std::cell::Cell::new(0);
-        let rejected = request_once(
-            &asked,
-            || Err("LaunchServices cannot resolve application test.identity".into()),
-            || {
-                effects.set(effects.get() + 1);
-                Ok(())
-            },
-        );
-        assert_eq!(
-            rejected.unwrap_err(),
-            "LaunchServices cannot resolve application test.identity"
-        );
-        assert!(!asked.load(Ordering::Relaxed));
-        assert_eq!(effects.get(), 0);
-        request_once(
-            &asked,
-            || Ok(()),
-            || {
-                effects.set(effects.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-        request_once(
-            &asked,
-            || Ok(()),
-            || {
-                effects.set(effects.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(asked.load(Ordering::Relaxed));
-        assert_eq!(effects.get(), 1);
-    }
-
-    #[test]
     fn failed_finite_request_preserves_the_parent_budget_without_retrying() {
         let asked = AtomicBool::new(false);
-        let error = request_once(
-            &asked,
-            || Ok(()),
-            || Err("finite request reply lost".into()),
-        )
-        .unwrap_err();
+        let error = request_once(&asked, || Err("finite request reply lost".into())).unwrap_err();
         assert_eq!(error, "finite request reply lost");
         assert!(asked.load(Ordering::Relaxed));
-        request_once(
-            &asked,
-            || Ok(()),
-            || panic!("a failed request must not be dispatched twice"),
-        )
+        request_once(&asked, || {
+            panic!("a failed request must not be dispatched twice")
+        })
         .unwrap();
     }
 

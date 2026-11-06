@@ -126,7 +126,7 @@ pub(super) async fn open(
     config.host.set_params(serde_json::Map::from_iter([
         (
             "systemPermission".into(),
-            serde_json::json!({"sessionId": session_id, "requestId": request_id}),
+            serde_json::json!({"sessionId": session_id, "requestId": request_id, "request": record.request}),
         ),
         (
             "languagePreference".into(),

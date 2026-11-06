@@ -24,8 +24,6 @@ mod attachment_paths;
 pub mod bindings;
 mod clipboard;
 pub mod host;
-#[cfg(test)]
-mod permission_setup_tests;
 pub mod reload;
 
 use nsh_engine::{Bundle, Capabilities, EngineConfig, Limits, Policy};

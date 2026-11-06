@@ -108,9 +108,28 @@ pub struct SystemPermissionState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSystemPermissionStatus")]
 pub struct SystemPermissionStatus {
-    pub record: InteractionRecord,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SystemPermissionOutcome>")]
+    pub outcome: Option<SystemPermissionOutcome>,
     pub grants: Vec<SystemPermissionState>,
     pub requestable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentSystemPermissionOutcome")]
+pub enum SystemPermissionOutcome {
+    SystemPermissionGranted {
+        committed_at: u64,
+    },
+    Closure {
+        reason: maka_agent_facts::interaction::ClosureReason,
+        committed_at: u64,
+    },
 }
 
 #[derive(Deserialize, JsonSchema)]

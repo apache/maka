@@ -28,15 +28,14 @@ import {
   View,
   type ViewRef,
 } from 'nsh';
-import type {
-  InteractionRecord,
-  SystemPermissionGrant,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type { SystemPermissionGrant } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import {
   createComputerPermissionSetup,
   nextPermission,
   type ComputerPermissionClient,
   type PermissionSetupState,
+  type SystemPermissionRequest,
+  type ComputerPermissionStatus,
 } from './computerPermissionSetupState';
 import { PermissionButton, PermissionRow } from './ComputerPermissionControls';
 import { Icon } from './Icon';
@@ -63,10 +62,11 @@ export const systemPermissionName = (grant: SystemPermissionGrant) =>
 /** The same task surface is hosted in a desktop utility window or inline on terminal/non-window clients. */
 export function ComputerPermissionSetup(props: {
   client: ComputerPermissionClient;
+  request: SystemPermissionRequest;
   presentation: 'window' | 'inline';
   nativeApplicationDrag?: boolean;
   onClose?: () => Promise<void> | void;
-  onRecord?: (record: InteractionRecord) => void;
+  onOutcome?: (outcome: NonNullable<ComputerPermissionStatus['outcome']>) => void;
 }) {
   const model = signal<PermissionSetupState>({
     status: null,
@@ -85,7 +85,7 @@ export function ComputerPermissionSetup(props: {
   let lastFocus: string | null = null;
   const controller = createComputerPermissionSetup(props.client, (state) => {
     model.set(state);
-    if (state.status) props.onRecord?.(state.status.record);
+    if (state.status?.outcome) props.onOutcome?.(state.status.outcome);
   });
   cleanup(() => {
     alive = false;
@@ -95,13 +95,10 @@ export function ComputerPermissionSetup(props: {
     void Promise.resolve().then(() => controller.refresh());
   });
   const status = () => model().status;
-  const request = () => {
-    const value = status()?.record.request;
-    return value?.kind === 'system_permission' ? value : null;
-  };
-  const settled = () => !!status()?.record.outcome;
-  const granted = () => status()?.record.outcome?.kind === 'system_permission_granted';
-  const grants = () => request()?.grants ?? [];
+  const request = () => props.request;
+  const settled = () => !!status()?.outcome;
+  const granted = () => status()?.outcome?.kind === 'system_permission_granted';
+  const grants = () => request().grants;
   const ready = (grant: SystemPermissionGrant) =>
     status()?.grants.some((entry) => entry.grant === grant && entry.effective) ?? false;
   const next = () => nextPermission(status());
@@ -152,14 +149,14 @@ export function ComputerPermissionSetup(props: {
               : tr('permissionSetup.closed')
             : tr('permissionSetup.title')}
         </Text>
-        <If when={request()}>
+        <If when={status()}>
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>
             {settled()
               ? granted()
                 ? tr('permissionSetup.resumed')
                 : tr('permissionSetup.closedBody')
               : tr('permissionSetup.subtitle', {
-                  application: request()!.application,
+                  application: request().application,
                 })}
           </Text>
         </If>
@@ -167,7 +164,7 @@ export function ComputerPermissionSetup(props: {
       <If when={!status()}>
         <LoadingState label={tr('permissionSetup.loading')} />
       </If>
-      <If when={request()}>
+      <If when={status()}>
         <View class="gap-1">
           <Text style={{ ...captionTextStyle, color: C.muted }}>
             {tr('permissionSetup.application')}
@@ -180,7 +177,7 @@ export function ComputerPermissionSetup(props: {
               userSelect: 'text',
             }}
           >
-            {request()!.application}
+            {request().application}
           </Text>
         </View>
         <View>
@@ -221,7 +218,7 @@ export function ComputerPermissionSetup(props: {
             <If when={model().active && next()}>
               <Text style={{ ...bodyTextStyle, color: C.secondary }}>
                 {tr('permissionSetup.turnOn', {
-                  application: request()!.application,
+                  application: request().application,
                 })}
               </Text>
             </If>
