@@ -1438,3 +1438,52 @@ test('WorkHub groups receive their target epoch and join Desktop interaction tur
   assert.deepEqual(result.content, [{ type: 'text', text: frame.sessionId }], 'WorkHub authority sees the real Host Session id, not a native resource alias');
   await provider.close();
 });
+
+
+test('hidden browser action lease follows Host admission, failure and cancellation without changing Session identity', async () => {
+  let admitted = false;
+  let grants = 0;
+  let releases = 0;
+  let fail = false;
+  let block = false;
+  let started!: () => void;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [tool('browser_navigate', z.object({url:z.string()}), async (_args, ctx) => {
+      assert.equal(ctx.sessionId, 'native:worker');
+      assert.equal(grants, releases + 1);
+      if (fail) throw Error('navigation failed');
+      if (block) {
+        started();
+        await new Promise((_resolve, reject) => ctx.abortSignal.addEventListener('abort', () => reject(ctx.abortSignal.reason), {once:true}));
+      }
+      return 'ok';
+    })],
+    resolveBrowserUrl: () => 'https://example.com/',
+    admitBrowserAction: (sessionId, signal) => {
+      assert.ok(admitted, 'no browser lease before Host approval');
+      assert.equal(sessionId, 'native:worker');
+      assert.equal(signal.aborted, false);
+      grants++;
+      return () => { releases++; };
+    },
+    releaseBrowserSession() {}, computerUseTools:computerTools(), releaseDesktopInteractionSession() {},
+  }, {nativeSessionId: id => `native:${id}`});
+  const frame=capabilityFrame({sessionId:'worker'});
+  await assert.rejects(call(provider,frame,()=>{throw Error('denied')}),/denied/);
+  assert.equal(grants,0);
+  admitted=true;
+  await call(provider,frame);
+  assert.equal(grants,releases);
+  fail=true;
+  await assert.rejects(call(provider,frame),/navigation failed/);
+  assert.equal(grants,releases);
+  fail=false; block=true;
+  const ready=new Promise<void>(resolve=>{started=resolve});
+  const pending=call(provider,frame);
+  const rejected=assert.rejects(pending);
+  await ready;
+  await provider.abortSession('worker');
+  await rejected;
+  assert.equal(grants,releases);
+  await provider.close();
+});

@@ -140,3 +140,54 @@ test('lightweight activity requires caller identity and preserves adapter failur
     await root.fiber.dispose();
   }
 });
+
+test('explicit source evidence survives pages and reads, and test sources cannot downgrade their items', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const service = new PluginSourceService(root, agents);
+  const owner = root.extend({
+    maka: { rootId: 'profile' as const, packageId: 'fixture', entryId: 'fixture', generation: 1 },
+  });
+  const object = {
+    id: 'message',
+    revision: '1',
+    kind: 'message',
+    locator: { id: 'message' },
+    evidenceKind: 'generated' as const,
+  };
+  owner.sources.register({
+    ...adapter('fixture'),
+    evidenceKind: 'test',
+    enumerate: async () => ({ items: [object] }),
+    query: async () => ({ items: [object] }),
+    authorize: async () => ['message'],
+    read: async () => ({ status: 'ok', object, content: 'synthetic selection' }),
+  });
+  try {
+    await agents.withInvocation(
+      {
+        sessionId: 'test',
+        turnId: 'turn',
+        cwd: '/tmp',
+        toolCallId: 'call',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+      async () => {
+        assert.equal(service.list()[0].evidenceKind, 'test');
+        for (const page of [
+          await service.enumerate('example.docs'),
+          await service.query('example.docs', {}),
+        ]) {
+          assert.equal(page.items[0].evidenceKind, 'test');
+          assert.equal(
+            (await service.read('example.docs', page.items[0])).object!.evidenceKind,
+            'test',
+          );
+        }
+      },
+    );
+  } finally {
+    await root.fiber.dispose();
+  }
+});

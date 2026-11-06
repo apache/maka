@@ -1078,6 +1078,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     mainWindowController,
     nativeCapabilities: {
       browserTools: native.browserTools,
+      admitBrowserAction: (sessionId, signal) => browserIpc.admitAction(sessionId, signal),
       resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
         if (toolName === "browser_navigate") {
           if (typeof args.url !== "string") {

@@ -261,3 +261,35 @@ The worker keeps one Session, receives UTC and a last-successful-check/start-of-
 The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. The quick worker remains read-only.
 
 The quick-discovery, exploration and judgement Sessions use native history compaction, not timed Session replacement. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.
+
+## Source evidence and range recovery
+
+Source adapters can declare `evidenceKind: "test" | "generated"` on the adapter or
+an individual `SourceObject`. A source-level `test` declaration cannot be downgraded
+by one item or a read response. Native history Sessions use the explicit label
+`synthetic-test-data`; labels are never inferred from words in a message or title.
+The Codex adapter's existing `computer_history_summary` and `codex_memory` kinds
+are treated as generated evidence, including previously cached references.
+Queries, history, original reads, extraction inputs and index reference navigation
+retain these distinctions. Generated summaries can contain simulations and must
+be verified before treating their contents as user facts. This does not retroactively
+identify which sentences in an unlabelled mixed summary originated in a test.
+
+Model-facing history titles are at most 120 Unicode code points. Repeated identical
+titles are returned once in a page's `titles`; an item's `titleIndex` selects that
+array entry. Full titles and bodies remain unchanged in stored originals. Compact
+read budgets include the shared metadata and continuation envelope.
+
+An obsolete index scope does not block observation of currently authorized sources.
+Read errors identify range recovery through `MemoryIndexMaintain`. Maintenance
+reuses valid unfinished work; it replaces an inaccessible working range only after
+successfully capturing a new one. Old checkpoints then fail as superseded. Entries,
+original references and completed coverage stay unchanged until the organizing
+Agent writes content and checkpoints. Source failures retain progress and never
+become a zero-change observation.
+
+Hidden workers can execute an embedded-browser operation after Host admission,
+using their own Session page. The desktop grants an invocation-scoped execution
+lease, with no renderer IPC for granting it. Host cancellation, operation completion
+and Host retirement revoke that lease; URL/origin approval checks remain separate.
+No parent Session identity or general Computer Use permission is inherited.
