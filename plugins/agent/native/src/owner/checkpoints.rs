@@ -103,6 +103,7 @@ impl Owner {
                 || runs.controls.contains_key(id)
                 || runs.preparing.contains_key(id)
                 || runs.retained_cleanup.contains(id)
+                || self.mcp_projects.has_any_client(id)
             {
                 return Err("agent_checkpoint_busy".into());
             }
@@ -113,6 +114,7 @@ impl Owner {
                 .cloned()
                 .chain(self.runs.ordered_sessions())
                 .chain(self.goals.admissions.ordered_sessions())
+                .chain(self.mcp_projects.client_sessions())
                 .filter(|active| active != id)
                 .collect::<std::collections::BTreeSet<_>>()
         };

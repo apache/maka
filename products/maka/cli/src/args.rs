@@ -51,7 +51,7 @@ enum Command {
     Host(HostCommand),
     /// Execute a journaled Code Mode cell read from stdin.
     Code(code::Args),
-    /// Serve Agent Client Protocol v2 over stdin/stdout.
+    /// Serve Agent Client Protocol v1 and v2 over stdin/stdout.
     Acp(crate::acp::Args),
     /// Inspect the committed execution log.
     Inspect(Log),

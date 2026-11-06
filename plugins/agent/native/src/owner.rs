@@ -103,6 +103,8 @@ struct MessageBasis {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mcp_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_mcp: Option<crate::mcp::ClientGeneration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     compaction_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     graph: Option<maka_graph::Epoch>,
@@ -162,6 +164,7 @@ enum PreparedBackend {
 }
 #[derive(Clone)]
 struct Control {
+    settlement: Option<tokio::sync::watch::Sender<Option<Result<(), String>>>>,
     #[cfg(test)]
     handoff: Option<maka_agent_engine::HandoffGate>,
     compacting: bool,
@@ -252,6 +255,8 @@ pub(crate) struct Owner {
     producer_gate: Arc<Mutex<()>>,
     #[cfg(test)]
     title_write_gate: std::sync::Mutex<Option<Arc<title::WriteGate>>>,
+    #[cfg(test)]
+    mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool,
     #[cfg(all(test, target_os = "macos"))]
     file_native_hints: std::sync::atomic::AtomicBool,
     stop: CancellationToken,
@@ -589,6 +594,8 @@ impl Owner {
         let mcp_projects = Arc::new(crate::mcp::Projects::new(
             crate::mcp::Catalog {
                 revision: None,
+                client_mcp: None,
+                _parent: None,
                 tools: tools.clone(),
                 definitions: Arc::new(internal_tools),
                 bindings: Arc::new(internal_bindings),
@@ -607,7 +614,7 @@ impl Owner {
             workers.clone(),
             stop.child_token(),
         ));
-        Ok(Arc::new(Self {
+        let owner = Arc::new(Self {
             graphs,
             goals,
             auxiliary,
@@ -650,10 +657,20 @@ impl Owner {
             producer_gate: Arc::default(),
             #[cfg(test)]
             title_write_gate: std::sync::Mutex::default(),
+            #[cfg(test)]
+            mcp_shutdown_at_parked_wait: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(test, target_os = "macos"))]
             file_native_hints: std::sync::atomic::AtomicBool::new(true),
             stop,
-        }))
+        });
+        if let Err(error) = owner.revoke_lost_client_mcp().await {
+            let cleanup = owner.close().await;
+            return Err(match cleanup {
+                Ok(()) => error.to_string(),
+                Err(cleanup) => format!("{error}; Agent cleanup: {cleanup}"),
+            });
+        }
+        Ok(owner)
     }
     pub fn operation_id(&self, operation: &maka_plugin_core::operation::RecoveryRef) -> String {
         // Use the actual complete original reference. UUIDs alone do not name
@@ -1486,8 +1503,13 @@ impl Owner {
                 }
             }
         };
+        let selected_catalog = self.mcp_projects.with_client(&id, selected_catalog)?;
+        if external && !host_bridge && selected_catalog.revision.is_some() {
+            return Err("agent_executor_cannot_use_session_mcp".into());
+        }
         let mut basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(

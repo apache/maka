@@ -68,9 +68,9 @@ Start the watch, wait for `ready`, then read the first list page and compare its
 
 On macOS, active watches also compare direct-child metadata. Each scan is followed by a pause of at least one second, extended to nine times the scan duration for expensive directories; this targets a 10% scanning duty cycle per subscription, rather than a fixed delivery deadline or total CPU limit. This detects persistent changes even when native notifications arrive late; unchanged scans emit nothing. Scans do not read file contents, follow symlinks or descend into child directories. `ready` waits for the initial scan; large directories or slow storage can delay readiness and later notifications. Closing a subscription waits for its active filesystem work to settle.
 
-[Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
-
 `metadata.pinned` sets or clears conversation pinning; omission preserves it. Session results include `pinned`. Catalog pages place pinned conversations first, then keep the existing ID order, with revision-bound forward and backward cursors. New conversations and forks start unpinned.
+
+`sessionMcp` is a user-only subscription that attaches client MCP servers to one idle Session. Retain the subscription for the connection lifetime and await its cleanup on close. It emits the attached tool names; credentials remain transient, and each new lease has a fresh identity. Closing fences queued work and settles its original execution before releasing the transports.
 
 ## History checkpoint management
 
@@ -129,3 +129,5 @@ The API and private JSON are development contracts: no legacy publication endpoi
 The restore atomically commits the new workspace binding and original restore receipt. It keeps the Session ID and existing checkpoint Head; a later publication uses that Head's revision as its CAS expectation. It does **not** roll back history or reconstruct a lost Root. Loading/rebinding does not execute a model or tool. Send an ordinary new message explicitly to continue; it uses the new Workspace. Cross-Root/Host authority handoff, arbitrary historical rollback, full auxiliary-state migration and mid-turn recovery are outside this implementation.
 
 After an uncertain restore response, use `sessionCheckpointRestoreReceipt` with the original `{ reference, input }`. Querying a committed receipt does not require the old destination path still to exist. A durable request alone does not own its destination: only a successfully copied and synced directory has its physical identity recorded. Retry and commit require that same directory, even if a replacement has identical contents. Before commit, occupied, altered or incomplete destinations fail closed and never rebind the Session; retain them for inspection and use a newly selected operation/destination after resolving the failed preparation. Restore also excludes in-flight Goal producers until the binding commits. No automatic deletion of user-visible recovery directories is performed. Private inspection databases, restored directories and immutable file objects consume retained disk; automatic GC is not implemented.
+
+[Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

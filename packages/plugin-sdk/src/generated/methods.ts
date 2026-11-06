@@ -1246,6 +1246,20 @@ export interface ServiceMethods {
         restore?: AgentSessionCheckpointRestoreReceiptOutput_AgentSessionCheckpointRestored | null;
       };
     };
+    sessionMcp: {
+      mode: 'subscription';
+      /**
+       * Client-provided MCP servers whose lifetime is the original subscription.
+       * Configurations and credentials are never saved as installation settings.
+       */
+      input: {
+        sessionId: string;
+        servers: Runtime.McpServerConfiguration[];
+      };
+      output: {
+        tools: string[];
+      };
+    };
     setCompactionPrompt: {
       mode: 'mutation';
       input: {

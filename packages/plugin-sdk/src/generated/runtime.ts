@@ -5406,8 +5406,8 @@ export interface AgentConfiguration {
   tools: AgentServiceTool[];
 }
 /**
- * Explicit installation trust for an external MCP server. Tool annotations
- * never expand these permissions. Changes require reactivating the Agent.
+ * Explicit trust for an external MCP server; tool annotations never expand it.
+ * Installation changes require reactivation; client subscriptions own their scope.
  */
 export interface McpServerConfiguration {
   /**

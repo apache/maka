@@ -72,3 +72,20 @@ pub enum McpTrustResult {
     Trusted,
     Changed,
 }
+
+/// Client-provided MCP servers whose lifetime is the original subscription.
+/// Configurations and credentials are never saved as installation settings.
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionMcp")]
+pub struct SessionMcp {
+    pub session_id: String,
+    pub servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionMcpAttached")]
+pub struct SessionMcpAttached {
+    pub tools: Vec<String>,
+}

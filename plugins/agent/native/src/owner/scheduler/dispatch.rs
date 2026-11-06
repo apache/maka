@@ -163,8 +163,10 @@ impl Owner {
             return Err("graph_background_conflict".into());
         }
 
+        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
         Ok(MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(

@@ -19,13 +19,40 @@
 
 mod catalog;
 use crate::{Error, client::Client};
-use agent_client_protocol::schema::v2 as acp;
 use maka_agent_api::contract::{MetadataResult, Session, WorkspaceAccess};
 use maka_agent_facts::configuration::ModelSelection;
 use maka_agent_facts::execution::ThinkingLevel;
 use maka_capabilities::call::Attachments;
 use maka_settings_native::contract::{DefaultModel, ModelChoice};
 use serde_json::json;
+
+#[derive(Clone)]
+pub(crate) struct Select {
+    pub id: String,
+    pub name: String,
+    pub current: String,
+    pub category: Category,
+    pub choices: Vec<Choice>,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Category {
+    Model,
+    ThoughtLevel,
+    WorkspaceAccess,
+}
+#[derive(Clone)]
+pub(crate) struct Choice {
+    pub value: String,
+    pub name: String,
+}
+impl Choice {
+    fn new(value: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            name: name.into(),
+        }
+    }
+}
 
 /// Per-ACP-session choices; immutable model revisions are resolved at each send.
 #[derive(Clone, Default)]
@@ -67,108 +94,78 @@ pub async fn options(
     client: &Client,
     session: &Session,
     preferences: &Preferences,
-) -> Result<Vec<acp::SessionConfigOption>, Error> {
+) -> Result<Vec<Select>, Error> {
     project(session, preferences, &catalog::read(client).await?)
 }
 fn project(
     session: &Session,
     preferences: &Preferences,
     models: &catalog::Catalog,
-) -> Result<Vec<acp::SessionConfigOption>, Error> {
-    let mut model_choices = vec![acp::SessionConfigSelectOption::new(
-        "default",
-        "Configured default",
-    )];
-    model_choices.extend(models.choices.iter().map(|choice| {
-        acp::SessionConfigSelectOption::new(
+) -> Result<Vec<Select>, Error> {
+    let mut choices = vec![Choice::new("default", "Configured default")];
+    choices.extend(models.choices.iter().map(|choice| {
+        Choice::new(
             catalog::identity(choice),
             format!("{} ({})", choice.label, choice.connection_name),
         )
     }));
-    let mut options = vec![
-        acp::SessionConfigOption::select(
-            "model",
-            "Model",
-            preferences.model.as_deref().unwrap_or("default"),
-            model_choices,
-        )
-        .category(acp::SessionConfigOptionCategory::Model),
-    ];
+    let mut options = vec![Select {
+        id: "model".into(),
+        name: "Model".into(),
+        current: preferences.model.as_deref().unwrap_or("default").into(),
+        category: Category::Model,
+        choices,
+    }];
     if let Ok(choice) = selected(preferences, models)
         && !choice.thinking_levels.is_empty()
     {
-        let mut levels = vec![acp::SessionConfigSelectOption::new(
-            "default",
-            "Provider default",
-        )];
+        let mut choices = vec![Choice::new("default", "Provider default")];
         for level in &choice.thinking_levels {
             let value = wire(level)?;
-            levels.push(acp::SessionConfigSelectOption::new(value.clone(), value));
+            choices.push(Choice::new(value.clone(), value));
         }
-        options.push(
-            acp::SessionConfigOption::select(
-                "thinking_level",
-                "Thinking level",
-                preferences
-                    .thinking
-                    .map(|level| wire(&level))
-                    .transpose()?
-                    .unwrap_or_else(|| "default".into()),
-                levels,
-            )
-            .category(acp::SessionConfigOptionCategory::ThoughtLevel),
-        );
+        options.push(Select {
+            id: "thinking_level".into(),
+            name: "Thinking level".into(),
+            current: preferences
+                .thinking
+                .map(|level| wire(&level))
+                .transpose()?
+                .unwrap_or_else(|| "default".into()),
+            category: Category::ThoughtLevel,
+            choices,
+        });
     }
-    options.push(
-        acp::SessionConfigOption::select(
-            "sandbox_mode",
-            "Workspace access",
-            wire(&session.permissions.access)?,
-            vec![
-                acp::SessionConfigSelectOption::new("read_only", "Read only"),
-                acp::SessionConfigSelectOption::new("workspace_write", "Workspace write"),
-            ],
-        )
-        .category(acp::SessionConfigOptionCategory::Other(
-            "_maka/sandbox_mode".into(),
-        )),
-    );
+    options.push(Select {
+        id: "sandbox_mode".into(),
+        name: "Workspace access".into(),
+        current: wire(&session.permissions.access)?,
+        category: Category::WorkspaceAccess,
+        choices: vec![
+            Choice::new("read_only", "Read only"),
+            Choice::new("workspace_write", "Workspace write"),
+        ],
+    });
     Ok(options)
 }
+
 pub async fn set(
     client: &Client,
     session: &Session,
     preferences: &mut Preferences,
-    request: acp::SetSessionConfigOptionRequest,
-) -> Result<Vec<acp::SessionConfigOption>, Error> {
-    if request.session_id.0.as_ref() != session.id {
-        return Err("Configuration request does not match session".into());
-    }
-    let value = request
-        .value
-        .as_id()
-        .ok_or("Configuration requires a select value")?
-        .0
-        .as_ref();
+    id: &str,
+    value: &str,
+) -> Result<Vec<Select>, Error> {
     let models = catalog::read(client).await?;
     let options = project(session, preferences, &models)?;
     let option = options
         .iter()
-        .find(|option| option.config_id == request.config_id)
+        .find(|option| option.id == id)
         .ok_or("Configuration option unavailable")?;
-    let acp::SessionConfigKind::Select(select) = &option.kind else {
-        return Err("Configuration requires a select option".into());
-    };
-    let acp::SessionConfigSelectOptions::Ungrouped(choices) = &select.options else {
-        return Err("Unsupported configuration choices".into());
-    };
-    if !choices
-        .iter()
-        .any(|choice| choice.value.0.as_ref() == value)
-    {
+    if !option.choices.iter().any(|choice| choice.value == value) {
         return Err("Unsupported configuration value".into());
     }
-    match request.config_id.0.as_ref() {
+    match id {
         "model" => {
             preferences.model = (value != "default").then(|| value.to_owned());
             preferences.thinking = None;

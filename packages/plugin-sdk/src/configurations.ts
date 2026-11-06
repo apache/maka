@@ -161,7 +161,7 @@ export const configurations = {
     $defs: {
       McpServerConfiguration: {
         description:
-          'Explicit installation trust for an external MCP server. Tool annotations\nnever expand these permissions. Changes require reactivating the Agent.',
+          'Explicit trust for an external MCP server; tool annotations never expand it.\nInstallation changes require reactivation; client subscriptions own their scope.',
         type: 'object',
         properties: {
           name: {
@@ -212,8 +212,7 @@ export const configurations = {
       McpTransport: {
         oneOf: [
           {
-            description:
-              'Trusted installation process. Runs outside the session filesystem sandbox.',
+            description: 'Explicitly trusted process. Runs outside the session filesystem sandbox.',
             type: 'object',
             properties: {
               type: {
@@ -987,7 +986,7 @@ export const configurations = {
         },
         required: ['name', 'transport'],
         description:
-          'Explicit installation trust for an external MCP server. Tool annotations\nnever expand these permissions. Changes require reactivating the Agent.',
+          'Explicit trust for an external MCP server; tool annotations never expand it.\nInstallation changes require reactivation; client subscriptions own their scope.',
       },
       McpTransport: {
         oneOf: [
@@ -1031,8 +1030,7 @@ export const configurations = {
               },
             },
             required: ['type', 'command', 'cwd'],
-            description:
-              'Trusted installation process. Runs outside the session filesystem sandbox.',
+            description: 'Explicitly trusted process. Runs outside the session filesystem sandbox.',
           },
           {
             type: 'object',

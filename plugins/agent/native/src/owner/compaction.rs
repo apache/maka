@@ -234,6 +234,7 @@ impl Owner {
         };
         let basis = MessageBasis {
             mcp_revision: None,
+            client_mcp: None,
             mcp_catalog: None,
             language,
             compaction_prompt: Some(prompt),
@@ -292,6 +293,9 @@ impl Owner {
         runs.controls.insert(
             input.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),

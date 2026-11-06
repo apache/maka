@@ -353,6 +353,9 @@ impl Owner {
         runs.controls.insert(
             invocation.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),
@@ -683,8 +686,15 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
 
+        let selected_catalog = if matches!(purpose, ResumePurpose::Admit) {
+            self.mcp_projects
+                .with_client(&input.session_id, selected_catalog)?
+        } else {
+            selected_catalog
+        };
         let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),

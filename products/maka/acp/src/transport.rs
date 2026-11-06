@@ -21,9 +21,21 @@ use crate::{
     Error,
     interaction::{Callback, Response},
 };
-use agent_client_protocol::{Client, Lines, V2ConnectionTo, schema::v2 as acp};
+use agent_client_protocol::{
+    Client, Lines,
+    v1::schema as v1_wire,
+    v2::{ConnectionTo, schema as acp},
+};
+pub(crate) mod v1;
+pub(crate) mod v2;
+
 use futures_util::{StreamExt, sink};
-use std::{io, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::{
     codec::{FramedRead, LinesCodec},
@@ -60,16 +72,170 @@ where
 
 #[derive(Clone)]
 pub(crate) struct Peer {
-    pub connection: V2ConnectionTo<Client>,
+    connection: Connection,
     pub stop: CancellationToken,
 }
+#[derive(Clone)]
+enum Connection {
+    V1 {
+        client: agent_client_protocol::v1::ConnectionTo<Client>,
+        projections: Arc<Mutex<HashMap<String, v1::Projection>>>,
+    },
+    V2(ConnectionTo<Client>),
+}
 impl Peer {
-    pub async fn update(&self, session: &str, update: acp::SessionUpdate) -> Result<(), Error> {
+    pub fn v1(
+        client: agent_client_protocol::v1::ConnectionTo<Client>,
+        stop: CancellationToken,
+    ) -> Self {
+        Self {
+            connection: Connection::V1 {
+                client,
+                projections: Default::default(),
+            },
+            stop,
+        }
+    }
+    pub fn v2(client: ConnectionTo<Client>, stop: CancellationToken) -> Self {
+        Self {
+            connection: Connection::V2(client),
+            stop,
+        }
+    }
+    pub fn reset(&self, session: &str) {
+        if let Connection::V1 { projections, .. } = &self.connection {
+            projections.lock().unwrap().remove(session);
+        }
+    }
+    pub async fn update(
+        &self,
+        session: &str,
+        update: crate::presentation::Update,
+    ) -> Result<(), Error> {
         if self.stop.is_cancelled() {
             return Err("ACP connection closed".into());
         }
-        self.connection
-            .send_notification(acp::UpdateSessionNotification::new(session, update))?;
+        match &self.connection {
+            Connection::V1 {
+                client,
+                projections,
+            } => {
+                let update = projections
+                    .lock()
+                    .unwrap()
+                    .entry(session.into())
+                    .or_default()
+                    .update(update)?;
+                if let Some(update) = update {
+                    client.send_notification(v1_wire::SessionNotification::new(
+                        session.to_owned(),
+                        update,
+                    ))?;
+                }
+            }
+            Connection::V2(client) => {
+                client.send_notification(acp::UpdateSessionNotification::new(
+                    session.to_owned(),
+                    v2::update(update),
+                ))?;
+            }
+        }
+        Ok(())
+    }
+    pub async fn state(
+        &self,
+        session: &str,
+        state: crate::presentation::State,
+    ) -> Result<(), Error> {
+        if let Connection::V2(client) = &self.connection {
+            client.send_notification(acp::UpdateSessionNotification::new(
+                session.to_owned(),
+                acp::SessionUpdate::StateUpdate(match state {
+                    crate::presentation::State::Running => {
+                        acp::StateUpdate::Running(acp::RunningStateUpdate::new())
+                    }
+                    crate::presentation::State::RequiresAction => {
+                        acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new())
+                    }
+                }),
+            ))?;
+        }
+        Ok(())
+    }
+    pub async fn synchronize(
+        &self,
+        session: &maka_agent_api::contract::Session,
+    ) -> Result<(), Error> {
+        if let Connection::V2(client) = &self.connection {
+            client.send_notification(acp::UpdateSessionNotification::new(
+                session.id.clone(),
+                acp::SessionUpdate::StateUpdate(
+                    acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
+                ),
+            ))?;
+            client.send_notification(acp::UpdateSessionNotification::new(
+                session.id.clone(),
+                acp::SessionUpdate::SessionInfoUpdate(
+                    acp::SessionInfoUpdate::new().title(session.title.clone()),
+                ),
+            ))?;
+        }
+        Ok(())
+    }
+    pub async fn complete(
+        &self,
+        session: &str,
+        result: Result<crate::presentation::Completion, Error>,
+    ) -> Result<(), Error> {
+        use crate::presentation::Completion;
+        if let Connection::V2(client) = &self.connection {
+            let reason = match result {
+                Ok(Completion::Completed) => acp::StopReason::EndTurn,
+                Ok(Completion::Cancelled) => acp::StopReason::Cancelled,
+                Ok(Completion::Paused) => acp::StopReason::Other(acp::OtherStopReason::new(
+                    "_maka_paused",
+                    Default::default(),
+                )),
+                result => acp::StopReason::Error(acp::ErrorStopReason::new().error(
+                    acp::Error::internal_error().data(match result {
+                        Err(e) => e.to_string(),
+                        _ => "Agent execution failed; see transcript".into(),
+                    }),
+                )),
+            };
+            client.send_notification(acp::UpdateSessionNotification::new(
+                session.to_owned(),
+                acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(
+                    acp::IdleStateUpdate::new().stop_reason(reason),
+                )),
+            ))?;
+        }
+        self.reset(session);
+        Ok(())
+    }
+    pub async fn config(
+        &self,
+        session: &str,
+        options: Vec<crate::configuration::Select>,
+    ) -> Result<(), Error> {
+        match &self.connection {
+            Connection::V1 { client, .. } => {
+                client.send_notification(v1_wire::SessionNotification::new(
+                    session.to_owned(),
+                    v1_wire::SessionUpdate::ConfigOptionUpdate(v1_wire::ConfigOptionUpdate::new(
+                        v1::config(options),
+                    )),
+                ))?;
+            }
+            Connection::V2(client) => {
+                client.send_notification(acp::UpdateSessionNotification::new(
+                    session.to_owned(),
+                    acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(
+                        v2::config(options),
+                    )),
+                ))?;
+            }
+        }
         Ok(())
     }
     pub async fn request(
@@ -81,9 +247,11 @@ impl Peer {
             _ = self.stop.cancelled() => Err("ACP connection closed".into()),
             _ = cancel.cancelled() => Err("ACP interaction cancelled".into()),
             result = async {
-                Ok::<_, Error>(match callback {
-                    Callback::Permission(request) => Response::Permission(self.connection.send_request(request).block_task().await?),
-                    Callback::Elicitation(request) => Response::Elicitation(self.connection.send_request(request).block_task().await?),
+                Ok(match (&self.connection,callback) {
+                    (Connection::V1 { client, .. }, Callback::Permission(offer)) => Response::Permission(v1::permission_answer(client.send_request(v1::permission(offer)).block_task().await?)?),
+                    (Connection::V2(client), Callback::Permission(offer)) => Response::Permission(v2::permission_answer(client.send_request(v2::permission(offer)).block_task().await?)?),
+                    (Connection::V1 { client, .. }, Callback::Elicitation(input)) => Response::Elicitation(v1::form_answer(client.send_request(v1::form(input)?).block_task().await?)?),
+                    (Connection::V2(client), Callback::Elicitation(input)) => Response::Elicitation(v2::form_answer(client.send_request(v2::form(input)?).block_task().await?)?),
                 })
             } => result,
         }

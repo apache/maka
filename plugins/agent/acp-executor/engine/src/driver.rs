@@ -24,7 +24,7 @@ use crate::{
     projection::Projection,
     transport::{Connection, Event, Peer},
 };
-use agent_client_protocol::{self as sdk, schema::v1 as acp};
+use agent_client_protocol::{self as sdk, v1::schema as acp};
 use maka_agent_ports::executor;
 
 use std::time::Duration;
