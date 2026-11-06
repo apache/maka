@@ -27,14 +27,14 @@ use sqlx::sqlite::SqliteWorkerConnection;
 // follows original sequence order, not the wall clock (which can move backward).
 const SQL: &str = "WITH first AS (
     SELECT timestamp AS at FROM transcript_directory
-    WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
+    WHERE owner_key = ?1 AND turn_id = ?2 AND source_sequence <= ?3
       AND role = 'turn_state'
       AND state_status = 'running'
     ORDER BY source_sequence, item_index LIMIT 1
 ), last AS (
     SELECT timestamp AS at,
         state_status AS status FROM transcript_directory
-    WHERE session_id = ?1 AND turn_id = ?2 AND source_sequence <= ?3
+    WHERE owner_key = ?1 AND turn_id = ?2 AND source_sequence <= ?3
       AND role = 'turn_state'
     ORDER BY source_sequence DESC, item_index DESC LIMIT 1
 ) SELECT first.at, last.at, last.status FROM first, last";

@@ -82,7 +82,7 @@ impl EventLog {
         let invocation = invocation.clone();
         let basis = *basis;
         let tool_use_id = tool_use_id.map(str::to_owned);
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             if crate::workspace_bindings::permission_basis(&mut tx, &invocation.session_id).await? != Some(basis) {
                 return Ok(Vec::new());
@@ -158,6 +158,7 @@ pub(crate) async fn close_previous_basis(
             .ok_or_else(|| invalid("permission request disappeared"))?;
         if matches!(record.request,
             InteractionRequest::SessionApproval { basis, .. }
+            | InteractionRequest::ComputerApp { basis, .. }
             | InteractionRequest::Permissions { basis, .. }
             | InteractionRequest::ClientCapability { basis: Some(basis), .. }
             if basis == previous)

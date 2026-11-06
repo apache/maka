@@ -99,9 +99,9 @@ async fn scan(
     let archive_filter = Selection::archive_predicate("t", "a", "9223372036854775807", "?4");
     let branches = target::SOURCES.map(|source| format!(
         "SELECT t.sequence AS sequence,t.event_id,
-           COALESCE(b.sqlite_json_bytes,
+           COALESCE(t.body_json_bytes,
                     length(CAST(json_extract(t.event_header,'$.fact.outcome.message') AS BLOB)),0)
-         FROM ({source}) t LEFT JOIN event_bodies b ON b.id=t.body_id CROSS JOIN runtime_events d
+         FROM ({source}) t CROSS JOIN runtime_events d
          WHERE d.invocation_id=t.invocation_id AND d.operation_id=t.operation_id AND d.kind='tool_dispatched'
            AND t.sequence>?1 AND t.sequence<=?3 AND t.owner_session_id=?2
            AND {filter} AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider'

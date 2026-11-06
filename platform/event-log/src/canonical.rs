@@ -19,7 +19,6 @@
 
 //! Lossless canonical events over immutable headers and typed body slots.
 mod event;
-pub(crate) mod migration;
 mod read;
 mod recipe;
 mod source;

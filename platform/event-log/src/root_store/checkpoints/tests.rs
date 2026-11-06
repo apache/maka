@@ -216,14 +216,13 @@ async fn corrupt_object_cannot_be_checked_out_or_published() {
     journal::prepare(&log, request.clone(), manifest.clone())
         .await
         .unwrap();
-    let value = objects.manifest(&manifest).unwrap();
     let path = directory
         .path()
         .join("root/history-checkpoints/objects")
-        .join(&value.bundle().digest);
+        .join(&manifest.digest);
     std::fs::write(&path, b"broken").unwrap();
     assert!(
-        verify(&objects, &request, &manifest)
+        verify(&log, &objects, &request, &manifest)
             .await
             .unwrap_err()
             .to_string()
@@ -613,7 +612,7 @@ async fn nonregular_checkpoint_object_is_rejected_without_blocking_close() {
     let path = directory
         .path()
         .join("root/history-checkpoints/objects")
-        .join(&checkout.manifest.bundle().digest);
+        .join(&head.manifest.digest);
     drop(checkout);
     std::fs::remove_file(&path).unwrap();
     let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();

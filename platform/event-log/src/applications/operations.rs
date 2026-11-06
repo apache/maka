@@ -398,8 +398,8 @@ async fn read(
     let namespace = serde_json::to_string(&reference.namespace)?;
     let Some(row) = sqlx::query(
         "SELECT source_revision, contract_digest, request_json, outcome_json,
-        cleanup_json
-        FROM application_operations WHERE deployment=? AND namespace=? AND operation=?",
+        cleanup_json,c.payload AS outcome_value
+        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
     )
     .bind(reference.source.deployment.to_string())
     .bind(namespace)
@@ -411,8 +411,14 @@ async fn read(
     };
     let request: OperationRequest<RecoveryContract> =
         serde_json::from_str(&row.try_get::<String, _>("request_json")?)?;
-    let outcome: OperationOutcome =
-        serde_json::from_str(&row.try_get::<String, _>("outcome_json")?)?;
+    let outcome =
+        match serde_json::from_str::<StoredOutcome>(&row.try_get::<String, _>("outcome_json")?)? {
+            StoredOutcome::Unresolved => OperationOutcome::Unresolved,
+            StoredOutcome::Unknown { diagnostic } => OperationOutcome::Unknown { diagnostic },
+            StoredOutcome::Returned => OperationOutcome::Returned {
+                value: serde_json::from_slice(&row.try_get::<Vec<u8>, _>("outcome_value")?)?,
+            },
+        };
     let cleanup: OperationCleanup =
         serde_json::from_str(&row.try_get::<String, _>("cleanup_json")?)?;
     let expected = request.stored_reference()?;
@@ -572,7 +578,7 @@ impl EventLog {
         self.operation_domain(reference)?;
         let reference = reference.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     read(connection, &reference)
                         .await
@@ -732,8 +738,25 @@ impl crate::writeback::Statement for WriteSettlement {
                     return Err(StoreError::EventConflict);
                 }
             } else {
-                sqlx::query("UPDATE application_operations SET outcome_json=?, cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?")
-                    .bind(serde_json::to_string(&observation.outcome)?).bind(serde_json::to_string(&observation.cleanup)?)
+                let (stored, value) = match &observation.outcome {
+                    OperationOutcome::Unresolved => (StoredOutcome::Unresolved, None),
+                    OperationOutcome::Unknown { diagnostic } => (
+                        StoredOutcome::Unknown {
+                            diagnostic: diagnostic.clone(),
+                        },
+                        None,
+                    ),
+                    OperationOutcome::Returned { value } => {
+                        let bytes = serde_json::to_vec(value)?;
+                        let digest = maka_agent_facts::artifact::content_digest(&bytes);
+                        (
+                            StoredOutcome::Returned,
+                            Some(crate::content::put(connection, &digest, &bytes).await?),
+                        )
+                    }
+                };
+                sqlx::query("UPDATE application_operations SET outcome_json=?, outcome_content_id=?, cleanup_json=? WHERE deployment=? AND namespace=? AND operation=?")
+                    .bind(serde_json::to_string(&stored)?).bind(value).bind(serde_json::to_string(&observation.cleanup)?)
                     .bind(reference.source.deployment.to_string()).bind(serde_json::to_string(&reference.namespace)?)
                     .bind(reference.operation.to_string()).execute(&mut *connection).await?;
             }
@@ -774,4 +797,12 @@ pub(crate) async fn require_source(
     } else {
         Err(invalid("original application source missing"))
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StoredOutcome {
+    Unresolved,
+    Returned,
+    Unknown { diagnostic: String },
 }

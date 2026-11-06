@@ -26,7 +26,7 @@ use std::sync::{
 async fn append_noise(log: &EventLog, first: i64, last: i64) {
     log.connection.run(move |db| Box::pin(async move {
         let mut tx=db.begin().await?;
-        sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES ('test',X'') ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO contents(content_sha256,payload) VALUES ('test',X'') ON CONFLICT DO NOTHING").execute(&mut *tx).await?;
         for number in first..=last {
             let id=format!("noise-{number:08}");
             sqlx::query("INSERT INTO artifacts(session_id,id,created_at,record_json,content_sha256,lookup_digest)

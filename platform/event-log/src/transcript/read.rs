@@ -21,7 +21,7 @@ use crate::{EventLog, StoreError, sequence_number, sessions};
 use maka_agent_facts::history::RowPosition;
 use sqlx::Row;
 
-pub(super) const ORDER: &str = "SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3";
+pub(super) const ORDER: &str = "SELECT order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3";
 
 #[derive(Clone, Copy, Debug)]
 pub enum TranscriptDirection {
@@ -70,15 +70,15 @@ impl EventLog {
                         super::directory::ensure(tx, &session, through).await?;
                         let crossing: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM transcript_directory
-                 WHERE session_id = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2
+                 WHERE owner_key = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2
                  GROUP BY turn_id HAVING
                     SUM((order_sequence,order_item) <= (
-                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?3),
-                        COALESCE((SELECT order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?4)
+                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?3),
+                        COALESCE((SELECT order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?4)
                     )) > 0
                     AND SUM((order_sequence,order_item) > (
-                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?3),
-                        COALESCE((SELECT order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?3 AND item_index=?4), ?4)
+                        COALESCE((SELECT order_sequence FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?3),
+                        COALESCE((SELECT order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?3 AND item_index=?4), ?4)
                     )) > 0)",
                         )
                         .bind(session)
@@ -122,10 +122,10 @@ impl EventLog {
             super::directory::ensure(tx, &session, fence).await?;
             let order_position = position;
             let query = match (direction, order_position.is_some()) {
-                (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
-                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3",
-                (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
-                (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3",
+                (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
+                (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3",
+                (TranscriptDirection::Older, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3",
+                (TranscriptDirection::Newer, false) => "SELECT source_sequence,item_index,turn_id,order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3",
             };
             let mut query = sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through).bind(limit);
             if let Some((source,item))=order_position { query=query.bind(source).bind(item); }
@@ -134,7 +134,7 @@ impl EventLog {
             for row in selected {
                 let position = row_position(row.try_get(0)?, row.try_get(1)?)?;
                 super::bodycache::ensure(tx, &session, position).await?;
-                let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                     .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
                 result.push(TranscriptRowHeader { position, order: row_position(row.try_get(3)?,row.try_get(4)?)?, turn_id: row.try_get(2)?, total_bytes: sequence_number(bytes)?, digest });
             }
@@ -165,11 +165,11 @@ impl EventLog {
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::ensure(tx, &session, position.source_sequence).await?;
             super::bodycache::ensure(tx, &session, position).await?;
-            let total:i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+            let total:i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                 .bind(&session).bind(source).bind(item).fetch_optional(&mut *tx).await?.ok_or_else(||invalid("transcript message was not found"))?;
             let total = sequence_number(total)?;
             if offset.checked_add(length).is_none_or(|end|end>total) { return Err(invalid("transcript fragment exceeds message")); }
-            let bytes:Vec<u8>=sqlx::query_scalar("SELECT substr(payload,?4,?5) FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+            let bytes:Vec<u8>=sqlx::query_scalar("SELECT substr(payload,?4,?5) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                 .bind(&session).bind(source).bind(item).bind(start).bind(length as i64).fetch_one(&mut *tx).await?;
             if bytes.len() as u64 != length { return Err(invalid("transcript payload length changed")); }
 
@@ -190,26 +190,26 @@ impl EventLog {
         let turn = turn.to_owned();
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::ensure(tx,&session,through).await?;
-            let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence,order_item LIMIT 1")
+            let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence,order_item LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_optional(&mut *tx).await?;
             let Some((source,item))=first else {  return Ok(None) };
-            let (last_source,last_item):(i64,i64)=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence DESC,order_item DESC LIMIT 1")
+            let (last_source,last_item):(i64,i64)=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 ORDER BY order_sequence DESC,order_item DESC LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
             // Exact serialized bytes intentionally visit the whole requested Turn.
             // Page locators at the existing header batch size, rather than retaining
             // an unbounded Turn's positions while its selected bodies are generated.
-            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3")
+            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3")
                 .bind(&session).bind(&turn).bind(fence).fetch_one(&mut *tx).await?;
             let rows=sequence_number(rows)?;
             let mut bytes=0u64;
             let mut cursor=(0i64,0i64);
             loop {
-                let selected: Vec<(i64,i64)> = sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")
+                let selected: Vec<(i64,i64)> = sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND turn_id=?2 AND source_sequence<=?3 AND order_sequence<=?3 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT 256")
                     .bind(&session).bind(&turn).bind(fence).bind(cursor.0).bind(cursor.1).fetch_all(&mut *tx).await?;
                 if selected.is_empty() { break; }
                 for (source,item) in selected {
                     super::bodycache::ensure(tx,&session,row_position(source,item)?).await?;
-                    let size: i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                    let size: i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                         .bind(&session).bind(source).bind(item).fetch_one(&mut *tx).await?;
                     bytes=bytes.checked_add(sequence_number(size)?).ok_or(StoreError::PrefixTooLarge)?;
                     cursor=(source,item);

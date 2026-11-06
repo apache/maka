@@ -52,7 +52,7 @@ impl EventLog {
         }
         let prefix = prefix.to_owned();
         let after = after.map(str::to_owned);
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let anchor: Option<i64> = if let Some(after) = &after {
                 Some(sqlx::query_scalar("SELECT created_at FROM session_imports WHERE session_id=? AND state='published'")

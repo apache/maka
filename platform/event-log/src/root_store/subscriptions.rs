@@ -17,74 +17,45 @@
  * under the License.
  */
 
-//! Bounded fan-in is owned by the observer; no forwarding task or Root counter.
+//! Root observations share one canonical owner's notifications.
 use super::*;
-use futures_util::{StreamExt, stream::FuturesUnordered};
 
 pub struct RootSubscription {
-    receivers: Vec<tokio::sync::watch::Receiver<()>>,
+    receiver: tokio::sync::watch::Receiver<()>,
     stop: tokio_util::sync::CancellationToken,
 }
 impl RootSubscription {
     pub fn borrow_and_update(&mut self) {
-        for receiver in &mut self.receivers {
-            receiver.borrow_and_update();
-        }
+        self.receiver.borrow_and_update();
     }
     pub async fn changed(&mut self) -> Result<(), StoreError> {
-        let mut pending: FuturesUnordered<_> = self
-            .receivers
-            .iter_mut()
-            .map(|receiver| receiver.changed())
-            .collect();
         tokio::select! {
             biased;
-            () = self.stop.cancelled() => Err(StoreError::ConnectionClosed),
-            result = pending.next() => result.ok_or(StoreError::ConnectionClosed)?.map_err(|_| StoreError::ConnectionClosed),
+            ()=self.stop.cancelled()=>Err(StoreError::ConnectionClosed),
+            result=self.receiver.changed()=>result.map_err(|_|StoreError::ConnectionClosed),
         }
     }
 }
 impl RootStore {
     pub fn subscribe_catalog_changes(&self) -> RootSubscription {
         RootSubscription {
-            receivers: std::iter::once(&self.control)
-                .chain(&self.partitions)
-                .map(|log| log.subscribe_catalog_changes())
-                .collect(),
+            receiver: self.log.subscribe_catalog_changes(),
             stop: self.gates.cancellation(),
         }
     }
     pub fn subscribe_changes(&self) -> RootSubscription {
         self.subscribe_catalog_changes()
     }
-}
-
-impl RootStore {
     pub fn subscribe_control_changes(&self) -> RootSubscription {
-        RootSubscription {
-            receivers: vec![self.control.subscribe_catalog_changes()],
-            stop: self.gates.cancellation(),
-        }
+        self.subscribe_catalog_changes()
     }
-}
-
-impl RootStore {
-    /// Register before reading the initial activation snapshot.
     pub fn subscribe_activation_changes(&self) -> RootSubscription {
         RootSubscription {
-            receivers: self
-                .partitions
-                .iter()
-                .map(|log| log.subscribe_activation_changes())
-                .collect(),
+            receiver: self.log.subscribe_activation_changes(),
             stop: self.gates.cancellation(),
         }
     }
-    /// Shared permission changes require reconciliation in each partition.
     pub fn subscribe_activation_control_changes(&self) -> RootSubscription {
-        RootSubscription {
-            receivers: vec![self.control.subscribe_activation_changes()],
-            stop: self.gates.cancellation(),
-        }
+        self.subscribe_activation_changes()
     }
 }

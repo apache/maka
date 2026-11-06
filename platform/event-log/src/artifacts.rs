@@ -178,19 +178,7 @@ async fn store_content(
     digest: &str,
     bytes: &[u8],
 ) -> Result<(), StoreError> {
-    let inserted = sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES (?,?) ON CONFLICT(content_sha256) DO NOTHING")
-        .bind(digest).bind(bytes).execute(&mut *connection).await?.rows_affected();
-    if inserted == 0
-        && !sqlx::query_scalar::<_, bool>(
-            "SELECT payload=? FROM artifact_contents WHERE content_sha256=?",
-        )
-        .bind(bytes)
-        .bind(digest)
-        .fetch_one(connection)
-        .await?
-    {
-        return Err(StoreError::ArtifactConflict);
-    }
+    crate::content::put(connection, digest, bytes).await?;
     Ok(())
 }
 
@@ -234,7 +222,7 @@ async fn verify_payload(
     bytes: &[u8],
 ) -> Result<(), StoreError> {
     let matches: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ? AND payload = ?)",
+        "SELECT EXISTS(SELECT 1 FROM artifacts JOIN contents USING(content_sha256) WHERE session_id = ? AND artifacts.id = ? AND payload = ?)",
     )
     .bind(&artifact.session_id)
     .bind(&artifact.id)
@@ -338,7 +326,7 @@ async fn image_chunk(
         return Err(StoreError::ArtifactOffset);
     }
     let (total, bytes): (i64, Vec<u8>) = sqlx::query_as(
-        "SELECT length(payload), substr(payload, ?, ?) FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ?"
+        "SELECT length(payload), substr(payload, ?, ?) FROM artifacts JOIN contents USING(content_sha256) WHERE session_id = ? AND artifacts.id = ?"
     ).bind(offset as i64 + 1).bind(limit as i64).bind(&artifact.session_id).bind(&artifact.id).fetch_one(&mut *connection).await?;
     if total as u64 != artifact.size_bytes
         || bytes.len() as u64 != (artifact.size_bytes - offset).min(limit as u64)

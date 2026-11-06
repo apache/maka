@@ -266,8 +266,10 @@ impl EventLog {
                 } else {
                     sqlx::query("INSERT INTO application_packages VALUES (?, ?)").bind(&reference.id).bind(&reference.revision).execute(&mut *tx).await?;
                     for (path, payload) in package.files() {
+                        let digest=maka_agent_facts::artifact::content_digest(payload);
+                        let content=crate::content::put(&mut tx,&digest,payload).await?;
                         sqlx::query("INSERT INTO application_package_files VALUES (?, ?, ?, ?)")
-                            .bind(&reference.id).bind(&reference.revision).bind(path).bind(payload).execute(&mut *tx).await?;
+                            .bind(&reference.id).bind(&reference.revision).bind(path).bind(content).execute(&mut *tx).await?;
                     }
                 }
                 sqlx::query("INSERT INTO application_source_packages VALUES (?, ?, ?, ?)")
@@ -346,7 +348,7 @@ impl EventLog {
         let requested = package.clone();
         let files = self
             .connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let installed: bool = sqlx::query_scalar(
@@ -392,7 +394,7 @@ impl EventLog {
             return Err(invalid("invalid deployment"));
         }
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let metadata = read_metadata(&mut tx, domain, deployment, revision).await?;
@@ -415,7 +417,7 @@ impl EventLog {
         let owner = std::sync::Arc::downgrade(self.root_owner.as_ref().expect("owned source Root"));
         let raw = self
             .connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let Some(metadata) =
@@ -539,8 +541,9 @@ async fn read_package_files(
 ) -> Result<BTreeMap<String, Vec<u8>>, StoreError> {
     let rows = sqlx::query(
         "SELECT path,
-            CASE WHEN typeof(payload) = 'blob' THEN payload END AS payload
-            FROM application_package_files WHERE id = ? AND revision = ? ORDER BY path",
+            CASE WHEN typeof(c.payload) = 'blob' THEN c.payload END AS payload
+            FROM application_package_files f JOIN contents c ON c.id=f.content_id
+            WHERE f.id = ? AND f.revision = ? ORDER BY f.path",
     )
     .bind(&reference.id)
     .bind(&reference.revision)

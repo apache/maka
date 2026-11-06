@@ -47,7 +47,7 @@ impl crate::EventLog {
             source_artifact.to_owned(),
         );
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     resolve(connection, &session, &source_session, &source_artifact).await
                 })
@@ -208,8 +208,8 @@ async fn retain_one(
     let metadata = serde_json::to_string(&artifact)?;
     let copied = sqlx::query(
         "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, canonical_at, lookup_digest)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN artifact_contents USING(content_sha256)
-         WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
+         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN contents USING(content_sha256)
+         WHERE session_id = ?1 AND artifacts.id = ?2 AND length(payload) = ?7",
     )
     .bind(source)
     .bind(&source_id)

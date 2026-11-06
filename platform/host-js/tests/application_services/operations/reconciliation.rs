@@ -137,7 +137,8 @@ async fn live_adoption_preserves_original_mutation_preparation_and_unchanged_act
             )
             .unwrap();
             connection
-                .execute("UPDATE application_package_files SET payload = X'00'", [])
+                .execute_batch("INSERT INTO contents(content_sha256,payload) VALUES('sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d',X'00');
+                    UPDATE application_package_files SET content_id=last_insert_rowid();")
                 .unwrap();
             drop(connection);
             assert!(store.load_application_at(&original).await.is_err());

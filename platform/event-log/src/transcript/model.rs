@@ -45,14 +45,12 @@ pub(super) struct Metadata {
 // validates each candidate; the history UNION must not drive a whole-session scan.
 const PRODUCER: &str = "SELECT e.invocation_id, e.kind, e.operation_id
 FROM runtime_events e WHERE e.sequence = ?2 AND e.sequence <= ?3
-  AND (e.event_session = ?1 OR EXISTS(
-    SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
+  AND (e.event_session=?1 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?1 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?1 AND m.sequence=e.sequence))";
 const REQUESTED: &str = "SELECT json_extract(e.event_header, '$.fact.model_id')
 FROM runtime_events e WHERE e.operation_id = ?3 AND e.kind = 'model_requested'
   AND e.invocation_id = ?2 AND e.sequence <= ?4
   AND json_extract(e.event_header, '$.fact.step_id') = ?3
-  AND (e.event_session = ?1 OR EXISTS(
-    SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
+  AND (e.event_session=?1 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?1 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?1 AND m.sequence=e.sequence))";
 const OBSERVED: &str = "SELECT e.sequence, json_extract(e.event_header, '$.fact.event.data.model')
 FROM runtime_events e WHERE e.invocation_id = ?2
   AND CAST(json_extract(e.event_header, '$.fact.step_id') AS TEXT) = ?3
@@ -60,20 +58,17 @@ FROM runtime_events e WHERE e.invocation_id = ?2
   AND e.sequence <= ?4 AND e.kind = 'model_observed' AND e.event_header IS NOT NULL
   AND json_extract(e.event_header, '$.fact.event.kind') = 'response_metadata'
   AND json_type(e.event_header, '$.fact.event.data.model') = 'text'
-  AND (e.event_session = ?1 OR EXISTS(
-    SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))
+  AND (e.event_session=?1 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?1 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?1 AND m.sequence=e.sequence))
 ORDER BY e.sequence DESC LIMIT 1";
 const COMPLETED: &str = "SELECT e.sequence, json_extract(e.event_header, '$.fact.output.model')
 FROM runtime_events e WHERE e.operation_id = ?3 AND e.kind = 'model_completed'
   AND e.invocation_id = ?2 AND e.sequence <= ?4
   AND json_extract(e.event_header, '$.fact.step_id') = ?3
   AND json_type(e.event_header, '$.fact.output.model') = 'text'
-  AND (e.event_session = ?1 OR EXISTS(
-    SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
+  AND (e.event_session=?1 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?1 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?1 AND m.sequence=e.sequence))";
 const EXECUTOR: &str = "SELECT EXISTS(SELECT 1 FROM runtime_events e
 WHERE e.invocation_id = ?2 AND e.kind = 'executor_started' AND e.sequence <= ?3
-  AND (e.event_session = ?1 OR EXISTS(
-    SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence)))";
+  AND (e.event_session=?1 OR EXISTS(SELECT 1 FROM session_history_members h WHERE h.session_id=?1 AND h.sequence=e.sequence) OR EXISTS(SELECT 1 FROM history_snapshot_sessions s JOIN history_snapshot_members m USING(capture_key,session_id) WHERE s.owner_key=?1 AND m.sequence=e.sequence)))";
 
 pub(super) async fn resolve(
     tx: &mut SqliteConnection,

@@ -27,7 +27,7 @@ use sqlx::sqlite::SqliteWorkerConnection;
 // Materialize the one-row owner and keep it before each indexed lookup.
 // Reordering these joins can scan the Session's payloads or entire tool indexes.
 const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
-            SELECT session_id, turn_id, source_sequence, item_index, message_id,
+            SELECT owner_key, turn_id, source_sequence, item_index, message_id,
                 role AS kind,
                 CASE role WHEN 'tool_call' THEN message_id
                     ELSE tool_use_id END AS tool_id,
@@ -37,13 +37,13 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 is_error AS error,
                 content_kind IS 'image' AS image,
                 COALESCE(image_count, 0) AS images
-            FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3 AND source_sequence <= ?4
+            FROM transcript_directory WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3 AND source_sequence <= ?4
         ), call_row AS (
             SELECT row.source_sequence, row.item_index, row.tool_name AS name,
                 row.tool_origin AS origin,
                 row.parent_tool_call_id AS parent_call,
                 row.parent_operation_id AS parent_operation
-            FROM owner CROSS JOIN transcript_directory row ON row.session_id = owner.session_id
+            FROM owner CROSS JOIN transcript_directory row ON row.owner_key = owner.owner_key
                 AND row.message_id = owner.tool_id AND row.turn_id = owner.turn_id
             WHERE row.source_sequence <= ?4 AND row.role = 'tool_call'
                 AND row.has_args = 1
@@ -52,7 +52,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 CASE WHEN parent.tool_origin IN ('host_sdk', 'code_mode')
                     THEN parent.parent_tool_call_id END, 1
             FROM owner CROSS JOIN call_row CROSS JOIN transcript_directory parent
-                ON parent.session_id = owner.session_id AND parent.turn_id = owner.turn_id
+                ON parent.owner_key = owner.owner_key AND parent.turn_id = owner.turn_id
                 AND parent.message_id = call_row.parent_call
             WHERE (parent.source_sequence, parent.item_index) < (call_row.source_sequence, call_row.item_index) AND parent.role = 'tool_call'
                 AND call_row.origin IN ('host_sdk', 'code_mode')
@@ -61,14 +61,14 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 CASE WHEN parent.tool_origin IN ('host_sdk', 'code_mode')
                     THEN parent.parent_tool_call_id END, ancestors.depth + 1
             FROM ancestors CROSS JOIN owner CROSS JOIN transcript_directory parent
-                ON parent.session_id = owner.session_id AND parent.turn_id = owner.turn_id
+                ON parent.owner_key = owner.owner_key AND parent.turn_id = owner.turn_id
                 AND parent.message_id = ancestors.parent_id
             WHERE (parent.source_sequence, parent.item_index) < (ancestors.source_sequence, ancestors.item_index) AND parent.role = 'tool_call'
         ), activity AS MATERIALIZED (
             SELECT row.source_sequence, row.item_index, row.tool_name AS name,
                 row.tool_title AS title,
                 row.presentation AS presentation
-            FROM owner CROSS JOIN transcript_directory row ON row.session_id = owner.session_id
+            FROM owner CROSS JOIN transcript_directory row ON row.owner_key = owner.owner_key
                 AND row.turn_id = owner.turn_id AND row.tool_use_id = owner.tool_id
             WHERE row.source_sequence <= ?4 AND row.role = 'tool_activity'
             ORDER BY row.source_sequence, row.item_index LIMIT 2
@@ -85,7 +85,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                     AND (activity.source_sequence, activity.item_index) > (call_row.source_sequence, call_row.item_index) AND activity.name = call_row.name)),
                 'pending', json(CASE WHEN call_row.origin IN ('provider', 'host_sdk', 'code_mode')
                     AND (SELECT row.state_status FROM owner CROSS JOIN transcript_directory row
-                        ON row.session_id = owner.session_id AND row.turn_id = owner.turn_id
+                        ON row.owner_key = owner.owner_key AND row.turn_id = owner.turn_id
                         WHERE row.source_sequence <= ?4 AND row.role = 'turn_state'
                         ORDER BY row.source_sequence DESC, row.item_index DESC LIMIT 1) = 'running'
                     THEN 'true' ELSE 'false' END)) AS reference FROM call_row
@@ -98,7 +98,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 row.is_error AS error,
                 row.content_kind IS 'image' AS image,
                 COALESCE(row.image_count, 0) AS images
-            FROM owner CROSS JOIN transcript_directory row ON row.session_id = owner.session_id
+            FROM owner CROSS JOIN transcript_directory row ON row.owner_key = owner.owner_key
                 AND row.turn_id = owner.turn_id AND row.tool_use_id = owner.tool_id
             WHERE row.source_sequence <= ?4 AND row.role = 'tool_result'
             ORDER BY row.source_sequence, row.item_index LIMIT 2

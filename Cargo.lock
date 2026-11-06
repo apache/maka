@@ -7875,6 +7875,7 @@ dependencies = [
 name = "maka-event-log"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
  "futures-util",

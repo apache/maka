@@ -37,7 +37,7 @@ impl EventLog {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             Ok(sqlx::query_scalar(
                 "SELECT json_extract(opening.event_header, '$.invocation.run_id')
                  FROM runtime_events opening JOIN runtime_events terminal
@@ -64,7 +64,7 @@ impl EventLog {
             return Err(invalid("invalid source Run high-water"));
         }
         let source = source.clone();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
                 "SELECT sequence, CASE WHEN length(CAST(event_header AS BLOB)) <= 1048576 THEN event_header END

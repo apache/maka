@@ -48,7 +48,7 @@ impl EventLog {
         super::validate_id(target)?;
         let target = target.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let row: Option<(String, String)> = sqlx::query_as(
                         "SELECT request_json, state FROM session_history_copies WHERE session_id=? AND bundle_digest IS NULL",

@@ -34,6 +34,7 @@ pub(crate) struct Record<'json> {
 pub(crate) struct BodyReference {
     pub id: i64,
     pub offset: i64,
+    pub json_bytes: i64,
 }
 
 pub(crate) fn insert(record: Record<'_>) -> Query<'_, Sqlite, SqliteArguments> {
@@ -47,9 +48,9 @@ pub(crate) fn insert_header(
     body: Option<BodyReference>,
 ) -> Query<'_, Sqlite, SqliteArguments> {
     sqlx::query(
-        "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_header,canonical_bytes,body_id,header_offset,
+        "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_header,canonical_bytes,body_id,header_offset,body_json_bytes,
                                accounting_at,accounting_usage,invocation_model,accounting_tool,event_session)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,
             CASE WHEN ?4 IN ('model_requested', 'model_completed', 'model_interrupted',
                            'invocation_ended', 'auxiliary_model_started', 'auxiliary_model_settled',
                            'tool_dispatched', 'tool_settled', 'tool_rejected')
@@ -87,4 +88,5 @@ pub(crate) fn insert_header(
     .bind(canonical_bytes as i64)
     .bind(body.map(|body| body.id))
     .bind(body.map(|body| body.offset))
+    .bind(body.map(|body| body.json_bytes))
 }

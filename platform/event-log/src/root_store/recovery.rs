@@ -32,7 +32,8 @@ impl RootStore {
         let guard = Arc::new(guard);
         let result = async {
             let mut count = 0u64;
-            for owner in &self.partitions {
+            {
+                let owner = &self.log;
                 let log = owner.scoped(guard.clone());
                 let value = match kind {
                     Recovery::Shell(at) => log.recover_shell_runs(at).await?,

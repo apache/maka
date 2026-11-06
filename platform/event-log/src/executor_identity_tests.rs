@@ -111,7 +111,7 @@ fn events(db: &Connection) -> Vec<(i64, Vec<u8>)> {
         .unwrap()
 }
 fn raw(db: &Connection) -> Vec<(String, Vec<u8>)> {
-    db.prepare("SELECT event_id,payload FROM tool_result_payloads ORDER BY event_id")
+    db.prepare("SELECT event_id,c.payload FROM tool_result_payloads p JOIN contents c ON c.id=p.content_id ORDER BY event_id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -119,7 +119,7 @@ fn raw(db: &Connection) -> Vec<(String, Vec<u8>)> {
         .unwrap()
 }
 fn cached_rows(db: &Connection) -> Vec<(i64, i64, String, Vec<u8>)> {
-    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM temp.transcript_rows WHERE session_id='session' ORDER BY source_sequence,item_index")
+    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM temp.transcript_rows WHERE owner_key='session' ORDER BY source_sequence,item_index")
         .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
         .unwrap().collect::<Result<_, _>>().unwrap()
 }

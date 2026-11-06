@@ -30,20 +30,6 @@ use std::panic::AssertUnwindSafe;
 
 type Close = BoxFuture<'static, Result<()>>;
 type Jobs = FuturesUnordered<BoxFuture<'static, Done>>;
-fn next_change(
-    mut cursor: maka_event_log::applications::DeploymentChanges,
-) -> BoxFuture<
-    'static,
-    (
-        maka_event_log::applications::DeploymentChanges,
-        std::result::Result<DeploymentRef, maka_event_log::StoreError>,
-    ),
-> {
-    Box::pin(async move {
-        let source = cursor.next().await;
-        (cursor, source)
-    })
-}
 
 struct Failed {
     _execution: Execution<Service>,
@@ -233,7 +219,7 @@ impl Owner {
             .map(|(source, store)| store.subscribe_application(source.reference().clone()))
             .transpose()
         {
-            Ok(changes) => changes.map(next_change),
+            Ok(changes) => changes,
             Err(error) => {
                 let source = self
                     .persisted
@@ -294,14 +280,12 @@ impl Owner {
                 },
                 change = async {
                     match &mut changes {
-                        Some(next) => next.await,
+                        Some(cursor) => cursor.next().await,
                         None => std::future::pending().await,
                     }
                 }, if !self.closing && self.loading_adoption.is_none() => {
-                    let (cursor, source) = change;
-                    match source {
+                    match change {
                         Ok(source) => {
-                            changes = Some(next_change(cursor));
                             self.observe_source(source);
                         }
                         Err(error) => {

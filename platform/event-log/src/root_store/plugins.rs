@@ -28,9 +28,7 @@ impl RootStore {
         if let Scope::Session(session) = namespace.scope() {
             return self.session(session).await?.scoped().await;
         }
-        let identity =
-            serde_json::to_string(&(namespace.package(), String::from(namespace.scope().clone())))?;
-        Ok(self.partitions[partition_for(b"plugin-storage", &identity)].scoped(Arc::new(())))
+        Ok(self.log.scoped(self.log.clone()))
     }
     pub async fn plugin_data_scan(
         &self,

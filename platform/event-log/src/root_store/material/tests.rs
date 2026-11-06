@@ -287,11 +287,7 @@ async fn ownership_released_during_a_pass_revisits_an_earlier_retained_source() 
     )
     .await;
     retire(&root, "source").await;
-    let partition = root.route_partition("source").await.unwrap();
-    let later_id = (0..)
-        .map(|index| format!("z-later-{index}"))
-        .find(|id| partition_for(b"session", id) == partition)
-        .unwrap();
+    let later_id = "z-later".to_owned();
     let later = root
         .create_session(&later_id, &later_id, &json!({}), 2)
         .await
@@ -355,7 +351,6 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .unwrap();
     turns(&source).await;
     let log = source.owner().unwrap();
-    let partition = root.route_partition("source").await.unwrap();
     let (reached, release) = block_update(&log, "event_log").await;
     retire(&root, "source").await;
     tokio::time::timeout(Duration::from_secs(10), reached)
@@ -363,14 +358,8 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .unwrap()
         .unwrap();
     let closed = root.lifecycle.as_ref().unwrap().receipt();
-    let independent = root.partitions[(partition + 1) % PARTITION_COUNT].close_receipt();
     drop(log);
     drop(root);
-    // Another partition closes while the accepted GC transaction is blocked.
-    tokio::time::timeout(Duration::from_secs(10), independent)
-        .await
-        .unwrap()
-        .unwrap();
     assert!(closed.clone().now_or_never().is_none());
     let namespaces = root::RootNamespaces {
         ownership: directory.path().join("ownership"),
@@ -382,12 +371,8 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
         .await
         .unwrap()
         .unwrap();
-    let inspect = rusqlite::Connection::open(
-        directory
-            .path()
-            .join(format!("root/runtime-partitions/{partition:02}.sqlite")),
-    )
-    .unwrap();
+    let inspect =
+        rusqlite::Connection::open(directory.path().join("root/runtime-rust.sqlite")).unwrap();
     let remaining: i64 = inspect
         .query_row(
             "SELECT COUNT(*) FROM event_log WHERE event_header IS NOT NULL",
@@ -403,6 +388,6 @@ async fn shutdown_drains_the_accepted_batch_and_reopen_resumes_without_new_write
     let restored =
         Arc::new(root::RootOwner::open(&directory.path().join("root"), &namespaces).unwrap());
     let reopened = RootStore::open(restored).await.unwrap();
-    reclaimed(&reopened.partitions[partition]).await;
+    reclaimed(&reopened.log).await;
     reopened.close().await.unwrap();
 }

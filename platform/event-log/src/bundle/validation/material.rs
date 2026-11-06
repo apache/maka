@@ -50,7 +50,12 @@ pub(super) async fn tool(
         return Err(invalid("tool blob differs from its original event"));
     }
     let payload = payload(staged, number, &descriptor).await?;
-    decode_raw_tool_result(&payload, raw).map_err(invalid)?;
+    let output = decode_raw_tool_result(&payload, raw).map_err(invalid)?;
+    if serde_json::to_vec(&output)? != payload {
+        return Err(invalid(
+            "tool blob is not the canonical raw result encoding",
+        ));
+    }
     Ok(Some(payload))
 }
 
@@ -74,11 +79,10 @@ pub(super) async fn composition(
     }
     let bytes = payload(staged, number, &descriptor).await?;
     let surface: RequestComposition = serde_json::from_slice(&bytes)?;
-    if surface.freeze().map_err(invalid)?.digest() != descriptor.digest() {
+    if surface.clone().freeze().map_err(invalid)?.digest() != descriptor.digest() {
         return Err(invalid("composition is not the frozen request surface"));
     }
-    sqlx::query("INSERT INTO request_compositions(digest,surface) VALUES(?,?) ON CONFLICT(digest) DO NOTHING")
-        .bind(descriptor.digest()).bind(bytes).execute(&mut *db).await?;
+    crate::composition::store(db, descriptor.digest(), &surface, bytes.len()).await?;
     sqlx::query("INSERT INTO model_request_compositions(event_id,digest) VALUES(?,?)")
         .bind(&event.id)
         .bind(descriptor.digest())

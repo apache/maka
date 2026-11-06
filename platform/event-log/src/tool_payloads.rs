@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod material;
 use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
@@ -24,7 +25,8 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::tool_output::ToolOutput;
 use maka_agent_facts::tool_output::decode_raw_tool_result;
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
+pub(crate) use material::encode;
+use rusqlite::{Connection as RawConnection, OptionalExtension};
 use sqlx::{Connection, SqliteConnection};
 
 use crate::{EventLog, StoreError};
@@ -96,11 +98,7 @@ pub(crate) async fn insert(
         return Err(invalid());
     }
     if let Some(payload) = write.raw_payload() {
-        sqlx::query("INSERT INTO tool_result_payloads (event_id, payload) VALUES (?, ?)")
-            .bind(&write.event().id)
-            .bind(payload)
-            .execute(&mut *connection)
-            .await?;
+        store_raw(connection, &write.event().id, payload).await?;
     }
     for pending in write.projection_artifacts() {
         let artifact = pending.artifact();
@@ -121,8 +119,12 @@ pub(crate) async fn verify_replay(
     write: &EventWrite,
 ) -> Result<(), StoreError> {
     let equal: Option<bool> =
-        sqlx::query_scalar("SELECT payload = ? FROM tool_result_payloads WHERE event_id = ?")
-            .bind(write.raw_payload())
+        sqlx::query_scalar("SELECT raw_digest = ? FROM tool_result_payloads WHERE event_id = ?")
+            .bind(
+                write
+                    .raw_payload()
+                    .map(maka_agent_facts::artifact::content_digest),
+            )
             .bind(&write.event().id)
             .fetch_optional(&mut *connection)
             .await?;
@@ -141,15 +143,12 @@ pub(crate) async fn verify_replay(
 
 fn raw_meta() -> String {
     format!(
-        "SELECT e.event_header, length(p.payload) AS payload_bytes,{} FROM runtime_events e {}
+        "SELECT e.event_header, p.raw_bytes AS payload_bytes,{} FROM runtime_events e {}
          LEFT JOIN tool_result_payloads p ON p.event_id=e.event_id WHERE e.event_id=?",
         crate::canonical::COLUMNS,
         crate::canonical::JOINS
     )
 }
-const RAW_BYTES: &str =
-    r#"SELECT payload FROM tool_result_payloads WHERE event_id = ? AND length(payload) = ?"#;
-
 /// Selected T2 only; proof and original payload reads share the caller snapshot.
 pub(crate) fn resolve_in_transaction(
     db: &RawConnection,
@@ -178,10 +177,9 @@ pub(crate) fn resolve_in_transaction(
         return Err(invalid());
     }
     verify_binding(event, bytes)?;
-    let payload: Vec<u8> = db
-        .prepare_cached(RAW_BYTES)?
-        .query_row(params![&event.id, raw.bytes as i64], |row| row.get(0))?;
-    decode_raw_tool_result(&payload, raw).map_err(|_| invalid())
+    let output = material::read_on_handle(db, &event.id)?;
+    let encoded = serde_json::to_vec(&output)?;
+    decode_raw_tool_result(&encoded, raw).map_err(|_| invalid())
 }
 
 impl EventLog {
@@ -195,7 +193,7 @@ impl EventLog {
         crate::sessions::validate_id(session_id)?;
         let (session_id, event_id) = (session_id.to_owned(), event_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -220,4 +218,12 @@ impl EventLog {
             })
             .await
     }
+}
+
+pub(crate) async fn store_raw(
+    connection: &mut SqliteConnection,
+    event: &str,
+    bytes: &[u8],
+) -> Result<(), StoreError> {
+    material::store(connection, event, bytes).await
 }

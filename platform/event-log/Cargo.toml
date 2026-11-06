@@ -28,6 +28,7 @@ ignore = "0.4.33"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 hex.workspace = true
+base64 = "0.23.1"
 postcard.workspace = true
 maka-agent-facts.workspace = true
 maka-packages.workspace = true

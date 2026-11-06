@@ -34,7 +34,7 @@ impl EventLog {
                 "invalid catalog change bounds".into(),
             ));
         }
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
         let rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT sequence, json_extract(event_header, '$.invocation.session_id')
              FROM local_runtime_events

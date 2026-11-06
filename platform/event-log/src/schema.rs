@@ -26,13 +26,6 @@ static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 pub(crate) async fn initialize_connection(
     connection: &mut SqliteConnection,
 ) -> Result<(), StoreError> {
-    initialize_connection_with_control(connection, None).await
-}
-
-pub(crate) async fn initialize_connection_with_control(
-    connection: &mut SqliteConnection,
-    control: Option<&crate::connection::control::ReadOnlyControl>,
-) -> Result<(), StoreError> {
     let application_id: i64 = sqlx::query_scalar("PRAGMA application_id")
         .fetch_one(&mut *connection)
         .await?;
@@ -45,7 +38,7 @@ pub(crate) async fn initialize_connection_with_control(
     .fetch_one(&mut *connection)
     .await?;
     if !((application_id == 0 && version == 0 && tables == 0)
-        || (application_id == 0x4d414b52 && matches!(version, 0..=1)))
+        || (application_id == 0x4d414b52 && matches!(version, 0 | 2)))
     {
         return Err(StoreError::UnsupportedDatabase);
     }
@@ -56,7 +49,7 @@ pub(crate) async fn initialize_connection_with_control(
     .await?;
     // Version zero is only a genuinely empty or interrupted initial setup.
     // Existing data is never adopted by creating a new migration ledger.
-    if (version == 0 && tables != i64::from(ledger)) || (version == 1 && !ledger) {
+    if (version == 0 && tables != i64::from(ledger)) || (version == 2 && !ledger) {
         return Err(StoreError::UnsupportedDatabase);
     }
     if ledger {
@@ -64,24 +57,6 @@ pub(crate) async fn initialize_connection_with_control(
             .fetch_one(&mut *connection)
             .await?;
         if (version == 0) != (applied == 0) {
-            return Err(StoreError::UnsupportedDatabase);
-        }
-    }
-    // Root partitions cannot own caller journals. Reject before migrations or
-    // derived-index initialization can write to this original database.
-    if control.is_some() {
-        let has_intents: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE name='application_intents' AND type='table')",
-        )
-        .fetch_one(&mut *connection)
-        .await?;
-        if has_intents
-            && sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM main.application_intents)",
-            )
-            .fetch_one(&mut *connection)
-            .await?
-        {
             return Err(StoreError::UnsupportedDatabase);
         }
     }
@@ -107,27 +82,12 @@ pub(crate) async fn initialize_connection_with_control(
     // Establish Rust identity before SQLx creates its migration ledger, so a
     // crash before migration 1 is distinguishable from an unrelated database.
     if application_id == 0 {
-        sqlx::query("PRAGMA application_id = 1296124754")
+        sqlx::raw_sql("PRAGMA application_id = 1296124754")
             .execute(&mut *connection)
             .await?;
     }
     crate::sqlite_functions::register(connection).await?;
-    crate::sqlite_functions::register_migrations(connection).await?;
-    let migrated = MIGRATIONS
-        .run_direct(None, &mut *connection, false)
-        .await
-        .map_err(StoreError::from);
-    let unregistered = crate::sqlite_functions::unregister_migrations(connection).await;
-    match (migrated, unregistered) {
-        (Ok(()), Ok(())) => {}
-        (Err(cause), Err(cleanup)) => {
-            return Err(StoreError::StartupCleanupFailed {
-                cause: Box::new(cause),
-                cleanup: Box::new(cleanup),
-            });
-        }
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
-    }
+    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
     sqlx::raw_sql(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
     )
@@ -135,7 +95,6 @@ pub(crate) async fn initialize_connection_with_control(
     .await?;
     // Migrations create the standalone main table; derived Session reads must
     // resolve the root's live bindings before rebuilding any execution state.
-    crate::connection::control::initialize_views(connection, control).await?;
     crate::message_sources::initialize(connection).await?;
     crate::sessions::initialize_execution(connection).await?;
     Ok(())

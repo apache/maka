@@ -29,6 +29,7 @@ pub struct DeploymentChanges {
     store: Weak<EventLog>,
     stop: Option<tokio_util::sync::CancellationToken>,
     observed: DeploymentRef,
+    observed_idle: bool,
     wakes: tokio::sync::watch::Receiver<u64>,
 }
 impl EventLog {
@@ -44,6 +45,7 @@ impl EventLog {
             store: Arc::downgrade(self),
             stop: None,
             observed,
+            observed_idle: false,
             wakes: self.subscribe_commits(),
         })
     }
@@ -58,7 +60,7 @@ impl EventLog {
             return Err(invalid("invalid deployment"));
         }
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let row =
                         sqlx::query("SELECT revision FROM application_deployments WHERE id = ?")
@@ -90,24 +92,26 @@ impl DeploymentChanges {
 
     pub async fn next(&mut self) -> Result<DeploymentRef, StoreError> {
         loop {
-            // Consume the wake before the SQL read: a commit during the read
-            // remains observable if that read did not already include it.
-            self.wakes.borrow_and_update();
             if self.stop.as_ref().is_some_and(|stop| stop.is_cancelled()) {
                 return Err(StoreError::ConnectionClosed);
             }
             let store = self.store.upgrade().ok_or(StoreError::ConnectionClosed)?;
             let closed = store.connection.close_receipt();
-            let source = store
-                .application_head(self.observed.deployment)
-                .await?
-                .ok_or_else(|| invalid("watched deployment not found"))?;
-            if source.revision < self.observed.revision {
-                return Err(invalid("watched revision exceeds committed head"));
-            }
-            if source.revision > self.observed.revision {
-                self.observed = source.clone();
-                return Ok(source);
+            if !self.observed_idle {
+                // A commit during this read remains observable on the next wake.
+                self.wakes.borrow_and_update();
+                let source = store
+                    .application_head(self.observed.deployment)
+                    .await?
+                    .ok_or_else(|| invalid("watched deployment not found"))?;
+                if source.revision < self.observed.revision {
+                    return Err(invalid("watched revision exceeds committed head"));
+                }
+                if source.revision > self.observed.revision {
+                    self.observed = source.clone();
+                    return Ok(source);
+                }
+                self.observed_idle = true;
             }
             drop(store);
             let stopping = async {
@@ -127,6 +131,7 @@ impl DeploymentChanges {
                 }
                 wake = self.wakes.changed() => {
                     wake.map_err(|_| invalid("application commit source closed"))?;
+                    self.observed_idle = false;
                 }
             }
         }

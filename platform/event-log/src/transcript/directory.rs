@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::emit::source_on_handle;
 const INSERT: &str = "INSERT INTO transcript_directory
- (session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,image_count,tool_title,presentation,duration_ms,context_eligible,order_sequence,order_item)
+ (owner_key,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,image_count,tool_title,presentation,duration_ms,context_eligible,order_sequence,order_item)
  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)";
 
 #[derive(Clone, Copy)]
@@ -71,7 +71,12 @@ pub(crate) fn ensure_on_handle(
     session: &str,
     through: u64,
 ) -> Result<(), StoreError> {
-    ensure_for(db, session, through, Need::Directory)
+    ensure_for(
+        db,
+        &super::HistoryOwner::Session(session.to_owned()),
+        through,
+        Need::Directory,
+    )
 }
 
 pub(crate) fn ensure_recall_on_handle(
@@ -80,16 +85,22 @@ pub(crate) fn ensure_recall_on_handle(
     through: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), StoreError> {
-    ensure_for(db, session, through, Need::Recall(cancellation))
+    ensure_for(
+        db,
+        &super::HistoryOwner::Session(session.to_owned()),
+        through,
+        Need::Recall(cancellation),
+    )
 }
 
 fn ensure_for(
     db: &RawConnection,
-    session: &str,
+    owner: &super::HistoryOwner,
     through: u64,
     need: Need<'_>,
 ) -> Result<(), StoreError> {
     need.check()?;
+    let session = owner.session();
     let through = read::sql_number(through)?;
     let high: i64 = db
         .prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
@@ -99,24 +110,40 @@ fn ensure_for(
             "transcript fence exceeds committed log".into(),
         ));
     }
-    let removed: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 AND remove_session=1)")?
+    let identity = match owner {
+        super::HistoryOwner::Session(_) => {
+            let removed: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?1 AND remove_session=1)")?
         .query_row([session], |row| row.get(0))?;
-    if removed {
-        return Err(StoreError::SessionNotFound);
-    }
-    // Canonical membership retains copied material. A bare imported owner can
-    // lose its own material without a session retirement row.
-    let unavailable: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY event_retired_material_owner WHERE event_session=?1 AND sequence<=?2 AND event_header IS NULL AND invocation_id IS NOT NULL)")?
+            if removed {
+                return Err(StoreError::SessionNotFound);
+            }
+            // Canonical membership retains copied material. A bare imported owner can
+            // lose its own material without a session retirement row.
+            let unavailable: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY event_retired_material_owner WHERE event_session=?1 AND sequence<=?2 AND event_header IS NULL AND invocation_id IS NOT NULL)")?
         .query_row(params![session,through], |row| row.get(0))?;
-    if unavailable {
-        return Err(StoreError::InvalidTransition(
-            "history source material is unavailable".into(),
-        ));
-    }
-    let identity: Option<String> = db.prepare_cached("SELECT json_array(source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,bundle_digest,state) FROM session_history_copies WHERE session_id=?1")?
+            if unavailable {
+                return Err(StoreError::InvalidTransition(
+                    "history source material is unavailable".into(),
+                ));
+            }
+            let identity: Option<String> = db.prepare_cached("SELECT json_array(source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,bundle_digest,state) FROM session_history_copies WHERE session_id=?1")?
         .query_row([session], |row| row.get(0)).optional()?;
-    let identity = identity.unwrap_or_default();
-    let previous: Option<(String,i64)> = db.prepare_cached("SELECT copy_identity,through_sequence FROM temp.transcript_directory_progress WHERE session_id=?1")?
+            identity.unwrap_or_default()
+        }
+        super::HistoryOwner::Snapshot { key, .. } => {
+            let (identity,fence):(String,i64)=db.query_row(
+                "SELECT s.copy_identity,c.through_sequence FROM history_snapshot_sessions s JOIN history_snapshot_captures c USING(capture_key) WHERE s.owner_key=?",
+                [key],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            if through > fence {
+                return Err(StoreError::InvalidTransition(
+                    "snapshot history fence exceeds its frozen cut".into(),
+                ));
+            }
+            identity
+        }
+    };
+    let session = owner.key();
+    let previous: Option<(String,i64)> = db.prepare_cached("SELECT copy_identity,through_sequence FROM temp.transcript_directory_progress WHERE owner_key=?1")?
         .query_row([session], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
     let directory_after = match previous {
         Some((prior, progress)) if prior == identity => progress,
@@ -130,7 +157,7 @@ fn ensure_for(
                 "transcript_sessions",
                 "transcript_active_source",
             ] {
-                db.prepare_cached(&format!("DELETE FROM temp.{table} WHERE session_id=?1"))?
+                db.prepare_cached(&format!("DELETE FROM temp.{table} WHERE owner_key=?1"))?
                     .execute([session])?;
             }
             crate::recall::maintenance::reset_session(db, session)?;
@@ -140,14 +167,13 @@ fn ensure_for(
     };
     let recall_after: Option<i64> = match need {
         Need::Directory => None,
-        Need::Recall(_) => Some(db.prepare_cached("SELECT COALESCE((SELECT through_source_sequence FROM recall_progress WHERE session_id=?1),0)")?
+        Need::Recall(_) => Some(db.prepare_cached("SELECT COALESCE((SELECT through_source_sequence FROM recall_progress WHERE owner_key=?1),0)")?
             .query_row([session], |row| row.get(0))?),
     };
     let after = recall_after.map_or(directory_after, |recall| directory_after.min(recall));
     if after < through {
         let sql = format!(
-            "SELECT e.sequence FROM runtime_events e WHERE e.event_session=?1 AND e.sequence>?2 AND e.sequence<=?3 AND {} UNION SELECT e.sequence FROM session_history_members h JOIN runtime_events e ON e.sequence=h.sequence WHERE h.session_id=?1 AND e.sequence>?2 AND e.sequence<=?3 AND {} ORDER BY sequence",
-            emit::ELIGIBLE,
+            "SELECT e.sequence FROM history_owner_events h JOIN runtime_events e ON e.sequence=h.sequence WHERE h.owner_key=?1 AND e.sequence>?2 AND e.sequence<=?3 AND {} ORDER BY e.sequence",
             emit::ELIGIBLE
         );
         let mut statement = db.prepare_cached(&sql)?;
@@ -158,13 +184,13 @@ fn ensure_for(
             let missing_directory = source > directory_after;
             let missing_recall = recall_after.is_some_and(|recall| source > recall);
             if !missing_directory {
-                let failed: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM transcript_failures WHERE session_id=?1 AND source_sequence=?2)")?
+                let failed: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM transcript_failures WHERE owner_key=?1 AND source_sequence=?2)")?
                     .query_row(params![session,source], |row| row.get(0))?;
                 if failed {
                     continue;
                 }
             }
-            let rows = match emit::source_on_handle(db, session, source) {
+            let rows = match emit::source_for_owner_on_handle(db, owner, source) {
                 Ok(rows) => rows,
                 Err(error) if missing_directory => {
                     record_failure(db, session, source, error)?;
@@ -183,14 +209,14 @@ fn ensure_for(
     }
     // Both watermarks cover zero-row sources and explicit cached failures.
     if directory_after < through {
-        db.prepare_cached("INSERT INTO temp.transcript_directory_progress(session_id,copy_identity,through_sequence) VALUES(?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET copy_identity=excluded.copy_identity,through_sequence=excluded.through_sequence")?
+        db.prepare_cached("INSERT INTO temp.transcript_directory_progress(owner_key,copy_identity,through_sequence) VALUES(?1,?2,?3) ON CONFLICT(owner_key) DO UPDATE SET copy_identity=excluded.copy_identity,through_sequence=excluded.through_sequence")?
             .execute(params![session,identity,through])?;
     }
     if recall_after.is_some_and(|recall| recall < through) {
         crate::recall::maintenance::mark_progress(db, session, through)?;
     }
     need.check()?;
-    let failure: Option<(i64,String,Option<String>)> = db.prepare_cached("SELECT source_sequence,category,reason FROM transcript_failures WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence LIMIT 1")?
+    let failure: Option<(i64,String,Option<String>)> = db.prepare_cached("SELECT source_sequence,category,reason FROM transcript_failures WHERE owner_key=?1 AND source_sequence<=?2 ORDER BY source_sequence LIMIT 1")?
         .query_row(params![session,through], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
     if let Some((source, category, reason)) = failure {
         let cause = if category == "namespace" {
@@ -250,7 +276,7 @@ fn record_failure(
     let Some((category, reason)) = optional_failure(&error) else {
         return Err(error);
     };
-    db.prepare_cached("INSERT INTO transcript_failures(session_id,source_sequence,category,reason) VALUES(?1,?2,?3,?4)")?
+    db.prepare_cached("INSERT INTO transcript_failures(owner_key,source_sequence,category,reason) VALUES(?1,?2,?3,?4)")?
         .execute(params![session,source,category,reason.as_ref()])?;
     Ok(())
 }
@@ -264,11 +290,11 @@ fn record_rows(
     let mut ids = HashMap::new();
     for row in rows {
         let (sequence, item) = read::sql_position(row.position)?;
-        let prior: Option<(i64,i64)> = db.prepare_cached("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND message_id=?2")?
+        let prior: Option<(i64,i64)> = db.prepare_cached("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND message_id=?2")?
             .query_row(params![session,&row.message.id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
         let prior = prior.or_else(|| ids.insert(row.message.id.as_str(), (sequence, item)));
         if let Some((claimed_source, claimed_item)) = prior {
-            db.prepare_cached("INSERT INTO transcript_failures(session_id,source_sequence,category,message_id,claimant_source_sequence,claimant_item_index,attempted_item_index,reason) VALUES(?1,?2,'namespace',?3,?4,?5,?6,'message identity is already claimed')")?
+            db.prepare_cached("INSERT INTO transcript_failures(owner_key,source_sequence,category,message_id,claimant_source_sequence,claimant_item_index,attempted_item_index,reason) VALUES(?1,?2,'namespace',?3,?4,?5,?6,'message identity is already claimed')")?
                 .execute(params![session,source,&row.message.id,claimed_source,claimed_item,item])?;
             return Ok(false);
         }
@@ -490,6 +516,20 @@ impl<'row> Metadata<'row> {
             }
         });
     }
+}
+
+pub(crate) async fn ensure_owner(
+    connection: &mut SqliteConnection,
+    owner: super::HistoryOwner,
+    through: u64,
+) -> Result<(), StoreError> {
+    connection
+        .run_on_worker(move |handle| {
+            // SAFETY: the observation worker exclusively lends this handle.
+            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
+            ensure_for(&db, &owner, through, Need::Directory)
+        })
+        .await?
 }
 
 #[cfg(test)]

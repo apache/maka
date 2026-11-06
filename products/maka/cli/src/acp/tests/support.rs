@@ -85,23 +85,7 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn runtime_databases(&self) -> Vec<PathBuf> {
-        let mut entries =
-            tokio::fs::read_dir(self.database.parent().unwrap().join("runtime-partitions"))
-                .await
-                .unwrap();
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "sqlite")
-                && entry.file_type().await.unwrap().is_file()
-            {
-                paths.push(path);
-            }
-        }
-        assert!(!paths.is_empty(), "fixture must have runtime databases");
-        paths
+        vec![self.database.clone()]
     }
 
     pub async fn database_containing(&self, query: &'static str, parameters: &[&str]) -> PathBuf {

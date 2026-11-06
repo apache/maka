@@ -235,8 +235,6 @@ async fn storage_failure_rolls_back_prepared_neighbors_and_preserves_cause() {
         let mut b = Box::pin(log.admit_message(admission("b")));
         assert!(futures_util::poll!(&mut a).is_pending());
         assert!(futures_util::poll!(&mut b).is_pending());
-        let mut read = Box::pin(log.pending_messages("a"));
-        assert!(futures_util::poll!(&mut read).is_pending());
         release.send(()).unwrap();
         gate.await.unwrap();
         for error in [a.await.unwrap_err(), b.await.unwrap_err()] {
@@ -255,11 +253,6 @@ async fn storage_failure_rolls_back_prepared_neighbors_and_preserves_cause() {
             );
             assert!(database.as_error().source().is_some());
             assert!(error.to_string().contains("admission storage fault"));
-        }
-        if rollback_fails {
-            assert!(matches!(read.await, Err(StoreError::OperationUnknown)));
-        } else {
-            assert!(read.await.unwrap().is_empty());
         }
         log.connection.shutdown().await.unwrap();
         assert!(stored(&path).is_empty());

@@ -30,6 +30,8 @@ mod canonical_insert;
 mod catalog_changes;
 pub mod checkpoints;
 mod commits;
+mod content;
+pub(crate) mod snapshots;
 pub use commits::SessionSubscription;
 pub mod connection;
 pub mod context;
@@ -202,46 +204,10 @@ pub struct EventLog {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OpenPurpose {
     Execution,
-    RootControl,
     ApplicationInspection,
 }
 
 impl EventLog {
-    /// A completed checkpoint inspection is immutable and never enters execution.
-    /// The caller holds its shared checkpoint gate through the physical close.
-    async fn open_checkpoint_inspection(
-        path: &Path,
-        root: Arc<root::RootOwner>,
-        through: u64,
-    ) -> Result<Self, StoreError> {
-        let mut wal = path.as_os_str().to_os_string();
-        wal.push("-wal");
-        match std::fs::metadata(Path::new(&wal)) {
-            Ok(metadata) if metadata.len() != 0 => return Err(StoreError::WriterBusy),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let connection = OwnedConnection::open(
-            SqliteConnectOptions::new()
-                .filename(path)
-                .create_if_missing(false)
-                .read_only(true)
-                .immutable(true)
-                .query_planner_stability(true),
-            ConnectionAuthority::Root(root.clone()),
-            application_inspection::initialize,
-        )
-        .await?;
-        Ok(Self {
-            expected_session: None,
-            connection,
-            root_owner: Some(root),
-            commits: commits::CommitHub::new(through),
-            shell_changes: tokio::sync::broadcast::channel(256).0,
-        })
-    }
-
     /// Observe canonical SQLite actors.
     pub async fn sqlite_resource_stats(
         &self,
@@ -326,15 +292,6 @@ impl EventLog {
         root_owner: Option<Arc<root::RootOwner>>,
         purpose: OpenPurpose,
     ) -> Result<Self, StoreError> {
-        Self::open_owned_with_control(path, root_owner, purpose, None).await
-    }
-
-    async fn open_owned_with_control(
-        path: &Path,
-        root_owner: Option<Arc<root::RootOwner>>,
-        purpose: OpenPurpose,
-        control: Option<connection::control::ReadOnlyControl>,
-    ) -> Result<Self, StoreError> {
         // A symlink alias must share the same lease and SQLite sidecars.
         let path = match path.canonicalize() {
             Ok(path) => path,
@@ -376,9 +333,7 @@ impl EventLog {
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push(".writer.lock");
         let acquired = match purpose {
-            OpenPurpose::Execution | OpenPurpose::RootControl => {
-                root::FileLease::acquire(Path::new(&lock_path))
-            }
+            OpenPurpose::Execution => root::FileLease::acquire(Path::new(&lock_path)),
             OpenPurpose::ApplicationInspection => {
                 root::FileLease::acquire_existing(Path::new(&lock_path))
             }
@@ -391,39 +346,34 @@ impl EventLog {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let options = match purpose {
-            OpenPurpose::Execution | OpenPurpose::RootControl => SqliteConnectOptions::new()
+            OpenPurpose::Execution => SqliteConnectOptions::new()
                 .filename(&path)
                 .create_if_missing(true)
                 .query_planner_stability(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
-        let initialize_control = control.clone();
-        let connection = OwnedConnection::open_with_control(
+        let connection = OwnedConnection::open(
             options,
-            ConnectionAuthority::Writer {
-                lease,
-                root: root_owner.clone(),
+            match purpose {
+                OpenPurpose::Execution => ConnectionAuthority::Writer {
+                    lease,
+                    root: root_owner.clone(),
+                },
+                OpenPurpose::ApplicationInspection => ConnectionAuthority::Inspection {
+                    lease,
+                    root: root_owner.clone(),
+                },
             },
             move |connection| {
                 Box::pin(async move {
                     match purpose {
-                        OpenPurpose::Execution => {
-                            schema::initialize_connection_with_control(
-                                connection,
-                                initialize_control.as_ref(),
-                            )
-                            .await
-                        }
-                        OpenPurpose::RootControl => {
-                            root_store::initialize_control(connection).await
-                        }
+                        OpenPurpose::Execution => schema::initialize_connection(connection).await,
                         OpenPurpose::ApplicationInspection => {
                             application_inspection::initialize(connection).await
                         }
                     }
                 })
             },
-            control,
         )
         .await?;
         let high_water = connection

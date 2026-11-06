@@ -46,7 +46,7 @@ impl EventLog {
         max_bytes: usize,
     ) -> Result<LogPrefix, StoreError> {
         self.validate_root()?;
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
         let mut transaction = connection.begin().await?;
         let selection = Selection::resolve(&mut transaction, &scope).await?;
         let collected: bool = match &selection.session {
@@ -97,8 +97,8 @@ impl EventLog {
                 // Keep large body payloads out of the ordered event records.
                 // Both statements borrow the original transaction's snapshot.
                 let mut bodies = raw.prepare(
-                    "SELECT id AS canonical_body_id,raw_bytes AS canonical_raw_bytes,
-                     payload AS canonical_payload FROM event_bodies WHERE id=?"
+                    "SELECT id AS canonical_body_id,length(payload) AS canonical_raw_bytes,
+                     payload AS canonical_payload FROM contents WHERE id=?"
                 )?;
                 let mut rows = statement.query(rusqlite::params![session, selected_lineage])?;
                 while let Some(row) = rows.next()? {

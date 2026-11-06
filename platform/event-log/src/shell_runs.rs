@@ -49,7 +49,7 @@ impl EventLog {
         maka_agent_facts::interaction::entity_id(session).map_err(invalid)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| Box::pin(async move { unsettled(connection, &session).await }))
+            .read(move |connection| Box::pin(async move { unsettled(connection, &session).await }))
             .await
     }
 
@@ -154,7 +154,7 @@ impl EventLog {
         ids(session_id, id)?;
         let (session_id, id) = (session_id.to_owned(), id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { read(connection, &session_id, &id).await })
             })
             .await

@@ -75,9 +75,6 @@ impl LoadRequest {
     pub(crate) fn key(&self) -> Result<String, StoreError> {
         load_key(&self.scope, &self.session_id, self.load.operation)
     }
-    pub(crate) fn binding(&self) -> Result<String, StoreError> {
-        Ok(format!("sha256:{}", digest(&serde_json::to_vec(self)?)))
-    }
 }
 pub(crate) fn load_key(
     scope: &Scope,

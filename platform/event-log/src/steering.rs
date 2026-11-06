@@ -71,7 +71,7 @@ impl EventLog {
         let session_id = session_id.to_owned();
         let message_id = message_id.to_owned();
         self.connection
-            .run(move |tx| {
+            .read(move |tx| {
                 Box::pin(async move {
                     let row: Option<(i64, String)> = sqlx::query_as(
                         "SELECT e.sequence, e.event_header FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id

@@ -527,7 +527,7 @@ async fn javascript_forwarded_mutation_preserves_original_evidence_and_parent_cl
     }).await.unwrap();
 }
 
-// Locate persisted test evidence without exposing a raw partition API in production.
+// Inspect persisted evidence after the runtime owner has closed.
 fn journal_database(root: &std::path::Path, table: &str, operation: Uuid) -> std::path::PathBuf {
     let databases = match table {
         "application_intents" => vec![root.join(maka_event_log::root::ROOT_DATABASE)],
@@ -564,7 +564,10 @@ fn persisted_operation(
         rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
     let (outcome, cleanup): (String, String) = connection.query_row(
-        "SELECT outcome_json, cleanup_json FROM application_operations WHERE deployment=? AND namespace=? AND operation=? AND source_revision=?",
+        "SELECT CASE WHEN json_extract(o.outcome_json,'$.kind')='returned'
+         THEN json_object('kind','returned','value',json(CAST(c.payload AS TEXT))) ELSE o.outcome_json END,
+         o.cleanup_json FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id
+         WHERE deployment=? AND namespace=? AND operation=? AND source_revision=?",
         rusqlite::params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace).unwrap(), reference.operation.to_string(), i64::try_from(reference.source.revision).unwrap()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
@@ -576,12 +579,7 @@ fn persisted_operation(
 }
 
 fn journal_databases(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    (0..8)
-        .map(|index| {
-            root.join("runtime-partitions")
-                .join(format!("{index:02}.sqlite"))
-        })
-        .collect()
+    vec![root.join(maka_event_log::root::ROOT_DATABASE)]
 }
 
 const SETTLEMENT_SECRET: &str = "SECRET_OPERATION_SETTLEMENT_SQL_PAYLOAD";

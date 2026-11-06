@@ -67,7 +67,7 @@ impl crate::EventLog {
         let name = name.to_owned();
         let input = input.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let (sequence, encoded): (i64, String) = sqlx::query_as(
                         "SELECT sequence, event_header FROM runtime_events

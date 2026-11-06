@@ -335,7 +335,7 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
 }
 
 #[tokio::test]
-async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_cancels() {
+async fn archive_and_retirement_wait_for_cross_session_sql_after_observer_cancels() {
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
     let session = root
@@ -345,11 +345,7 @@ async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_canc
     let lease = session.execution_scope(None).await.unwrap().accept();
     let running = lease.store();
     let original = session.owner().unwrap();
-    let other = root
-        .partitions
-        .iter()
-        .find(|log| !Arc::ptr_eq(log, &original))
-        .unwrap();
+    let other = &root.log;
     let log = other.scoped(running.execution.as_ref().unwrap().custody().unwrap());
     let (entered, reached) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
@@ -381,15 +377,10 @@ async fn archive_and_retirement_wait_for_cross_partition_sql_after_observer_canc
         Err(StoreError::SessionBusy)
     ));
     let revision = session.get::<Value>().await.unwrap().unwrap().revision;
-    root.begin_session_removal("session", revision)
-        .await
-        .unwrap();
-    assert!(!root.session_retirement_ready("session").await.unwrap());
-    assert!(matches!(
-        root.finish_session_retirement("session").await,
-        Err(StoreError::SessionBusy)
-    ));
+    let mut retirement = Box::pin(root.begin_session_removal("session", revision));
+    assert!(futures_util::poll!(&mut retirement).is_pending());
     release.send(()).unwrap();
+    retirement.await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if root

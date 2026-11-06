@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 mod members;
 
 /// Event identities and exact copied memberships, not additional catalog Sessions.
-pub(super) struct Closure {
+pub(crate) struct Closure {
     pub events: BTreeSet<u64>,
     pub members: BTreeMap<(String, u64), Option<u64>>,
     pub copies: BTreeSet<String>,
@@ -81,21 +81,22 @@ impl Closure {
             }
         }
         while let Some(sequence) = selected.queue.pop_front() {
-            let row=sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT e.event_header,(SELECT length(payload) FROM tool_result_payloads WHERE event_id=e.event_id) AS tool_payload_bytes,{columns}
-                 FROM runtime_events e {joins} WHERE e.sequence=?1",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
-            ))).bind(sequence as i64).fetch_optional(&mut *db).await?;
-            let row = row.ok_or(StoreError::MaterialCollected)?;
-            use sqlx::Row;
-            let payload_bytes: Option<i64> = row.try_get("tool_payload_bytes")?;
-            let json = crate::canonical::json(&row)?;
-            let event: RuntimeEvent = serde_json::from_str(&json)?;
-            crate::tool_payloads::verify_binding(&event, payload_bytes)?;
-            if !matches!(event.fact, Fact::MessageImported { .. }) {
-                selected
-                    .run(db, &event.invocation.invocation_id, sequence)
-                    .await?;
+            let (kind,invocation,header):(String,String,String)=sqlx::query_as(
+                "SELECT kind,invocation_id,event_header FROM runtime_events WHERE sequence=? AND event_header IS NOT NULL")
+                .bind(sequence as i64).fetch_optional(&mut *db).await?.ok_or(StoreError::MaterialCollected)?;
+            if kind != "message_imported" {
+                selected.run(db, &invocation, sequence).await?;
             }
+            if !matches!(
+                kind.as_str(),
+                "model_requested"
+                    | "context_checkpoint_recorded"
+                    | "invocation_opened"
+                    | "tool_result_archived"
+            ) {
+                continue;
+            }
+            let event: RuntimeEvent = serde_json::from_str(&header)?;
             match &event.fact {
                 Fact::ModelRequested {
                     source_scope,

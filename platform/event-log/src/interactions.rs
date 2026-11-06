@@ -300,7 +300,7 @@ async fn require_local_identity(
     session_id: &str,
 ) -> Result<(), StoreError> {
     let root: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM root_app_requests WHERE request_id=? AND session_id=?)",
+        "SELECT EXISTS(SELECT 1 FROM interaction_requests WHERE request_id=? AND session_id=? AND json_extract(record_json,'$.request.kind')='computer_app')",
     )
     .bind(request_id)
     .bind(session_id)
@@ -343,7 +343,6 @@ pub(crate) async fn capability_grant(
 
 const PENDING_INTERACTIONS: &str = "SELECT request_id,created_at FROM interaction_pending
     WHERE session_id=?1
-    UNION ALL SELECT request_id,created_at FROM root_app_pending WHERE session_id=?1
     ORDER BY created_at,request_id";
 
 /// Read inside the caller's observation transaction for a coherent projection.

@@ -656,13 +656,6 @@ async fn always_belongs_to_selected_root_profile_across_workspaces_and_restart()
             .await
             .unwrap()
     );
-    let local_count:i64=store.owner().unwrap().connection.read(|connection|Box::pin(async move {
-        Ok(sqlx::query_scalar("SELECT count(*) FROM interaction_requests WHERE json_extract(record_json,'$.request.kind')='computer_app'").fetch_one(connection).await?)
-    })).await.unwrap();
-    assert_eq!(
-        local_count, 0,
-        "app authority must have no source-partition shadow"
-    );
     root.shutdown().await.unwrap();
     drop(root);
     let reopened = RootStore::open(owner).await.unwrap();
@@ -890,12 +883,11 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
         )
         .await
         .unwrap();
-    let partition = store.owner().unwrap();
+    let log = store.owner().unwrap();
     let (entered, started) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let blocking = tokio::spawn(async move {
-        partition
-            .connection
+        log.connection
             .run(move |_connection| {
                 Box::pin(async move {
                     let _ = entered.send(());

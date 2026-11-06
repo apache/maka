@@ -259,7 +259,7 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     let before = inspect(&log, move |db| {
         assert_eq!(
             db.query_row(
-                "SELECT count(*) FROM temp.transcript_rows WHERE session_id='cache' AND source_sequence=?",
+                "SELECT count(*) FROM temp.transcript_rows WHERE owner_key='cache' AND source_sequence=?",
                 [through as i64],
                 |row| row.get::<_, i64>(0),
             )
@@ -315,7 +315,7 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
             .query_row("SELECT bytes FROM temp.transcript_body_cache_bytes", [], |row| row.get::<_, i64>(0))
             .unwrap();
         assert!(body_bytes <= super::RETAINED_BYTES);
-        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE session_id='cache' AND source_sequence=?", [through as i64], |row| row.get::<_,i64>(0)).unwrap(), SIBLINGS as i64 + 1, "body eviction must retain complete directory metadata");
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE owner_key='cache' AND source_sequence=?", [through as i64], |row| row.get::<_,i64>(0)).unwrap(), SIBLINGS as i64 + 1, "body eviction must retain complete directory metadata");
         assert_eq!(
             db.query_row("PRAGMA temp.freelist_count", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
@@ -622,7 +622,7 @@ async fn inherited_directory_replaces_a_warmed_bare_claimant_on_the_observation_
     let Page::Ready { chunks, .. } = read(&log, inherited, Position::Start).await;
     assert_eq!(chunks[0].text, "inherited bytes");
     inspect(&log, move |db| {
-        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_rows WHERE session_id='cache' AND source_sequence=?", [bare as i64], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_rows WHERE owner_key='cache' AND source_sequence=?", [bare as i64], |row| row.get::<_, i64>(0)).unwrap(), 0);
     }).await;
     log.close().await.unwrap();
 }

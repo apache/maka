@@ -101,7 +101,7 @@ impl EventLog {
         }
         let invocation = invocation.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let selected = crate::turns::run_invocation(
@@ -179,7 +179,7 @@ impl EventLog {
             expected.digest.clone(),
         );
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let selection = Selection::resolve(&mut tx, &scope).await?;

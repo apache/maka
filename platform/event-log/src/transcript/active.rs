@@ -65,7 +65,7 @@ impl EventLog {
         self.validate_root()?;
         let invocation = invocation.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let fence = evidence::fence(&mut tx, through).await?;

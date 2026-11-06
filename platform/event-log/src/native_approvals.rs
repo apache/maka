@@ -231,7 +231,7 @@ async fn frontier(
     {
         return Ok(false);
     }
-    let pending_interactions:Vec<String>=sqlx::query_scalar("SELECT p.request_id FROM interaction_pending p JOIN interaction_requests r ON r.request_id=p.request_id WHERE p.session_id=?1 AND json_extract(r.record_json,'$.turnId')=?2 AND json_extract(r.record_json,'$.runId')=?3 UNION ALL SELECT p.request_id FROM root_app_pending p JOIN root_app_requests r ON r.request_id=p.request_id WHERE p.session_id=?1 AND json_extract(r.record_json,'$.turnId')=?2 AND json_extract(r.record_json,'$.runId')=?3")
+    let pending_interactions:Vec<String>=sqlx::query_scalar("SELECT p.request_id FROM interaction_pending p JOIN interaction_requests r ON r.request_id=p.request_id WHERE p.session_id=?1 AND json_extract(r.record_json,'$.turnId')=?2 AND json_extract(r.record_json,'$.runId')=?3")
         .bind(&invocation.session_id).bind(&invocation.turn_id).bind(&invocation.run_id).fetch_all(&mut *tx).await?;
     if pending_interactions
         .iter()

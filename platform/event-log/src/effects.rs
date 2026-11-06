@@ -227,7 +227,7 @@ impl EventLog {
         id: Uuid,
     ) -> Result<Option<Record>, StoreError> {
         self.validate_root()?;
-        self.connection.run(move |connection| {
+        self.connection.read(move |connection| {
             Box::pin(async move {
             let row = sqlx::query("SELECT request, outcome, payload FROM host_effects WHERE id = ? AND package_id = ? AND scope_id = ?")
                 .bind(id.to_string()).bind(namespace.package()).bind(String::from(namespace.scope().clone()))

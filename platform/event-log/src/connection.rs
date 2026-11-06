@@ -30,9 +30,7 @@ use std::{
 mod authority;
 mod stats;
 pub use stats::{ConnectionResourceStats, SqliteResourceStats};
-pub(crate) mod control;
 pub(crate) mod custody;
-use control::ReadOnlyControl;
 use custody::{Custody, Retained};
 #[cfg(test)]
 mod cancellation;
@@ -135,6 +133,7 @@ impl Command {
 /// Ingress is bounded; accepted work and the database lease belong to a dedicated
 /// thread, independent of the caller's executor. Dropping ingress drains work.
 pub struct OwnedConnection {
+    read_on_owner: bool,
     failures: Arc<AtomicU64>,
     jobs: mpsc::Sender<Command>,
     read_jobs: mpsc::Sender<ReadEnvelope>,
@@ -269,6 +268,7 @@ impl OwnedConnection {
     /// Internal scoped ingress to the same physical owner, never a new owner.
     pub(crate) fn cloned(&self) -> Self {
         Self {
+            read_on_owner: self.read_on_owner,
             failures: self.failures.clone(),
             jobs: self.jobs.clone(),
             read_jobs: self.read_jobs.clone(),
@@ -328,22 +328,13 @@ impl OwnedConnection {
     pub async fn open(
         options: SqliteConnectOptions,
         authority: ConnectionAuthority,
-        initialize: for<'c> fn(&'c mut SqliteConnection) -> BoxFuture<'c, Result<(), StoreError>>,
-    ) -> Result<Self, StoreError> {
-        Self::open_with_control(options, authority, initialize, None).await
-    }
-
-    pub(crate) async fn open_with_control(
-        options: SqliteConnectOptions,
-        authority: ConnectionAuthority,
         initialize: impl for<'c> FnOnce(
             &'c mut SqliteConnection,
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        control: Option<ReadOnlyControl>,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(options, authority, initialize, control, None).await
+        Self::open_registered(options, authority, initialize, None).await
     }
 
     pub(crate) async fn open_tracked(
@@ -356,7 +347,7 @@ impl OwnedConnection {
         + 'static,
         registration: crate::root_store::StageRegistration,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(options, authority, initialize, None, Some(registration)).await
+        Self::open_registered(options, authority, initialize, Some(registration)).await
     }
 
     async fn open_registered(
@@ -367,9 +358,9 @@ impl OwnedConnection {
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        control: Option<ReadOnlyControl>,
         mut registration: Option<crate::root_store::StageRegistration>,
     ) -> Result<Self, StoreError> {
+        let read_on_owner = matches!(authority, ConnectionAuthority::Inspection { .. });
         let (jobs, mut receiver) = mpsc::channel::<Command>(32);
         let (read_jobs, read_receiver) = mpsc::channel::<ReadEnvelope>(1);
         let (observation_jobs, observation_receiver) = mpsc::channel::<ReadEnvelope>(1);
@@ -402,7 +393,6 @@ impl OwnedConnection {
                         reader_stop.clone(),
                         ReaderOptions {
                             connection: read_options,
-                            control: control.clone(),
                         },
                         authority.clone(),
                         retained.clone(),
@@ -412,11 +402,6 @@ impl OwnedConnection {
                     let initialized = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         runtime.block_on(async {
                             initialize(&mut connection).await?;
-                            // Later initialization must not discard the TEMP view and
-                            // silently expose the standalone main bindings table.
-                            if let Some(control) = &control {
-                                control.validate(&mut connection).await?;
-                            }
                             last_changes = sqlx::query_scalar("SELECT total_changes()")
                                 .fetch_one(&mut connection)
                                 .await?;
@@ -583,6 +568,7 @@ impl OwnedConnection {
             })?;
         match startup.await {
             Ok(Ok(())) => Ok(Self {
+                read_on_owner,
                 failures: Arc::new(AtomicU64::new(0)),
                 jobs,
                 read_jobs,
@@ -706,6 +692,9 @@ impl OwnedConnection {
         + 'static,
         interruptible: bool,
     ) -> Result<T, StoreError> {
+        if self.read_on_owner {
+            return self.run(operation).await;
+        }
         let (jobs, admission) = match role {
             ReaderRole::Read => (&self.read_jobs, &self.readers),
             ReaderRole::Observation => (&self.observation_jobs, &self.observations),
@@ -817,7 +806,6 @@ impl OwnedConnection {
 #[derive(Clone)]
 struct ReaderOptions {
     connection: SqliteConnectOptions,
-    control: Option<ReadOnlyControl>,
 }
 
 // Both physical roles remain on the original owner's runtime, with independent
@@ -896,7 +884,7 @@ async fn reader_worker(
             Ok(())
         };
         if valid.is_ok() && connection.is_none() && matches!(&job, ReadJob::Execute(_)) {
-            match connect_reader(&options.connection, options.control.as_ref(), role).await {
+            match connect_reader(&options.connection, role).await {
                 Ok(opened) => connection = Some(opened),
                 Err(error) => {
                     if matches!(error, StoreError::StartupCleanupFailed { .. }) {
@@ -964,7 +952,6 @@ async fn close_reader(connection: SqliteConnection) -> Result<(), StoreError> {
 
 async fn connect_reader(
     options: &SqliteConnectOptions,
-    control: Option<&ReadOnlyControl>,
     role: ReaderRole,
 ) -> Result<SqliteConnection, StoreError> {
     let mut connection = connect_owned(options).await?;
@@ -974,9 +961,6 @@ async fn connect_reader(
     if matches!(role, ReaderRole::Observation)
         && let Err(error) = crate::transcript::initialize_cache(&mut connection).await
     {
-        return Err(close_startup(connection, error).await);
-    }
-    if let Err(error) = control::initialize_views(&mut connection, control).await {
         return Err(close_startup(connection, error).await);
     }
     Ok(connection)

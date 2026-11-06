@@ -200,8 +200,9 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
         .connection
         .run(|conn| {
             Box::pin(async move {
+                sqlx::raw_sql("DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;").execute(&mut *conn).await?;
                 sqlx::query(
-                    "UPDATE application_package_files SET payload = X'00' WHERE path = 'host.mjs'",
+                    "UPDATE contents SET payload = X'00' WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
                 )
                 .execute(conn)
                 .await?;
@@ -256,8 +257,8 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
 async fn stored_package_paths_types_and_immutable_digests_are_checked() {
     for corruption in [
         "UPDATE application_package_files SET path = '../escape' WHERE path='host.mjs'",
-        "UPDATE application_package_files SET payload = zeroblob(8388609) WHERE path='host.mjs'",
-        "UPDATE application_package_files SET payload = 'x' || char(0) || printf('%.*c', 8388609, 'z') WHERE path='host.mjs'",
+        "UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
+        "UPDATE contents SET payload = 'x' || char(0) || printf('%.*c', 8388609, 'z') WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
     ] {
         let (_dir, store) = store().await;
         let id = Uuid::new_v4();
@@ -271,6 +272,11 @@ async fn stored_package_paths_types_and_immutable_digests_are_checked() {
             .connection
             .run(move |conn| {
                 Box::pin(async move {
+                    sqlx::raw_sql(
+                        "DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;",
+                    )
+                    .execute(&mut *conn)
+                    .await?;
                     sqlx::query(corruption).execute(conn).await?;
                     Ok(())
                 })
@@ -342,8 +348,10 @@ async fn single_package_load_does_not_read_or_validate_sibling_packages() {
         .connection
         .run(move |conn| {
             Box::pin(async move {
+                sqlx::query("INSERT INTO contents(content_sha256,payload) VALUES('sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d',X'00')")
+                    .execute(&mut *conn).await?;
                 sqlx::query(
-                    "UPDATE application_package_files SET payload = X'00' WHERE id = ? AND revision = ? AND path = 'host.mjs'",
+                    "UPDATE application_package_files SET content_id=last_insert_rowid() WHERE id = ? AND revision = ? AND path = 'host.mjs'",
                 )
                 .bind(corrupted_id)
                 .bind(corrupted_revision)
@@ -455,7 +463,8 @@ async fn metadata_snapshot_never_materializes_package_payloads() {
     // A payload that cannot be loaded still must not enter metadata reads. This
     // tests the physical DAO boundary, not a profiler estimate or source string.
     store.connection.run(|connection| Box::pin(async move {
-        sqlx::query("UPDATE application_package_files SET payload = zeroblob(8388609) WHERE path='host.mjs'").execute(connection).await?;
+        sqlx::query("DROP TRIGGER content_immutable").execute(&mut *connection).await?;
+        sqlx::query("UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')").execute(connection).await?;
         Ok(())
     })).await.unwrap();
     assert_eq!(

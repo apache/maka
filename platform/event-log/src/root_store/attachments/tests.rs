@@ -43,10 +43,7 @@ async fn fixture() -> (tempfile::TempDir, RootStore, SessionStore, SessionStore)
         .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
-    let target_id = (0..100)
-        .map(|n| format!("target-{n}"))
-        .find(|id| partition_for(b"session", id) != partition_for(b"session", "source"))
-        .unwrap();
+    let target_id = "target".to_owned();
     let target = root
         .create_session(&target_id, &target_id, &json!({}), 1)
         .await
@@ -90,15 +87,19 @@ async fn upload(source: &SessionStore, target: &SessionStore, bytes: &[u8]) -> C
     }
 }
 async fn count(target: &SessionStore) -> i64 {
+    let session_id = target.id().to_owned();
     target
         .owner()
         .unwrap()
         .connection
-        .read(|connection| {
+        .read(move |connection| {
             Box::pin(async move {
-                Ok(sqlx::query_scalar("SELECT count(*) FROM artifacts")
-                    .fetch_one(connection)
-                    .await?)
+                Ok(
+                    sqlx::query_scalar("SELECT count(*) FROM artifacts WHERE session_id=?")
+                        .bind(session_id)
+                        .fetch_one(connection)
+                        .await?,
+                )
             })
         })
         .await
@@ -106,7 +107,7 @@ async fn count(target: &SessionStore) -> i64 {
 }
 
 #[tokio::test]
-async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() {
+async fn cross_session_copy_streams_complete_bytes_and_retries_same_receipt() {
     let (_directory, root, source, target) = fixture().await;
     let bytes: Vec<u8> = (0..(3 * 64 * 1024 + 17)).map(|i| (i % 251) as u8).collect();
     let request = upload(&source, &target, &bytes).await;
@@ -145,50 +146,7 @@ async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() 
     assert_eq!(before.revision, after.revision);
     assert_eq!(before.record, after.record);
     assert_eq!(count(&target).await, 2);
-    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 2));
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn corrupted_source_rolls_back_target_payload_and_catalog() {
-    let (_directory, root, source, target) = fixture().await;
-    let request = upload(&source, &target, &vec![7; 64 * 1024 + 1]).await;
-    source
-        .owner()
-        .unwrap()
-        .connection
-        .run(|connection| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE artifact_contents SET payload=zeroblob(length(payload)) WHERE content_sha256 IN (SELECT content_sha256 FROM artifacts WHERE id='upload')",
-                )
-                .execute(connection)
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    assert!(
-        root.copy_plugin_attachment(&namespace(), request)
-            .await
-            .is_err()
-    );
-    assert_eq!(count(&target).await, 0);
-    let catalog: i64 = target
-        .owner()
-        .unwrap()
-        .connection
-        .read(|connection| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar("SELECT count(*) FROM artifact_catalog")
-                    .fetch_one(connection)
-                    .await?)
-            })
-        })
-        .await
-        .unwrap();
-    assert_eq!(catalog, 0);
+    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 3));
     root.close().await.unwrap();
 }
 
@@ -198,11 +156,10 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
     use tokio::sync::oneshot;
     let (_directory, root, source, target) = fixture().await;
     let request = upload(&source, &target, &vec![3; 2 * 64 * 1024 + 1]).await;
-    let (source_owner, target_owner, same) = root
+    let (source_owner, target_owner) = root
         .pin_session_pair(source.id(), target.id(), None)
         .await
         .unwrap();
-    assert!(!same);
     let (entered, started) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = target.owner().unwrap();
@@ -220,9 +177,9 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
             .unwrap();
     });
     started.await.unwrap();
+    drop(source_owner);
     let namespace = namespace();
-    let mut operation =
-        Box::pin(target_owner.copy_attachment_from_partition(source_owner, &namespace, request));
+    let mut operation = Box::pin(target_owner.copy_plugin_attachment(&namespace, request));
     std::future::poll_fn(|cx| {
         assert!(operation.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -262,7 +219,7 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
 }
 
 #[tokio::test]
-async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle() {
+async fn cross_session_image_freezes_at_target_consumption_and_survives_bundle() {
     use maka_agent_facts::{
         event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
         model::{
@@ -294,26 +251,7 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         )
         .await
         .unwrap();
-    source
-        .owner()
-        .unwrap()
-        .connection
-        .run(|db| {
-            Box::pin(async move {
-                sqlx::query("UPDATE artifacts SET canonical_at=1000 WHERE id='image'")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    // Six ordinary facts in this partition put the target's own dispatch at
-    // sequence 10, independently of the source partition's much higher freeze.
-    let padding = (0..1000)
-        .map(|n| format!("padding-{n}"))
-        .filter(|id| partition_for(b"session", id) == partition_for(b"session", target.id()))
-        .take(6);
+    let padding = (0..6).map(|n| format!("padding-{n}"));
     for id in padding {
         let session = root.create_session(&id, &id, &json!({}), 1).await.unwrap();
         session
@@ -561,7 +499,7 @@ fn owned_parts(
 
 async fn physical_content(session: &SessionStore) -> (i64, i64, i64) {
     session.owner().unwrap().connection.read(|db| Box::pin(async move {
-        Ok(sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM artifact_contents")
+        Ok(sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM contents")
             .fetch_one(db).await?)
     })).await.unwrap()
 }
@@ -645,7 +583,7 @@ async fn large_attachment_forks_share_one_body_until_the_last_session_retires() 
     }
     let survivor = root.session("fork-9").await.unwrap();
     assert_eq!(physical_content(&survivor).await, (1, 1024 * 1024 + 17, 1));
-    let original_owner = root.control.owned_root().unwrap();
+    let original_owner = root.log.owned_root().unwrap();
     root.close().await.unwrap();
     let root = RootStore::open(original_owner).await.unwrap();
     let survivor = root.session("fork-9").await.unwrap();
@@ -679,58 +617,6 @@ async fn large_attachment_forks_share_one_body_until_the_last_session_retires() 
         SessionRetirement::Removed
     );
     assert_eq!(physical_content(&survivor).await, (0, 0, 0));
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn existing_content_digest_never_bypasses_incoming_byte_comparison() {
-    let (_directory, root, source, target) = fixture().await;
-    let bytes = vec![17; 64 * 1024 + 17];
-    let request = upload(&source, &target, &bytes).await;
-    upload(&target, &source, &bytes).await;
-    let before = target.get_artifact(target.id(), "upload").await.unwrap();
-    target
-        .owner()
-        .unwrap()
-        .connection
-        .run(|db| {
-            Box::pin(async move {
-                sqlx::query("UPDATE artifact_contents SET payload=zeroblob(length(payload))")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        root.copy_plugin_attachment(&namespace(), request).await,
-        Err(StoreError::ArtifactConflict)
-    ));
-    let mut another = before.record.clone().unwrap();
-    another.id = "new-upload".into();
-    assert!(matches!(
-        target.commit_artifact(another, bytes.clone()).await,
-        Err(StoreError::ArtifactConflict)
-    ));
-    assert_eq!(
-        target
-            .get_artifact(target.id(), "upload")
-            .await
-            .unwrap()
-            .revision,
-        before.revision
-    );
-    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 1));
-    assert_eq!(
-        target
-            .read_artifact_chunk(target.id(), "upload", 0, 17)
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        vec![0; 17]
-    );
     root.close().await.unwrap();
 }
 

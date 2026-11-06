@@ -63,12 +63,7 @@ async fn copy_and_authority_inherit_source_instead_of_target_hash() {
         .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
-    let source = store.route_partition("source").await.unwrap();
-    let targets: Vec<_> = (0..100)
-        .map(|n| format!("child-{n}"))
-        .filter(|id| partition_for(b"session", id) != source)
-        .take(3)
-        .collect();
+    let targets: Vec<String> = (0..3).map(|index| format!("target-{index}")).collect();
     for (target, purpose) in targets.iter().zip([
         CopyPurpose::Branch {
             position: maka_agent_facts::session::ForkPosition::End,
@@ -83,17 +78,12 @@ async fn copy_and_authority_inherit_source_instead_of_target_hash() {
                 .unwrap(),
             SessionCopyResult::Committed(_)
         ));
-        assert_eq!(store.route_partition(target).await.unwrap(), source);
     }
     store
         .create_plugin_session(&origin(&targets[2], Some("source")), &json!({}), 2)
         .await
         .unwrap();
-    assert_eq!(store.route_partition(&targets[2]).await.unwrap(), source);
-    let authority = store.partitions[source]
-        .preview_bundle("source")
-        .await
-        .unwrap();
+    let authority = store.log.preview_bundle("source").await.unwrap();
     assert_eq!(authority.sessions.len(), 4);
     store.close().await.unwrap();
 }
@@ -164,7 +154,7 @@ async fn durable_bundle_pending_reservation_recovers_all_members() {
         members: members.clone(),
     };
     store
-        .reserve_family("bundle-root", &binding, command, 3, members)
+        .reserve_family("bundle-root", &binding, command, members)
         .await
         .unwrap();
     assert!(matches!(
@@ -173,8 +163,6 @@ async fn durable_bundle_pending_reservation_recovers_all_members() {
     ));
     store.close().await.unwrap();
     let store = RootStore::open(owner).await.unwrap();
-    assert_eq!(store.route_partition("bundle-root").await.unwrap(), 3);
-    assert_eq!(store.route_partition("bundle-child").await.unwrap(), 3);
     assert!(!path.exists());
     store.close().await.unwrap();
 }
@@ -193,13 +181,7 @@ async fn atomic_family_reservation_cannot_leave_partial_members() {
     };
     assert!(matches!(
         store
-            .reserve_family(
-                "new",
-                "new",
-                command,
-                2,
-                vec!["new".into(), "occupied".into()]
-            )
+            .reserve_family("new", "new", command, vec!["new".into(), "occupied".into()])
             .await,
         Err(StoreError::SessionConflict)
     ));
@@ -218,7 +200,6 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         .create_session("source", "source", &json!({}), 1)
         .await
         .unwrap();
-    let partition = store.route_partition("source").await.unwrap();
     let mut request = copy("source", "rejected", CopyPurpose::EmptySideConversation);
     request.expected_source_revision = 2;
     let command = Creation::Copy {
@@ -227,14 +208,8 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         configuration: json!({}),
         created_at: 2,
     };
-    let (partition, command) = store
-        .reserve_family(
-            "rejected",
-            "copy",
-            command,
-            partition,
-            vec!["rejected".into()],
-        )
+    let command = store
+        .reserve_family("rejected", "copy", command, vec!["rejected".into()])
         .await
         .unwrap();
     let creation = store
@@ -242,9 +217,7 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         .write([gates::Key::Creation("rejected".into())])
         .await
         .unwrap();
-    let rejection = commit(&store, &store.partitions[partition], command)
-        .await
-        .unwrap();
+    let rejection = commit(&store, &store.log, command).await.unwrap();
     assert!(matches!(
         rejection,
         Some(CreationRejection::SourceRevisionConflict { actual: 1, .. })
@@ -252,7 +225,8 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
     let mut probe = Box::pin(store.session_copy_receipt("rejected"));
     assert!(futures_util::poll!(&mut probe).is_pending());
     // The immutable request would succeed now, but its original rejection wins.
-    store.partitions[partition]
+    store
+        .log
         .connection
         .run(|db| {
             Box::pin(async move {
@@ -265,14 +239,14 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         .await
         .unwrap();
     store
-        .control
+        .log
         .connection
         .write(
             creation::WritePublication {
                 id: "rejected".into(),
                 rejection,
             },
-            store.control.commits.notice(),
+            store.log.commits.notice(),
         )
         .await
         .unwrap();
@@ -290,15 +264,14 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         created_at: 2,
     };
     assert!(matches!(
-        store
-            .finish_creation("rejected", "copy", partition, command)
-            .await,
+        store.finish_creation("rejected", "copy", command).await,
         Err(StoreError::SessionCreationRejected(
             CreationRejection::SourceRevisionConflict { actual: 1, .. }
         ))
     ));
     assert!(
-        store.partitions[partition]
+        store
+            .log
             .get_session::<Value>("rejected")
             .await
             .unwrap()
@@ -422,12 +395,11 @@ async fn creation_blocks_relocation(import: bool) {
         .await
         .unwrap();
     let target = "pinned-target";
-    let partition = store.partitions[partition_for(b"session", target)].clone();
+    let log = store.log.clone();
     let (entered, reached) = tokio::sync::oneshot::channel();
     let (release, gate) = std::sync::mpsc::channel();
     let blocking = tokio::spawn(async move {
-        partition
-            .connection
+        log.connection
             .run(move |db| {
                 Box::pin(async move {
                     db.run_with_connection(move |_| {

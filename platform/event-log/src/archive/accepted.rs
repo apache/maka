@@ -247,7 +247,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let Some(mut target) = target::read(&mut tx, &session, &event_id).await? else {
@@ -331,7 +331,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let Some(target) = target::read(&mut tx, &session, &event_id).await? else {

@@ -27,10 +27,10 @@ use sqlx::{Connection, SqliteConnection};
 use std::collections::HashSet;
 
 mod accounting;
-mod blobs;
-mod closure;
-mod export;
-mod format;
+pub(crate) mod blobs;
+pub(crate) mod closure;
+pub(crate) mod export;
+pub(crate) mod format;
 mod import;
 pub use import::ImportReceipt;
 mod reader;
@@ -97,7 +97,7 @@ impl Inventory {
     }
 }
 
-async fn inventory(
+pub(crate) async fn inventory(
     connection: &mut SqliteConnection,
     root: &str,
 ) -> Result<Inventory, BundleError> {

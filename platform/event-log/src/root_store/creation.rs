@@ -109,19 +109,18 @@ impl crate::writeback::Statement for WriteCreation {
         connection: &mut SqliteConnection,
     ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<()>, StoreError>> {
         Box::pin(async move {
-            // Recover an existing receipt before inspecting mutable attachments.
-            let previous: Option<String> =
-                sqlx::query_scalar("SELECT fingerprint FROM session_control WHERE id=?")
-                    .bind(&self.id)
-                    .fetch_optional(&mut *connection)
-                    .await?;
-            if let Some(previous) = previous {
-                if previous != self.fingerprint {
-                    return Err(StoreError::SessionCreationRejected(
-                        CreationRejection::IdentityConflict,
-                    ));
+            let command = super::routes::Creation::Session {
+                configuration: self.configuration.clone(),
+                created_at: self.now,
+            };
+            if let Some((fingerprint,encoded))=sqlx::query_as::<_,(String,String)>(
+                "SELECT fingerprint,command FROM session_creations WHERE session_id=? AND session_id=creation_id"
+            ).bind(&self.id).fetch_optional(&mut *connection).await? {
+                let previous:super::routes::Creation=serde_json::from_str(&encoded)?;
+                if fingerprint!=self.fingerprint || previous.identity()?!=command.identity()? {
+                    return Err(StoreError::SessionCreationRejected(CreationRejection::IdentityConflict));
                 }
-                return Ok(prepared((), false));
+                return Ok(prepared((),false));
             }
             match crate::sessions::removal::require_accepting(connection, &self.id).await {
                 Ok(()) => {}
@@ -141,7 +140,12 @@ impl crate::writeback::Statement for WriteCreation {
             )
             .await
             {
-                Ok(()) => Ok(prepared((), true)),
+                Ok(()) => {
+                    sqlx::query("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?1,?1,?2,?3,1,1)")
+                        .bind(&self.id).bind(&self.fingerprint).bind(serde_json::to_string(&command)?)
+                        .execute(connection).await?;
+                    Ok(prepared((), true))
+                }
                 Err(StoreError::SessionConflict) => Err(StoreError::SessionCreationRejected(
                     CreationRejection::IdentityConflict,
                 )),
@@ -161,11 +165,9 @@ pub(crate) struct WriteReservation {
     pub(super) id: String,
     pub(super) fingerprint: String,
     pub(super) command: super::routes::Creation,
-    pub(super) partition: usize,
     pub(super) members: Vec<String>,
 }
 pub(crate) struct ReservedCreation {
-    pub(super) partition: usize,
     pub(super) command: super::routes::Creation,
 }
 impl crate::writeback::Statement for WriteReservation {
@@ -178,7 +180,7 @@ impl crate::writeback::Statement for WriteReservation {
     {
         Box::pin(async move {
             if let Some(row) = sqlx::query(
-                "SELECT creation_id,partition,fingerprint,command,failure FROM session_routes WHERE session_id=?",
+                "SELECT creation_id,fingerprint,command,failure FROM session_creations WHERE session_id=?",
             )
             .bind(&self.id)
             .fetch_optional(&mut *connection)
@@ -198,7 +200,6 @@ impl crate::writeback::Statement for WriteReservation {
                 }
                 return Ok(prepared(
                     ReservedCreation {
-                        partition: row.get::<i64, _>("partition") as usize,
                         command: previous,
                     },
                     false,
@@ -213,7 +214,7 @@ impl crate::writeback::Statement for WriteReservation {
                     _ => true,
                 };
                 let occupied: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM session_routes WHERE session_id=?)",
+                    "SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=?)",
                 )
                 .bind(&member)
                 .fetch_one(&mut *connection)
@@ -221,12 +222,11 @@ impl crate::writeback::Statement for WriteReservation {
                 if occupied {
                     return Err(StoreError::SessionConflict);
                 }
-                sqlx::query("INSERT INTO session_routes(session_id,creation_id,partition,fingerprint,command,ready,visible) VALUES(?,?,?,?,?,0,?)")
-                    .bind(&member).bind(&self.id).bind(self.partition as i64).bind(&self.fingerprint).bind((member == self.id).then_some(&encoded)).bind(visible).execute(&mut *connection).await?;
+                sqlx::query("INSERT INTO session_creations(session_id,creation_id,fingerprint,command,ready,visible) VALUES(?,?,?,?,0,?)")
+                    .bind(&member).bind(&self.id).bind(&self.fingerprint).bind((member == self.id).then_some(&encoded)).bind(visible).execute(&mut *connection).await?;
             }
             Ok(prepared(
                 ReservedCreation {
-                    partition: self.partition,
                     command: self.command,
                 },
                 true,
@@ -258,7 +258,7 @@ impl crate::writeback::Statement for WritePublication {
         Box::pin(async move {
             let changed = if let Some(rejection) = self.rejection {
                 sqlx::query(
-                    "UPDATE session_routes SET ready=2,failure=? WHERE creation_id=? AND ready=0",
+                    "UPDATE session_creations SET ready=2,failure=? WHERE creation_id=? AND ready=0",
                 )
                 .bind(serde_json::to_string(&rejection)?)
                 .bind(&self.id)
@@ -267,10 +267,10 @@ impl crate::writeback::Statement for WritePublication {
                 .rows_affected()
                     != 0
             } else {
-                let newly_visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_routes WHERE creation_id=? AND ready=0 AND visible=1)")
+                let newly_visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_creations WHERE creation_id=? AND ready=0 AND visible=1)")
                     .bind(&self.id).fetch_one(&mut *connection).await?;
                 let changed = sqlx::query(
-                    "UPDATE session_routes SET ready=1 WHERE creation_id=? AND ready=0",
+                    "UPDATE session_creations SET ready=1 WHERE creation_id=? AND ready=0",
                 )
                 .bind(&self.id)
                 .execute(&mut *connection)

@@ -21,7 +21,6 @@
 mod captured;
 mod directory;
 pub(crate) mod gc;
-pub(crate) mod migration;
 pub use captured::{
     ArtifactCapture, ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult,
     CapturedDirectoryRow, CapturedLocalResource, CapturedRow, CapturedSource, ChildPage,

@@ -445,7 +445,7 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             for table in ["temp.transcript_text", "temp.transcript_rows"] {
                 inspect
                     .execute(
-                        &format!("DELETE FROM {table} WHERE session_id = ?"),
+                        &format!("DELETE FROM {table} WHERE owner_key = ?"),
                         [&cache_session],
                     )
                     .unwrap();

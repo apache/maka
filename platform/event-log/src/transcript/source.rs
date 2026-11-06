@@ -55,7 +55,7 @@ fn source_sql() -> String {
     json_type(payload, '$.failureMessage') IS 'text' AS failure_message,
     json_type(payload, '$.errorClass') IS 'text' AS error_class,
     json_extract(payload, '$.content.kind') IS 'operation' AS operation
-    FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3),
+    FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3),
     source AS (SELECT
         CASE WHEN ?5 IS NULL THEN body WHEN format = 'json' THEN
             CASE json_type(body, ?5) WHEN 'text' THEN json_extract(body, ?5) ELSE body -> ?5 END END AS body,
@@ -85,7 +85,7 @@ impl EventLog {
                         super::directory::ensure(tx, &session, fence).await?;
                         let (source, item): (i64, i64) = sqlx::query_as(
                             "SELECT source_sequence,item_index FROM transcript_directory
-                 WHERE session_id = ? AND message_id = ? AND source_sequence <= ?
+                 WHERE owner_key = ? AND message_id = ? AND source_sequence <= ?
                  AND role = 'tool_call'",
                         )
                         .bind(&session)

@@ -68,6 +68,7 @@ pub(crate) async fn insert(
         let body = match &projection {
             Some(projection) => Some(crate::canonical_insert::BodyReference {
                 id: crate::canonical::prepare(worker, projection).await?,
+                json_bytes: projection.sqlite_json_bytes() as i64,
                 offset: i64::try_from(projection.offset).map_err(|_| StoreError::PrefixTooLarge)?,
             }),
             None => None,

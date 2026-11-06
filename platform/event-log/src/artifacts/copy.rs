@@ -17,8 +17,6 @@
  * under the License.
  */
 
-mod partition;
-
 use super::records::{advance, invalid, read_record, require_session};
 use crate::StoreError;
 use maka_agent_facts::artifact::ArtifactSource;
@@ -71,7 +69,7 @@ pub(crate) async fn copy_in_transaction(
         let same: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM artifacts s JOIN artifacts t
              ON t.session_id = ?3 AND t.id = ?4 WHERE s.session_id = ?1 AND s.id = ?2
-             AND (SELECT length(payload) FROM artifact_contents WHERE content_sha256=s.content_sha256) = ?5 AND s.content_sha256 = t.content_sha256)",
+             AND (SELECT length(payload) FROM contents WHERE content_sha256=s.content_sha256) = ?5 AND s.content_sha256 = t.content_sha256)",
         )
         .bind(source_session)
         .bind(source_id)
@@ -88,8 +86,8 @@ pub(crate) async fn copy_in_transaction(
     }
     let inserted = sqlx::query(
         "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, canonical_at, lookup_digest)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN artifact_contents USING(content_sha256)
-         WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
+         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN contents USING(content_sha256)
+         WHERE session_id = ?1 AND artifacts.id = ?2 AND length(payload) = ?7",
     )
     .bind(source_session)
     .bind(source_id)

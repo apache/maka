@@ -201,7 +201,7 @@ async fn lookup(
         "SELECT c.rowid, length(c.payload),
          record_json,
          CASE WHEN length(CAST(artifacts.content_sha256 AS BLOB)) = 71 THEN artifacts.content_sha256 END
-         FROM artifacts JOIN artifact_contents c USING(content_sha256) WHERE session_id = ?1 AND id = ?2
+         FROM artifacts JOIN contents c USING(content_sha256) WHERE session_id = ?1 AND artifacts.id = ?2
          AND (?3 IS NULL OR json_extract(record_json, '$.turnId') = ?3)",
     )
     .bind(session)
@@ -230,7 +230,7 @@ async fn with_blob<T>(
     // SAFETY: this original SQLx guard excludes worker FFI. The non-owning
     // wrapper and read-only Blob remain in this no-await scope; neither escapes.
     let borrowed = unsafe { rusqlite::Connection::from_handle(locked.as_raw_handle().as_ptr()) }?;
-    let mut blob = borrowed.blob_open("main", "artifact_contents", "payload", row.rowid, true)?;
+    let mut blob = borrowed.blob_open("main", "contents", "payload", row.rowid, true)?;
     let result = if blob.len() as u64 == row.record.size_bytes {
         read(&row.record, &mut blob)
     } else {

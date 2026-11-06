@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::root::{RootNamespaces, RootOwner};
-use crate::root_store::{RootStore, partition_for};
+use crate::root_store::RootStore;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -37,10 +37,7 @@ async fn fixture() -> (tempfile::TempDir, RootStore, SessionStore, SessionStore)
     );
     let root = RootStore::open(owner).await.unwrap();
     let first = "scope-a";
-    let second = (0..100)
-        .map(|i| format!("scope-b-{i}"))
-        .find(|id| partition_for(b"session", id) == partition_for(b"session", first))
-        .unwrap();
+    let second = "scope-b".to_owned();
     let a = root
         .create_session(first, first, &json!({}), 1)
         .await

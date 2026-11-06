@@ -136,7 +136,7 @@ impl EventLog {
                         }
                         if row.try_get::<String,_>(3)? == "turn_state" {
                             super::bodycache::ensure(tx,&session,position).await?;
-                            let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                            let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                                 .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
                             let mut message: TurnStateMessage = serde_json::from_slice(&bytes)?;
                             if message.turn_id != contribution.turn_id {
@@ -202,7 +202,7 @@ impl EventLog {
                         let Some((first_source, first_index, last_source, last_index)) = bounds else { return Ok(vec![]); };
                         let prompt: Option<(i64,i64,Option<String>)> = sqlx::query_as(
                             "SELECT row.source_sequence,row.item_index,row.user_origin FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
-                             WHERE row.session_id=?1 AND row.turn_id=?2 AND row.source_sequence<=?3 AND row.role='user'
+                             WHERE row.owner_key=?1 AND row.turn_id=?2 AND row.source_sequence<=?3 AND row.role='user'
                              AND source.kind IN ('invocation_opened','message_steered') ORDER BY row.source_sequence,row.item_index LIMIT 1")
                             .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;
                         let (label, origin) = match prompt {
@@ -267,7 +267,7 @@ async fn preview(
     budget: i64,
 ) -> Result<Option<String>, StoreError> {
     super::bodycache::ensure(db, session, position).await?;
-    sqlx::query_scalar("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+    sqlx::query_scalar("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
         .bind(session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).bind(budget).fetch_one(db).await.map_err(Into::into)
 }
 

@@ -20,7 +20,7 @@
 use crate::{EventLog, StoreError};
 use maka_agent_facts::composition::{CompositionEvidence, RequestComposition};
 use maka_agent_facts::event::EventWrite;
-use sqlx::SqliteConnection;
+use sqlx::{Connection, SqliteConnection};
 
 pub(crate) async fn insert(
     connection: &mut SqliteConnection,
@@ -62,8 +62,13 @@ pub(crate) async fn insert(
     };
     match surface {
         CompositionEvidence::Inline(surface) => {
-            sqlx::query("INSERT INTO request_compositions (digest, surface) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING")
-                .bind(surface.digest()).bind(surface.bytes()).execute(&mut *connection).await?;
+            store(
+                connection,
+                surface.digest(),
+                surface.value(),
+                surface.encoded_len(),
+            )
+            .await?;
         }
         CompositionEvidence::Committed { event_id, digest } => {
             validate_reference(connection, write.event(), event_id, digest).await?;
@@ -120,12 +125,7 @@ pub(crate) async fn verify_replay(
         (None, None) => Ok(()),
         (Some(digest), Some(surface)) if digest == surface.digest() => match surface {
             CompositionEvidence::Inline(surface) => {
-                let bytes: Vec<u8> =
-                    sqlx::query_scalar("SELECT surface FROM request_compositions WHERE digest = ?")
-                        .bind(digest)
-                        .fetch_one(connection)
-                        .await?;
-                if bytes == surface.bytes() {
+                if read(connection, &digest).await?.as_ref() == Some(surface.value()) {
                     Ok(())
                 } else {
                     Err(StoreError::EventConflict)
@@ -178,7 +178,7 @@ impl EventLog {
         let owned_session = session.to_owned();
         let event_id: Option<String> = self
             .connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
                         "SELECT r.event_id FROM runtime_events c JOIN runtime_events r
@@ -208,14 +208,118 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(event_id)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
-        self.connection.run(move |connection| Box::pin(async move {
-            let row: Option<Vec<u8>> = sqlx::query_scalar(
-                "SELECT composition.surface FROM request_compositions AS composition
+        self.connection.read(move |connection| Box::pin(async move {
+            let mut tx=connection.begin().await?;
+            let row: Option<String> = sqlx::query_scalar(
+                "SELECT composition.digest FROM request_compositions AS composition
                  JOIN model_request_compositions AS request ON request.digest = composition.digest
                  JOIN runtime_events AS event ON event.event_id = request.event_id
                  WHERE request.event_id = ? AND json_extract(event.event_header, '$.invocation.session_id') = ?"
-            ).bind(event_id).bind(session).fetch_optional(connection).await?;
-            row.map(|bytes| serde_json::from_slice(&bytes).map_err(StoreError::from)).transpose()
+            ).bind(event_id).bind(session).fetch_optional(&mut *tx).await?;
+            let result=match row {Some(digest)=>read(&mut tx,&digest).await,None=>Ok(None)};
+            tx.rollback().await?;
+            result
         })).await
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Metadata {
+    dynamic_context: Vec<String>,
+    tool_catalog_digest: String,
+    provider_options: Option<serde_json::Value>,
+    max_output_tokens: Option<u64>,
+    sources: Vec<maka_agent_facts::composition::SourceRevision>,
+}
+
+pub(crate) async fn store(
+    connection: &mut SqliteConnection,
+    digest: &str,
+    value: &RequestComposition,
+    bytes: usize,
+) -> Result<(), StoreError> {
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM request_compositions WHERE digest=?)",
+    )
+    .bind(digest)
+    .fetch_one(&mut *connection)
+    .await?
+    {
+        return Ok(());
+    }
+    let system = if let Some(text) = &value.system_prompt {
+        let bytes = serde_json::to_vec(text)?;
+        Some(
+            crate::content::put(
+                connection,
+                &maka_agent_facts::artifact::content_digest(&bytes),
+                &bytes,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let metadata = Metadata {
+        dynamic_context: value.dynamic_context.clone(),
+        tool_catalog_digest: value.tool_catalog_digest.clone(),
+        provider_options: value.provider_options.clone(),
+        max_output_tokens: value.max_output_tokens,
+        sources: value.sources.clone(),
+    };
+    sqlx::query("INSERT INTO request_compositions(digest,metadata,system_content_id,canonical_bytes) VALUES(?,?,?,?)")
+        .bind(digest).bind(serde_json::to_string(&metadata)?).bind(system).bind(bytes as i64).execute(&mut *connection).await?;
+    for (ordinal, definition) in value.tools.iter().enumerate() {
+        let bytes = serde_json::to_vec(definition)?;
+        let content = crate::content::put(
+            connection,
+            &maka_agent_facts::artifact::content_digest(&bytes),
+            &bytes,
+        )
+        .await?;
+        sqlx::query("INSERT INTO composition_tools(composition,ordinal,content_id) VALUES(?,?,?)")
+            .bind(digest)
+            .bind(ordinal as i64)
+            .bind(content)
+            .execute(&mut *connection)
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn read(
+    connection: &mut SqliteConnection,
+    digest: &str,
+) -> Result<Option<RequestComposition>, StoreError> {
+    let Some((metadata,system))=sqlx::query_as::<_,(String,Option<Vec<u8>>)>(
+        "SELECT r.metadata,c.payload FROM request_compositions r LEFT JOIN contents c ON c.id=r.system_content_id WHERE r.digest=?"
+    ).bind(digest).fetch_optional(&mut *connection).await? else {return Ok(None)};
+    let metadata: Metadata = serde_json::from_str(&metadata)?;
+    let tools:Vec<Vec<u8>>=sqlx::query_scalar("SELECT c.payload FROM composition_tools t JOIN contents c ON c.id=t.content_id WHERE t.composition=? ORDER BY t.ordinal")
+        .bind(digest).fetch_all(connection).await?;
+    Ok(Some(RequestComposition {
+        system_prompt: system
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?,
+        tools: tools
+            .into_iter()
+            .map(|bytes| serde_json::from_slice(&bytes).map(std::sync::Arc::new))
+            .collect::<Result<_, _>>()?,
+        dynamic_context: metadata.dynamic_context,
+        tool_catalog_digest: metadata.tool_catalog_digest,
+        provider_options: metadata.provider_options,
+        max_output_tokens: metadata.max_output_tokens,
+        sources: metadata.sources,
+    }))
+}
+
+pub(crate) async fn encode(
+    connection: &mut SqliteConnection,
+    digest: &str,
+) -> Result<Vec<u8>, StoreError> {
+    let value = read(connection, digest)
+        .await?
+        .ok_or(StoreError::MaterialCollected)?;
+    Ok(serde_json::to_vec(&value)?)
 }

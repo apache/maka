@@ -45,7 +45,7 @@ impl EventLog {
         self.validate_root()?;
         let (digest, binding) = (digest.to_owned(), binding_fingerprint.to_owned());
         self.connection
-            .run(move |db| Box::pin(async move { receipt(db, &digest, &binding).await }))
+            .read(move |db| Box::pin(async move { receipt(db, &digest, &binding).await }))
             .await
     }
 

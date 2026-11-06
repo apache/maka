@@ -72,7 +72,7 @@ impl EventLog {
         command.validate()?;
         let command = command.clone();
         self.connection
-            .run(move |connection| Box::pin(async move { read(connection, &command).await }))
+            .read(move |connection| Box::pin(async move { read(connection, &command).await }))
             .await
     }
 

@@ -59,7 +59,7 @@ pub struct ObservationVersion {
     pub metadata: u64,
     pub queue: u64,
     pub event: u64,
-    pub root_control_revision: u64,
+    pub workspace_revision: u64,
 }
 
 /// Observation pages are ordered delivery material, not model replay proofs.
@@ -114,15 +114,15 @@ impl EventLog {
                         WHERE invocation_id IS NOT NULL
                         AND (event_header IS NOT NULL AND event_session=session.id)
                         ORDER BY sequence DESC LIMIT 1), 0),
-                    control.revision
-                 FROM session_control session CROSS JOIN root_app_revision control
+                    COALESCE((SELECT metadata_epoch FROM workspace_bindings binding WHERE binding.id=json_extract(session.configuration,'$.workspace.id')),0)
+                 FROM session_control session
                  WHERE session.id IN (SELECT value FROM json_each(?))"
             ).bind(sessions).fetch_all(connection).await?;
             rows.into_iter().map(|(id, metadata, queue, event, control)| Ok((id, ObservationVersion {
                 metadata: sequence_number(metadata)?,
                 queue: sequence_number(queue)?,
                 event: sequence_number(event)?,
-                root_control_revision: sequence_number(control)?,
+                workspace_revision: sequence_number(control)?,
             }))).collect()
         })).await
     }
@@ -131,22 +131,20 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionProjection<T>>, StoreError> {
-        self.session_projection_filtered(session_id, None).await
+        self.session_projection_filtered(session_id, false).await
     }
 
     pub(crate) async fn root_session_projection<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,
-        partition: usize,
     ) -> Result<Option<SessionProjection<T>>, StoreError> {
-        self.session_projection_filtered(session_id, Some(partition))
-            .await
+        self.session_projection_filtered(session_id, true).await
     }
 
     async fn session_projection_filtered<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,
-        partition: Option<usize>,
+        published_only: bool,
     ) -> Result<Option<SessionProjection<T>>, StoreError> {
         self.validate_root()?;
         sessions::validate_id(session_id)?;
@@ -155,10 +153,9 @@ impl EventLog {
             .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
-                    if let Some(partition) = partition
+                    if published_only
                         && !crate::root_store::catalog::session_visible(
                             &mut transaction,
-                            partition,
                             &session_id,
                         )
                         .await?
@@ -173,7 +170,7 @@ impl EventLog {
             .await
     }
 
-    /// Canonical committed sequence across this partition, including other Sessions.
+    /// Canonical committed sequence in this store, including other Sessions.
     /// Scoped notification watermarks are hints and may lag this SQL boundary.
     pub async fn committed_sequence(&self) -> Result<u64, StoreError> {
         self.validate_root()?;
@@ -186,22 +183,20 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<SessionObservation<T>>, StoreError> {
-        self.observe_session_filtered(session_id, None).await
+        self.observe_session_filtered(session_id, false).await
     }
 
     pub(crate) async fn root_observe_session<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,
-        partition: usize,
     ) -> Result<Option<SessionObservation<T>>, StoreError> {
-        self.observe_session_filtered(session_id, Some(partition))
-            .await
+        self.observe_session_filtered(session_id, true).await
     }
 
     async fn observe_session_filtered<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,
-        partition: Option<usize>,
+        published_only: bool,
     ) -> Result<Option<SessionObservation<T>>, StoreError> {
         self.validate_root()?;
         sessions::validate_id(session_id)?;
@@ -210,10 +205,9 @@ impl EventLog {
             .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
-                    if let Some(partition) = partition
+                    if published_only
                         && !crate::root_store::catalog::session_visible(
                             &mut transaction,
-                            partition,
                             &session_id,
                         )
                         .await?

@@ -137,7 +137,6 @@ pub(super) const PENDING_ROOT_PAGE: &str = "SELECT request_id FROM interaction_p
     WHERE request_id > ? ORDER BY request_id LIMIT 64";
 pub(super) const ALL_PENDING_SESSION_PAGE: &str = "SELECT request_id FROM interaction_pending
     WHERE session_id=?1 AND request_id>?2
-    UNION ALL SELECT request_id FROM root_app_pending WHERE session_id=?1 AND request_id>?2
     ORDER BY request_id LIMIT 64";
 
 /// Bound allocations independently of the number of requests in the root.

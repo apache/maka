@@ -43,9 +43,6 @@ async fn initialize(mut db: SqliteConnection) -> SqliteConnection {
     .execute(&mut db)
     .await
     .unwrap();
-    crate::connection::control::initialize_views(&mut db, None)
-        .await
-        .unwrap();
     append(
         &mut db,
         Fact::InvocationOpened {
@@ -297,9 +294,6 @@ async fn approval_replay_keeps_original_call_across_step_end_dispatch_and_interr
     db.close().await.unwrap();
     let mut db = SqliteConnection::connect_with(&options).await.unwrap();
     crate::sqlite_functions::register(&mut db).await.unwrap();
-    crate::connection::control::initialize_views(&mut db, None)
-        .await
-        .unwrap();
     assert_eq!(seeds(&mut db).await, vec![expected(start, operation)]);
     let replay:Vec<(i64,String)>=sqlx::query_as("SELECT sequence,kind FROM runtime_events WHERE sequence>? AND sequence<=? ORDER BY sequence")
         .bind((start-1) as i64).bind(dispatched as i64).fetch_all(&mut db).await.unwrap();

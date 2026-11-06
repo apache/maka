@@ -282,20 +282,13 @@ async fn materials(
         let payload = stage::payload(staged, number, &blob).await?;
         match blob {
             Blob::ToolResult { event_id, .. } => {
-                sqlx::query("INSERT INTO tool_result_payloads VALUES(?,?)")
-                    .bind(event_id)
-                    .bind(payload)
-                    .execute(&mut *destination)
-                    .await?;
+                crate::tool_payloads::store_raw(destination, &event_id, &payload).await?;
             }
             Blob::Composition {
                 event_id, digest, ..
             } => {
-                sqlx::query("INSERT INTO request_compositions VALUES(?,?) ON CONFLICT DO NOTHING")
-                    .bind(&digest)
-                    .bind(payload)
-                    .execute(&mut *destination)
-                    .await?;
+                let value = serde_json::from_slice(&payload)?;
+                crate::composition::store(destination, &digest, &value, payload.len()).await?;
                 sqlx::query("INSERT INTO model_request_compositions VALUES(?,?)")
                     .bind(event_id)
                     .bind(digest)

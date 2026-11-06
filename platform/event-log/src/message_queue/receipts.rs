@@ -125,7 +125,7 @@ impl EventLog {
         let session = session.to_owned();
         let command = command.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { read(connection, &session, &command).await })
             })
             .await

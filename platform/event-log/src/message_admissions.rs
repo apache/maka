@@ -119,7 +119,7 @@ impl EventLog {
         let owner = owner.to_owned();
         let after = after.map(str::to_owned);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
                         "SELECT DISTINCT session_id FROM message_admissions
@@ -159,7 +159,7 @@ impl EventLog {
         let session = session.to_owned();
         let message = message.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { read(connection, &session, &message).await })
             })
             .await
@@ -173,7 +173,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     pending(&mut tx, &session).await

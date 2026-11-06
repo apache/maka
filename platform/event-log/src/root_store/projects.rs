@@ -39,7 +39,7 @@ struct BindingAdvance {
 impl RootStore {
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.list_projects().await
+        self.log.list_projects().await
     }
 
     pub async fn projects_with_identity_prefix(
@@ -47,12 +47,12 @@ impl RootStore {
         prefix: &str,
     ) -> Result<Vec<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.projects_with_identity_prefix(prefix).await
+        self.log.projects_with_identity_prefix(prefix).await
     }
 
     pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.get_project(id).await
+        self.log.get_project(id).await
     }
 
     pub async fn register_project(
@@ -194,7 +194,7 @@ impl RootStore {
         self.require_open()?;
         let mutation = self.project_mutations.clone().lock_owned().await;
         self.require_open()?;
-        Ok(self.control.scoped(Arc::new(mutation)))
+        Ok(self.log.scoped(Arc::new(mutation)))
     }
 
     async fn prepare_relink(
@@ -256,33 +256,27 @@ impl RootStore {
             .ok_or(StoreError::SessionBusy)?;
         // The original scoped control handle retains the mutation mutex too.
         let custody: crate::connection::custody::Custody = Arc::new((exclusive, control));
-        // Every partition contributes its two indexed maxima. No control write
-        // happens unless all counters can advance; pinned members cannot change
-        // an offset or acquire a new attachment between this check and commit.
-        let changes: Arc<[BindingAdvance]> = changes.into();
-        for partition in &self.partitions {
-            let changes = changes.clone();
-            partition
-                .scoped(custody.clone())
-                .connection
-                .read(move |connection| {
-                    Box::pin(async move {
-                        for change in changes.iter() {
-                            crate::workspace_bindings::require_headroom(
-                                connection,
-                                change.id,
-                                change.permission_epoch,
-                                change.metadata_epoch,
-                            )
-                            .await?;
-                        }
-                        Ok(())
-                    })
+        // Pinned members cannot change counters or attachments before commit.
+        self.log
+            .scoped(custody.clone())
+            .connection
+            .read(move |connection| {
+                Box::pin(async move {
+                    for change in &changes {
+                        crate::workspace_bindings::require_headroom(
+                            connection,
+                            change.id,
+                            change.permission_epoch,
+                            change.metadata_epoch,
+                        )
+                        .await?;
+                    }
+                    Ok(())
                 })
-                .await?;
-        }
+            })
+            .await?;
         self.require_open()?;
-        Ok((self.control.scoped(custody), guard))
+        Ok((self.log.scoped(custody), guard))
     }
 }
 

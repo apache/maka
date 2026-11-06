@@ -2778,11 +2778,7 @@ export interface SettingsUpdateWorkspaceLocationsOutput_DirectoryRootSpec {
 }
 export interface SettingsUsageOutput_UsageFence {
   stateDomain: string;
-  /**
-   * @minItems 8
-   * @maxItems 8
-   */
-  partitions: [number, number, number, number, number, number, number, number];
+  sequence: number;
 }
 export interface SettingsUsageOutput_UsageModelAttempt {
   requestId: string;
@@ -2858,16 +2854,11 @@ export interface SettingsUsageOutput_ToolCallIdentity {
 }
 export interface SettingsUsageOutput_UsageActivityCursor {
   completedAt: number;
-  partition: number;
   requestId: string;
 }
 export interface SettingsUsageSummaryOutput_UsageFence {
   stateDomain: string;
-  /**
-   * @minItems 8
-   * @maxItems 8
-   */
-  partitions: [number, number, number, number, number, number, number, number];
+  sequence: number;
 }
 export interface SettingsUsageSummaryOutput_SettingsUsageTotals {
   models: SettingsUsageSummaryOutput_UsageModelTotals;
@@ -2958,7 +2949,7 @@ export interface SettingsUsageSummaryOutput_UsageToolSummary {
 export interface SettingsUsageSummaryOutput_UsageGroupCursor {
   group: SettingsUsageSummaryOutput_UsageGroup;
   /**
-   * None is the unknown-provider group, not the beginning of pagination.
+   * None identifies the unknown-provider group, not the start of pagination.
    */
   key: string | null;
 }

@@ -70,7 +70,7 @@ pub struct Manifest {
     pub root_id: String,
     pub scope: Scope,
     pub inventory: Inventory,
-    /// MAKA-SESSION version 2; no TS tar.zst compatibility is implied.
+    /// Commitment to the MAKA-SESSION stream reconstructed from this snapshot.
     pub bundle: ObjectRef,
     pub transfer_digest: String,
     pub history_cut: String,

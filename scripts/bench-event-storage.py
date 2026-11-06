@@ -40,7 +40,9 @@ import time
 
 def storage_stats(directory):
     result = []
-    for path in sorted((directory.resolve() / "root" / "runtime-partitions").glob("*.sqlite")):
+    root = directory.resolve() / "root"
+    paths = [root / "runtime-rust.sqlite", *(root / "runtime-partitions").glob("*.sqlite")]
+    for path in sorted(paths):
         if not path.is_file():
             continue
         sidecars = {}
@@ -62,6 +64,7 @@ def storage_stats(directory):
                                pages=db.execute("PRAGMA page_count").fetchone()[0],
                                free_pages=db.execute("PRAGMA freelist_count").fetchone()[0],
                                directories=directories,
+                               shared_content=(dict(zip(("records", "encoded_bytes"), db.execute("SELECT COUNT(*),COALESCE(SUM(length(payload)),0) FROM contents").fetchone())) if "contents" in tables else None),
                                bodies=(dict(zip(("records","raw_bytes","encoded_bytes"), db.execute("SELECT COUNT(*),COALESCE(SUM(raw_bytes),0),COALESCE(SUM(length(payload)),0) FROM event_bodies").fetchone())) if "event_bodies" in tables else None)))
     return result
 

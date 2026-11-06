@@ -29,10 +29,9 @@ pub(crate) const COLUMNS: &str = "e.canonical_bytes AS canonical_length,
  e.body_id AS canonical_body_reference,
  e.header_offset AS canonical_offset,
  canonical_body.id AS canonical_body_id,
- canonical_body.raw_bytes AS canonical_raw_bytes,
+ length(canonical_body.payload) AS canonical_raw_bytes,
  canonical_body.payload AS canonical_payload";
-pub(crate) const JOINS: &str =
-    "LEFT JOIN event_bodies canonical_body ON canonical_body.id=e.body_id";
+pub(crate) const JOINS: &str = "LEFT JOIN contents canonical_body ON canonical_body.id=e.body_id";
 fn invalid(reason: &'static str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, reason).into()
 }

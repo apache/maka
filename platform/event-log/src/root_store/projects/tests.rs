@@ -86,7 +86,7 @@ async fn raw(session: &SessionStore) -> (i64, String) {
 }
 
 #[tokio::test]
-async fn relink_updates_control_and_effective_cas_across_partitions_without_rewriting_sessions() {
+async fn relink_updates_control_and_effective_cas_across_sessions_without_rewriting_sessions() {
     let (_directory, store) = fixture().await;
     let source = store
         .register_project(registration("source", "/old"), true, 1)
@@ -94,10 +94,7 @@ async fn relink_updates_control_and_effective_cas_across_partitions_without_rewr
         .unwrap();
     let binding = attach(&store, &source, "/old").await;
     let first = create(&store, "one", binding).await;
-    let second_id = (0..100)
-        .map(|n| format!("other-{n}"))
-        .find(|id| partition_for(b"session", id) != partition_for(b"session", "one"))
-        .unwrap();
+    let second_id = "other".to_owned();
     let second = create(&store, &second_id, binding).await;
     let before = first.get::<Value>().await.unwrap().unwrap();
     let basis = crate::workspace_bindings::effective_boundary(
@@ -209,7 +206,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
         .unwrap();
     let (entered, started) = oneshot::channel();
     let (release, released) = oneshot::channel();
-    let owner = store.control.clone();
+    let owner = store.log.clone();
     let blocker = tokio::spawn(async move {
         owner
             .connection
@@ -245,7 +242,7 @@ async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_c
     blocker.await.unwrap();
     // This queued barrier completes only after the cancelled commit's job exits.
     store
-        .control
+        .log
         .connection
         .run(|_| Box::pin(async { Ok(()) }))
         .await

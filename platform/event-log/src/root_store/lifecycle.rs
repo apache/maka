@@ -30,9 +30,8 @@ pub(super) struct Lifecycle {
 }
 impl Lifecycle {
     pub(super) async fn start(
-        logs: Vec<Arc<EventLog>>,
+        log: Arc<EventLog>,
         gates: Arc<gates::Gates>,
-        inspections: Arc<checkpoints::load::Inspections>,
     ) -> Result<Self, StoreError> {
         let (ready, started) = tokio::sync::oneshot::channel();
         let (done, closed) = tokio::sync::oneshot::channel();
@@ -46,10 +45,7 @@ impl Lifecycle {
                 {
                     Ok(runtime) => runtime,
                     Err(error) => {
-                        inspections.request_shutdown();
-                        for log in &logs {
-                            log.request_shutdown();
-                        }
+                        log.request_shutdown();
                         let reason = error.to_string();
                         let _ = ready.send(Err(reason.clone()));
                         let _ = done.send(Err(reason));
@@ -61,14 +57,13 @@ impl Lifecycle {
                 if ready.send(Ok(())).is_err() {
                     gates.close();
                 }
-                let mut cached_inspections = Vec::new();
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let (unconfirmed, premature_close) = runtime.block_on(async {
-                        let receipts = logs.iter().map(|log| log.close_receipt()).collect::<Vec<_>>();
+                        let receipt = log.close_receipt();
                         let shutdown = async {
                             tokio::select! {
                             failed = gates.wait_for_shutdown() => (failed, None),
-                            (closed, _, _) = futures_util::future::select_all(receipts) => {
+                            closed = receipt => {
                                 let ready = gates.shutdown_ready();
                                 gates.close();
                                 match (closed, ready) {
@@ -79,7 +74,7 @@ impl Lifecycle {
                             }
                         };
                         let (_, result) = futures_util::future::join(
-                            material::maintain(&logs[1..], recovered, gates.cancellation()),
+                            material::maintain(&log, recovered, gates.cancellation()),
                             shutdown,
                         ).await;
                         result
@@ -91,10 +86,8 @@ impl Lifecycle {
                         // can still persist known results before quarantining.
                         return Err("accepted Root work cleanup is unconfirmed".into());
                     }
-                    cached_inspections = inspections.take_all();
-                    for log in logs.iter().chain(&cached_inspections) { log.request_shutdown(); }
-                    let results = runtime.block_on(futures_util::future::join_all(logs.iter().chain(&cached_inspections).map(|log| log.shutdown())));
-                    let mut failures: Vec<String> = results.into_iter().filter_map(Result::err).map(|error| error.to_string()).collect();
+                    log.request_shutdown();
+                    let mut failures: Vec<String> = runtime.block_on(log.shutdown()).err().map(|error|error.to_string()).into_iter().collect();
                     if let Some(error) = premature_close { failures.push(error); }
                     if failures.is_empty() {
                         Ok(())
@@ -107,9 +100,7 @@ impl Lifecycle {
                 });
                 let failed = result.is_err();
                 if !failed {
-                    drop(cached_inspections);
-                    drop(inspections);
-                    drop(logs);
+                    drop(log);
                     drop(gates);
                 }
                 let _ = done.send(result);
@@ -153,7 +144,7 @@ impl Lifecycle {
 }
 
 /// Captured from the live Root; temporary stage SQL joins the same shutdown
-/// barrier as physical Session work without becoming a permanent partition.
+/// barrier as physical Session work without becoming a permanent store.
 #[derive(Clone)]
 pub(crate) struct StageOwner {
     root: Arc<root::RootOwner>,
@@ -164,7 +155,7 @@ impl RootStore {
     pub(crate) fn stage_owner(&self) -> Result<StageOwner, StoreError> {
         self.require_open()?;
         Ok(StageOwner {
-            root: self.control.owned_root()?,
+            root: self.log.owned_root()?,
             gates: self.gates.clone(),
         })
     }

@@ -156,11 +156,7 @@ async fn replay(
         .await?;
         crate::message_sources::insert(original, &event).await?;
         if let Some(payload) = payload {
-            sqlx::query("INSERT INTO tool_result_payloads(event_id,payload) VALUES(?,?)")
-                .bind(&event.id)
-                .bind(payload)
-                .execute(&mut *original)
-                .await?;
+            crate::tool_payloads::store_raw(original, &event.id, &payload).await?;
         }
         material::composition(staged, original, &event).await?;
     }

@@ -141,7 +141,7 @@ impl EventLog {
         crate::sessions::validate_id(session_id)?;
         let session = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { first_message_opening(connection, &session).await })
             })
             .await
@@ -165,7 +165,7 @@ impl EventLog {
             message_id.to_owned(),
         );
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let row: Option<(i64, String)> = sqlx::query_as(
@@ -208,7 +208,7 @@ impl EventLog {
         let session = session_id.to_owned();
         let message = message_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let row: Option<(i64, String)> = sqlx::query_as(
                         "SELECT e.sequence, e.event_header

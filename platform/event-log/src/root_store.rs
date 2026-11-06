@@ -17,11 +17,10 @@
  * under the License.
  */
 
-//! One Root authority, a control database, and a fixed set of independent writers.
+//! One Root authority and one transactional runtime database.
 
 use crate::{EventLog, OpenPurpose, StoreError, root, sessions::SessionRecord};
 use serde::{Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection};
 use std::sync::{
     Arc, Weak,
@@ -72,19 +71,13 @@ pub use creation::CreationRejection;
 #[cfg(test)]
 mod applications_tests;
 mod routes;
-#[cfg(test)]
-mod tests;
-
-pub const PARTITION_COUNT: usize = 8;
 
 /// Session and operation handles never extend the lifetime of an idle SQL owner.
 /// An accepted call holds the original owner through its completion instead.
 pub struct RootStore {
-    control: Arc<EventLog>,
-    partitions: Vec<Arc<EventLog>>,
+    log: Arc<EventLog>,
     closed: Arc<AtomicBool>,
     gates: Arc<gates::Gates>,
-    inspections: Arc<checkpoints::load::Inspections>,
     lifecycle: Option<lifecycle::Lifecycle>,
     project_mutations: Arc<tokio::sync::Mutex<()>>,
 }
@@ -92,9 +85,7 @@ pub struct RootStore {
 #[derive(Clone)]
 pub struct SessionStore {
     id: Arc<str>,
-    partition: Weak<EventLog>,
-    journals: [Weak<EventLog>; PARTITION_COUNT],
-    control: Weak<EventLog>,
+    log: Weak<EventLog>,
     execution: Option<Arc<execution::Pins>>,
     gates: Arc<gates::Gates>,
     closed: Arc<AtomicBool>,
@@ -112,7 +103,7 @@ impl SessionStore {
         {
             return Err(StoreError::ConnectionClosed);
         }
-        self.partition.upgrade().ok_or(StoreError::ConnectionClosed)
+        self.log.upgrade().ok_or(StoreError::ConnectionClosed)
     }
 
     /// Capture a stable Session attachment before entering its binding gate.
@@ -123,7 +114,7 @@ impl SessionStore {
             return Ok(owner.scoped(pins.custody()?).bind_session(self.id.clone()));
         }
         Ok(
-            pin_partition(owner, &self.gates, &[self.id.to_string()], &[])
+            pin_sessions(owner, &self.gates, &[self.id.to_string()], &[])
                 .await?
                 .bind_session(self.id.clone()),
         )
@@ -147,18 +138,9 @@ impl SessionStore {
 
     pub fn subscribe_commits(&self) -> Result<crate::SessionSubscription, StoreError> {
         let owner = self.owner()?;
-        let subscription = owner.subscribe_session_commits(&self.id);
-        let mut peers = Vec::with_capacity(PARTITION_COUNT - 1);
-        for journal in &self.journals {
-            let journal = journal.upgrade().ok_or(StoreError::ConnectionClosed)?;
-            if !Arc::ptr_eq(&journal, &owner) {
-                peers.push(journal.subscribe_session_commits(&self.id));
-            }
-        }
-        let control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
-        Ok(subscription
-            .with_peers(peers)
-            .with_control(control.subscribe_catalog_changes()))
+        Ok(owner
+            .subscribe_session_commits(&self.id)
+            .with_control(owner.subscribe_catalog_changes()))
     }
 }
 
@@ -167,68 +149,33 @@ impl RootStore {
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
-        let mut stats = Vec::with_capacity(self.partitions.len() + 1);
-        for owner in std::iter::once(&self.control).chain(&self.partitions) {
-            stats.push(owner.sqlite_resource_stats().await?);
-        }
-        Ok(stats)
+        Ok(vec![self.log.sqlite_resource_stats().await?])
     }
 
     pub async fn open(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
         owner.validate_current()?;
-        let control = Arc::new(
+        let log = Arc::new(
             EventLog::open_owned(
                 &owner.canonical_path().join(root::ROOT_DATABASE),
                 Some(owner.clone()),
-                OpenPurpose::RootControl,
+                OpenPurpose::Execution,
             )
             .await?,
         );
         let mut store = Self {
-            control,
-            partitions: Vec::with_capacity(PARTITION_COUNT),
+            log,
             closed: Arc::new(AtomicBool::new(false)),
             gates: gates::Gates::new(),
-            inspections: checkpoints::load::Inspections::new(),
             lifecycle: None,
             project_mutations: Arc::new(tokio::sync::Mutex::new(())),
         };
         let opened = async {
-            let read_control = crate::connection::control::ReadOnlyControl::new(
-                &owner.canonical_path().join(root::ROOT_DATABASE),
-            )?;
-            let directory = owner.canonical_path().join("runtime-partitions");
-            root::private_directory(&directory)?;
-            for index in 0..PARTITION_COUNT {
-                let path = directory.join(format!("{index:02}.sqlite"));
-                // A missing file is only safe before any route references this partition.
-                if !path.exists() && store.partition_has_routes(index).await? {
-                    return Err(StoreError::InvalidTransition(
-                        "routed partition is missing".into(),
-                    ));
-                }
-                store.partitions.push(Arc::new(
-                    EventLog::open_owned_with_control(
-                        &path,
-                        Some(owner.clone()),
-                        OpenPurpose::Execution,
-                        Some(read_control.clone()),
-                    )
-                    .await?,
-                ));
-            }
-            let logs = std::iter::once(store.control.clone())
-                .chain(store.partitions.iter().cloned())
-                .collect();
-            store.lifecycle = Some(
-                lifecycle::Lifecycle::start(logs, store.gates.clone(), store.inspections.clone())
-                    .await?,
-            );
+            store.lifecycle =
+                Some(lifecycle::Lifecycle::start(store.log.clone(), store.gates.clone()).await?);
             // Recovery also owns real workers. Install their independent close
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
             store.recover_checkpoints().await?;
-            store.recover_checkpoint_loads().await?;
             // No admission or retirement can observe work abandoned by the
             // previous owner as live after a process restart.
             store.recover_host_effects().await?;
@@ -271,12 +218,10 @@ impl RootStore {
         }
     }
 
-    fn handle(&self, id: String, partition: usize) -> SessionStore {
+    fn handle(&self, id: String) -> SessionStore {
         SessionStore {
             id: id.into(),
-            partition: Arc::downgrade(&self.partitions[partition]),
-            journals: std::array::from_fn(|index| Arc::downgrade(&self.partitions[index])),
-            control: Arc::downgrade(&self.control),
+            log: Arc::downgrade(&self.log),
             execution: None,
             gates: self.gates.clone(),
             closed: self.closed.clone(),
@@ -287,11 +232,7 @@ impl RootStore {
         self.closed.store(true, Ordering::Release);
         self.gates.close();
         if self.lifecycle.is_none() {
-            self.inspections.request_shutdown();
-            self.control.request_shutdown();
-            for partition in &self.partitions {
-                partition.request_shutdown();
-            }
+            self.log.request_shutdown();
         }
     }
 
@@ -300,27 +241,7 @@ impl RootStore {
         if let Some(lifecycle) = &self.lifecycle {
             return lifecycle.wait().await;
         }
-        // Bootstrap failures have not installed a lifecycle owner yet.
-        // Observe every real close even if an earlier owner fails. Each failed
-        // owner retains its original authority, so it cannot be replaced.
-        let cached = self.inspections.take_all();
-        let results = futures_util::future::join_all(
-            std::iter::once(&self.control)
-                .chain(&self.partitions)
-                .chain(&cached)
-                .map(|log| log.shutdown()),
-        )
-        .await;
-        let failures: Vec<_> = results
-            .into_iter()
-            .filter_map(Result::err)
-            .map(|error| error.to_string())
-            .collect();
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(StoreError::CloseFailed(failures.join("; ")))
-        }
+        self.log.shutdown().await
     }
 
     pub async fn close(self) -> Result<(), StoreError> {
@@ -334,79 +255,9 @@ impl Drop for RootStore {
     }
 }
 
-fn partition_for(domain: &[u8], identity: &str) -> usize {
-    let mut digest = Sha256::new();
-    digest.update(domain);
-    digest.update([0]);
-    digest.update(identity.as_bytes());
-    usize::from(digest.finalize()[0]) % PARTITION_COUNT
-}
-
-pub(crate) async fn initialize_control(
-    connection: &mut SqliteConnection,
-) -> Result<(), StoreError> {
-    let has_layout: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='root_store_layout' AND type='table')")
-        .fetch_one(&mut *connection).await?;
-    if has_layout {
-        let layout: (i64, i64) =
-            sqlx::query_as("SELECT version, partitions FROM root_store_layout WHERE singleton=1")
-                .fetch_one(&mut *connection)
-                .await?;
-        if layout != (1, PARTITION_COUNT as i64) {
-            return Err(StoreError::UnsupportedDatabase);
-        }
-    } else {
-        // Never silently orphan a previous single-writer data store. An empty
-        // interrupted initialization remains safe to retry.
-        for (table, query) in [
-            (
-                "session_control",
-                "SELECT EXISTS(SELECT 1 FROM session_control)",
-            ),
-            ("event_log", "SELECT EXISTS(SELECT 1 FROM event_log)"),
-            (
-                "application_operations",
-                "SELECT EXISTS(SELECT 1 FROM application_operations)",
-            ),
-            ("host_effects", "SELECT EXISTS(SELECT 1 FROM host_effects)"),
-            ("plugin_data", "SELECT EXISTS(SELECT 1 FROM plugin_data)"),
-            (
-                "application_intents",
-                "SELECT EXISTS(SELECT 1 FROM application_intents)",
-            ),
-        ] {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=? AND type='table')",
-            )
-            .bind(table)
-            .fetch_one(&mut *connection)
-            .await?;
-            if exists
-                && sqlx::query_scalar::<_, bool>(query)
-                    .fetch_one(&mut *connection)
-                    .await?
-            {
-                return Err(StoreError::UnsupportedDatabase);
-            }
-        }
-    }
-    crate::schema::initialize_connection(connection).await?;
-    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS root_store_layout(singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL, partitions INTEGER NOT NULL)")
-        .execute(&mut *tx).await?;
-    sqlx::raw_sql(include_str!("root_store/routes.sql"))
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO root_store_layout VALUES(1,1,?) ON CONFLICT(singleton) DO NOTHING")
-        .bind(PARTITION_COUNT as i64)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await.map_err(StoreError::CommitUnknown)
-}
-
 /// All attachment-changing callers take an exclusive Session gate; ordinary
 /// work shares it. Binding pins then fence Root relocation until SQL cleanup.
-async fn pin_partition(
+async fn pin_sessions(
     owner: Arc<EventLog>,
     gates: &Arc<gates::Gates>,
     sessions: &[String],
@@ -439,33 +290,18 @@ async fn pin_partition(
 impl RootStore {
     pub async fn activation_checkpoint_sessions(&self) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
-        let mut sessions = Vec::new();
-        for partition in &self.partitions {
-            sessions.extend(partition.activation_checkpoint_sessions().await?);
-        }
-        sessions.sort();
-        sessions.dedup();
-        Ok(sessions)
+        self.log.activation_checkpoint_sessions().await
     }
     pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
-        let mut sessions = Vec::new();
-        for partition in &self.partitions {
-            sessions.extend(partition.ready_native_approval_sessions().await?);
-        }
-        sessions.sort();
-        sessions.dedup();
-        Ok(sessions)
+        self.log.ready_native_approval_sessions().await
     }
 }
 
 impl RootStore {
     pub async fn reconcile_activation_controls(&self) -> Result<(), StoreError> {
         self.require_open()?;
-        for partition in &self.partitions {
-            partition.reconcile_activation_controls().await?;
-        }
-        Ok(())
+        self.log.reconcile_activation_controls().await
     }
 }
 
@@ -475,10 +311,7 @@ impl RootStore {
         now_unix_ms: u64,
     ) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
-        let mut candidates = Vec::new();
-        for partition in &self.partitions {
-            candidates.extend(partition.due_model_retry_candidates(now_unix_ms).await?);
-        }
+        let mut candidates = self.log.due_model_retry_candidates(now_unix_ms).await?;
         candidates.sort();
         Ok(candidates
             .into_iter()
@@ -490,12 +323,6 @@ impl RootStore {
         now_unix_ms: u64,
     ) -> Result<Option<u64>, StoreError> {
         self.require_open()?;
-        let mut deadline = None;
-        for partition in &self.partitions {
-            if let Some(next) = partition.next_model_retry_deadline(now_unix_ms).await? {
-                deadline = Some(deadline.map_or(next, |saved: u64| saved.min(next)));
-            }
-        }
-        Ok(deadline)
+        self.log.next_model_retry_deadline(now_unix_ms).await
     }
 }

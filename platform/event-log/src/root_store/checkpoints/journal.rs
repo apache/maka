@@ -218,6 +218,7 @@ pub(super) async fn commit(
     request: Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
+    let notice = log.commits.notice();
     log.connection.run(move |db| Box::pin(async move {
         let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
         let mut value = receipt(&mut tx, &request).await?.ok_or_else(|| invalid("checkpoint claim missing"))?;
@@ -232,6 +233,7 @@ pub(super) async fn commit(
         let actual = head(&mut tx, &request.session_id).await?.map(|head| head.revision);
         if actual != request.publication.expected_revision {
             value.state = PublicationState::Conflict { actual };
+            crate::snapshots::release_unpublished(&mut tx,&request.key()?).await?;
         } else {
             let head = Head { revision: Revision(uuid::Uuid::new_v4()), manifest };
             sqlx::query("INSERT INTO history_checkpoint_heads VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET head_json=excluded.head_json")
@@ -239,13 +241,18 @@ pub(super) async fn commit(
             value.state = PublicationState::Published { head };
             boundary("head_written");
         }
+        if let PublicationState::Published { head } = &value.state {
+            crate::snapshots::publish(&mut tx,&request.key()?,&head.manifest.digest).await?;
+        }
         write(&mut tx, &request, &value).await?;
         tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                notice.material_released();
         Ok(value)
     })).await
 }
 
 pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), StoreError> {
+    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
             Box::pin(async move {
@@ -255,9 +262,12 @@ pub(super) async fn interrupt(log: &EventLog, request: Request) -> Result<(), St
                     .ok_or_else(|| invalid("checkpoint claim missing"))?;
                 if value.state == PublicationState::Capturing {
                     value.state = PublicationState::Interrupted;
+                    crate::snapshots::release_unpublished(&mut tx, &request.key()?).await?;
                     write(&mut tx, &request, &value).await?;
                 }
-                tx.commit().await.map_err(StoreError::CommitUnknown)
+                tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                notice.material_released();
+                Ok(())
             })
         })
         .await
@@ -290,6 +300,7 @@ pub(super) async fn unavailable(
     manifest: ObjectRef,
     cause: String,
 ) -> Result<Publication, StoreError> {
+    let notice = log.commits.notice();
     log.connection
         .run(move |db| {
             Box::pin(async move {
@@ -303,9 +314,11 @@ pub(super) async fn unavailable(
                     })
                 {
                     value.state = PublicationState::Unavailable { manifest, cause };
+                    crate::snapshots::release_unpublished(&mut tx, &request.key()?).await?;
                     write(&mut tx, &request, &value).await?;
                 }
                 tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                notice.material_released();
                 Ok(value)
             })
         })

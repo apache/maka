@@ -86,11 +86,11 @@ pub(super) async fn page<T: Serialize + Send + 'static>(
 ) -> Result<Page<T>, StoreError> {
     log.validate_root()?;
     query.validate()?;
-    if offset > i64::MAX as u64 || !(1..=100).contains(&limit) {
+    if offset > i64::MAX as u64 || limit == 0 {
         return Err(invalid("invalid Usage page"));
     }
     log.connection
-        .run(move |connection| {
+        .read(move |connection| {
             Box::pin(async move {
                 let mut tx = connection.begin().await?;
                 let through = query.fence(&mut tx).await?;
@@ -112,19 +112,8 @@ pub(super) async fn page<T: Serialize + Send + 'static>(
                     .push_bind(offset as i64);
                 let rows = select.build().fetch_all(&mut *tx).await?;
                 let mut attempts = Vec::with_capacity(rows.len());
-                // Leave envelope/cursor headroom. Never truncate one accounting fact.
-                let mut bytes = 0;
                 for row in &rows {
-                    let attempt = read(row)?;
-                    let size = serde_json::to_vec(&attempt)?.len() + 1;
-                    if bytes + size > 32 * 1024 {
-                        if attempts.is_empty() {
-                            return Err(invalid("one Usage record exceeds page capacity"));
-                        }
-                        break;
-                    }
-                    bytes += size;
-                    attempts.push(attempt);
+                    attempts.push(read(row)?);
                 }
                 let total = crate::sequence_number(total)?;
                 let end = offset + attempts.len() as u64;
@@ -146,7 +135,6 @@ pub(crate) async fn activity_after(
     log: &EventLog,
     query: Query,
     selection: Selection,
-    partition: usize,
     after: Option<crate::root_store::UsageActivityCursor>,
 ) -> Result<Page<super::Activity>, StoreError> {
     log.validate_root()?;
@@ -168,15 +156,12 @@ pub(crate) async fn activity_after(
                     select
                         .push(" AND (completed_at < ")
                         .push_bind(after.completed_at);
-                    if partition >= after.partition {
-                        select
-                            .push(" OR (completed_at = ")
-                            .push_bind(after.completed_at);
-                        if partition == after.partition {
-                            select.push(" AND event_id > ").push_bind(after.request_id);
-                        }
-                        select.push(")");
-                    }
+                    select
+                        .push(" OR (completed_at = ")
+                        .push_bind(after.completed_at)
+                        .push(" AND event_id > ")
+                        .push_bind(after.request_id)
+                        .push(")");
                     select.push(")");
                 }
                 select.push(" ORDER BY completed_at DESC, event_id LIMIT 33");
@@ -185,12 +170,6 @@ pub(crate) async fn activity_after(
                     .iter()
                     .map(super::read_activity)
                     .collect::<Result<Vec<_>, _>>()?;
-                // Fixed 33 records per partition; one oversized fact is never truncated.
-                for attempt in &attempts {
-                    if serde_json::to_vec(attempt)?.len() > 32 * 1024 {
-                        return Err(invalid("one Usage record exceeds page capacity"));
-                    }
-                }
                 tx.commit().await?;
                 Ok(Page {
                     through,

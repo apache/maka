@@ -61,7 +61,7 @@ impl EventLog {
         }
         let (epoch, session, message) = (epoch.to_owned(), session.to_owned(), message.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { read(connection, &epoch, &session, &message).await })
             })
             .await

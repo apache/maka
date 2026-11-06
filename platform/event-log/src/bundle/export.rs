@@ -70,11 +70,17 @@ impl EventLog {
                                 source_high_water: through,
                             })
                             .await?;
-                        catalog(&mut tx, &inventory, &mut writer).await?;
-                        histories(&mut tx, &closure, &mut writer).await?;
-                        events(&mut tx, &closure, &mut writer).await?;
+                        for record in catalog(&mut tx, &inventory).await? {
+                            writer.record(&record).await?;
+                        }
+                        for record in histories(&mut tx, &closure).await? {
+                            writer.record(&record).await?;
+                        }
+                        events(&mut tx, &closure.events, &mut writer).await?;
                         super::blobs::export(&mut tx, &inventory, &closure, &mut writer).await?;
-                        accounting(&mut tx, &closure, &mut writer).await?;
+                        for record in accounting(&mut tx, &closure).await? {
+                            writer.record(&record).await?;
+                        }
                         let (output, bytes, digest) = writer.finish().await?;
                         Ok((
                             output,
@@ -94,14 +100,14 @@ impl EventLog {
     }
 }
 
-async fn events<W: AsyncWrite + Unpin>(
+pub(crate) async fn events<W: AsyncWrite + Unpin>(
     db: &mut SqliteConnection,
-    closure: &Closure,
+    events: &std::collections::BTreeSet<u64>,
     writer: &mut Writer<W>,
 ) -> Result<(), StoreError> {
     // Batch only identities; stream each joined body in the caller's snapshot.
     // The batch size bounds query parameters, never the accepted event size.
-    let mut selected = closure.events.iter();
+    let mut selected = events.iter();
     loop {
         let batch: Vec<u64> = selected.by_ref().take(128).copied().collect();
         if batch.is_empty() {
@@ -172,11 +178,11 @@ pub(crate) async fn history_cut(
     Ok(hex::encode(hash.finalize()))
 }
 
-async fn catalog<W: AsyncWrite + Unpin>(
+pub(crate) async fn catalog(
     db: &mut SqliteConnection,
     inventory: &Inventory,
-    writer: &mut Writer<W>,
-) -> Result<(), StoreError> {
+) -> Result<Vec<Record>, StoreError> {
+    let mut records = Vec::new();
     for session in &inventory.sessions {
         let (created, updated, archived, configuration, parent): (
             i64,
@@ -193,66 +199,58 @@ async fn catalog<W: AsyncWrite + Unpin>(
         .bind(&session.id)
         .fetch_one(&mut *db)
         .await?;
-        writer
-            .record(&Record::Session {
-                id: session.id.clone(),
-                parent: parent.filter(|id| inventory.sessions.iter().any(|s| s.id == *id)),
-                created_at: sequence_number(created)?,
-                updated_at: sequence_number(updated)?,
-                archived,
-                configuration: serde_json::from_str(&configuration)?,
-            })
-            .await?;
+        records.push(Record::Session {
+            id: session.id.clone(),
+            parent: parent.filter(|id| inventory.sessions.iter().any(|s| s.id == *id)),
+            created_at: sequence_number(created)?,
+            updated_at: sequence_number(updated)?,
+            archived,
+            configuration: serde_json::from_str(&configuration)?,
+        });
     }
-    Ok(())
+    Ok(records)
 }
 
-async fn histories<W: AsyncWrite + Unpin>(
+pub(crate) async fn histories(
     db: &mut SqliteConnection,
     closure: &Closure,
-    writer: &mut Writer<W>,
-) -> Result<(), StoreError> {
+) -> Result<Vec<Record>, StoreError> {
+    let mut records = Vec::new();
     for session in &closure.copies {
         let (request, through, observed, lineage, state): (String,i64,i64,String,String) = sqlx::query_as(
             "SELECT request_json,through_sequence,observed_through,lineage_json,state FROM session_history_copies WHERE session_id=?"
         ).bind(session).fetch_one(&mut *db).await?;
-        writer
-            .record(&Record::Copy(Copy {
-                request: serde_json::from_str(&request)?,
-                through: sequence_number(through)?,
-                observed_through: sequence_number(observed)?,
-                lineage: serde_json::from_str(&lineage)?,
-                state: state
-                    .parse()
-                    .map_err(|error: &str| StoreError::InvalidTransition(error.into()))?,
-            }))
-            .await?;
+        records.push(Record::Copy(Copy {
+            request: serde_json::from_str(&request)?,
+            through: sequence_number(through)?,
+            observed_through: sequence_number(observed)?,
+            lineage: serde_json::from_str(&lineage)?,
+            state: state
+                .parse()
+                .map_err(|error: &str| StoreError::InvalidTransition(error.into()))?,
+        }));
     }
     for ((session, sequence), archive_sequence) in &closure.members {
-        writer
-            .record(&Record::Member {
-                session: session.clone(),
-                sequence: *sequence,
-                archive_sequence: *archive_sequence,
-            })
-            .await?;
+        records.push(Record::Member {
+            session: session.clone(),
+            sequence: *sequence,
+            archive_sequence: *archive_sequence,
+        });
     }
     for (session, sequence) in &closure.revisions {
-        writer
-            .record(&Record::RevisionSource {
-                session: session.clone(),
-                sequence: *sequence,
-            })
-            .await?;
+        records.push(Record::RevisionSource {
+            session: session.clone(),
+            sequence: *sequence,
+        });
     }
-    Ok(())
+    Ok(records)
 }
 
-async fn accounting<W: AsyncWrite + Unpin>(
+pub(crate) async fn accounting(
     db: &mut SqliteConnection,
     closure: &Closure,
-    writer: &mut Writer<W>,
-) -> Result<(), StoreError> {
+) -> Result<Vec<Record>, StoreError> {
+    let mut records = Vec::new();
     for sequence in &closure.events {
         let row: Option<(String, String, Option<String>, Option<f64>)> = sqlx::query_as(
             "SELECT a.request_id,a.quote_json,v.usage_json,v.usd FROM event_log e
@@ -267,21 +265,19 @@ async fn accounting<W: AsyncWrite + Unpin>(
             // future usage is not evidence belonging to this transfer.
             let witness = super::accounting::witness(db, &event_id).await?;
             let usage = usage.filter(|_| witness.is_some_and(|n| closure.events.contains(&n)));
-            writer
-                .record(&Record::Accounting {
-                    event_id,
-                    quote: serde_json::from_str(&quote)?,
-                    valuation: usage
-                        .map(|usage| {
-                            Ok::<_, serde_json::Error>(Valuation {
-                                usage: serde_json::from_str(&usage)?,
-                                usd,
-                            })
+            records.push(Record::Accounting {
+                event_id,
+                quote: serde_json::from_str(&quote)?,
+                valuation: usage
+                    .map(|usage| {
+                        Ok::<_, serde_json::Error>(Valuation {
+                            usage: serde_json::from_str(&usage)?,
+                            usd,
                         })
-                        .transpose()?,
-                })
-                .await?;
+                    })
+                    .transpose()?,
+            });
         }
     }
-    Ok(())
+    Ok(records)
 }

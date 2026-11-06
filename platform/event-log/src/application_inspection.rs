@@ -97,7 +97,7 @@ pub(super) fn initialize(
         let version: i64 = sqlx::query_scalar("PRAGMA user_version")
             .fetch_one(&mut *connection)
             .await?;
-        if application_id != 0x4d414b52 || version != 1 {
+        if application_id != 0x4d414b52 || version != 2 {
             return Err(StoreError::UnsupportedDatabase);
         }
         Ok(())

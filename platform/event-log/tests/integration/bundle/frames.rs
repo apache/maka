@@ -82,6 +82,13 @@ pub(crate) fn rewrite_events(bytes: &[u8], mut change: impl FnMut(&mut Value) ->
 }
 
 pub(crate) fn rewrite_records(bytes: &[u8], mut change: impl FnMut(&mut Value) -> bool) -> Vec<u8> {
+    rewrite_material(bytes, |record, _| change(record))
+}
+
+pub(crate) fn rewrite_material(
+    bytes: &[u8],
+    mut change: impl FnMut(&mut Value, &mut Vec<u8>) -> bool,
+) -> Vec<u8> {
     use std::io::{Cursor, Read};
     let magic = b"MAKA-SESSION\0\x02";
     let mut cursor = Cursor::new(bytes);
@@ -105,12 +112,13 @@ pub(crate) fn rewrite_records(bytes: &[u8], mut change: impl FnMut(&mut Value) -
         };
         let start = cursor.position() as usize;
         cursor.set_position(cursor.position() + payload_len);
+        let mut payload = bytes[start..start + payload_len as usize].to_vec();
         let end = record["kind"] == "end";
         if end {
             record["digest"] =
                 Value::String(format!("sha256:{}", hex::encode(Sha256::digest(&output))));
             record["frames"] = Value::from(count);
-        } else if !change(&mut record) {
+        } else if !change(&mut record, &mut payload) {
             continue;
         }
         let json = serde_json::to_vec(&record).unwrap();
@@ -120,6 +128,6 @@ pub(crate) fn rewrite_records(bytes: &[u8], mut change: impl FnMut(&mut Value) -
             return output;
         }
         count += 1;
-        output.extend(&bytes[start..start + payload_len as usize]);
+        output.extend(payload);
     }
 }

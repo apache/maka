@@ -205,7 +205,7 @@ async fn immutable_uploads_are_scoped_bounded_and_reopen_with_atomic_catalog_cha
         .await
         .unwrap();
     let stored: (String, Vec<u8>) =
-        sqlx::query_as("SELECT record_json, payload FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE id = 'first'")
+        sqlx::query_as("SELECT record_json, payload FROM artifacts JOIN contents USING(content_sha256) WHERE artifacts.id = 'first'")
             .fetch_one(&mut observer)
             .await
             .unwrap();
@@ -362,7 +362,7 @@ async fn identical_uploads_share_content_but_keep_independent_ownership_and_recl
     let inspect = rusqlite::Connection::open(&path).unwrap();
     let physical: (i64, i64) = inspect
         .query_row(
-            "SELECT COUNT(*), SUM(length(payload)) FROM artifact_contents",
+            "SELECT COUNT(*), SUM(length(payload)) FROM contents",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -400,7 +400,7 @@ async fn identical_uploads_share_content_but_keep_independent_ownership_and_recl
     );
     assert_eq!(
         inspect
-            .query_row("SELECT COUNT(*) FROM artifact_contents", [], |row| row
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
         0
@@ -446,7 +446,7 @@ async fn bundle_roundtrip_preserves_owned_artifacts_while_deduplicating_their_by
             .unwrap();
     }
     let inspect = rusqlite::Connection::open(&destination_path).unwrap();
-    assert_eq!(inspect.query_row("SELECT COUNT(*),SUM(length(payload)),(SELECT COUNT(*) FROM artifacts) FROM artifact_contents", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(), (1, 131_089, 2));
+    assert_eq!(inspect.query_row("SELECT COUNT(*),SUM(length(payload)),(SELECT COUNT(*) FROM artifacts) FROM contents", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap(), (1, 131_089, 2));
     for id in ["first", "second"] {
         let observed = target
             .with_artifact(

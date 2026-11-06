@@ -324,9 +324,9 @@ async fn archive_publication_is_atomic_and_preserves_original_source_integrity()
     );
     // Deliberately corrupt immutable physical material outside its publisher.
     inspect
-        .execute_batch("DROP TRIGGER event_body_immutable")
+        .execute_batch("DROP TRIGGER content_immutable")
         .unwrap();
-    inspect.execute("UPDATE event_bodies SET payload=CAST(replace(CAST(payload AS TEXT),'xxxxxxxx','yyyyyyyy') AS BLOB) WHERE id=(
+    inspect.execute("UPDATE contents SET payload=CAST(replace(CAST(payload AS TEXT),'xxxxxxxx','yyyyyyyy') AS BLOB) WHERE id=(
         SELECT e.body_id FROM event_log e WHERE e.event_id=?)",
         [&target.event().id]).unwrap();
     assert!(

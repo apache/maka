@@ -20,7 +20,7 @@
 use crate::{
     recall::{ExcludedTurnTail, SearchHit, SearchQuery},
     root::{RootNamespaces, RootOwner},
-    root_store::{RootStore, partition_for},
+    root_store::RootStore,
     sessions::{PluginSession, RemovalAuthority, RemoveFamilyResult, SessionRetirement},
 };
 use maka_agent_facts::import::{Content, Record, Source};
@@ -102,14 +102,8 @@ impl Fixture {
             .unwrap(),
         );
         let root = RootStore::open(owner.clone()).await.unwrap();
-        let id = |partition| {
-            (0..)
-                .map(|n| format!("{PREFIX}{n}"))
-                .find(|id| partition_for(b"session", id) == partition)
-                .unwrap()
-        };
-        let left = id(0);
-        let right = id(7);
+        let left = format!("{PREFIX}a");
+        let right = format!("{PREFIX}b");
         import(&root, &left, a).await;
         import(&root, &right, b).await;
         import(
@@ -123,10 +117,6 @@ impl Fixture {
             )],
         )
         .await;
-        assert_ne!(
-            root.route_partition(&left).await.unwrap(),
-            root.route_partition(&right).await.unwrap()
-        );
         Self {
             _directory: directory,
             owner,
@@ -257,7 +247,7 @@ async fn recall_preserves_literal_unicode_and_ranks_one_hit_per_turn() {
 }
 
 #[tokio::test]
-async fn recall_merges_partitions_before_limits_and_applies_scope_time_and_exclusion() {
+async fn recall_orders_results_before_limits_and_applies_scope_time_and_exclusion() {
     let f = Fixture::new(
         vec![
             record("a-first", "a-first", "tiebreakword sharedneedle", 10),
@@ -384,13 +374,12 @@ async fn recall_context_and_index_retirement_survive_reopen() {
             .collect::<Vec<_>>(),
         ["preceding message", "following message"]
     );
-    let partition = f.root.route_partition(&f.a).await.unwrap();
     let counts = || {
         let session = f.a.clone();
-        crate::test_store::inspect_cache(&f.root.partitions[partition], move |db| {
+        crate::test_store::inspect_cache(&f.root.log, move |db| {
             (
                 db.query_row(
-                    "SELECT count(*) FROM temp.transcript_directory WHERE session_id=?1",
+                    "SELECT count(*) FROM temp.transcript_directory WHERE owner_key=?1",
                     [session],
                     |row| row.get::<_, i64>(0),
                 )
@@ -450,8 +439,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
     let owner = demand_owner(directory.path());
     let root = RootStore::open(owner.clone()).await.unwrap();
     let session = "demand-source";
-    let partition = partition_for(b"session", session);
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         db.execute_batch("CREATE TEMP TRIGGER fail_recall BEFORE INSERT ON temp.recall_progress BEGIN SELECT RAISE(ABORT,'Recall index fault'); END;").unwrap();
     }).await;
     import(
@@ -466,7 +454,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
         ],
     )
     .await;
-    let anchor: String = crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    let anchor: String = crate::test_store::inspect_cache(&root.log, |db| {
         let through: i64 = db
             .query_row(
                 "SELECT COALESCE(MAX(sequence),0) FROM event_log",
@@ -513,7 +501,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
             .collect::<Vec<_>>(),
         ["before", "after"]
     );
-    let empty: String = crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    let empty: String = crate::test_store::inspect_cache(&root.log, |db| {
         db.query_row(
             "SELECT message_id FROM transcript_directory WHERE timestamp=3",
             [],
@@ -552,7 +540,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
             .await
             .is_err()
     );
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(
             db.query_row("SELECT count(*) FROM recall_progress", [], |r| r
                 .get::<_, i64>(0))
@@ -574,7 +562,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
         .unwrap();
     assert_eq!(found.hits.len(), 1);
     assert_eq!(found.hits[0].body, "needle anchor");
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         db.execute_batch("CREATE TEMP TRIGGER fail_recall BEFORE INSERT ON temp.recall_progress BEGIN SELECT RAISE(ABORT,'clean query replayed sources'); END;").unwrap();
     }).await;
     let warm = root
@@ -584,7 +572,7 @@ async fn recall_fault_does_not_reject_sources_or_direct_context_and_search_recov
     assert_eq!(warm.hits[0].message_id, found.hits[0].message_id);
     root.close().await.unwrap();
     let root = RootStore::open(owner).await.unwrap();
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(
             db.query_row("SELECT count(*) FROM transcript_directory", [], |row| row
                 .get::<_, i64>(
@@ -622,10 +610,7 @@ async fn demand_indexes_new_copy_with_old_sources_without_inheriting_progress() 
         .await
         .unwrap();
     assert_eq!(first.hits.len(), 1);
-    let late = (0..)
-        .map(|n| format!("demand-late-{n}"))
-        .find(|id| partition_for(b"session", id) == partition_for(b"session", "demand-source"))
-        .unwrap();
+    let late = "demand-late".to_owned();
     import(
         &root,
         &late,
@@ -656,11 +641,10 @@ async fn demand_indexes_new_copy_with_old_sources_without_inheriting_progress() 
         .unwrap(),
         SessionCopyResult::Committed(_)
     ));
-    let partition = root.route_partition("demand-copy").await.unwrap();
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(
             db.query_row(
-                "SELECT count(*) FROM transcript_directory WHERE session_id='demand-copy'",
+                "SELECT count(*) FROM transcript_directory WHERE owner_key='demand-copy'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -669,9 +653,9 @@ async fn demand_indexes_new_copy_with_old_sources_without_inheriting_progress() 
         );
     })
     .await;
-    let frozen = root.partitions[partition]
-        .search_partition_through(
-            partition,
+    let frozen = root
+        .log
+        .search_published_through(
             "demand-".into(),
             query("oldneedle"),
             first.hits[0].through,
@@ -716,21 +700,20 @@ async fn cancelled_source_catchup_rolls_back_its_scope_and_resumes_after_reopen(
         ],
     )
     .await;
-    let partition = root.route_partition("demand-cancel").await.unwrap();
     let cancellation = CancellationToken::new();
     let stop = cancellation.clone();
-    crate::test_store::inspect_cache(&root.partitions[partition], move |db| {
+    crate::test_store::inspect_cache(&root.log, move |db| {
         db.create_scalar_function("cancel_recall", 0, FunctionFlags::SQLITE_UTF8, move |_| {
             stop.cancel(); Ok(0_i64)
         }).unwrap();
-        db.execute_batch("CREATE TEMP TRIGGER cancel_recall_source BEFORE INSERT ON temp.recall_progress WHEN NEW.session_id='demand-cancel' BEGIN SELECT cancel_recall(); END;").unwrap();
+        db.execute_batch("CREATE TEMP TRIGGER cancel_recall_source BEFORE INSERT ON temp.recall_progress WHEN NEW.owner_key='demand-cancel' BEGIN SELECT cancel_recall(); END;").unwrap();
     }).await;
     assert!(
         root.search_history("demand-", query("needle"), cancellation)
             .await
             .is_err()
     );
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(
             db.query_row("SELECT count(*) FROM transcript_directory", [], |r| r
                 .get::<_, i64>(0))
@@ -802,7 +785,6 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
         .unwrap(),
         SessionCopyResult::Committed(_)
     ));
-    let partition = root.route_partition("demand-source").await.unwrap();
     assert!(matches!(
         root.remove_session_family("demand-source", revision, RemovalAuthority::Unmanaged)
             .await
@@ -816,10 +798,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
         SessionRetirement::Removed
     );
     assert_eq!(
-        root.partitions[partition]
-            .collect_session_material(None)
-            .await
-            .unwrap(),
+        root.log.collect_session_material(None).await.unwrap(),
         MaterialCollection::Retained("demand-source".into())
     );
     let found = root
@@ -844,7 +823,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
         root.finish_session_retirement("demand-copy").await.unwrap(),
         SessionRetirement::Removed
     );
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         for table in ["transcript_directory", "recall_terms", "recall_progress"] {
             assert_eq!(
                 db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
@@ -880,8 +859,7 @@ async fn cached_namespace_failure_stays_explicit_without_replaying_sources() {
         vec![record("healthy", "healthy", "needle healthy", 3)],
     )
     .await;
-    let partition = root.route_partition(session).await.unwrap();
-    let conflicting_message = crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    let conflicting_message = crate::test_store::inspect_cache(&root.log, |db| {
         let mut statement = db.prepare(
             "SELECT sequence FROM runtime_events WHERE event_session='demand-namespace' ORDER BY sequence",
         ).unwrap();
@@ -895,7 +873,7 @@ async fn cached_namespace_failure_stays_explicit_without_replaying_sources() {
             db, "demand-namespace", rows[0].position.source_sequence, &CancellationToken::new(),
         ).unwrap();
         db.execute(
-            "UPDATE temp.transcript_directory SET message_id=?1 WHERE session_id='demand-namespace'",
+            "UPDATE temp.transcript_directory SET message_id=?1 WHERE owner_key='demand-namespace'",
             [&rows[1].message.id],
         ).unwrap();
         rows[1].message.id.clone()
@@ -909,22 +887,22 @@ async fn cached_namespace_failure_stays_explicit_without_replaying_sources() {
     assert_eq!(first.gaps.len(), 1);
     assert!(first.gaps[0].contains("demand-namespace"));
     assert!(first.gaps[0].contains("namespace: message identity is already claimed"));
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         assert_eq!(db.query_row(
-            "SELECT count(*) FROM temp.transcript_failures WHERE session_id='demand-namespace' AND category='namespace'",
+            "SELECT count(*) FROM temp.transcript_failures WHERE owner_key='demand-namespace' AND category='namespace'",
             [], |row| row.get::<_, i64>(0),
         ).unwrap(), 1);
         let progress: i64 = db.query_row(
-            "SELECT through_sequence FROM temp.transcript_directory_progress WHERE session_id='demand-namespace'",
+            "SELECT through_sequence FROM temp.transcript_directory_progress WHERE owner_key='demand-namespace'",
             [], |row| row.get(0),
         ).unwrap();
         let through: i64 = db.query_row(
             "SELECT MAX(sequence) FROM event_log", [], |row| row.get(0),
         ).unwrap();
         assert_eq!(progress, through);
-        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE session_id='demand-namespace'", [], |row| row.get::<_, i64>(0)).unwrap(), 1, "failed source must not publish partial metadata");
-        assert_eq!(db.query_row("SELECT through_source_sequence FROM temp.recall_progress WHERE session_id='demand-namespace'", [], |row| row.get::<_, i64>(0)).unwrap(), through);
-        db.execute_batch("CREATE TEMP TRIGGER fail_namespace_replay BEFORE INSERT ON temp.transcript_directory WHEN NEW.session_id='demand-namespace' BEGIN SELECT RAISE(ABORT,'namespace source replayed'); END;").unwrap();
+        assert_eq!(db.query_row("SELECT count(*) FROM temp.transcript_directory WHERE owner_key='demand-namespace'", [], |row| row.get::<_, i64>(0)).unwrap(), 1, "failed source must not publish partial metadata");
+        assert_eq!(db.query_row("SELECT through_source_sequence FROM temp.recall_progress WHERE owner_key='demand-namespace'", [], |row| row.get::<_, i64>(0)).unwrap(), through);
+        db.execute_batch("CREATE TEMP TRIGGER fail_namespace_replay BEFORE INSERT ON temp.transcript_directory WHEN NEW.owner_key='demand-namespace' BEGIN SELECT RAISE(ABORT,'namespace source replayed'); END;").unwrap();
     }).await;
     let warm = root
         .search_history("demand-", query("needle"), CancellationToken::new())
@@ -965,25 +943,21 @@ async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_at
         vec![record("old", "old", "oldcacheword", 1)],
     )
     .await;
-    let partition = root.route_partition(old_session).await.unwrap();
     let old = root
         .search_history("demand-", query("oldcacheword"), CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(old.hits.len(), 1);
-    let old_rowid: i64 = crate::test_store::inspect_cache(&root.partitions[partition], |db| {
-        let rowid = db.query_row("SELECT rowid FROM temp.transcript_directory WHERE session_id='demand-reuse-old'", [], |row| row.get(0)).unwrap();
-        db.execute_batch("DELETE FROM temp.transcript_directory WHERE session_id='demand-reuse-old';
-            DELETE FROM temp.transcript_directory_progress WHERE session_id='demand-reuse-old';
-            DELETE FROM temp.recall_progress WHERE session_id='demand-reuse-old';").unwrap();
+    let old_rowid: i64 = crate::test_store::inspect_cache(&root.log, |db| {
+        let rowid = db.query_row("SELECT rowid FROM temp.transcript_directory WHERE owner_key='demand-reuse-old'", [], |row| row.get(0)).unwrap();
+        db.execute_batch("DELETE FROM temp.transcript_directory WHERE owner_key='demand-reuse-old';
+            DELETE FROM temp.transcript_directory_progress WHERE owner_key='demand-reuse-old';
+            DELETE FROM temp.recall_progress WHERE owner_key='demand-reuse-old';").unwrap();
         assert_eq!(db.query_row("SELECT count(*) FROM temp.recall_terms", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
         db.execute_batch("CREATE TEMP TRIGGER fail_recall_rebuild BEFORE INSERT ON temp.recall_progress BEGIN SELECT RAISE(ABORT,'Recall rebuild failed'); END;").unwrap();
         rowid
     }).await;
-    let new_session = (0..)
-        .map(|n| format!("demand-reuse-new-{n}"))
-        .find(|id| partition_for(b"session", id) == partition)
-        .unwrap();
+    let new_session = "demand-reuse-new".to_owned();
     import(
         &root,
         &new_session,
@@ -997,7 +971,7 @@ async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_at
             .await
             .is_err()
     );
-    crate::test_store::inspect_cache(&root.partitions[partition], |db| {
+    crate::test_store::inspect_cache(&root.log, |db| {
         for table in [
             "transcript_directory",
             "transcript_directory_progress",
@@ -1022,10 +996,10 @@ async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_at
     assert_eq!(new.hits.len(), 1);
     assert_eq!(new.hits[0].body, "newcacheword");
     let selected = new_session.clone();
-    crate::test_store::inspect_cache(&root.partitions[partition], move |db| {
+    crate::test_store::inspect_cache(&root.log, move |db| {
         let rowid: i64 = db
             .query_row(
-                "SELECT rowid FROM temp.transcript_directory WHERE session_id=?1",
+                "SELECT rowid FROM temp.transcript_directory WHERE owner_key=?1",
                 [selected],
                 |row| row.get(0),
             )

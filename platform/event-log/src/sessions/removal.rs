@@ -131,7 +131,7 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     if !read(&mut tx, &session)
@@ -201,7 +201,7 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| Box::pin(async move { read(connection, &session).await }))
+            .read(move |connection| Box::pin(async move { read(connection, &session).await }))
             .await
     }
 
@@ -216,7 +216,7 @@ impl EventLog {
         }
         let after = after.map(str::to_owned);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
                         "SELECT session_id FROM session_retirements WHERE completed=0
@@ -332,7 +332,7 @@ async fn settled(connection: &mut SqliteConnection, session: &str) -> Result<boo
          OR EXISTS(SELECT 1 FROM session_processes WHERE session_id=?1 AND cleaned=0)
          OR EXISTS(SELECT 1 FROM host_effects WHERE outcome IS NULL
             AND json_extract(request, '$.boundary.boundary.sessionId')=?1)
-         OR EXISTS(SELECT 1 FROM all_interaction_pending WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM interaction_pending WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM event_log a WHERE a.kind='auxiliary_model_started'
             AND json_extract(a.event_header,'$.source.kind')='session_title'

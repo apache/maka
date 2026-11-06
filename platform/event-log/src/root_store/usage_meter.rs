@@ -37,27 +37,22 @@ pub struct SessionUsageTotals {
     pub output: Tokens,
 }
 impl RootStore {
-    /// Physical settled usage from each fixed partition, including auxiliary
-    /// operation models. Pending calls do not become fabricated zero usage.
+    /// Physical settled usage, including auxiliary operation models.
+    /// Pending calls do not become fabricated zero usage.
     pub async fn session_usage_totals(
         &self,
         session: &str,
     ) -> Result<SessionUsageTotals, StoreError> {
         self.require_open()?;
         crate::sessions::validate_id(session)?;
-        let mut total = [0u64; 4];
-        for partition in &self.partitions {
-            let session = session.to_owned();
-            let row = partition
-                .connection
-                .read(move |db| Box::pin(async move { read(db, &session).await }))
-                .await?;
-            for (sum, value) in total.iter_mut().zip(row) {
-                *sum = sum
-                    .checked_add(value)
-                    .filter(|value| *value <= MAX_EXACT)
-                    .ok_or_else(overflow)?;
-            }
+        let session = session.to_owned();
+        let total = self
+            .log
+            .connection
+            .read(move |db| Box::pin(async move { read(db, &session).await }))
+            .await?;
+        if total.iter().any(|value| *value > MAX_EXACT) {
+            return Err(overflow());
         }
         Ok(SessionUsageTotals {
             input: Tokens {

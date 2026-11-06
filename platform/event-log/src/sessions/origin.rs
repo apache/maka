@@ -136,7 +136,7 @@ impl EventLog {
         validate_id(session_id)?;
         let session_id = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     sqlx::query(
                         "SELECT package_id, scope_id FROM plugin_sessions

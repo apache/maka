@@ -21,7 +21,7 @@ use crate::{EventLog, StoreError};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::tool_call::tool_use_id;
-use sqlx::SqliteConnection;
+use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
     /// Admission preflight only. The canonical INSERT checks the same namespace
@@ -37,8 +37,13 @@ impl EventLog {
         let session = session.to_owned();
         let message = message.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move { validate_source_id(connection, &session, &message).await })
+            .read(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let result = validate_source_id(&mut tx, &session, &message).await;
+                    tx.rollback().await?;
+                    result
+                })
             })
             .await
     }

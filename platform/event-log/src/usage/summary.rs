@@ -161,9 +161,7 @@ impl EventLog {
                                 Group::ByModel => summary.by_model.len(),
                                 Group::ByTool => summary.by_tool.len(),
                             };
-                            if len <= 1
-                                || (len <= 32 && serde_json::to_vec(&summary)?.len() <= 48 * 1024)
-                            {
+                            if len <= 1 || len <= 32 {
                                 break;
                             }
                             match group {
@@ -252,14 +250,6 @@ async fn groups(
         sql.push(" OFFSET ").push_bind(offset as i64);
     }
     let rows = sql.build().fetch_all(connection).await?;
-    for row in &rows {
-        if row
-            .try_get::<Option<i64>, _>("key_bytes")?
-            .is_some_and(|bytes| bytes > 48 * 1024)
-        {
-            return Err(invalid("one Usage group exceeds page capacity"));
-        }
-    }
     Ok(rows)
 }
 

@@ -31,7 +31,10 @@ pub(crate) struct CatalogKey {
     pub id: String,
 }
 impl CatalogKey {
-    async fn read(db: &mut SqliteConnection, id: &str) -> Result<Option<Self>, StoreError> {
+    pub(crate) async fn read(
+        db: &mut SqliteConnection,
+        id: &str,
+    ) -> Result<Option<Self>, StoreError> {
         let sql = format!("SELECT {PIN_ORDER}, catalog_recency FROM session_control WHERE id = ?");
         Ok(sqlx::query_as::<_, (bool, i64)>(sqlx::AssertSqlSafe(sql))
             .bind(id)
@@ -73,7 +76,7 @@ const PREDICATE: &str = "
     AND (?3 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.path')=?3))
     AND (?4 IS NULL OR substr(id, 1, length(?4)) = ?4)
     AND (?5 = 0 OR EXISTS (
-        SELECT 1 FROM all_interaction_pending pending
+        SELECT 1 FROM interaction_pending pending
         WHERE pending.session_id = session_control.id))
     AND (?6 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.projectId')=?6))
     AND (?7 IS NULL OR EXISTS (SELECT 1 FROM workspace_bindings binding WHERE binding.id=json_extract(configuration,'$.workspace.id') AND json_extract(binding.workspace_json,'$.identity')=?7))
@@ -81,7 +84,7 @@ const PREDICATE: &str = "
 
 #[derive(Clone)]
 pub(crate) struct Selection {
-    root_partition: Option<usize>,
+    pub(crate) published_only: bool,
     session: Option<String>,
     cwd: Option<String>,
     prefix: Option<String>,
@@ -94,7 +97,7 @@ pub(crate) struct Selection {
 impl Selection {
     pub(crate) fn new(scope: &CatalogScope, filter: CatalogFilter) -> Result<Self, StoreError> {
         let mut selection = Self {
-            root_partition: None,
+            published_only: false,
             session: None,
             cwd: None,
             prefix: None,
@@ -145,7 +148,7 @@ impl Selection {
         Ok(selection)
     }
 
-    async fn ids(
+    pub(crate) async fn ids(
         &self,
         connection: &mut SqliteConnection,
         position: &CatalogPosition,
@@ -160,8 +163,8 @@ impl Selection {
                 ("<", "DESC", key.unpinned, key.recency, key.id.as_str())
             }
         };
-        let visibility = if self.root_partition.is_some() {
-            "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?11 AND r.ready=1 AND r.visible=1)"
+        let visibility = if self.published_only {
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?11 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
@@ -195,10 +198,7 @@ impl Selection {
             .bind(&self.title_query)
             .bind(cursor)
             .bind(limit as i64);
-        let query = query
-            .bind(self.root_partition.map(|partition| partition as i64))
-            .bind(unpinned)
-            .bind(recency);
+        let query = query.bind(self.published_only).bind(unpinned).bind(recency);
         let query = if let Some(parent) = &self.parent {
             query.bind(parent)
         } else {
@@ -220,9 +220,12 @@ impl Selection {
         Ok(ids)
     }
 
-    async fn pending_count(&self, connection: &mut SqliteConnection) -> Result<u64, StoreError> {
-        let visibility = if self.root_partition.is_some() {
-            "AND EXISTS (SELECT 1 FROM root_control.session_routes r WHERE r.session_id=session_control.id AND r.partition=?9 AND r.ready=1 AND r.visible=1)"
+    pub(crate) async fn pending_count(
+        &self,
+        connection: &mut SqliteConnection,
+    ) -> Result<u64, StoreError> {
+        let visibility = if self.published_only {
+            "AND EXISTS (SELECT 1 FROM session_creations r WHERE r.session_id=session_control.id AND ?9 AND r.ready=1 AND r.visible=1)"
         } else {
             ""
         };
@@ -248,8 +251,8 @@ impl Selection {
             .bind(&self.project)
             .bind(&self.workspace_identity)
             .bind(&self.title_query);
-        let query = if self.root_partition.is_some() || self.parent.is_some() {
-            query.bind(self.root_partition.map(|partition| partition as i64))
+        let query = if self.published_only || self.parent.is_some() {
+            query.bind(self.published_only)
         } else {
             query
         };
@@ -293,7 +296,7 @@ impl EventLog {
         self.validate_root()?;
         Selection::new(&scope, filter)?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move { revision(connection, &scope, filter).await })
             })
             .await
@@ -308,8 +311,8 @@ impl EventLog {
         filter: CatalogFilter,
     ) -> Result<SessionPage<T>, StoreError> {
         self.validate_root()?;
-        if limit == 0 || limit > MAX_SESSION_PAGE {
-            return Err(invalid("session page limit must be 1..=32"));
+        if limit == 0 || i64::try_from(limit).is_err() {
+            return Err(invalid("invalid session page size"));
         }
         let cursor = match position {
             SessionPosition::Start => None,
@@ -332,7 +335,7 @@ impl EventLog {
         let selection = Selection::new(&scope, filter)?;
         let expected_revision = expected_revision.map(str::to_owned);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let revision = revision(&mut tx, &scope, filter).await?;
@@ -419,59 +422,12 @@ impl EventLog {
         Selection::new(scope, filter).map(|_| ())
     }
 
-    /// Root-only primitive: IDs, not configuration bodies, cross this bounded fanout.
-    pub(crate) async fn root_catalog_ids(
-        &self,
-        partition: usize,
-        mut selection: Selection,
-        position: CatalogPosition,
-        limit: usize,
-        expected: (i64, i64),
-        count_pending: bool,
-    ) -> Result<(Vec<CatalogKey>, u64), StoreError> {
-        self.validate_root()?;
-        if partition >= crate::root_store::PARTITION_COUNT
-            || limit == 0
-            || limit > MAX_SESSION_PAGE + 1
-        {
-            return Err(invalid("invalid Root catalog page"));
-        }
-        selection.root_partition = Some(partition);
-        self.connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    crate::root_store::catalog::require_snapshot(&mut tx, expected).await?;
-                    let ids = selection.ids(&mut tx, &position, limit).await?;
-                    let pending = if count_pending {
-                        selection.pending_count(&mut tx).await?
-                    } else {
-                        0
-                    };
-                    Ok((ids, pending))
-                })
-            })
-            .await
-    }
-
-    pub(crate) async fn catalog_key(&self, id: &str) -> Result<Option<CatalogKey>, StoreError> {
-        self.validate_root()?;
-        let id = id.to_owned();
-        self.connection
-            .read(move |db| Box::pin(async move { CatalogKey::read(db, &id).await }))
-            .await
-    }
-
     pub(crate) async fn root_catalog_record_outcomes<T: DeserializeOwned + Send + 'static>(
         &self,
-        partition: usize,
         ids: Vec<String>,
-        expected: Option<(i64, i64)>,
+        expected: Option<i64>,
     ) -> Result<Vec<Result<SessionRecord<T>, crate::sessions::UnreadableSession>>, StoreError> {
         self.validate_root()?;
-        if partition >= crate::root_store::PARTITION_COUNT || ids.len() > MAX_SESSION_PAGE {
-            return Err(invalid("invalid Root catalog selection"));
-        }
         self.connection
             .read(move |connection| {
                 Box::pin(async move {
@@ -481,9 +437,7 @@ impl EventLog {
                     }
                     let mut records = Vec::with_capacity(ids.len());
                     for id in ids {
-                        if crate::root_store::catalog::session_visible(&mut tx, partition, &id)
-                            .await?
-                        {
+                        if crate::root_store::catalog::session_visible(&mut tx, &id).await? {
                             match read(&mut tx, &id).await {
                                 Ok(Some(record)) => records.push(Ok(record)),
                                 Ok(None) => return Err(StoreError::SessionNotFound),
@@ -512,11 +466,10 @@ impl EventLog {
 
     pub(crate) async fn root_catalog_records<T: DeserializeOwned + Send + 'static>(
         &self,
-        partition: usize,
         ids: Vec<String>,
-        expected: Option<(i64, i64)>,
+        expected: Option<i64>,
     ) -> Result<Vec<SessionRecord<T>>, StoreError> {
-        self.root_catalog_record_outcomes(partition, ids, expected)
+        self.root_catalog_record_outcomes(ids, expected)
             .await?
             .into_iter()
             .map(|entry| entry.map_err(|unreadable| unreadable.error))

@@ -37,7 +37,6 @@ use objects::Objects;
 pub struct HistoryCheckpoints {
     session: SessionStore,
     scope: Scope,
-    inspections: Arc<load::Inspections>,
 }
 
 #[derive(Debug)]
@@ -63,16 +62,16 @@ impl RootStore {
         Ok(HistoryCheckpoints {
             session: self.session(session).await?,
             scope,
-            inspections: self.inspections.clone(),
         })
     }
 
     pub(super) async fn recover_checkpoints(&self) -> Result<(), StoreError> {
-        for partition in &self.partitions {
-            if journal::pending(partition, String::new()).await?.is_empty() {
-                continue;
+        {
+            let log = &self.log;
+            if journal::pending(log, String::new()).await?.is_empty() {
+                return Ok(());
             }
-            let log = partition.scoped(partition.clone());
+            let log = log.scoped(log.clone());
             worker(log, self.gates.clone(), |log, objects| async move {
                 let mut after = String::new();
                 loop {
@@ -211,7 +210,40 @@ async fn checkout(
     session: String,
     revision: Revision,
 ) -> Result<Checkout, StoreError> {
-    let head = journal::read_head(log, scope.clone(), session.clone())
+    let (head, manifest) = selected_checkpoint(log, objects, &scope, &session, revision).await?;
+    let digest = head.manifest.digest.clone();
+    let key = log
+        .connection
+        .read(move |db| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT capture_key FROM history_snapshots WHERE digest=?")
+                    .bind(digest)
+                    .fetch_optional(db)
+                    .await?
+                    .ok_or(StoreError::MaterialCollected)
+            })
+        })
+        .await?;
+    let bundle = materialize_bundle(log, key, &manifest).await?;
+    // Confirm the retained revision again after expensive verification.
+    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+        return Err(invalid("history checkpoint revision unavailable"));
+    }
+    Ok(Checkout {
+        head,
+        manifest,
+        bundle,
+    })
+}
+
+async fn selected_checkpoint(
+    log: &EventLog,
+    objects: &Objects,
+    scope: &Scope,
+    session: &str,
+    revision: Revision,
+) -> Result<(Head, Manifest), StoreError> {
+    let head = journal::read_head(log, scope.clone(), session.to_owned())
         .await?
         .filter(|head| head.revision == revision)
         .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
@@ -222,22 +254,13 @@ async fn checkout(
         inventory,
         ..
     } = &manifest;
-    if root_id != objects.root_id() || origin != &scope || inventory.root_session_id != session {
+    if root_id != objects.root_id() || origin != scope || inventory.root_session_id != session {
         return Err(invalid("history checkpoint origin differs"));
     }
-    let bundle = objects.read(manifest.bundle())?;
     if let Some(snapshot) = manifest.workspace() {
         workspace::verify(objects, snapshot)?;
     }
-    // Confirm the retained revision again after expensive verification.
-    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
-        return Err(invalid("history checkpoint revision unavailable"));
-    }
-    Ok(Checkout {
-        head,
-        manifest,
-        bundle,
-    })
+    Ok((head, manifest))
 }
 
 fn bundle_error(error: BundleError) -> StoreError {
@@ -252,20 +275,23 @@ async fn capture(
     objects: &Objects,
     request: &Request,
 ) -> Result<ObjectRef, StoreError> {
+    let key = request.key()?;
+    log.capture_snapshot(
+        key.clone(),
+        request.session_id.clone(),
+        request.publication.confirmed_subtree_digest.clone(),
+    )
+    .await?;
     let file = tokio::fs::File::from_std(objects.create(request, "bundle")?);
-    let (file, summary) = log
-        .export_bundle(
-            &request.session_id,
-            &request.publication.confirmed_subtree_digest,
-            file,
-        )
-        .await
-        .map_err(bundle_error)?;
+    let (file, summary) = log.export_snapshot(key, file).await?;
     file.sync_all().await?;
     drop(file);
-    let bundle = objects.publish(&objects.staging(request, "bundle")?)?;
+    let mut file = std::fs::File::open(objects.staging(request, "bundle")?)?;
+    let bundle = objects::measure(&mut file)?;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
     boundary("payload");
-    let mut staged = StagedBundle::read(tokio::fs::File::from_std(objects.read(&bundle)?))
+    let mut staged = StagedBundle::read(tokio::fs::File::from_std(file))
         .await
         .map_err(bundle_error)?;
     let validated = async {
@@ -299,7 +325,32 @@ async fn capture(
     objects.publish_manifest(request, &manifest)
 }
 
-async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), StoreError> {
+async fn materialize_bundle(
+    log: &EventLog,
+    key: String,
+    manifest: &Manifest,
+) -> Result<std::fs::File, StoreError> {
+    let file = tokio::fs::File::from_std(tempfile::tempfile()?);
+    let (file, summary) = log.export_snapshot(key, file).await?;
+    let mut file = file.into_std().await;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    if summary.inventory != manifest.inventory
+        || summary.digest != manifest.transfer_digest
+        || objects::measure(&mut file)? != manifest.bundle
+    {
+        return Err(invalid("checkpoint bundle differs from frozen manifest"));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
+}
+
+async fn validate_bundle(
+    log: &EventLog,
+    objects: &Objects,
+    manifest: &Manifest,
+    key: String,
+) -> Result<(), StoreError> {
     if let Some(workspace) = manifest.workspace() {
         workspace::verify(objects, workspace)?;
     }
@@ -309,7 +360,7 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
         transfer_digest,
         ..
     } = manifest;
-    let file = tokio::fs::File::from_std(objects.read(bundle)?);
+    let file = tokio::fs::File::from_std(materialize_bundle(log, key, manifest).await?);
     let mut staged = StagedBundle::read(file).await.map_err(bundle_error)?;
     let result = async {
         if &staged.summary().inventory != inventory
@@ -330,6 +381,7 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
 }
 
 async fn verify(
+    log: &EventLog,
     objects: &Objects,
     request: &Request,
     reference: &ObjectRef,
@@ -348,7 +400,7 @@ async fn verify(
     {
         return Err(invalid("checkpoint manifest origin or membership differs"));
     }
-    validate_bundle(objects, &manifest).await
+    validate_bundle(log, objects, &manifest, request.key()?).await
 }
 
 async fn resume(
@@ -357,7 +409,7 @@ async fn resume(
     request: &Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    match verify(objects, request, &manifest).await {
+    match verify(log, objects, request, &manifest).await {
         Ok(()) => journal::commit(log, request.clone(), manifest).await,
         Err(error) => journal::unavailable(log, request.clone(), manifest, error.to_string()).await,
     }

@@ -39,25 +39,25 @@ pub(crate) async fn initialize(db: &mut SqliteConnection) -> Result<(), StoreErr
          PRAGMA temp.synchronous=OFF;
          PRAGMA temp.journal_mode=DELETE;
          CREATE TABLE temp.transcript_rows (
-             session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
+             owner_key TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
              item_index INTEGER NOT NULL CHECK(item_index>=0), turn_id TEXT NOT NULL,
              message_id TEXT NOT NULL, payload BLOB NOT NULL, digest TEXT NOT NULL,
              total_bytes INTEGER NOT NULL CHECK(total_bytes>0),
-             PRIMARY KEY(session_id,source_sequence,item_index), UNIQUE(session_id,message_id)
+             PRIMARY KEY(owner_key,source_sequence,item_index), UNIQUE(owner_key,message_id)
          );
          CREATE TABLE temp.transcript_text (
-             session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
+             owner_key TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
              item_index INTEGER NOT NULL CHECK(item_index>=0),
              field TEXT NOT NULL CHECK(field IN ('body','thinking')),
              timestamp INTEGER NOT NULL, role TEXT NOT NULL, body BLOB NOT NULL,
-             PRIMARY KEY(session_id,source_sequence,item_index,field)
+             PRIMARY KEY(owner_key,source_sequence,item_index,field)
          );
          CREATE TABLE temp.transcript_sessions (
-             session_id TEXT PRIMARY KEY, copy_identity TEXT
+             owner_key TEXT PRIMARY KEY, copy_identity TEXT
          );
          CREATE TABLE temp.transcript_active_source (
              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-             session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL
+             owner_key TEXT NOT NULL, source_sequence INTEGER NOT NULL
          );",
     )
     .execute(&mut *db)
@@ -150,7 +150,7 @@ pub(crate) async fn purge(db: &mut SqliteConnection, session: &str) -> Result<()
         "transcript_directory_progress",
         "recall_progress",
     ] {
-        let query = format!("DELETE FROM temp.{table} WHERE session_id=?");
+        let query = format!("DELETE FROM temp.{table} WHERE owner_key=?");
         sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(session)
             .execute(&mut *tx)
@@ -172,14 +172,14 @@ async fn trim(db: &mut SqliteConnection) -> Result<(), StoreError> {
     sqlx::raw_sql(
         "DELETE FROM temp.transcript_text WHERE NOT EXISTS (
              SELECT 1 FROM temp.transcript_active_source a
-             WHERE a.session_id=transcript_text.session_id AND a.source_sequence=transcript_text.source_sequence
+             WHERE a.owner_key=transcript_text.owner_key AND a.source_sequence=transcript_text.source_sequence
          );
          DELETE FROM temp.transcript_rows WHERE NOT EXISTS (
              SELECT 1 FROM temp.transcript_active_source a
-             WHERE a.session_id=transcript_rows.session_id AND a.source_sequence=transcript_rows.source_sequence
+             WHERE a.owner_key=transcript_rows.owner_key AND a.source_sequence=transcript_rows.source_sequence
          );
          DELETE FROM temp.transcript_sessions WHERE NOT EXISTS (
-             SELECT 1 FROM temp.transcript_rows r WHERE r.session_id=transcript_sessions.session_id
+             SELECT 1 FROM temp.transcript_rows r WHERE r.owner_key=transcript_sessions.owner_key
          );",
     )
     .execute(&mut *tx)
@@ -196,8 +196,8 @@ async fn retain_source(
     source: i64,
 ) -> Result<(), StoreError> {
     sqlx::query("INSERT INTO temp.transcript_active_source VALUES(1,?1,?2)
-        ON CONFLICT(singleton) DO UPDATE SET session_id=excluded.session_id,source_sequence=excluded.source_sequence
-        WHERE transcript_active_source.session_id!=excluded.session_id OR transcript_active_source.source_sequence!=excluded.source_sequence")
+        ON CONFLICT(singleton) DO UPDATE SET owner_key=excluded.owner_key,source_sequence=excluded.source_sequence
+        WHERE transcript_active_source.owner_key!=excluded.owner_key OR transcript_active_source.source_sequence!=excluded.source_sequence")
         .bind(session).bind(source).execute(db).await?;
     Ok(())
 }
@@ -219,15 +219,29 @@ pub(super) async fn ensure_on_worker(
     session: &str,
     position: RowPosition,
 ) -> Result<(), StoreError> {
+    ensure_for_owner_on_worker(
+        db,
+        &super::HistoryOwner::Session(session.to_owned()),
+        position,
+    )
+    .await
+}
+
+pub(super) async fn ensure_for_owner_on_worker(
+    db: &mut SqliteWorkerConnection<'_>,
+    owner: &super::HistoryOwner,
+    position: RowPosition,
+) -> Result<(), StoreError> {
+    let session = owner.key();
     let (source, item) = sql_position(position)?;
     let (turn, message, copy_identity): (String, String, Option<String>) = sqlx::query_as(
-        "SELECT turn_id,message_id,(SELECT json_array(source_session_id,source_revision,through_sequence,observed_through,bundle_digest) FROM session_history_copies WHERE session_id=?1) FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
+        "SELECT turn_id,message_id,(SELECT json_array(source_session_id,source_revision,through_sequence,observed_through,bundle_digest) FROM session_history_copies WHERE session_id=?1) FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3",
     ).bind(session).bind(source).bind(item).fetch_optional(&mut *db).await?
         .ok_or_else(|| StoreError::InvalidTransition("history row was not found".into()))?;
     // A copied base can replace previously readable bare claimants. Its durable
     // marker changes in the same snapshot as the directory, never on appends.
     let previous: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT copy_identity FROM temp.transcript_sessions WHERE session_id=?")
+        sqlx::query_as("SELECT copy_identity FROM temp.transcript_sessions WHERE owner_key=?")
             .bind(session)
             .fetch_optional(&mut *db)
             .await?;
@@ -235,21 +249,21 @@ pub(super) async fn ensure_on_worker(
         .as_ref()
         .is_some_and(|(previous,)| previous != &copy_identity)
     {
-        sqlx::query("DELETE FROM temp.transcript_text WHERE session_id=?")
+        sqlx::query("DELETE FROM temp.transcript_text WHERE owner_key=?")
             .bind(session)
             .execute(&mut *db)
             .await?;
-        sqlx::query("DELETE FROM temp.transcript_rows WHERE session_id=?")
+        sqlx::query("DELETE FROM temp.transcript_rows WHERE owner_key=?")
             .bind(session)
             .execute(&mut *db)
             .await?;
     }
     if previous.as_ref().map(|(identity,)| identity) != Some(&copy_identity) {
-        sqlx::query("INSERT INTO temp.transcript_sessions VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET copy_identity=excluded.copy_identity")
+        sqlx::query("INSERT INTO temp.transcript_sessions VALUES(?,?) ON CONFLICT(owner_key) DO UPDATE SET copy_identity=excluded.copy_identity")
             .bind(session).bind(copy_identity).execute(&mut *db).await?;
     }
     let cached: Option<(String, String)> = sqlx::query_as(
-        "SELECT turn_id,message_id FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
+        "SELECT turn_id,message_id FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3",
     ).bind(session).bind(source).bind(item).fetch_optional(&mut *db).await?;
     if let Some(identity) = cached {
         if identity != (turn, message) {
@@ -261,7 +275,7 @@ pub(super) async fn ensure_on_worker(
     // S is the cache unit: emission already owns every original row from this
     // selected producer. Retain these rows once, never replayed earlier sources.
     // Text remains demand-driven per visited row. A hit needs no sibling fill.
-    let rows = super::emit::source_on_worker(db, session, position.source_sequence).await?;
+    let rows = super::emit::source_for_owner_on_worker(db, owner, position.source_sequence).await?;
     if !rows.iter().any(|row| row.position == position) {
         return Err(StoreError::TranscriptConflict);
     }
@@ -294,14 +308,14 @@ pub(super) async fn ensure_on_worker(
                 .push_bind(&message.turn_id)
                 .push_bind(&message.id);
         });
-        identities.push(") SELECT count(*) FROM wanted JOIN transcript_directory d ON d.item_index=wanted.item_index AND d.turn_id=wanted.turn_id AND d.message_id=wanted.message_id WHERE d.session_id=")
+        identities.push(") SELECT count(*) FROM wanted JOIN transcript_directory d ON d.item_index=wanted.item_index AND d.turn_id=wanted.turn_id AND d.message_id=wanted.message_id WHERE d.owner_key=")
             .push_bind(session).push(" AND d.source_sequence=").push_bind(source);
         let matched: i64 = identities.build_query_scalar().fetch_one(&mut *db).await?;
         if matched != encoded.len() as i64 {
             return Err(StoreError::TranscriptConflict);
         }
         let mut insert = QueryBuilder::<Sqlite>::new(
-            "INSERT OR IGNORE INTO temp.transcript_rows (session_id,source_sequence,item_index,turn_id,message_id,payload,digest,total_bytes) ",
+            "INSERT OR IGNORE INTO temp.transcript_rows (owner_key,source_sequence,item_index,turn_id,message_id,payload,digest,total_bytes) ",
         );
         insert.push_values(
             &encoded,
@@ -335,7 +349,7 @@ pub(super) async fn ensure_on_worker(
                     .push_bind(bytes);
             },
         );
-        verify.push(") SELECT count(*) FROM wanted JOIN temp.transcript_rows c ON c.item_index=wanted.item_index AND c.turn_id=wanted.turn_id AND c.message_id=wanted.message_id AND c.payload=wanted.payload AND c.digest=wanted.digest AND c.total_bytes=wanted.total_bytes WHERE c.session_id=")
+        verify.push(") SELECT count(*) FROM wanted JOIN temp.transcript_rows c ON c.item_index=wanted.item_index AND c.turn_id=wanted.turn_id AND c.message_id=wanted.message_id AND c.payload=wanted.payload AND c.digest=wanted.digest AND c.total_bytes=wanted.total_bytes WHERE c.owner_key=")
             .push_bind(session).push(" AND c.source_sequence=").push_bind(source);
         let matched: i64 = verify.build_query_scalar().fetch_one(&mut *db).await?;
         if matched != encoded.len() as i64 {

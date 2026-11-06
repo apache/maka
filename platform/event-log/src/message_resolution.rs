@@ -63,7 +63,7 @@ impl EventLog {
         }
         let session = session.to_owned();
         let messages = messages.to_vec();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let mut resolutions = Vec::new();
             let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)")

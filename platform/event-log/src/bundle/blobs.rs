@@ -34,51 +34,14 @@ pub(super) async fn export<W: AsyncWrite + Unpin>(
     closure: &Closure,
     writer: &mut Writer<W>,
 ) -> Result<(), StoreError> {
-    for sequence in &closure.events {
-        let tool: Option<(String, i64, Option<String>, Option<i64>)> = sqlx::query_as(
-            "SELECT e.event_id,length(p.payload),json_extract(e.event_header,'$.fact.outcome.raw.digest'),
-                json_extract(e.event_header,'$.fact.outcome.raw.bytes')
-             FROM runtime_events e JOIN tool_result_payloads p ON p.event_id=e.event_id WHERE e.sequence=?"
-        ).bind(*sequence as i64).fetch_optional(&mut *db).await?;
-        if let Some((event_id, bytes, digest, expected_bytes)) = tool {
-            if expected_bytes != Some(bytes) {
-                return Err(invalid("tool payload length changed"));
-            }
-            let blob = Blob::ToolResult {
-                event_id,
-                bytes: sequence_number(bytes)?,
-                digest: digest.ok_or_else(|| invalid("unbound tool payload"))?,
-            };
-            transfer(db, blob, writer).await?;
-        }
-        let composition: Option<(String, String, i64)> = sqlx::query_as(
-            "SELECT e.event_id,c.digest,length(c.surface) FROM runtime_events e
-             JOIN model_request_compositions r ON r.event_id=e.event_id
-             JOIN request_compositions c ON c.digest=r.digest WHERE e.sequence=?",
-        )
-        .bind(*sequence as i64)
-        .fetch_optional(&mut *db)
-        .await?;
-        if let Some((event_id, digest, bytes)) = composition {
-            transfer(
-                db,
-                Blob::Composition {
-                    event_id,
-                    bytes: sequence_number(bytes)?,
-                    digest,
-                },
-                writer,
-            )
-            .await?;
-        }
-    }
+    export_events(db, &closure.events, writer).await?;
     for session in &inventory.sessions {
         required(db, &session.id).await?;
         let mut after = None::<String>;
         loop {
             let next: Option<(String, String, String, i64)> = sqlx::query_as(
-                "SELECT id,record_json,artifacts.content_sha256,length(payload) FROM artifacts JOIN artifact_contents USING(content_sha256)
-                 WHERE session_id=?1 AND (?2 IS NULL OR id>?2) ORDER BY id LIMIT 1",
+                "SELECT artifacts.id,record_json,artifacts.content_sha256,length(payload) FROM artifacts JOIN contents USING(content_sha256)
+                 WHERE session_id=?1 AND (?2 IS NULL OR artifacts.id>?2) ORDER BY artifacts.id LIMIT 1",
             )
             .bind(&session.id)
             .bind(&after)
@@ -138,10 +101,56 @@ pub(super) async fn export<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+pub(crate) async fn export_events<W: AsyncWrite + Unpin>(
+    db: &mut SqliteConnection,
+    events: &std::collections::BTreeSet<u64>,
+    writer: &mut Writer<W>,
+) -> Result<(), StoreError> {
+    for sequence in events {
+        let tool: Option<(String, i64, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT e.event_id,p.raw_bytes,json_extract(e.event_header,'$.fact.outcome.raw.digest'),
+                json_extract(e.event_header,'$.fact.outcome.raw.bytes')
+             FROM runtime_events e JOIN tool_result_payloads p ON p.event_id=e.event_id WHERE e.sequence=?"
+        ).bind(*sequence as i64).fetch_optional(&mut *db).await?;
+        if let Some((event_id, bytes, digest, expected_bytes)) = tool {
+            if expected_bytes != Some(bytes) {
+                return Err(invalid("tool payload length changed"));
+            }
+            let blob = Blob::ToolResult {
+                event_id,
+                bytes: sequence_number(bytes)?,
+                digest: digest.ok_or_else(|| invalid("unbound tool payload"))?,
+            };
+            transfer(db, blob, writer).await?;
+        }
+        let composition: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT e.event_id,c.digest,c.canonical_bytes FROM runtime_events e
+             JOIN model_request_compositions r ON r.event_id=e.event_id
+             JOIN request_compositions c ON c.digest=r.digest WHERE e.sequence=?",
+        )
+        .bind(*sequence as i64)
+        .fetch_optional(&mut *db)
+        .await?;
+        if let Some((event_id, digest, bytes)) = composition {
+            transfer(
+                db,
+                Blob::Composition {
+                    event_id,
+                    bytes: sequence_number(bytes)?,
+                    digest,
+                },
+                writer,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// An earlier source freeze need not be in a partial copied history. Export the
 /// first consumption in this owner's selected history at which those same bytes
 /// were already frozen, without bringing in another Session's private history.
-async fn frozen_witness(
+pub(crate) async fn frozen_witness(
     db: &mut SqliteConnection,
     metadata: &maka_agent_facts::artifact::Artifact,
 ) -> Result<Option<u64>, StoreError> {
@@ -213,7 +222,81 @@ async fn frozen_witness(
     Ok(None)
 }
 
-async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreError> {
+pub(crate) async fn snapshot_witness(
+    db: &mut SqliteConnection,
+    capture: &str,
+    metadata: &maka_agent_facts::artifact::Artifact,
+) -> Result<Option<u64>, StoreError> {
+    let Some(mime) = metadata.mime_type.as_deref() else {
+        return Ok(None);
+    };
+    let kind = if mime.starts_with("image/") {
+        maka_agent_facts::artifact::ArtifactKind::Image
+    } else {
+        maka_agent_facts::artifact::ArtifactKind::File
+    };
+    if metadata.kind != kind {
+        return Ok(None);
+    }
+    let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.sequence,m.inherited,e.event_header,{},h.source_session_id,h.source_artifact_id
+         FROM history_snapshot_members m JOIN runtime_events e ON e.sequence=m.sequence {}
+         JOIN history_snapshot_artifacts a ON a.capture_key=?3 AND a.session_id=?1 AND a.id=?2
+         LEFT JOIN history_snapshot_aliases h ON h.capture_key=?3 AND h.session_id=?1 AND h.artifact_id=?2
+         WHERE m.capture_key=?3 AND m.session_id=?1 AND e.kind='tool_settled'
+           AND json_extract(e.event_header,'$.fact.outcome.kind')='succeeded'
+           AND a.canonical_at>0 AND a.canonical_at<=e.sequence ORDER BY e.sequence",
+        crate::canonical::COLUMNS,
+        crate::canonical::JOINS
+    )))
+    .bind(&metadata.session_id)
+    .bind(&metadata.id)
+    .bind(capture)
+    .fetch(db);
+    while let Some(row) = rows.try_next().await? {
+        let event: maka_agent_facts::event::RuntimeEvent =
+            serde_json::from_str(&crate::canonical::json(&row)?)?;
+        let maka_agent_facts::event::Fact::ToolSettled {
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection:
+                        maka_agent_facts::tool_output::DurableToolProjection::Content { parts },
+                    ..
+                },
+            ..
+        } = event.fact
+        else {
+            continue;
+        };
+        let inherited: bool = row.try_get("inherited")?;
+        let source_session: Option<&str> = row.try_get("source_session_id")?;
+        let source_artifact: Option<&str> = row.try_get("source_artifact_id")?;
+        for part in parts {
+            let Some((
+                maka_agent_facts::attachment::StorageRef::SessionFile {
+                    session_id,
+                    relative_path,
+                },
+                part_mime,
+            )) = part.media()
+            else {
+                continue;
+            };
+            let owned = if inherited {
+                source_session == Some(session_id.as_str())
+                    && source_artifact == Some(relative_path.as_str())
+            } else {
+                session_id == &metadata.session_id && relative_path == &metadata.id
+            };
+            if owned && part_mime == mime {
+                return Ok(Some(sequence_number(row.try_get("sequence")?)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreError> {
     // Copied evidence resolves through destination-owned material, never through
     // a live lookup into an ancestor's artifact namespace.
     let broken: bool = sqlx::query_scalar(
@@ -223,7 +306,7 @@ async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreE
            AND h.source_session_id=e.event_session AND h.source_artifact_id=json_extract(proof.value,'$.id')
          LEFT JOIN artifacts a ON a.session_id=e.owner_session_id AND
            a.id=CASE WHEN e.inherited=1 THEN h.artifact_id ELSE json_extract(proof.value,'$.id') END
-         LEFT JOIN artifact_contents c ON c.content_sha256=a.content_sha256
+         LEFT JOIN contents c ON c.content_sha256=a.content_sha256
          WHERE e.owner_session_id=? AND e.kind='tool_settled' AND
            (a.id IS NULL OR c.content_sha256 IS NULL OR length(c.payload)!=json_extract(proof.value,'$.bytes')
             OR a.content_sha256!=json_extract(proof.value,'$.digest')
@@ -236,12 +319,29 @@ async fn required(db: &mut SqliteConnection, session: &str) -> Result<(), StoreE
     Ok(())
 }
 
-async fn transfer<W: AsyncWrite + Unpin>(
+pub(crate) async fn transfer<W: AsyncWrite + Unpin>(
     db: &mut SqliteConnection,
     blob: Blob,
     writer: &mut Writer<W>,
 ) -> Result<(), StoreError> {
+    let composition = if let Blob::Composition { digest, .. } = &blob {
+        Some(crate::composition::encode(db, digest).await?)
+    } else {
+        None
+    };
+    let raw = if let Blob::ToolResult { event_id, .. } = &blob {
+        Some(crate::tool_payloads::encode(db, event_id).await?)
+    } else {
+        None
+    };
     let length = blob.bytes();
+    if composition
+        .as_ref()
+        .or(raw.as_ref())
+        .is_some_and(|bytes| bytes.len() as u64 != length)
+    {
+        return Err(invalid("bundle payload length changed"));
+    }
     let mut offset = 0;
     let mut hash = Sha256::new();
     writer.record(&Record::Blob(blob.clone())).await?;
@@ -250,31 +350,20 @@ async fn transfer<W: AsyncWrite + Unpin>(
         let start = (offset + 1) as i64;
         let bytes: Vec<u8> = match &blob {
             Blob::ToolResult { event_id, .. } => {
-                sqlx::query_scalar(
-                    "SELECT substr(payload,?2,?3) FROM tool_result_payloads WHERE event_id=?1",
-                )
-                .bind(event_id)
-                .bind(start)
-                .bind(size)
-                .fetch_one(&mut *db)
-                .await?
+                let bytes = raw.as_ref().expect("raw result materialized once");
+                let _ = event_id;
+                bytes[offset as usize..(offset + size as u64) as usize].to_vec()
             }
             Blob::Composition { digest, .. } => {
-                sqlx::query_scalar(
-                    "SELECT substr(surface,?2,?3) FROM request_compositions WHERE digest=?1",
-                )
-                .bind(digest)
-                .bind(start)
-                .bind(size)
-                .fetch_one(&mut *db)
-                .await?
+                let bytes = composition.as_ref().expect("composition materialized once");
+                let _ = digest;
+                bytes[offset as usize..(offset + size as u64) as usize].to_vec()
             }
-            Blob::Artifact { metadata, .. } => {
+            Blob::Artifact { .. } => {
                 sqlx::query_scalar(
-                    "SELECT substr(payload,?3,?4) FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id=?1 AND id=?2",
+                    "SELECT substr(payload,?2,?3) FROM contents WHERE content_sha256=?1",
                 )
-                .bind(&metadata.session_id)
-                .bind(&metadata.id)
+                .bind(blob.digest())
                 .bind(start)
                 .bind(size)
                 .fetch_one(&mut *db)

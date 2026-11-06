@@ -155,7 +155,7 @@ impl EventLog {
             return Err(invalid("invalid caller intent identity"));
         }
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     read(connection, &domain, deployment, &consumer, operation).await
                 })
@@ -255,7 +255,7 @@ impl EventLog {
         if deployment.is_nil() || after > i64::MAX as u64 || !(1..=128).contains(&limit) {
             return Err(invalid("invalid caller intent page"));
         }
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let mut query = sqlx::QueryBuilder::new("SELECT CASE WHEN length(CAST(operation AS BLOB)) = 36 THEN operation END AS operation, consumer FROM application_intents WHERE deployment=");
             query.push_bind(deployment.to_string());

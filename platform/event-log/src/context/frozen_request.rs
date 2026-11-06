@@ -153,15 +153,15 @@ pub(crate) async fn read_in_transaction(
         route: route_identity.clone(),
         model: model_id.clone(),
     });
-    let (digest, bytes): (String, Vec<u8>) = sqlx::query_as(
-        "SELECT b.digest,c.surface FROM model_request_compositions b
-                 JOIN request_compositions c ON c.digest=b.digest WHERE b.event_id=?",
-    )
-    .bind(&request.id)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
-    let composition = serde_json::from_slice(&bytes)?;
+    let digest: String =
+        sqlx::query_scalar("SELECT digest FROM model_request_compositions WHERE event_id=?")
+            .bind(&request.id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
+    let composition = crate::composition::read(&mut *tx, &digest)
+        .await?
+        .ok_or_else(|| invalid("frozen request composition is unavailable"))?;
     Ok(FrozenModelRequest {
         request: StoredEvent {
             sequence,

@@ -96,7 +96,7 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     receipt(&mut tx, &session).await
@@ -111,7 +111,7 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     read(&mut tx, &session).await

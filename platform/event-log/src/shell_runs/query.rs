@@ -72,7 +72,7 @@ impl EventLog {
         let (session, id) = (session.to_owned(), id.map(str::to_owned));
         let provider_prefix = provider_prefix.map(str::to_owned);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let exists: bool = sqlx::query_scalar(

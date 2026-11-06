@@ -184,8 +184,8 @@ impl HistoryCheckpoints {
                 if prior.result.is_none() { verify_destination(&objects, &prior.prepared, &request.operation, prior.directory_identity()?)?; }
                 return Ok(prior.prepared);
             }
-            let checkout = checkout(&log, &objects, request.scope.clone(), request.session.clone(), request.operation.revision).await?;
-            let Manifest { inventory, workspace, history_cut, .. } = checkout.manifest;
+            let (head,manifest) = selected_checkpoint(&log, &objects, &request.scope, &request.session, request.operation.revision).await?;
+            let Manifest { inventory, workspace, history_cut, .. } = manifest;
             let workspace = workspace.ok_or_else(|| invalid("checkpoint has no workspace"))?;
             if inventory.sessions.len() != 1 || inventory.sessions[0].id != request.session { return Err(invalid("checkpoint restore requires one ordinary Session")); }
             let current = log.get_session::<Value>(&request.session).await?.ok_or(StoreError::SessionNotFound)?;
@@ -202,7 +202,7 @@ impl HistoryCheckpoints {
             let directory = cap_std::fs::Dir::open_ambient_dir(&parent, cap_std::ambient_authority())?;
             if directory_identity(&directory)? != request.operation.parent_identity { return Err(invalid("restore parent directory changed")); }
             if parent.starts_with(objects.owner.canonical_path()) { return Err(invalid("restore destination overlaps private Root")); }
-            let prepared = PreparedRestore { head: checkout.head, history_cut, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
+            let prepared = PreparedRestore { head, history_cut, workspace, path: parent.join(format!("maka-restored-{}", request.key()?)) };
             let key = request.key()?;
             let encoded = serde_json::to_string(&request)?;
             let data = serde_json::to_string(&prepared)?;
@@ -245,10 +245,9 @@ impl HistoryCheckpoints {
         let request = self.restore_identity(operation);
         let log = self.session.exclusive_metadata(true).await?;
         let gates = self.session.gates.clone();
-        let session_store = self.session.clone();
         let control = self
             .session
-            .control
+            .log
             .upgrade()
             .ok_or(StoreError::ConnectionClosed)?;
         worker(log, gates.clone(), move |log, objects| async move {
@@ -284,16 +283,14 @@ impl HistoryCheckpoints {
                 if binding.workspace.get("path").and_then(Value::as_str) != prepared.path.to_str() {
                     return Err(invalid("restore binding differs from prepared workspace"));
                 }
-                let control_dependency = session_store.control_dependency()?;
                 let key = request.key()?;
                 let result = log
-                    .scoped(Arc::new((pin, control_dependency)))
+                    .scoped(Arc::new(pin))
                     .mutate_session_metadata::<T, _>(
                         &request.session,
                         record.revision,
                         true,
                         Some(now),
-                        Some(control.clone()),
                         Some(Commit {
                             key,
                             request: request.clone(),

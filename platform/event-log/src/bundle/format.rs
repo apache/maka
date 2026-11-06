@@ -34,9 +34,9 @@ mod decode;
 pub(super) const MAGIC: &[u8] = b"MAKA-SESSION\0\x02";
 pub(super) const CHUNK: usize = 64 * 1024;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Record {
+pub(crate) enum Record {
     Header {
         inventory: Inventory,
         source_high_water: u64,
@@ -82,9 +82,9 @@ pub(super) enum Record {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Copy {
+pub(crate) struct Copy {
     pub request: CopyRequest,
     pub through: u64,
     pub observed_through: u64,
@@ -92,9 +92,9 @@ pub(super) struct Copy {
     pub state: CopyState,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Valuation {
+pub(crate) struct Valuation {
     pub usage: ModelUsage,
     pub usd: Option<f64>,
 }
@@ -102,7 +102,7 @@ pub(super) struct Valuation {
 /// Exactly the declared raw bytes follow this frame; binary data is not JSON/base64.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "resource", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Blob {
+pub(crate) enum Blob {
     ToolResult {
         event_id: String,
         bytes: u64,
@@ -137,7 +137,7 @@ impl Blob {
     }
 }
 
-pub(super) struct Writer<W> {
+pub(crate) struct Writer<W> {
     output: W,
     digest: Sha256,
     bytes: u64,

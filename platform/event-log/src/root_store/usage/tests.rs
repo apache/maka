@@ -68,8 +68,8 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
         .await
         .unwrap();
     for index in 0..40 {
-        admit(&root.partitions[0], format!("model-{index:02}"), 1).await;
-        admit(&root.partitions[1], format!("model-{index:02}"), 2).await;
+        admit(&root.log, format!("model-{index:02}"), 1).await;
+        admit(&root.log, format!("model-{index:02}"), 2).await;
     }
     let report = root
         .usage_summary_page(query(), Group::ByModel, None)
@@ -102,12 +102,15 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
     assert_eq!(first.total, 80);
     assert_eq!(first.attempts.len(), 32);
     // A new settled admission at the same wall-clock time must not enter this fence.
-    admit(&root.partitions[0], "new-model".into(), 1000).await;
+    admit(&root.log, "new-model".into(), 1000).await;
     let mut ids = BTreeSet::new();
     let mut page = first;
     loop {
         for attempt in &page.attempts {
-            assert!(ids.insert(cursor(attempt, 0).request_id));
+            assert!(ids.insert(match attempt {
+                Activity::Model(row) => row.request_id.clone(),
+                Activity::Tool(row) => row.request_id.clone(),
+            }));
         }
         let Some(after) = page.next_cursor else {
             break;
@@ -132,7 +135,7 @@ async fn vector_fence_keyset_pages_merge_physical_journals_exactly_once() {
     let mut foreign = query();
     foreign.through = Some(UsageFence {
         state_domain: "foreign".into(),
-        partitions: [0; PARTITION_COUNT],
+        sequence: 0,
     });
     assert!(root.usage_totals(foreign).await.is_err());
     root.close().await.unwrap();

@@ -17,10 +17,7 @@
  * under the License.
  */
 
-//! App decisions and profile persistence have one authority: the Root control
-//! transaction. Session partitions only read those facts through their existing
-//! read-only attachment. The only cross-writer wait is partition -> control;
-//! control callbacks never wait for a partition, a gate, or a human response.
+//! App decisions, dispatch and profile consent share the Root transaction.
 use super::{RootStore, SessionStore, gates};
 use crate::append::ComputerAppDispatch;
 use crate::connection::BoxFuture;
@@ -38,17 +35,6 @@ use maka_agent_facts::workspace::PermissionBasis;
 use sqlx::{Connection, SqliteConnection};
 use std::sync::Arc;
 pub(super) mod activity;
-
-// Only the existing Root active-work barrier is extended, with no new lock or
-// authority state. App control ends this dependency at source SQL cleanup before
-// any human wait or physical action; a browser service receipt retains it through
-// settlement SQL cleanup. Accepted execution already owns the same barrier.
-struct ControlDependency(Arc<gates::Gates>);
-impl Drop for ControlDependency {
-    fn drop(&mut self) {
-        self.0.finish_work();
-    }
-}
 
 fn app_key(target: &GrantTarget) -> Result<String, StoreError> {
     target.validate().map_err(invalid)?;
@@ -91,7 +77,6 @@ struct Source {
     run: String,
     invocation: Option<Invocation>,
     basis: PermissionBasis,
-    request_id: Option<String>,
     app: Option<(
         GrantTarget,
         maka_agent_facts::interaction::ComputerAppDisplay,
@@ -124,7 +109,6 @@ impl Source {
             run: record.run_id.clone(),
             invocation: invocation.cloned(),
             basis: *basis,
-            request_id: Some(record.request_id.clone()),
             app: Some((target.clone(), display.clone())),
         })
     }
@@ -135,7 +119,6 @@ impl Source {
             run: invocation.run_id.clone(),
             invocation: Some(invocation.clone()),
             basis,
-            request_id: None,
             app: None,
         }
     }
@@ -174,30 +157,7 @@ impl Source {
 }
 
 impl SessionStore {
-    pub(super) fn control_dependency(
-        &self,
-    ) -> Result<Option<crate::connection::custody::Custody>, StoreError> {
-        if self.execution.is_some() {
-            return Ok(None);
-        }
-        self.gates.start_work()?;
-        Ok(Some(Arc::new(ControlDependency(self.gates.clone()))))
-    }
-
-    async fn control_source(&self) -> Result<EventLog, StoreError> {
-        let dependency = self.control_dependency()?;
-        let partition = self.scoped().await?;
-        Ok(if let Some(dependency) = dependency {
-            partition.scoped(dependency)
-        } else {
-            partition
-        })
-    }
-
-    /// Pins are acquired before SQL. A short source writer transaction prevents
-    /// terminal facts from crossing publication or an allowing response. The
-    /// control transaction alone commits authority; no multi-database atomicity
-    /// or replicated grant is assumed if the source reader later fails.
+    /// Source admission and consent share one writer transaction.
     async fn app_control<T: Send + 'static>(
         &self,
         source: Source,
@@ -213,26 +173,11 @@ impl SessionStore {
         // Accepted execution already owns its Binding pin. Reacquiring it can
         // deadlock behind a queued writer waiting for that same execution.
         // The source writer transaction also fences Session metadata commits.
-        let partition = self.control_source().await?;
-        let control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
-        partition
-            .connection
+        let log = self.scoped().await?;
+        log.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    if let Some(request_id) = &source.request_id
-                        && sqlx::query_scalar::<_, bool>(
-                            "SELECT EXISTS(SELECT 1 FROM interaction_requests WHERE request_id=?)",
-                        )
-                        .bind(request_id)
-                        .fetch_one(&mut *tx)
-                        .await?
-                    {
-                        return Err(invalid(
-                            "interaction ID already belongs to the Session partition",
-                        ));
-                    }
-                    // Session policy belongs to this source fence, not the profile database.
                     let access = if !source.live(&mut tx).await? {
                         SourceAccess::Inactive
                     } else if crate::workspace_bindings::full_access(
@@ -246,12 +191,9 @@ impl SessionStore {
                     } else {
                         SourceAccess::Managed
                     };
-                    let result = control
-                        .connection
-                        .run(move |connection| operation(connection, access))
-                        .await;
-                    tx.rollback().await?;
-                    result
+                    let result = operation(&mut tx, access).await?;
+                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    Ok(result)
                 })
             })
             .await
@@ -263,7 +205,7 @@ impl SessionStore {
     ) -> Result<u64, StoreError> {
         self.owner()?;
         let key = app_key(target)?;
-        let control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        let control = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
         control
             .connection
             .read(move |connection| Box::pin(async move { revision(connection, &key).await }))
@@ -283,8 +225,8 @@ impl SessionStore {
         let request = request.clone();
         self.app_control(source, move |connection, access| {
             Box::pin(async move {
-                let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                if let Some(mut record) = read(&mut tx, &request.request_id).await? {
+                let tx = connection;
+                if let Some(mut record) = read(tx, &request.request_id).await? {
                     if record.session_id != request.session_id {
                         return Err(invalid("foreign Session interaction identity"));
                     }
@@ -304,7 +246,7 @@ impl SessionStore {
                 else {
                     unreachable!()
                 };
-                if revision(&mut tx, &app_key(target)?).await? != *authority_revision {
+                if revision(tx, &app_key(target)?).await? != *authority_revision {
                     return Err(invalid(
                         "computer app authority changed before request publication",
                     ));
@@ -316,8 +258,7 @@ impl SessionStore {
                     .bind(encode(&request)?)
                     .execute(&mut *tx)
                     .await?;
-                crate::sessions::advance_catalog(&mut tx).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                crate::sessions::advance_revision(tx, &request.session_id).await?;
                 Ok(InteractionCommit {
                     matches: true,
                     record: request,
@@ -345,8 +286,8 @@ impl SessionStore {
         let source = Source::request(&record, None)?;
         self.app_control(source, move |connection, access| {
             Box::pin(async move {
-                let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                let mut actual = read(&mut tx, &record.request_id)
+                let tx = connection;
+                let mut actual = read(tx, &record.request_id)
                     .await?
                     .ok_or_else(|| invalid("computer app request disappeared"))?;
                 if actual.session_id != record.session_id || actual.request != record.request {
@@ -382,7 +323,7 @@ impl SessionStore {
                         decision: ComputerAppDecision::Always,
                         ..
                     }
-                ) && revision(&mut tx, &key).await? != *authority_revision;
+                ) && revision(tx, &key).await? != *authority_revision;
                 let selected = if allows && (access == SourceAccess::Inactive || stale_profile) {
                     InteractionOutcome::Closure {
                         reason: ClosureReason::ProducerCancelled,
@@ -439,8 +380,7 @@ impl SessionStore {
                     .execute(&mut *tx)
                     .await?;
                 }
-                crate::sessions::advance_catalog(&mut tx).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                crate::sessions::advance_revision(tx, &actual.session_id).await?;
                 let matches = equivalent(&selected, &outcome);
                 actual.outcome = Some(selected);
                 Ok(InteractionCommit {
@@ -476,10 +416,8 @@ impl SessionStore {
                 if access == SourceAccess::FullAccess {
                     return Ok(true);
                 }
-                let mut tx = connection.begin().await?;
-                let granted =
-                    granted(&mut tx, &invocation, &operation, &target, &key, basis).await?;
-                tx.commit().await?;
+                let tx = connection;
+                let granted = granted(tx, &invocation, &operation, &target, &key, basis).await?;
                 Ok(granted)
             })
         })
@@ -487,7 +425,7 @@ impl SessionStore {
     }
 
     /// Existing broad tool authority and original source admission remain in the
-    /// partition T1. The app read pin prevents profile revoke from passing that
+    /// dispatch T1. The app read pin prevents profile revoke from passing that
     /// exact T1, then is released before potentially long native execution.
     pub async fn append_computer_app_dispatch(
         &self,
@@ -578,30 +516,18 @@ impl SessionStore {
         now: u64,
     ) -> Result<usize, StoreError> {
         self.check_session(&invocation.session_id)?;
-        let partition = self.control_source().await?;
-        let control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        let log = self.scoped().await?;
         let invocation = invocation.clone();
         let outcome = InteractionOutcome::Closure {
             reason,
             committed_at: now,
         };
         outcome.validate().map_err(invalid)?;
-        let notice = partition.commits.session(&invocation.session_id);
-        partition
-            .connection
+        let notice = log.commits.session(&invocation.session_id);
+        log.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let root_scope = invocation.clone();
-                    let root_outcome = outcome.clone();
-                    let root_count = control
-                        .connection
-                        .run(move |connection| {
-                            Box::pin(async move {
-                                close_control(connection, Some(&root_scope), &root_outcome).await
-                            })
-                        })
-                        .await?;
                     let (local_count, approval_ready) =
                         crate::interactions::lifecycle::close_notified_in_transaction(
                             &mut tx,
@@ -616,7 +542,7 @@ impl SessionStore {
                     if local_count > 0 {
                         notice.metadata();
                     }
-                    Ok(root_count + local_count)
+                    Ok(local_count)
                 })
             })
             .await
@@ -783,41 +709,6 @@ impl EventLog {
         }
         Ok(count)
     }
-
-    /// RootStore passes its control owner into the accepted source metadata job.
-    /// Root facts retire after the source boundary commits, before that actor
-    /// accepts another response/publication. The readonly attachment stays so.
-    pub(crate) async fn close_computer_app_previous_basis(
-        &self,
-        session: &str,
-        previous: PermissionBasis,
-        now: u64,
-    ) -> Result<usize, StoreError> {
-        let session = session.to_owned();
-        let outcome = InteractionOutcome::Closure {
-            reason: ClosureReason::ProducerCancelled,
-            committed_at: now,
-        };
-        outcome.validate().map_err(invalid)?;
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx=connection.begin_with("BEGIN IMMEDIATE").await?;
-            let ids:Vec<String>=sqlx::query_scalar("SELECT request_id FROM interaction_pending WHERE session_id=?")
-                .bind(session).fetch_all(&mut *tx).await?;
-            let mut count=0;
-            for id in ids {
-                let record=read(&mut tx,&id).await?.ok_or_else(||invalid("pending app request disappeared"))?;
-                if matches!(record.request,InteractionRequest::ComputerApp { basis,.. } if basis==previous) {
-                    sqlx::query("INSERT INTO interaction_outcomes VALUES(?,?)").bind(id).bind(encode(&outcome)?).execute(&mut *tx).await?;
-                    count+=1;
-                }
-            }
-            if count>0 {
-                crate::sessions::advance_catalog(&mut tx).await?;
-                tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            } else { tx.rollback().await?; }
-            Ok(count)
-        })).await
-    }
 }
 
 impl RootStore {
@@ -834,7 +725,7 @@ impl RootStore {
             .gates
             .write([gates::Key::ComputerApp(key.clone())])
             .await?;
-        self.control.scoped(Arc::new(pin)).connection.run(move |connection| Box::pin(async move {
+        self.log.scoped(Arc::new(pin)).connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let current = revision(&mut tx, &key).await?;
             let next = current.checked_add(1).filter(|next| *next <= MAX_SAFE_INTEGER)
@@ -857,7 +748,7 @@ impl RootStore {
             reason: ClosureReason::HostRestarted,
             committed_at: now,
         };
-        self.control
+        self.log
             .scoped(custody)
             .connection
             .run(move |connection| {

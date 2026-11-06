@@ -481,13 +481,13 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         .commit_application(id, 0, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
-    let cursor = store.subscribe_application(first.clone()).unwrap();
+    let mut cursor = store.subscribe_application(first.clone()).unwrap();
     let second = store
         .commit_application(id, 1, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
     // This is a real completed SQL head read retained across another owner turn.
-    let (cursor, observed) = next_change(cursor).await;
+    let observed = cursor.next().await;
     assert_eq!(observed.as_ref().unwrap(), &second);
     let third = store
         .commit_application(id, 2, input.clone(), vec![], vec![ui.clone()])
@@ -525,7 +525,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         .unwrap();
     owner.drive();
     owner.observe_source(observed.unwrap());
-    let (_, latest) = next_change(cursor).await;
+    let latest = cursor.next().await;
     owner.observe_source(latest.unwrap());
     let snapshot = owner.snapshot();
     assert_eq!(snapshot.desired, Some(third.clone()));

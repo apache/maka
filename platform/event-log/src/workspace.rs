@@ -45,7 +45,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let (cwd, session) = (cwd.to_owned(), session.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
                         "SELECT EXISTS(SELECT 1 FROM workspace_bindings binding
@@ -65,7 +65,7 @@ impl EventLog {
     pub async fn workspace_fence(&self, cwd: &str) -> Result<WorkspaceFence, StoreError> {
         self.validate_root()?;
         let cwd = cwd.to_owned();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let rows = sqlx::query(
                 "SELECT s.id, s.revision,

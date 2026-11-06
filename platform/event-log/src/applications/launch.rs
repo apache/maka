@@ -59,7 +59,7 @@ impl EventLog {
 
     pub async fn application_launch(&self) -> Result<Option<Launch>, StoreError> {
         self.application_domain()?;
-        self.connection.run(|connection| Box::pin(async move {
+        self.connection.read(|connection| Box::pin(async move {
             let row = sqlx::query("SELECT deployment, configuration, pending FROM application_launch WHERE singleton=1")
                 .fetch_optional(connection).await?;
             let Some(row) = row else { return Ok(None); };

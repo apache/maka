@@ -42,7 +42,7 @@ impl EventLog {
         self.validate_root()?;
         let after = i64::try_from(after).map_err(|_| invalid("invalid handoff cursor"))?;
         self.connection
-            .run(move |tx| {
+            .read(move |tx| {
                 Box::pin(async move {
                     let rows: Vec<(i64, String, String)> = sqlx::query_as(
                         "SELECT pause.sequence, json_extract(pause.event_header,'$.invocation'),
@@ -81,7 +81,7 @@ impl EventLog {
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |tx| Box::pin(async move { Ok(reservation(tx, &session).await?.is_some()) }))
+            .read(move |tx| Box::pin(async move { Ok(reservation(tx, &session).await?.is_some()) }))
             .await
     }
 
@@ -101,7 +101,7 @@ impl EventLog {
             },
         );
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     crate::recovery::require_local(&mut tx, &event.invocation.invocation_id)

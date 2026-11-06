@@ -98,7 +98,7 @@ impl EventLog {
     async fn project_catalog(&self, prefix: Option<String>) -> Result<Vec<ProjectRecord>> {
         self.validate_root()?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let mut projects = read_all(&mut tx, prefix.as_deref()).await?;
@@ -120,7 +120,7 @@ impl EventLog {
         validate_id(id)?;
         let id = id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     read(&mut tx, &id).await

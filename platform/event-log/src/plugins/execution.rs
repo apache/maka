@@ -48,7 +48,7 @@ impl EventLog {
         let package = namespace.package().to_owned();
         let scope = String::from(namespace.scope().clone());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let Some(receipt) = read(
@@ -245,7 +245,7 @@ impl EventLog {
         let scope = String::from(namespace.scope().clone());
         let operation = operation.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     read(
                         connection,

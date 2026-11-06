@@ -88,8 +88,8 @@ fn disk(root: &std::path::Path) -> Value {
             .map(|e| size(&e.unwrap().path()))
             .sum()
     }
-    let partitions = root.join("runtime-partitions");
-    let wal = std::fs::read_dir(&partitions)
+    let directory = root.to_owned();
+    let wal = std::fs::read_dir(&directory)
         .unwrap()
         .filter_map(|e| {
             let e = e.unwrap();

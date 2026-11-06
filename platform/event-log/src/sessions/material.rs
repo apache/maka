@@ -73,6 +73,7 @@ impl EventLog {
             let session: Option<String> = sqlx::query_scalar(
                 "SELECT DISTINCT e.event_session FROM event_log e INDEXED BY event_material_owner
                  WHERE e.event_header IS NOT NULL AND e.event_session IS NOT NULL
+                 AND NOT EXISTS(SELECT 1 FROM history_snapshot_events pin WHERE pin.sequence=e.sequence)
                  AND (?1 IS NULL OR e.event_session>?1) AND (
                    EXISTS(SELECT 1 FROM session_retirements r WHERE r.session_id=e.event_session
                      AND r.remove_session=1 AND r.completed=1)
@@ -107,7 +108,7 @@ impl EventLog {
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
             let rows=sqlx::query(sqlx::AssertSqlSafe(format!(
                 "SELECT e.sequence,e.event_id,e.event_header,{columns} FROM event_log e {joins} WHERE e.event_session=?
-                 AND e.event_header IS NOT NULL ORDER BY e.sequence LIMIT 8",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+                 AND e.event_header IS NOT NULL AND NOT EXISTS(SELECT 1 FROM history_snapshot_events pin WHERE pin.sequence=e.sequence) ORDER BY e.sequence LIMIT 8",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
             ))).bind(&session).fetch_all(&mut *tx).await?;
             for row in rows {
                 use sqlx::Row;
@@ -128,7 +129,7 @@ impl EventLog {
                         AND NOT EXISTS (SELECT 1 FROM model_request_compositions WHERE digest=?1)")
                         .bind(surface).execute(&mut *tx).await?;
                 }
-                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE event_id=?")
+                sqlx::query("UPDATE event_log SET retained_json=?, body_digest=?, event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE event_id=?")
                     .bind(serde_json::to_string(&proof)?).bind(content_digest(body.as_bytes()))
                     .bind(&id).execute(&mut *tx).await?;
             }
@@ -293,7 +294,7 @@ mod cursor_tests {
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
         log.connection.run(move |db| Box::pin(async move {
-            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL WHERE sequence=2")
+            sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_header=NULL,canonical_bytes=NULL,body_id=NULL,header_offset=NULL,body_json_bytes=NULL WHERE sequence=2")
                 .bind(proof).bind(digest).execute(&mut *db).await?;
             let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
                 .fetch_one(&mut *db).await?;
@@ -379,9 +380,10 @@ mod cursor_tests {
             .sqlite_resource_stats()
             .await
             .unwrap()
-            .writer
-            .statements
+            .readers
             .into_iter()
+            .flatten()
+            .flat_map(|reader| reader.statements)
             .filter_map(|statement| statement.sql)
             .filter(|sql| {
                 (sql.contains("context_source_prefixes p")

@@ -83,20 +83,14 @@ async fn request(store: &EventLog) -> OperationRequest {
 }
 
 #[tokio::test]
-async fn cross_partition_auxiliary_retains_session_and_source_atomicity() {
+async fn cross_session_auxiliary_retains_session_and_source_atomicity() {
     let (_dir, root) = open().await;
     let session = root
         .create_session("session", "create", &serde_json::json!({}), 1)
         .await
         .unwrap();
-    let mut request = request(&root.control).await;
-    let store = loop {
-        let candidate = root.operation(&request.reference().unwrap()).unwrap();
-        if !Weak::ptr_eq(&candidate.partition, &session.partition) {
-            break candidate;
-        }
-        request.operation = Uuid::new_v4();
-    };
+    let request = request(&root.log).await;
+    let store = root.operation(&request.reference().unwrap()).unwrap();
     let Dispatch::New(claim) = store.dispatch_operation(request).await.unwrap() else {
         panic!("new");
     };
@@ -175,7 +169,7 @@ async fn cross_partition_auxiliary_retains_session_and_source_atomicity() {
         .await
         .unwrap();
     let mut changes = session.subscribe_commits().unwrap();
-    let original_high_water = *changes.borrow_and_update();
+    changes.borrow_and_update();
     auxiliary
         .settle(crate::usage::Outcome::Success)
         .await
@@ -184,11 +178,6 @@ async fn cross_partition_auxiliary_retains_session_and_source_atomicity() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        *changes.borrow(),
-        original_high_water,
-        "peer journal settlement does not change the primary Session's sequence"
-    );
     let meter = root.session_usage_totals("session").await.unwrap();
     assert_eq!(meter.input.known, 77);
     assert_eq!(meter.input.missing, 0);
@@ -238,7 +227,7 @@ async fn cross_partition_auxiliary_retains_session_and_source_atomicity() {
 #[tokio::test]
 async fn failed_cleanup_receipt_never_releases_root_authority() {
     let (dir, root) = open().await;
-    let request = request(&root.control).await;
+    let request = request(&root.log).await;
     let store = root.operation(&request.reference().unwrap()).unwrap();
     let Dispatch::New(claim) = store.dispatch_operation(request).await.unwrap() else {
         panic!("new");
@@ -276,7 +265,7 @@ async fn failed_cleanup_receipt_never_releases_root_authority() {
 async fn receipt_write_failure_preserves_confirmed_cleanup_and_pending_recovery() {
     for commit_failure in [false, true] {
         let (dir, root) = open().await;
-        let request = request(&root.control).await;
+        let request = request(&root.log).await;
         let reference = request.reference().unwrap();
         let store = root.operation(&reference).unwrap();
         let Dispatch::New(claim) = store.dispatch_operation(request.clone()).await.unwrap() else {
@@ -368,7 +357,7 @@ async fn receipt_write_failure_preserves_confirmed_cleanup_and_pending_recovery(
 #[tokio::test]
 async fn cancelled_receipt_observer_keeps_sql_custody_without_inventing_provider_failure() {
     let (dir, root) = open().await;
-    let request = request(&root.control).await;
+    let request = request(&root.log).await;
     let reference = request.reference().unwrap();
     let store = root.operation(&reference).unwrap();
     let Dispatch::New(claim) = store.dispatch_operation(request).await.unwrap() else {

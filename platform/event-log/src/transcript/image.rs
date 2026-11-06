@@ -81,7 +81,7 @@ impl EventLog {
                     super::bodycache::ensure(tx, &session, position).await?;
                     let raw: String = sqlx::query_scalar(
                         "SELECT a.value FROM temp.transcript_rows r, json_each(r.payload, '$.attachments') a
-                         WHERE r.session_id = ?1 AND r.source_sequence = ?2 AND r.item_index = ?3
+                         WHERE r.owner_key = ?1 AND r.source_sequence = ?2 AND r.item_index = ?3
                          AND json_extract(r.payload, '$.type') = 'user' AND a.key = ?4",
                     )
                     .bind(&session)
@@ -159,14 +159,14 @@ impl EventLog {
                     let query = match index {
                         None => sqlx::query_scalar(
                             "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
-                 FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                 FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
                  AND json_extract(payload, '$.content.kind') = 'image' AND ?4 IS NULL",
                         ),
                         Some(_) => sqlx::query_scalar(
                             "SELECT image.value
                  FROM temp.transcript_rows, json_each(payload, '$.images') image
-                 WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                 WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
                  AND image.key = ?4 AND image.type = 'object'",
                         ),

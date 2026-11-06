@@ -99,9 +99,9 @@ impl EventLog {
                         None
                     };
                     let query = if after_order.is_some() {
-                        "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4) ORDER BY order_sequence,order_item LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4) ORDER BY order_sequence,order_item LIMIT 65"
                     } else {
-                        "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
+                        "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT 65"
                     };
                     let mut query=sqlx::query(sqlx::AssertSqlSafe(query)).bind(&session).bind(through);
                     if let Some((order_sequence,order_item))=after_order { query=query.bind(order_sequence).bind(order_item); }
@@ -119,7 +119,7 @@ impl EventLog {
                         }
                         let locator = row_position(header.try_get(0)?,header.try_get(1)?)?;
                         super::bodycache::ensure(tx,&session,locator).await?;
-                        let size: i64 = sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                        let size: i64 = sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3")
                             .bind(&session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                         let size = sequence_number(size)?;
                         if index > 0 && bytes + size > 16 * 1024 * 1024 {
@@ -129,7 +129,7 @@ impl EventLog {
                         bytes += size;
                         position = Some(locator);
                         let payload: Vec<u8> = sqlx::query_scalar(
-                    "SELECT payload FROM temp.transcript_rows WHERE session_id = ? AND source_sequence = ? AND item_index = ?"
+                    "SELECT payload FROM temp.transcript_rows WHERE owner_key = ? AND source_sequence = ? AND item_index = ?"
                 ).bind(&session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                         let row: Value = serde_json::from_slice(&payload)?;
                         if !input.include_internal

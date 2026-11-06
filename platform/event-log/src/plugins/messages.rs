@@ -151,7 +151,7 @@ impl EventLog {
         let scope = String::from(namespace.scope().clone());
         let operation = operation.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     read(
                         connection,

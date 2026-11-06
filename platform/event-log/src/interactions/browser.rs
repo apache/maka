@@ -78,7 +78,7 @@ impl EventLog {
         let origin = origin.clone();
         let basis = *basis;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     if crate::workspace_bindings::permission_basis(&mut tx, &session).await?

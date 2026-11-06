@@ -104,35 +104,51 @@ impl EventLog {
         view: HistoryView,
         limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
+        crate::sessions::validate_id(session)?;
+        self.history_view_owned(
+            super::HistoryOwner::Session(session.to_owned()),
+            through,
+            position,
+            include_thinking,
+            view,
+            limits,
+        )
+        .await
+    }
+
+    pub(crate) async fn history_view_owned(
+        &self,
+        owner: super::HistoryOwner,
+        through: u64,
+        position: Position,
+        include_thinking: bool,
+        view: HistoryView,
+        limits: crate::transcript::HistoryLimits,
+    ) -> Result<Page, StoreError> {
         let crate::transcript::HistoryLimits {
             max_bytes,
             max_chunks,
             max_json_bytes,
         } = limits;
         self.validate_root()?;
-        if !(4..=128 * 1024).contains(&max_bytes)
-            || max_chunks == Some(0)
-            || !(1024..=1024 * 1024).contains(&max_json_bytes)
-        {
+        if max_bytes < 4 || max_chunks == Some(0) || max_json_bytes == 0 {
             return Err(invalid("invalid history window limits"));
         }
-        crate::sessions::validate_id(session)?;
         let fence = through;
         sql_number(fence)?;
         // A serialized chunk occupies at least one byte. The delivery budget
         // therefore bounds rows even when a caller needs no item-count limit.
         let max_chunks = max_chunks.unwrap_or(max_json_bytes).min(max_json_bytes);
-        let session = session.to_owned();
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
                     Box::pin(async move {
-                        super::directory::ensure(tx, &session, fence).await?;
+                        super::directory::ensure_owner(tx, owner.clone(), fence).await?;
                         crate::connection::worker_query(tx, move |worker| {
                             Box::pin(async move {
                                 read_page(
                                     worker,
-                                    &session,
+                                    &owner,
                                     through,
                                     position,
                                     include_thinking,
@@ -157,7 +173,7 @@ impl EventLog {
 #[allow(clippy::too_many_arguments)]
 async fn read_page(
     tx: &mut SqliteWorkerConnection<'_>,
-    session: &str,
+    owner: &super::HistoryOwner,
     through: u64,
     position: Position,
     include_thinking: bool,
@@ -166,17 +182,10 @@ async fn read_page(
     max_chunks: usize,
     max_json_bytes: usize,
 ) -> Result<Page, StoreError> {
+    let session = owner.key();
     let fence = through;
     let through_sql = sql_number(through)?;
     let mut final_outputs = std::collections::HashMap::new();
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)")
-            .bind(session)
-            .fetch_one(&mut *tx)
-            .await?;
-    if !exists {
-        return Err(invalid("Session no longer exists"));
-    }
     let target = if let Position::Row { position, field } = position {
         if position.validate().is_err()
             || position.source_sequence > fence
@@ -184,7 +193,7 @@ async fn read_page(
         {
             return Err(invalid("history row exceeds its fence"));
         }
-        materialize(tx, session, position, view, through_sql).await?;
+        materialize(tx, owner, position, view, through_sql).await?;
         // Header lookup requires the actual field; a tool Body cannot
         // impersonate a Thinking field that was never recorded.
         header(tx, session, position, field, view, through_sql).await?;
@@ -200,7 +209,7 @@ async fn read_page(
                 return Err(invalid("history cursor exceeds its fence"));
             }
             sql_number(cursor.offset)?;
-            materialize(tx, session, cursor.position, view, through_sql).await?;
+            materialize(tx, owner, cursor.position, view, through_sql).await?;
             let row = header(
                 tx,
                 session,
@@ -263,7 +272,7 @@ async fn read_page(
     };
     let boundary_order = if let Some(boundary) = boundary {
         let pair: Option<(i64, i64)> = if let Position::Event { sequence } = position {
-            sqlx::query_as("SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 ORDER BY order_sequence,order_item LIMIT 1")
+            sqlx::query_as("SELECT order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 ORDER BY order_sequence,order_item LIMIT 1")
                 .bind(session).bind(sql_number(sequence)?).fetch_optional(&mut *tx).await?
         } else {
             sqlx::query_as(super::read::ORDER)
@@ -283,22 +292,22 @@ async fn read_page(
     };
     let query = match (reverse, boundary_order.is_some(), inclusive) {
         (true, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (true, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (true, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (false, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
     };
     let mut query = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(query))
@@ -325,9 +334,9 @@ async fn read_page(
         let locator = row_position(locator.0, locator.1)?;
         // Materialize only actually visited rows, never a long message's
         // following rows. One oversized first row still progresses.
-        projected += materialize(tx, session, locator, view, through_sql).await?;
+        projected += materialize(tx, owner, locator, view, through_sql).await?;
         let has_thinking: bool = include_thinking && sqlx::query_scalar(
-        "SELECT has_thinking FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+        "SELECT has_thinking FROM transcript_directory WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
     ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
         let mut fields = vec![HistoryField::Body];
         if include_thinking && has_thinking {
@@ -437,7 +446,7 @@ async fn read_page(
                         COALESCE(json_array_length(payload, '$.quotes'), 0) > 0
                         OR COALESCE(json_array_length(payload, '$.directoryReferences'), 0) > 0
                         OR COALESCE(json_array_length(payload, '$.inlineReferences'), 0) > 0
-                     FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                     FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
                 ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                 (
                     encoded
@@ -474,7 +483,7 @@ async fn read_page(
                     super::timing::read_on_worker(tx, session, &row.turn, through_sql).await?;
                 let compaction = if role == Role::Compaction {
                     let duration: i64 = sqlx::query_scalar(
-                "SELECT json_extract(payload, '$.durationMs') FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                "SELECT json_extract(payload, '$.durationMs') FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
             ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                     Some(maka_agent_ports::session::history::Compaction {
                         duration_ms: sequence_number(duration)?,
@@ -599,11 +608,11 @@ async fn read_page(
             right = Some((cursor, row.total));
         } else if matches!(position, Position::Event { .. }) {
             let last: Option<(i64,i64)> = sqlx::query_as(
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1"
         ).bind(session).bind(through_sql).fetch_optional(&mut *tx).await?;
             if let Some(locator) = last {
                 let locator = row_position(locator.0, locator.1)?;
-                materialize(tx, session, locator, view, through_sql).await?;
+                materialize(tx, owner, locator, view, through_sql).await?;
                 let row =
                     header(tx, session, locator, HistoryField::Body, view, through_sql).await?;
                 let cursor = Cursor {
@@ -685,9 +694,9 @@ async fn header(
                 THEN 0 ELSE length(cached.body) END,
             CASE WHEN source.role = 'user' THEN source.user_origin END
             FROM transcript_directory source LEFT JOIN temp.transcript_text cached
-                ON cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence
+                ON cached.owner_key = source.owner_key AND cached.source_sequence = source.source_sequence
                 AND cached.item_index = source.item_index AND cached.field = ?4
-            WHERE source.session_id = ?1 AND source.source_sequence = ?2 AND source.item_index = ?3
+            WHERE source.owner_key = ?1 AND source.source_sequence = ?2 AND source.item_index = ?3
                 AND (cached.field IS NOT NULL OR
                     (source.role = 'turn_state' AND source.state_status IS NOT 'failed' AND ?4 = 'body'))"
     ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).bind(field_name(field)).fetch_one(&mut *tx).await?;
@@ -706,7 +715,7 @@ async fn header(
     if view == HistoryView::Conversation && field == HistoryField::Body && header.role == "user" {
         let query = format!(
             "SELECT length(CAST({CONVERSATION_USER} AS BLOB)) FROM temp.transcript_rows
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
         );
         header.total = sequence_number(
             sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
@@ -730,11 +739,11 @@ async fn fragment(
     let query = if conversation_user {
         format!(
             "SELECT substr(CAST({CONVERSATION_USER} AS BLOB), ?4, ?5) FROM temp.transcript_rows
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
         )
     } else {
         "SELECT substr(body, ?4, ?5) FROM temp.transcript_text
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3 AND field = ?6"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3 AND field = ?6"
             .into()
     };
     let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
@@ -761,10 +770,10 @@ async fn conversation_tool(
             COALESCE(row.tool_name, call.tool_name),
             COALESCE(row.is_error, 0)
         FROM transcript_directory row LEFT JOIN transcript_directory call
-            ON call.session_id = row.session_id AND call.turn_id = row.turn_id
+            ON call.owner_key = row.owner_key AND call.turn_id = row.turn_id
             AND call.message_id = row.tool_use_id
             AND call.role = 'tool_call' AND call.source_sequence <= ?4
-        WHERE row.session_id = ?1 AND row.source_sequence = ?2 AND row.item_index = ?3 AND row.source_sequence <= ?4
+        WHERE row.owner_key = ?1 AND row.source_sequence = ?2 AND row.item_index = ?3 AND row.source_sequence <= ?4
             AND row.role IN ('tool_call', 'tool_result')"
     ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).bind(through).fetch_optional(tx).await?;
     let Some(row) = row else {
@@ -804,7 +813,7 @@ async fn neighbor(
         }
         if before && cursor.field == HistoryField::Body {
             let exists: bool = sqlx::query_scalar(
-                "SELECT has_thinking FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                "SELECT has_thinking FROM transcript_directory WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
             ).bind(session).bind(sql_position(cursor.position)?.0).bind(sql_position(cursor.position)?.1).fetch_one(&mut *tx).await?;
             if exists {
                 return Ok(true);
@@ -818,9 +827,9 @@ async fn neighbor(
         .fetch_one(&mut *tx)
         .await?;
     let query = if before {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?3,?4))"
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?3,?4))"
     } else {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
     };
     Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(query))
         .bind(session)
@@ -832,11 +841,12 @@ async fn neighbor(
 }
 async fn materialize(
     tx: &mut SqliteWorkerConnection<'_>,
-    session: &str,
+    owner: &super::HistoryOwner,
     locator: RowPosition,
     view: HistoryView,
     through: i64,
 ) -> Result<usize, StoreError> {
+    let session = owner.key();
     if view == HistoryView::Conversation
         && conversation_tool(tx, session, locator, through)
             .await?
@@ -849,7 +859,7 @@ async fn materialize(
     // to cache an empty body repeats the completed invocation's evidence.
     let empty_state: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM transcript_directory
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                 AND role = 'turn_state' AND state_status IS NOT 'failed')",
     )
     .bind(session)
@@ -860,10 +870,10 @@ async fn materialize(
     if empty_state {
         return Ok(0);
     }
-    super::bodycache::ensure_on_worker(tx, session, locator).await?;
+    super::bodycache::ensure_for_owner_on_worker(tx, owner, locator).await?;
     let source: Option<(i64, bool)> = sqlx::query_as(
-        "SELECT total_bytes, EXISTS(SELECT 1 FROM temp.transcript_text cached WHERE cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
-            FROM temp.transcript_rows source WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+        "SELECT total_bytes, EXISTS(SELECT 1 FROM temp.transcript_text cached WHERE cached.owner_key = source.owner_key AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
+            FROM temp.transcript_rows source WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
     ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_optional(&mut *tx).await?;
     let Some((bytes, cached)) = source else {
         return Err(invalid("history row was not found"));
@@ -873,13 +883,13 @@ async fn materialize(
     }
     let query = format!(
         "INSERT INTO temp.transcript_text
-            SELECT session_id, source_sequence, item_index, 'body', json_extract(payload, '$.ts'), json_extract(payload, '$.type'),
+            SELECT owner_key, source_sequence, item_index, 'body', json_extract(payload, '$.ts'), json_extract(payload, '$.type'),
                 CAST({BODY} AS BLOB)
-            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
             UNION ALL
-            SELECT session_id, source_sequence, item_index, 'thinking', json_extract(payload, '$.ts'), 'assistant',
+            SELECT owner_key, source_sequence, item_index, 'thinking', json_extract(payload, '$.ts'), 'assistant',
                 CAST(json_extract(payload, '$.thinking.text') AS BLOB)
-            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                 AND json_extract(payload, '$.type') = 'assistant' AND json_type(payload, '$.thinking.text') = 'text'"
     );
     sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
@@ -956,7 +966,7 @@ mod tests {
         ];
         for (i, mut value) in rows.into_iter().enumerate() {
             value["ts"] = json!(1);
-            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible,order_sequence,order_item) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result'),?1,0")
+            sqlx::query("INSERT INTO transcript_directory (owner_key,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible,order_sequence,order_item) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result'),?1,0")
                 .bind((i+1) as i64).bind((i+1).to_string()).bind(serde_json::to_vec(&value).unwrap())
                 .execute(&mut db)
                 .await
@@ -1051,7 +1061,7 @@ mod tests {
         for (first, last) in [(1_i64, 64_i64), (65, 4096)] {
             // Use the production directory schema/indexes. Setup is outside the
             // handler; count only the real neighbor function, not a SQL copy.
-            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible,order_sequence,order_item) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1,value,0 FROM n")
+            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(owner_key,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible,order_sequence,order_item) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1,value,0 FROM n")
                 .bind(first)
                 .bind(last)
                 .execute(&mut db)

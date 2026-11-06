@@ -42,7 +42,7 @@ impl EventLog {
         }
         let source = source.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let invocation = &source.invocation;

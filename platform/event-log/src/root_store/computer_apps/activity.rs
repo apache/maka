@@ -197,13 +197,11 @@ impl SessionStore {
     ) -> Result<bool, StoreError> {
         entity_id(operation_id).map_err(invalid)?;
         crate::sessions::validate_time(now)?;
-        let partition = self.control_source().await?;
-        let control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
+        let log = self.scoped().await?;
         let session = self.id.to_string();
         let operation = operation_id.to_owned();
-        let notice = partition.commits.session(&session);
-        partition
-            .connection
+        let notice = log.commits.session(&session);
+        log.connection
             .run(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
@@ -231,54 +229,35 @@ impl SessionStore {
                         return Ok(true);
                     }
                     let key = instance_key(&selected.target, &selected.display)?;
-                    let root_key = key.clone();
-                    let root_scope = current.invocation.clone();
-                    control
-                        .connection
-                        .run(move |connection| {
-                            Box::pin(async move {
-                                let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                                let ids: Vec<String> = sqlx::query_scalar(
-                                    "SELECT request_id FROM interaction_pending WHERE session_id=?",
-                                )
-                                .bind(&root_scope.session_id)
-                                .fetch_all(&mut *tx)
+                    let ids: Vec<String> = sqlx::query_scalar(
+                        "SELECT request_id FROM interaction_pending WHERE session_id=?",
+                    )
+                    .bind(&current.invocation.session_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                    let closure = InteractionOutcome::Closure {
+                        reason: ClosureReason::ProducerCancelled,
+                        committed_at: now,
+                    };
+                    for id in ids {
+                        let record = read(&mut tx, &id)
+                            .await?
+                            .ok_or_else(|| invalid("pending app request disappeared"))?;
+                        if record.turn_id != current.invocation.turn_id {
+                            continue;
+                        }
+                        if let InteractionRequest::ComputerApp {
+                            target, display, ..
+                        } = &record.request
+                            && instance_key(target, display)? == key
+                        {
+                            sqlx::query("INSERT INTO interaction_outcomes VALUES(?,?)")
+                                .bind(id)
+                                .bind(encode(&closure)?)
+                                .execute(&mut *tx)
                                 .await?;
-                                let closure = InteractionOutcome::Closure {
-                                    reason: ClosureReason::ProducerCancelled,
-                                    committed_at: now,
-                                };
-                                let mut count = 0;
-                                for id in ids {
-                                    let record = read(&mut tx, &id).await?.ok_or_else(|| {
-                                        invalid("pending app request disappeared")
-                                    })?;
-                                    if record.turn_id != root_scope.turn_id {
-                                        continue;
-                                    }
-                                    if let InteractionRequest::ComputerApp {
-                                        target, display, ..
-                                    } = &record.request
-                                        && instance_key(target, display)? == root_key
-                                    {
-                                        sqlx::query("INSERT INTO interaction_outcomes VALUES(?,?)")
-                                            .bind(id)
-                                            .bind(encode(&closure)?)
-                                            .execute(&mut *tx)
-                                            .await?;
-                                        count += 1;
-                                    }
-                                }
-                                if count > 0 {
-                                    crate::sessions::advance_catalog(&mut tx).await?;
-                                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                                } else {
-                                    tx.rollback().await?;
-                                }
-                                Ok(())
-                            })
-                        })
-                        .await?;
+                        }
+                    }
                     sqlx::query("INSERT INTO computer_app_turn_stops VALUES(?,?,?,?)")
                         .bind(&session)
                         .bind(&current.invocation.turn_id)
