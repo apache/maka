@@ -425,7 +425,6 @@ export function Conversation(props: ConversationProps) {
   const draft = signal('');
   const draftReady = signal(false);
   const savingFailed = signal(false);
-  const sending = signal(false);
   const unresolved = signal<SendOperation[]>([]);
   type FrozenSend = {
     id: string;
@@ -434,9 +433,13 @@ export function Conversation(props: ConversationProps) {
     edit: AttachmentEdit & { text: string };
     selection: ReturnType<typeof sendSelection>;
     revision?: number;
-    error: UiText | null;
   };
-  const freezingSend = signal<FrozenSend | null>(null);
+  type FreezeState =
+    | { kind: 'idle' }
+    | { kind: 'reserving'; frozen: FrozenSend }
+    | { kind: 'failed'; frozen: FrozenSend; error: UiText };
+  const freezeState = signal<FreezeState>({ kind: 'idle' });
+  const sending = () => freezeState().kind === 'reserving';
   const activeSends = signal<Map<string, FrozenSend>>(new Map());
   const sendErrors = signal<Map<string, UiText>>(new Map());
   const checkingSends = signal<Set<string>>(new Set());
@@ -1971,7 +1974,8 @@ export function Conversation(props: ConversationProps) {
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
     if (sending()) return tr('Saving message… New typing is kept.');
-    if (freezingSend()) return tr('Retry or remove the unsaved message before sending another.');
+    if (freezeState().kind === 'failed')
+      return tr('Retry or remove the unsaved message before sending another.');
     if (!receiptsKnown()) return tr('Checking send status…');
     return '';
   };
@@ -2017,39 +2021,39 @@ export function Conversation(props: ConversationProps) {
   };
   const freezeSend = async (frozen: FrozenSend) => {
     if (!alive || sending()) return;
-    sending.set(true);
-    freezingSend.set({ ...frozen, error: null });
+    const reservation = { kind: 'reserving' as const, frozen };
+    freezeState.set(reservation);
+    const ownsReservation = () => alive && freezeState() === reservation;
     let operation: string | undefined;
     try {
       if (frozen.revision !== undefined) {
         // A lost local reply can be recovered by the exact draft revision;
         // message text is never used to infer whether an attempt already exists.
         const originals = await refreshSends();
+        if (!ownsReservation()) return;
         operation = originals.find((item) => item.draft?.revision === frozen.revision)?.id;
       }
       if (operation === undefined) {
         if (savingFailed()) {
           const stored = await loadDraft(client);
+          if (!ownsReservation()) return;
           draftRevision = stored.revision;
           savingFailed.set(false);
           pendingDraft = frozen.edit;
         }
         await flushDraft();
-        if (!alive) return;
+        if (!ownsReservation()) return;
         if (savingFailed())
           throw new UiError('The draft could not be saved; it has not been sent.');
         frozen.revision = draftRevision;
         operation = await reserveSend(client, draftRevision, frozen.selection);
       }
-      if (!alive) return;
-      freezingSend.set(null);
+      if (!ownsReservation()) return;
       releaseHeld();
-      sending.set(false);
+      freezeState.set({ kind: 'idle' });
       void confirmFrozen(operation, frozen);
     } catch (reason) {
-      if (alive) freezingSend.set({ ...frozen, error: errorText(reason) });
-    } finally {
-      if (alive) sending.set(false);
+      if (ownsReservation()) freezeState.set({ kind: 'failed', frozen, error: errorText(reason) });
     }
   };
   const send = async (
@@ -2079,7 +2083,6 @@ export function Conversation(props: ConversationProps) {
         files: edit.attachments,
         edit,
         selection: selected,
-        error: null,
       };
       const nextText = first && draft() !== text ? draft() : '';
       pendingDraft = edit;
@@ -2144,9 +2147,9 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const retryOriginal = async (id: string) => {
-    const frozen = freezingSend();
-    if (frozen?.id === id) {
-      await freezeSend(frozen);
+    const freezing = freezeState();
+    if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
+      await freezeSend(freezing.frozen);
       return;
     }
     const original = unresolved().find((item) => item.id === id);
@@ -2171,7 +2174,6 @@ export function Conversation(props: ConversationProps) {
           settledUploads: [],
         },
         selection: selected,
-        error: null,
       };
       activeSends.set(new Map(activeSends()).set(id, retry));
       const next = await retrySend(client, id, selected);
@@ -2190,11 +2192,12 @@ export function Conversation(props: ConversationProps) {
   };
   const dismissOriginal = async (id: string) => {
     if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
-    if (freezingSend()?.id === id) {
-      if (sending()) return;
-      freezingSend.set(null);
+    const freezing = freezeState();
+    if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
+      if (freezing.kind === 'reserving') return;
       savingFailed.set(false);
       releaseHeld();
+      freezeState.set({ kind: 'idle' });
       return;
     }
     try {
@@ -2260,16 +2263,16 @@ export function Conversation(props: ConversationProps) {
         busy: true,
       });
     }
-    const frozen = freezingSend();
-    if (frozen)
-      statuses.set(frozen.id, {
-        id: frozen.id,
-        text: frozen.text,
-        attachments: frozen.files,
-        state: frozen.error === null ? 'sending' : 'failed',
-        detail: frozen.error === null ? tr('Saving message…') : renderText(frozen.error),
-        retryable: frozen.error !== null,
-        busy: sending(),
+    const freezing = freezeState();
+    if (freezing.kind !== 'idle')
+      statuses.set(freezing.frozen.id, {
+        id: freezing.frozen.id,
+        text: freezing.frozen.text,
+        attachments: freezing.frozen.files,
+        state: freezing.kind === 'reserving' ? 'sending' : 'failed',
+        detail: freezing.kind === 'reserving' ? tr('Saving message…') : renderText(freezing.error),
+        retryable: freezing.kind === 'failed',
+        busy: freezing.kind === 'reserving',
       });
     return [...statuses.values()];
   };
@@ -2431,7 +2434,7 @@ export function Conversation(props: ConversationProps) {
       live().length === 0 &&
       unresolved().length === 0 &&
       activeSends().size === 0 &&
-      freezingSend() === null &&
+      freezeState().kind === 'idle' &&
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,

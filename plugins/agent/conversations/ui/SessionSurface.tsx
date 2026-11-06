@@ -190,6 +190,17 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
+type SubmissionAttempt = object;
+type Submission =
+  | { kind: 'idle' }
+  | { kind: 'preparing'; attempt: SubmissionAttempt }
+  | {
+      kind: 'handing_off';
+      attempt: SubmissionAttempt;
+      sessionId: string;
+      task: 'pending' | 'settled';
+    }
+  | { kind: 'finishing'; attempt: SubmissionAttempt };
 export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
@@ -291,7 +302,15 @@ export function createConversationUi(
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
-  const pendingSending = signal(false);
+  const submission = signal<Submission>({ kind: 'idle' });
+  const pendingSending = computed(() => {
+    const current = submission();
+    return (
+      current.kind === 'preparing' ||
+      current.kind === 'finishing' ||
+      (current.kind === 'handing_off' && current.task === 'pending')
+    );
+  });
   const pendingFiles = computed(() => pending()?.files ?? []);
   const pendingIntake = signal<Promise<void> | null>(null);
   const pendingFileBusy = () => pendingIntake() !== null;
@@ -314,7 +333,21 @@ export function createConversationUi(
     const target = pendingTarget();
     return target?.kind === 'creating' ? target.operationId : null;
   });
-  const pendingHandoff = signal<string | null>(null);
+  const pendingHandoff = computed(() => {
+    const current = submission();
+    return current.kind === 'handing_off' ? current.sessionId : null;
+  });
+  const currentSubmission = (attempt: SubmissionAttempt) => {
+    const current = submission();
+    return alive && current.kind !== 'idle' && current.attempt === attempt ? current : null;
+  };
+  const settleSubmission = (attempt: SubmissionAttempt) => {
+    const current = currentSubmission(attempt);
+    if (!current) return;
+    submission.set(
+      current.kind === 'handing_off' ? { ...current, task: 'settled' } : { kind: 'idle' },
+    );
+  };
   const pendingCreateUncertain = () => pendingCreateAttempt() !== null;
   let pendingModelGeneration = 0;
   const pendingDraftGeneration = signal(0);
@@ -880,6 +913,12 @@ export function createConversationUi(
     string,
     { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
   >();
+  const abandonHandoff = (attempt: SubmissionAttempt, sessionId: string) => {
+    const current = currentSubmission(attempt);
+    if (current?.kind !== 'handing_off' || current.sessionId !== sessionId) return;
+    prefills.delete(sessionId);
+    submission.set({ kind: 'preparing', attempt });
+  };
   const stagePending = (
     read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
     onText?: (text: string) => void,
@@ -1018,7 +1057,8 @@ export function createConversationUi(
           selected() !== null
         )
           return;
-        pendingSending.set(true);
+        const attempt: SubmissionAttempt = {};
+        submission.set({ kind: 'preparing', attempt });
         void (async () => {
           try {
             error.set('');
@@ -1123,8 +1163,9 @@ export function createConversationUi(
               throw new UiError(
                 'The conversation draft changed. Open the conversation to review it.',
               );
+            if (!currentSubmission(attempt)) return;
             prefills.set(id, { text, send: sendFirst, files, first: true });
-            pendingHandoff.set(id);
+            submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
             const switched = await switchSession(id, {
               sessionId: null,
               instance: null,
@@ -1132,13 +1173,13 @@ export function createConversationUi(
             if (switched) {
               await browsing.refresh();
             } else {
-              prefills.delete(id);
-              pendingHandoff.set(null);
+              abandonHandoff(attempt, id);
             }
           } catch (reason) {
-            report(reason);
+            if (currentSubmission(attempt)) report(reason);
+            else console.warn('Retired conversation submission failed', reason);
           } finally {
-            if (alive) pendingSending.set(false);
+            settleSubmission(attempt);
           }
         })();
       },
@@ -1396,8 +1437,9 @@ export function createConversationUi(
       const requireOwner = () => {
         if (!owns()) throw new UiError('Conversation navigation was cancelled.');
       };
+      const attempt: SubmissionAttempt = {};
       goalCreating.set(true);
-      pendingSending.set(true);
+      submission.set({ kind: 'preparing', attempt });
       pendingGoalError.set('');
       try {
         await pendingDefaultRead;
@@ -1489,26 +1531,25 @@ export function createConversationUi(
         requireOwner();
         const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
         prefills.set(id, { text, send: false, files, first: true });
-        pendingHandoff.set(id);
+        submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
         const switched = await switchSession(id, {
           sessionId: null,
           instance: overlay()?.instance ?? null,
         });
         if (!switched) {
-          prefills.delete(id);
-          pendingHandoff.set(null);
+          abandonHandoff(attempt, id);
           return false;
         }
         await browsing.refresh();
         return true;
       } catch (reason) {
         console.warn('Goal start failed', reason);
-        if (owns()) pendingGoalError.set(errorText(reason));
+        if (owns() && currentSubmission(attempt)) pendingGoalError.set(errorText(reason));
         return false;
       } finally {
         if (alive) {
           goalCreating.set(false);
-          pendingSending.set(false);
+          settleSubmission(attempt);
         }
       }
     },
@@ -2107,10 +2148,12 @@ export function createConversationUi(
                   takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
+                    const current = submission();
+                    const handoff =
+                      current.kind === 'handing_off' && current.sessionId === id() ? current : null;
                     if (!available) {
-                      if (pendingHandoff() === id()) {
-                        pendingHandoff.set(null);
-                        pendingSending.set(false);
+                      if (handoff) {
+                        submission.set({ kind: 'idle' });
                         void shell()!.openSession(null).catch(report);
                       }
                       if (prefill)
@@ -2121,9 +2164,13 @@ export function createConversationUi(
                         );
                       return null;
                     }
-                    if (pendingHandoff() === id()) {
+                    if (handoff) {
                       pending.set(null);
-                      pendingHandoff.set(null);
+                      submission.set(
+                        handoff.task === 'pending'
+                          ? { kind: 'finishing', attempt: handoff.attempt }
+                          : { kind: 'idle' },
+                      );
                     }
                     return prefill;
                   }}
