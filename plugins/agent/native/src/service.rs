@@ -1080,6 +1080,21 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "systemPermissionStatus" => {
+                    let input: InteractionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
+                    encode(owner.system_permission_status(input).await?)
+                }
+                "requestSystemPermission" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .request_system_permission(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "respond" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(

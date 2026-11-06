@@ -16,62 +16,91 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Text, View } from 'nsh';
-import type {
-  InteractionRequest,
-  SystemPermissionGrant,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
+import { cleanup, effect, signal, Text, View } from 'nsh';
 import { tr } from './locale';
-import { bodyTextStyle, C, captionTextStyle } from './ui';
+import { errorText, renderText } from './text';
+import { bodyTextStyle, C } from './ui';
+import { useHost } from './host';
+import { computerPermissionClient } from './computerPermissionClient';
+import { ComputerPermissionSetup } from './ComputerPermissionSetup';
+import { PermissionButton } from './ComputerPermissionControls';
+import type {
+  ComputerPermissionStatus,
+  SystemPermissionRequest as PermissionRequest,
+} from './computerPermissionSetupState';
+export { systemPermissionName } from './ComputerPermissionSetup';
 
-export type SystemPermissionRequest = Extract<InteractionRequest, { kind: 'system_permission' }>;
-
-/** The grant's name as System Settings shows it. */
-export function systemPermissionName(grant: SystemPermissionGrant): string {
-  return grant === 'accessibility' ? tr('Accessibility') : tr('Screen & System Audio Recording');
-}
-
+/** Desktop chat is a handoff, not another system-settings troubleshooting surface. */
 export function SystemPermissionRequest(props: {
-  request: SystemPermissionRequest;
-  canLocate?: boolean;
+  request: PermissionRequest;
+  sessionId: string;
+  requestId: string;
+  disabled?: boolean;
+  onCancel(): void;
+  onOutcome(outcome: NonNullable<ComputerPermissionStatus['outcome']>): void;
 }) {
+  const host = useHost();
+  const client = computerPermissionClient(host, props.sessionId, props.requestId);
+  const error = signal<unknown | null>(null);
+  const opening = signal(false);
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const open = async () => {
+    if (!alive || opening() || props.disabled) return;
+    opening.set(true);
+    error.set(null);
+    try {
+      await host.openSystemPermissionSetup(props.sessionId, props.requestId);
+    } catch (reason) {
+      if (alive) error.set(reason);
+    } finally {
+      if (alive) opening.set(false);
+    }
+  };
+  effect(() => {
+    if (!host.systemPermissionWindow) return;
+    // One automatic handoff per mounted request; status refresh never reopens a dismissed window.
+    void Promise.resolve().then(open);
+  });
   return (
-    <View style={{ gap: 16 }}>
-      <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
-        {tr(
-          '{application} needs these macOS permissions to use the computer. Turn them on in System Settings.',
-          { application: props.request.application },
-        )}
-      </Text>
-      <View style={{ gap: 8 }}>
-        <Each of={props.request.grants}>
-          {(grant) => (
-            <Text
-              style={[
-                { ...bodyTextStyle, color: C.text, fontWeight: '600' },
-                { userSelect: 'text' },
-              ]}
-            >
-              {systemPermissionName(grant())}
-            </Text>
-          )}
-        </Each>
+    <If
+      when={host.systemPermissionWindow}
+      else={
+        <ComputerPermissionSetup
+          client={client}
+          request={props.request}
+          presentation="inline"
+          onOutcome={props.onOutcome}
+        />
+      }
+    >
+      <View class="gap-3">
+        <Text style={{ ...bodyTextStyle, fontWeight: '600', color: C.text }}>
+          {tr('permissionSetup.waiting')}
+        </Text>
+        <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+          {tr('permissionSetup.windowHint')}
+        </Text>
+        <If when={error()}>
+          <Text style={{ ...bodyTextStyle, color: C.danger }}>
+            {renderText(errorText(error()))}
+          </Text>
+        </If>
+        <View class="flex-row flex-wrap justify-end gap-2">
+          <PermissionButton
+            label={tr('permissionSetup.cancel')}
+            disabled={props.disabled}
+            onPress={props.onCancel}
+          />
+          <PermissionButton
+            label={tr('permissionSetup.reopen')}
+            disabled={props.disabled || opening()}
+            onPress={() => void open()}
+          />
+        </View>
       </View>
-      <Text style={{ ...bodyTextStyle, color: C.text }}>
-        {tr(
-          'If {application} is enabled but access is still denied after an update, remove its entry and add the current app again. macOS may also require restarting the Host, not just the conversation window.',
-          { application: props.request.application },
-        )}
-      </Text>
-      <Text style={{ ...captionTextStyle, color: C.muted }}>
-        {props.canLocate
-          ? tr(
-              'Show the permission application in Finder, then drag the selected app into the privacy list in System Settings. You do not need to enter a path.',
-            )
-          : tr(
-              'Grant permission on the Mac running the Host. This window cannot locate the application for this request.',
-            )}
-      </Text>
-    </View>
+    </If>
   );
 }

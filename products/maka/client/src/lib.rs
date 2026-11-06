@@ -61,6 +61,7 @@ const CONTROL_METHODS: &[&str] = &[
     "stop",
     "stopComputerApp",
     "respond",
+    "requestSystemPermission",
     "editQueue",
     "metadata",
     "changeSession",
@@ -132,7 +133,7 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
     let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
         "stop" => Some("invocationId"),
-        "respond" => Some("requestId"),
+        "respond" | "requestSystemPermission" => Some("requestId"),
         "stopComputerApp" => Some("operationId"),
         _ => None,
     };
@@ -147,6 +148,14 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
                 "agent control requires a valid invocationId or requestId"
             })?;
         correlation[key] = Value::String(target.to_owned());
+    }
+    if method == "requestSystemPermission" {
+        let grant = input
+            .get("grant")
+            .and_then(Value::as_str)
+            .filter(|grant| !grant.is_empty())
+            .ok_or("system permission control requires a grant")?;
+        correlation["grant"] = Value::String(grant.to_owned());
     }
     if matches!(
         method,

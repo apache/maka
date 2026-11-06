@@ -19264,6 +19264,160 @@ export const contracts = {
           },
           resources: {},
         },
+        requestSystemPermission: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentRequestSystemPermission',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              requestId: {
+                type: 'string',
+                minLength: 1,
+              },
+              grant: {
+                $ref: '#/$defs/SystemPermissionGrant',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'requestId', 'grant'],
+            $defs: {
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSystemPermissionStatus',
+            type: 'object',
+            properties: {
+              outcome: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSystemPermissionOutcome',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              grants: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentSystemPermissionState',
+                },
+              },
+              requestable: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['outcome', 'grants', 'requestable'],
+            $defs: {
+              AgentSystemPermissionOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ClosureReason',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reason', 'committedAt'],
+                  },
+                ],
+              },
+              ClosureReason: {
+                type: 'string',
+                enum: [
+                  'steered',
+                  'turn_stopped',
+                  'turn_terminal',
+                  'producer_cancelled',
+                  'timed_out',
+                  'host_restarted',
+                  'provider_disconnected',
+                ],
+              },
+              AgentSystemPermissionState: {
+                type: 'object',
+                properties: {
+                  grant: {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  effective: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['grant', 'effective'],
+              },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         respond: {
           mode: 'mutation',
           input: {
@@ -26668,6 +26822,138 @@ export const contracts = {
             },
             additionalProperties: false,
             required: ['requested'],
+          },
+          resources: {},
+        },
+        systemPermissionStatus: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentInteractionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              requestId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'requestId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSystemPermissionStatus',
+            type: 'object',
+            properties: {
+              outcome: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentSystemPermissionOutcome',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              grants: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentSystemPermissionState',
+                },
+              },
+              requestable: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['outcome', 'grants', 'requestable'],
+            $defs: {
+              AgentSystemPermissionOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'closure',
+                      },
+                      reason: {
+                        $ref: '#/$defs/ClosureReason',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'reason', 'committedAt'],
+                  },
+                ],
+              },
+              ClosureReason: {
+                type: 'string',
+                enum: [
+                  'steered',
+                  'turn_stopped',
+                  'turn_terminal',
+                  'producer_cancelled',
+                  'timed_out',
+                  'host_restarted',
+                  'provider_disconnected',
+                ],
+              },
+              AgentSystemPermissionState: {
+                type: 'object',
+                properties: {
+                  grant: {
+                    $ref: '#/$defs/SystemPermissionGrant',
+                  },
+                  effective: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['grant', 'effective'],
+              },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
+            },
           },
           resources: {},
         },
