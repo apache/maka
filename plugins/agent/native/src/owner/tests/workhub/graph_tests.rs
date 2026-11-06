@@ -102,7 +102,7 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         assert_eq!(updated["kind"], "committed");
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"swarm"}})).await;
         assert_eq!(epoch["kind"], "committed", "{epoch}");
-        let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
+        let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["path"].clone();
         let selection = fixture.selection().await;
         let preset = json!({"id":"graph-reasoner","name":"Graph reasoner","description":"Frozen graph route", "worker":"worker","tools":[],"model":{"connectionId":selection.connection_id,"modelId":selection.model_id},"thinkingLevel":null,"enabled":true,"isolatedWorkspace":false});
         let saved = workhub_mutation(&fixture, "savePresets", json!({"revision":null,"entries":[preset.clone()]})).await;
@@ -247,7 +247,7 @@ async fn graph_stop_cancels_original_worker_and_other_coordinator_cannot_read_it
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"graph"}})).await;
-        let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
+        let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["path"].clone();
         fixture.send(session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await;
         graph_tool(&mut socket, "update_agent_graph", json!({"operation":"add_work","work":[{"target":{"kind":"worker","worker":"worker","title":"Original child","workspace":directory,"tools":[],"backend":model_backend(&fixture.selection().await)},"instruction":"Keep running until the original stop arrives."}]})).await;

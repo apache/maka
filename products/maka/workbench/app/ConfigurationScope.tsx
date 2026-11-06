@@ -72,7 +72,9 @@ export function createConfigurationWorkspace(operations: SettingsOperations) {
     async choose(selection: AgentWorkspaceSelection) {
       if (selection.kind !== 'directory') return;
       await operations.run(async () => {
-        const selected = await operations.mutate('agent', 'selectWorkspace', selection.selection);
+        const selected = await operations.mutate('agent', 'selectWorkspace', {
+          path: selection.path,
+        });
         if (!selected) throw settingsRejection({ reason: 'workspace_unavailable' });
         if (alive) {
           workspace.set(selected);

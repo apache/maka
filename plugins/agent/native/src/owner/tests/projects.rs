@@ -40,11 +40,11 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let source = roots["roots"][0]["selection"].clone();
-    let destination = roots["roots"][1]["selection"].clone();
+    let source = roots["roots"][0]["path"].clone();
+    let destination = roots["roots"][1]["path"].clone();
     assert_eq!(projects(&fixture).await["projects"], json!([]));
     let preview = fixture
-        .query("projects", json!({"kind":"directory","selection":source}))
+        .query("projects", json!({"kind":"directory","path":source}))
         .await
         .unwrap();
     assert!(preview["location"]["project"].is_null());
@@ -54,13 +54,13 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     );
     let registered = change(
         &fixture,
-        json!({"kind":"register","selection":source,"expected":null}),
+        json!({"kind":"register","path":source,"expected":null}),
     )
     .await;
     assert_eq!(registered["kind"], "committed");
     assert!(!fixture.workspace.join(MARKER_FILE).exists());
     let selected = registered["project"]["reference"].clone();
-    let created = fixture.mutation(2,"create",json!({"title":"Project conversation","labels":[],"workspace":{"kind":"project","project":selected,"selection":source}}),Uuid::new_v4()).await.unwrap();
+    let created = fixture.mutation(2,"create",json!({"title":"Project conversation","labels":[],"workspace":{"kind":"project","project":selected,"path":source}}),Uuid::new_v4()).await.unwrap();
     assert_eq!(created["kind"], "created");
     let session = created["session"]["id"].as_str().unwrap();
     assert_eq!(created["session"]["workspace"]["projectId"], selected["id"]);
@@ -79,7 +79,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     let listed = projects(&fixture).await;
     assert_eq!(listed["projects"][0], renamed["project"]);
     let directory = fixture
-        .query("projects", json!({"kind":"directory","selection":source}))
+        .query("projects", json!({"kind":"directory","path":source}))
         .await
         .unwrap();
     assert_eq!(directory["location"]["project"], renamed["project"]);
@@ -93,7 +93,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
     )
     .await;
     assert_eq!(archived["project"]["archived"], true);
-    let denied = fixture.mutation(2,"create",json!({"title":"Archived","labels":[],"workspace":{"kind":"project","project":archived["project"]["reference"],"selection":source}}),Uuid::new_v4()).await.unwrap();
+    let denied = fixture.mutation(2,"create",json!({"title":"Archived","labels":[],"workspace":{"kind":"project","project":archived["project"]["reference"],"path":source}}),Uuid::new_v4()).await.unwrap();
     assert_eq!(denied["kind"], "rejected");
     let denied = fixture.mutation(2,"create",json!({"title":"Archived session shortcut","labels":[],"workspace":{"kind":"session","sessionId":session}}),Uuid::new_v4()).await.unwrap();
     assert_eq!(denied["kind"], "rejected");
@@ -138,7 +138,7 @@ async fn projects_register_create_rename_archive_restore_and_relocate_original_s
         )
         .await
         .unwrap();
-    let relocated = change(&fixture,json!({"kind":"relocate","project":restored["project"]["reference"],"selection":destination,"destination":null})).await;
+    let relocated = change(&fixture,json!({"kind":"relocate","project":restored["project"]["reference"],"path":destination,"destination":null})).await;
     assert_eq!(relocated["kind"], "committed");
     assert_eq!(relocated["project"]["reference"]["id"], selected["id"]);
     let after = fixture.owner.session(session).await.unwrap();
@@ -211,16 +211,16 @@ async fn projects_relocation_rejects_running_and_queued_work_then_merges_without
         let fixture = Fixture::new(&base, None).await;
         let source_session = fixture.create("Source").await;
         let roots = fixture.query("directories", json!({"kind":"roots"})).await.unwrap();
-        let destination = roots["roots"][1]["selection"].clone();
-        let target = fixture.mutation(2, "create", json!({"title":"Destination", "labels":[], "workspace":{"kind":"directory","selection":destination}}), Uuid::new_v4()).await.unwrap();
+        let destination = roots["roots"][1]["path"].clone();
+        let target = fixture.mutation(2, "create", json!({"title":"Destination", "labels":[], "workspace":{"kind":"directory","path":destination}}), Uuid::new_v4()).await.unwrap();
         let target_id = target["session"]["id"].as_str().unwrap();
         let original = fixture.owner.session(&source_session).await.unwrap();
         let target_original = fixture.owner.session(target_id).await.unwrap();
         let project_id = original.configuration.workspace.project_id.unwrap().to_string();
         let catalog = projects(&fixture).await;
         let source = catalog["projects"].as_array().unwrap().iter().find(|p| p["reference"]["id"] == project_id).unwrap()["reference"].clone();
-        let preview = fixture.query("projects", json!({"kind":"directory","selection":destination})).await.unwrap();
-        let relocation = json!({"kind":"relocate","project":source,"selection":destination,"destination":preview["location"]["project"]["reference"]});
+        let preview = fixture.query("projects", json!({"kind":"directory","path":destination})).await.unwrap();
+        let relocation = json!({"kind":"relocate","project":source,"path":destination,"destination":preview["location"]["project"]["reference"]});
         fixture.send(&source_session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;

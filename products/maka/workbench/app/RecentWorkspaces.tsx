@@ -19,15 +19,11 @@
 
 import { Text, View, windowSize } from 'nsh';
 import { Select } from 'nsh/base';
-import type { BrowserWorkspace } from './browsing';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle, textTooltip } from './ui';
 
-export type RecentWorkspace = {
-  workspace: Extract<BrowserWorkspace, { kind: 'directory' }>;
-  path: string;
-};
+export type RecentWorkspace = { path: string };
 const name = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 export function RecentWorkspaces(props: {

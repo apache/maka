@@ -2764,20 +2764,23 @@ export const contracts = {
               AgentWorkspaceSelection: {
                 oneOf: [
                   {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'isolated_git',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
+                    description: 'A registered Project at one of its locations.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -2787,26 +2790,30 @@ export const contracts = {
                       project: {
                         $ref: '#/$defs/AgentProjectRef',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'selection'],
+                    required: ['kind', 'project', 'path'],
                   },
                   {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'directory',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -2824,27 +2831,6 @@ export const contracts = {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -3748,46 +3734,26 @@ export const contracts = {
                 additionalProperties: false,
               },
               {
+                description:
+                  'The directories inside `path`, a page at a time; `after` is the last\nname of the previous page.',
                 type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
                     const: 'children',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   after: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'after'],
+                required: ['kind', 'path', 'after'],
               },
             ],
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -3845,33 +3811,9 @@ export const contracts = {
                   path: {
                     type: 'string',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                 },
                 additionalProperties: false,
-                required: ['name', 'path', 'selection'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
+                required: ['name', 'path'],
               },
             },
           },
@@ -8504,8 +8446,9 @@ export const contracts = {
                   selection: {
                     $ref: '#/$defs/AgentImportSelection',
                   },
-                  directory: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   title: {
                     type: 'string',
@@ -8513,7 +8456,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'directory', 'title'],
+                required: ['kind', 'selection', 'path', 'title'],
               },
             ],
             $defs: {
@@ -8526,12 +8469,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8540,12 +8484,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8554,8 +8499,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -8563,30 +8509,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentImportSelection: {
                 type: 'object',
@@ -8745,12 +8670,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8759,12 +8685,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -8773,8 +8700,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -8782,30 +8710,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentSession: {
                 type: 'object',
@@ -9251,46 +9158,26 @@ export const contracts = {
                 additionalProperties: false,
               },
               {
+                description:
+                  'The directories inside `path`, a page at a time; `after` is the last\nname of the previous page.',
                 type: 'object',
                 properties: {
                   kind: {
                     type: 'string',
                     const: 'children',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   after: {
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'after'],
+                required: ['kind', 'path', 'after'],
               },
             ],
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -9348,33 +9235,9 @@ export const contracts = {
                   path: {
                     type: 'string',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                 },
                 additionalProperties: false,
-                required: ['name', 'path', 'selection'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
+                required: ['name', 'path'],
               },
             },
           },
@@ -9657,12 +9520,13 @@ export const contracts = {
                         type: 'string',
                         const: 'codex',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -9671,12 +9535,13 @@ export const contracts = {
                         type: 'string',
                         const: 'claude_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -9685,8 +9550,9 @@ export const contracts = {
                         type: 'string',
                         const: 'open_code',
                       },
-                      directory: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       database: {
                         type: 'string',
@@ -9694,30 +9560,9 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'directory', 'database'],
+                    required: ['kind', 'path', 'database'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentImportSourceRef: {
                 type: 'object',
@@ -14964,20 +14809,23 @@ export const contracts = {
               AgentWorkspaceSelection: {
                 oneOf: [
                   {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'isolated_git',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
+                    description: 'A registered Project at one of its locations.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -14987,26 +14835,30 @@ export const contracts = {
                       project: {
                         $ref: '#/$defs/AgentProjectRef',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'project', 'selection'],
+                    required: ['kind', 'project', 'path'],
                   },
                   {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
                     type: 'object',
                     properties: {
                       kind: {
                         type: 'string',
                         const: 'directory',
                       },
-                      selection: {
-                        $ref: '#/$defs/AgentDirectorySelection',
+                      path: {
+                        type: 'string',
+                        minLength: 1,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'selection'],
+                    required: ['kind', 'path'],
                   },
                   {
                     type: 'object',
@@ -15024,27 +14876,6 @@ export const contracts = {
                     required: ['kind', 'sessionId'],
                   },
                 ],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15310,8 +15141,9 @@ export const contracts = {
                     type: 'string',
                     const: 'register',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   expected: {
                     anyOf: [
@@ -15325,7 +15157,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection', 'expected'],
+                required: ['kind', 'path', 'expected'],
               },
               {
                 type: 'object',
@@ -15383,8 +15215,9 @@ export const contracts = {
                   project: {
                     $ref: '#/$defs/AgentProjectRef',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                   destination: {
                     anyOf: [
@@ -15398,31 +15231,10 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'project', 'selection', 'destination'],
+                required: ['kind', 'project', 'path', 'destination'],
               },
             ],
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentProjectRef: {
                 type: 'object',
                 properties: {
@@ -15520,22 +15332,13 @@ export const contracts = {
                   available: {
                     type: 'boolean',
                   },
-                  selection: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
                   path: {
+                    description: 'The location the Project was last used at, when it is available.',
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['reference', 'name', 'archived', 'available', 'selection', 'path'],
+                required: ['reference', 'name', 'archived', 'available', 'path'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15551,27 +15354,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
             },
           },
@@ -15721,12 +15503,13 @@ export const contracts = {
                     type: 'string',
                     const: 'directory',
                   },
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                  path: {
+                    type: 'string',
+                    minLength: 1,
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'selection'],
+                required: ['kind', 'path'],
               },
             ],
             $defs: {
@@ -15744,27 +15527,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['revision', 'after'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
             },
           },
@@ -15858,22 +15620,13 @@ export const contracts = {
                   available: {
                     type: 'boolean',
                   },
-                  selection: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentDirectorySelection',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
                   path: {
+                    description: 'The location the Project was last used at, when it is available.',
                     type: ['string', 'null'],
                   },
                 },
                 additionalProperties: false,
-                required: ['reference', 'name', 'archived', 'available', 'selection', 'path'],
+                required: ['reference', 'name', 'archived', 'available', 'path'],
               },
               AgentProjectRef: {
                 type: 'object',
@@ -15889,27 +15642,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['id', 'revision'],
-              },
-              AgentDirectorySelection: {
-                type: 'object',
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['rootId', 'segments', 'directoryIdentity'],
               },
               AgentProjectCursor: {
                 type: 'object',
@@ -15929,9 +15661,6 @@ export const contracts = {
               AgentProjectLocation: {
                 type: 'object',
                 properties: {
-                  selection: {
-                    $ref: '#/$defs/AgentDirectorySelection',
-                  },
                   path: {
                     type: 'string',
                     minLength: 1,
@@ -15952,7 +15681,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['selection', 'path', 'name', 'project'],
+                required: ['path', 'name', 'project'],
               },
             },
           },
@@ -21847,26 +21576,18 @@ export const contracts = {
           mode: 'mutation',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentDirectorySelection',
+            title: 'AgentDirectoryPath',
+            description:
+              'A directory on the Host: an absolute path, `~` standing for the home\ndirectory, within the configured workspace locations.',
             type: 'object',
             properties: {
-              rootId: {
+              path: {
                 type: 'string',
                 minLength: 1,
               },
-              segments: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                },
-              },
-              directoryIdentity: {
-                type: 'string',
-                pattern: '^sha256:[a-f0-9]{64}$',
-              },
             },
             additionalProperties: false,
-            required: ['rootId', 'segments', 'directoryIdentity'],
+            required: ['path'],
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -27859,7 +27580,7 @@ export const contracts = {
                     const: 'pending',
                   },
                   workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -27896,27 +27617,6 @@ export const contracts = {
             title: 'WorkHubCoordinator',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentSession: {
                 type: 'object',
                 additionalProperties: false,
@@ -29348,36 +29048,15 @@ export const contracts = {
             additionalProperties: false,
             properties: {
               workspace: {
-                $ref: '#/$defs/AgentDirectorySelection',
-                description: 'Used only when freezing the first coordinator creation intent.',
+                type: 'string',
+                description:
+                  "The coordinator's directory, used only when freezing the first\ncreation intent.",
+                minLength: 1,
               },
             },
             required: ['workspace'],
             title: 'WorkHubResolve',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
-            },
           },
           output: {
             oneOf: [
@@ -29401,7 +29080,7 @@ export const contracts = {
                     const: 'pending',
                   },
                   workspace: {
-                    $ref: '#/$defs/AgentDirectorySelection',
+                    type: 'string',
                   },
                 },
                 required: ['kind', 'workspace'],
@@ -29438,27 +29117,6 @@ export const contracts = {
             title: 'WorkHubCoordinator',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              AgentDirectorySelection: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  rootId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  segments: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                },
-                required: ['rootId', 'segments', 'directoryIdentity'],
-              },
               AgentSession: {
                 type: 'object',
                 additionalProperties: false,

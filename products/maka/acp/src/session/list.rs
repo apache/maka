@@ -20,9 +20,7 @@
 use crate::{Error, client::Client};
 use agent_client_protocol::schema::v2 as acp;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use maka_agent_api::contract::{
-    DirectoryPage, DirectorySelection, Session, SessionActivity, SessionPage,
-};
+use maka_agent_api::contract::{Session, SessionActivity, SessionPage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
@@ -43,59 +41,6 @@ pub(super) fn directory(path: &Path) -> Result<PathBuf, Error> {
         return Err("Workspace cwd must be an absolute path without parent traversal".into());
     }
     Ok(path.components().collect())
-}
-pub(super) async fn select(client: &Client, cwd: &Path) -> Result<DirectorySelection, Error> {
-    let DirectoryPage::Roots { roots } = client
-        .query("agent", "directories", json!({"kind":"roots"}))
-        .await?
-    else {
-        return Err("Host omitted published workspace roots".into());
-    };
-    let mut current = roots
-        .into_iter()
-        .filter(|root| cwd.starts_with(&root.path))
-        .max_by_key(|root| root.path.len())
-        .ok_or("Workspace cwd is outside published Host roots")?;
-    loop {
-        if Path::new(&current.path) == cwd {
-            return Ok(current.selection);
-        }
-        let mut after = None;
-        let mut seen = std::collections::HashSet::new();
-        current = loop {
-            let DirectoryPage::Children {
-                children,
-                after: next,
-                ..
-            } = client
-                .query(
-                    "agent",
-                    "directories",
-                    json!({"kind":"children","selection":current.selection,"after":after}),
-                )
-                .await?
-            else {
-                return Err("Host omitted workspace children".into());
-            };
-            if let Some(child) = children.into_iter().find(|child| {
-                let path = Path::new(&child.path);
-                // Canonical aliases may point back to this directory or an
-                // ancestor. Every step must consume part of the target path.
-                path != Path::new(&current.path)
-                    && path.starts_with(&current.path)
-                    && cwd.starts_with(path)
-            }) {
-                break child;
-            }
-            let Some(next) = next else {
-                return Err("Workspace cwd is unavailable in the published Host root".into());
-            };
-            if seen.len() >= 4096 || !seen.insert(next.clone()) {
-                return Err("Directory pagination exceeded its limit".into());
-            }
-            after = Some(next);
-        };
-    }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

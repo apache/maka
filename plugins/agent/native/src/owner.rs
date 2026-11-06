@@ -228,7 +228,10 @@ pub(crate) struct Owner {
     pub workspace_roots: Vec<workspace::Root>,
     instruction_home: Option<Arc<cap_std::fs::Dir>>,
     pub import_roots: Vec<workspace::Root>,
-    managed_worktrees: std::path::PathBuf,
+    pub(crate) managed_worktrees: std::path::PathBuf,
+    /// The user's home directory, which a leading `~` in a caller's path
+    /// stands for.
+    pub home: Option<std::path::PathBuf>,
     engine: Engine,
     tools: maka_tools::ToolCatalog,
     native_approval_executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
@@ -365,6 +368,7 @@ impl Owner {
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
         let workspace_roots =
             workspace::open(settings.workspace_roots.clone(), &managed_worktrees)?;
+        let home = std::env::home_dir();
         let import_roots = if settings.import_roots.is_empty() {
             Vec::new()
         } else {
@@ -615,6 +619,7 @@ impl Owner {
             workspace_roots,
             import_roots,
             managed_worktrees,
+            home,
             revision,
             behavior,
             configured_locale,
@@ -845,8 +850,8 @@ impl Owner {
             }
         }
         let selected = match input.workspace {
-            WorkspaceSelection::IsolatedGit { selection } => {
-                let Some(workspace) = self.isolated_workspace(selection, operation, scope).await?
+            WorkspaceSelection::IsolatedGit { path } => {
+                let Some(workspace) = self.isolated_workspace(&path, operation, scope).await?
                 else {
                     return Ok(Created::Rejected {
                         reason: Rejection::WorkspaceUnavailable,
@@ -854,16 +859,16 @@ impl Owner {
                 };
                 workspace
             }
-            WorkspaceSelection::Project { project, selection } => {
-                let Some(workspace) = self.select_project(project, selection).await? else {
+            WorkspaceSelection::Project { project, path } => {
+                let Some(workspace) = self.select_project(project, &path).await? else {
                     return Ok(Created::Rejected {
                         reason: Rejection::WorkspaceUnavailable,
                     });
                 };
                 workspace
             }
-            WorkspaceSelection::Directory { selection } => {
-                let Some(workspace) = self.create_project_workspace(selection).await? else {
+            WorkspaceSelection::Directory { path } => {
+                let Some(workspace) = self.create_project_workspace(&path).await? else {
                     return Ok(Created::Rejected {
                         reason: Rejection::WorkspaceUnavailable,
                     });

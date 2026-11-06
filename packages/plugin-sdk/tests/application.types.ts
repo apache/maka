@@ -381,13 +381,7 @@ void [
   unfencedSessionPage,
 ];
 
-const resolveCoordinator: WorkHubResolve = {
-  workspace: {
-    rootId: 'root-1',
-    segments: [],
-    directoryIdentity: `sha256:${'0'.repeat(64)}`,
-  },
-};
+const resolveCoordinator: WorkHubResolve = { workspace: '~/projects/hub' };
 function coordinatorSession(value: WorkHubCoordinator): string | null {
   return value.kind === 'ready' ? value.session.id : null;
 }

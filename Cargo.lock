@@ -8867,6 +8867,7 @@ name = "maka-workspace-support"
 version = "0.2.0"
 dependencies = [
  "maka-agent-api",
+ "maka-agent-facts",
  "maka-fs-tools",
  "maka-host-runtime",
  "maka-plugin-core",

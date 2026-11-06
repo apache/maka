@@ -126,8 +126,8 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        let selection = list::select(client, &cwd).await?;
-        let Created::Created { session } = client.mutate("agent", "create", json!({"title":"New session","labels":[],"workspace":{"kind":"directory","selection":selection}}), Attachments::new()).await? else {
+        let path = cwd.to_str().ok_or("Workspace cwd must be valid UTF-8")?;
+        let Created::Created { session } = client.mutate("agent", "create", json!({"title":"New session","labels":[],"workspace":{"kind":"directory","path":path}}), Attachments::new()).await? else {
             return Err("Host rejected session creation".into());
         };
         let id = session.id.clone();

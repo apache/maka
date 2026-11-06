@@ -31,7 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct Allocation {
     session: String,
     fingerprint: String,
-    selection: DirectorySelection,
+    /// The source directory as the Host captured it when allocating.
+    path: String,
+    identity: maka_agent_facts::execution::DirectoryIdentity,
     binding: Binding,
 }
 
@@ -60,7 +62,7 @@ pub(super) async fn blocking<T: std::marker::Send + 'static>(
 impl Owner {
     pub(super) async fn isolated_workspace(
         &self,
-        selection: DirectorySelection,
+        path: &str,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &Scope,
     ) -> Result<Option<Workspace>, String> {
@@ -86,7 +88,8 @@ impl Owner {
             None => {
                 let Some(source) = workspace::selected(
                     self.workspace_roots.clone(),
-                    selection.clone(),
+                    path,
+                    self.home.as_deref(),
                     self.managed_worktrees.clone(),
                 )
                 .await?
@@ -120,7 +123,8 @@ impl Owner {
                 };
                 let Some(observed) = workspace::selected(
                     self.workspace_roots.clone(),
-                    selection.clone(),
+                    path,
+                    self.home.as_deref(),
                     self.managed_worktrees.clone(),
                 )
                 .await?
@@ -128,14 +132,15 @@ impl Owner {
                     return Ok(None);
                 };
                 if std::path::Path::new(&observed.path) != binding.source()
-                    || binding.source_identity() != &selection.directory_identity
+                    || binding.source_identity() != &observed.identity
                 {
                     return Ok(None);
                 }
                 let allocation = Allocation {
                     session: session.clone(),
                     fingerprint: operation.fingerprint.clone(),
-                    selection: selection.clone(),
+                    path: observed.path,
+                    identity: observed.identity,
                     binding,
                 };
                 match self
@@ -169,23 +174,25 @@ impl Owner {
                 }
             }
         };
-        if allocation.session != session
-            || allocation.fingerprint != operation.fingerprint
-            || allocation.selection != selection
-        {
-            return Err("agent_worktree_allocation_conflict".into());
-        }
         let Some(source) = workspace::selected(
             self.workspace_roots.clone(),
-            selection,
+            path,
+            self.home.as_deref(),
             self.managed_worktrees.clone(),
         )
         .await?
         else {
             return Ok(None);
         };
+        if allocation.session != session
+            || allocation.fingerprint != operation.fingerprint
+            || allocation.path != source.path
+            || allocation.identity != source.identity
+        {
+            return Err("agent_worktree_allocation_conflict".into());
+        }
         if std::path::Path::new(&source.path) != allocation.binding.source()
-            || allocation.binding.source_identity() != &allocation.selection.directory_identity
+            || allocation.binding.source_identity() != &allocation.identity
         {
             return Ok(None);
         }

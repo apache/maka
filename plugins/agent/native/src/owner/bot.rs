@@ -770,17 +770,14 @@ impl Owner {
         let page = maka_workspace_support::query(
             self.workspace_roots.clone(),
             crate::contract::Directories::Roots,
+            self.home.as_deref(),
         )
         .await?;
         Ok(match page {
-            crate::contract::DirectoryPage::Roots { roots } => {
-                roots
-                    .into_iter()
-                    .next()
-                    .map(|root| WorkspaceSelection::Directory {
-                        selection: root.selection,
-                    })
-            }
+            crate::contract::DirectoryPage::Roots { roots } => roots
+                .into_iter()
+                .next()
+                .map(|root| WorkspaceSelection::Directory { path: root.path }),
             _ => None,
         })
     }

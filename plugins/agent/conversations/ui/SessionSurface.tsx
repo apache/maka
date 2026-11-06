@@ -97,10 +97,7 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import {
-  WorkspacePicker,
-  locateWorkspaceDirectory,
-} from '../../../../products/maka/workbench/app/WorkspacePicker';
+import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -271,10 +268,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+  const setRecentWorkspace = (path: string, remember: boolean) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -284,9 +281,7 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
-      report,
-    );
+    void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -400,7 +395,7 @@ export function createConversationUi(
       } else {
         await host.query('agent', 'directories', {
           kind: 'children',
-          selection: workspace.selection,
+          path: workspace.path,
           after: null,
         });
       }
@@ -723,26 +718,13 @@ export function createConversationUi(
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
-          : (workspace.selection.segments.at(-1) ?? ''));
+          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
       if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
-        if (!observed.session.workspace.worktree) {
-          const roots = await host.query('agent', 'directories', { kind: 'roots' });
-          if (!alive || selected() !== expectedSessionId) return;
-          const found =
-            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
-          if (found)
-            recentWorkspace = {
-              kind: 'directory',
-              selection: {
-                rootId: found.root.selection.rootId,
-                segments: [...found.root.selection.segments, ...found.names!],
-                directoryIdentity: observed.session.workspace.directoryIdentity,
-              },
-            };
-        }
+        if (!observed.session.workspace.worktree)
+          recentWorkspace = { kind: 'directory', path: label };
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
@@ -1893,7 +1875,7 @@ export function createConversationUi(
       recentKnown.set(true);
       recentWorkspaces.set(recent);
       if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
-        await create(recent[0].workspace, null, recent[0].path, false);
+        await create({ kind: 'directory', path: recent[0].path }, null, recent[0].path, false);
     },
   });
   createPendingRecovery({
@@ -2470,11 +2452,11 @@ export function createConversationUi(
                     disabled={() => pendingSending() || pendingFileBusy()}
                     forget={(path) => {
                       recentOpen.set(false);
-                      void setRecentWorkspace(path, null).catch(report);
+                      void setRecentWorkspace(path, false).catch(report);
                     }}
                     choose={(item) => {
                       recentOpen.set(false);
-                      void create(item.workspace, selected(), item.path);
+                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
                     }}
                     browse={() => {
                       recentOpen.set(false);
