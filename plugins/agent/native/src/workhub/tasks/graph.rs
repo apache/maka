@@ -34,13 +34,48 @@ pub(super) struct TaskSource {
     route: Value,
 }
 
+struct WakeHint(std::sync::atomic::AtomicU64);
+pub(super) struct ScanTicket(u64);
+impl WakeHint {
+    const AWAKE: u64 = 1;
+    const REVISION_STEP: u64 = 2;
+
+    fn new(awake: bool) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(u64::from(awake)))
+    }
+    fn written(&self) {
+        self.0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                Some(revision.wrapping_add(Self::REVISION_STEP) | Self::AWAKE)
+            })
+            .expect("unconditional update");
+    }
+    fn keeps_host_awake(&self) -> bool {
+        self.0.load(Ordering::Acquire) & Self::AWAKE != 0
+    }
+    fn begin_scan(&self) -> ScanTicket {
+        ScanTicket(self.0.fetch_or(Self::AWAKE, Ordering::AcqRel) | Self::AWAKE)
+    }
+    fn end_scan(&self, ticket: ScanTicket, pending: bool) {
+        if !pending {
+            // A graph write during a paged scan must not lose its retirement hint.
+            let _ = self.0.compare_exchange(
+                ticket.0,
+                ticket.0 & !Self::AWAKE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+}
+
 pub(crate) struct Graphs {
     link: Link,
     installed: bool,
     storage: OnceLock<Arc<maka_host_runtime::storage::Storage>>,
     repository: OnceLock<Repository>,
     pub(crate) gate: tokio::sync::Mutex<()>,
-    awake: std::sync::atomic::AtomicU64,
+    awake: WakeHint,
 }
 impl Graphs {
     pub(super) fn new(link: Link, installed: bool) -> Self {
@@ -50,7 +85,7 @@ impl Graphs {
             storage: OnceLock::new(),
             repository: OnceLock::new(),
             gate: tokio::sync::Mutex::new(()),
-            awake: std::sync::atomic::AtomicU64::new(u64::from(installed)),
+            awake: WakeHint::new(installed),
         }
     }
     pub(in crate::workhub) fn bind(&self, owner: &Arc<Owner>) {
@@ -110,28 +145,16 @@ struct ControlReceipt {
 }
 impl Graphs {
     pub(crate) fn written(&self) {
-        self.awake
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                Some(revision.wrapping_add(2) | 1)
-            })
-            .expect("unconditional update");
+        self.awake.written();
     }
     pub(crate) fn keeps_host_awake(&self) -> bool {
-        self.awake.load(Ordering::Acquire) & 1 != 0
+        self.awake.keeps_host_awake()
     }
-    pub(super) fn begin_scan(&self) -> u64 {
-        self.awake.fetch_or(1, Ordering::AcqRel) | 1
+    pub(super) fn begin_scan(&self) -> ScanTicket {
+        self.awake.begin_scan()
     }
-    pub(super) fn end_scan(&self, revision: u64, pending: bool) {
-        if !pending {
-            // A graph write during a paged scan must not lose its retirement hint.
-            let _ = self.awake.compare_exchange(
-                revision,
-                revision & !1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
+    pub(super) fn end_scan(&self, ticket: ScanTicket, pending: bool) {
+        self.awake.end_scan(ticket, pending);
     }
     pub(crate) fn repository(&self) -> Result<&Repository, String> {
         self.repository
@@ -885,6 +908,31 @@ fn work_retired(schedule: &Schedule, id: &WorkId, execution: Option<&(String, St
 mod tests {
     use super::*;
     use maka_agent_api::workhub::contract::{PreparationStage, PreparationState};
+
+    #[test]
+    fn graph_write_during_scan_prevents_retirement_until_a_clean_rescan() {
+        let awake = WakeHint::new(false);
+        let scan = awake.begin_scan();
+        awake.written();
+        awake.end_scan(scan, false);
+        assert!(awake.keeps_host_awake());
+
+        let scan = awake.begin_scan();
+        awake.end_scan(scan, false);
+        assert!(!awake.keeps_host_awake());
+    }
+
+    #[test]
+    fn pending_graph_work_keeps_host_awake_until_a_clean_scan() {
+        let awake = WakeHint::new(false);
+        let scan = awake.begin_scan();
+        awake.end_scan(scan, true);
+        assert!(awake.keeps_host_awake());
+
+        let scan = awake.begin_scan();
+        awake.end_scan(scan, false);
+        assert!(!awake.keeps_host_awake());
+    }
 
     #[test]
     fn graph_preparation_attention_preserves_original_cleanup_uncertainty() {

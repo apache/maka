@@ -42,7 +42,7 @@ impl Tasks {
             let mut commits = hub.agent.0.store.subscribe_changes();
             let mut after = None;
             let mut previous_error = None;
-            let mut graph_scan = 0;
+            let mut graph_scan = None;
             let mut graph_pending = false;
             loop {
                 if stop.is_cancelled() || hub.tasks.cleanup_failed() {
@@ -52,7 +52,7 @@ impl Tasks {
                     return;
                 };
                 if after.is_none() {
-                    graph_scan = hub.tasks.graphs.begin_scan();
+                    graph_scan = Some(hub.tasks.graphs.begin_scan());
                     graph_pending = false;
                 }
                 let result = hub.notification_page(after.take(), stop.clone()).await;
@@ -62,7 +62,12 @@ impl Tasks {
                         after = next;
                         graph_pending |= pending;
                         if after.is_none() {
-                            hub.tasks.graphs.end_scan(graph_scan, graph_pending);
+                            hub.tasks.graphs.end_scan(
+                                graph_scan
+                                    .take()
+                                    .expect("graph scan started with first page"),
+                                graph_pending,
+                            );
                         }
                         previous_error = None;
                     }
