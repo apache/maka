@@ -142,12 +142,48 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
             .files(),
         old.files()
     );
+    assert_eq!(
+        store
+            .load_application_package_at(&original, &old.application_ref())
+            .await
+            .unwrap()
+            .unwrap()
+            .files(),
+        old.files()
+    );
+    let current = store
+        .load_application(a)
+        .await
+        .unwrap()
+        .unwrap()
+        .source
+        .reference;
+    assert!(
+        store
+            .load_application_package_at(&current, &old.application_ref())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let mut absent = original.clone();
     absent.revision = 3;
     assert!(store.load_application_at(&absent).await.unwrap().is_none());
+    assert!(
+        store
+            .load_application_package_at(&absent, &old.application_ref())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let mut foreign = original;
     foreign.state_domain = "0".repeat(64);
     assert!(store.load_application_at(&foreign).await.is_err());
+    assert!(
+        store
+            .load_application_package_at(&foreign, &old.application_ref())
+            .await
+            .is_err()
+    );
     store.close().await.unwrap();
 }
 
@@ -156,7 +192,7 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     let (_dir, store) = store().await;
     let id = Uuid::new_v4();
     let package = package("export default {};");
-    store
+    let source = store
         .commit_application(id, 0, selected(&package), vec![], vec![package.clone()])
         .await
         .unwrap();
@@ -177,6 +213,15 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     assert!(
         store
             .load_application(id)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert!(
+        store
+            .load_application_package_at(&source, &package.application_ref())
             .await
             .err()
             .unwrap()

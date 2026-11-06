@@ -326,6 +326,50 @@ impl EventLog {
             .await
     }
 
+    /// Exact bytes of one package in a committed revision, without reading or
+    /// validating the revision's other packages. `None` when the revision does
+    /// not contain that package.
+    pub async fn load_application_package_at(
+        &self,
+        source: &DeploymentRef,
+        package: &PackageRef,
+    ) -> Result<Option<Package>, StoreError> {
+        source.validate().map_err(invalid)?;
+        if source.state_domain != self.application_domain()? {
+            return Err(invalid("foreign application state domain"));
+        }
+        package
+            .validate()
+            .map_err(|error| invalid(error.to_string()))?;
+        let deployment = source.deployment.to_string();
+        let revision = source.revision as i64;
+        let package = package.clone();
+        self.connection
+            .run(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let installed: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM application_source_packages
+                            WHERE deployment = ? AND source_revision = ? AND id = ? AND revision = ?)",
+                    )
+                    .bind(&deployment)
+                    .bind(revision)
+                    .bind(&package.id)
+                    .bind(&package.revision)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    let package = if installed {
+                        Some(read_package(&mut tx, &package).await?)
+                    } else {
+                        None
+                    };
+                    tx.commit().await?;
+                    Ok(package)
+                })
+            })
+            .await
+    }
+
     async fn read_metadata(
         &self,
         deployment: Uuid,

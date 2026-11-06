@@ -410,14 +410,19 @@ impl Manager {
     async fn export_package(&self, input: Value, context: Context) -> Result<Value> {
         let request: PackageBundleRead =
             serde_json::from_value(input).map_err(|error| error.to_string())?;
+        if request.source.state_domain != self.source.state_domain
+            || request.source.deployment != self.source.deployment
+        {
+            return Err("foreign managed deployment source".into());
+        }
+        // The UI exports each plugin's package while it starts. Loading the whole
+        // source here would read and hash every installed package per export.
         let package = {
             let _read = self.writes.lock().await;
-            let loaded = self.source_at(Some(request.source)).await?;
-            loaded
-                .packages()
-                .iter()
-                .find(|package| package.application_ref() == request.package)
-                .cloned()
+            self.store
+                .load_application_package_at(&request.source, &request.package)
+                .await
+                .map_err(|error| error.to_string())?
                 .ok_or("package is not installed in this source")?
         };
         let mut ticket = context
