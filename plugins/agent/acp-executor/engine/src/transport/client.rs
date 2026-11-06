@@ -19,8 +19,10 @@
 
 use super::sdk_error;
 use agent_client_protocol::{
-    self as sdk, Responder,
-    schema::{ProtocolVersion, v1, v2},
+    self as sdk,
+    schema::ProtocolVersion,
+    v1::{self, schema as acp_v1},
+    v2::{self, schema as acp_v2},
 };
 use std::sync::{
     Arc,
@@ -57,29 +59,29 @@ pub(super) async fn connect<C: sdk::ConnectTo<sdk::Client>>(
 }
 
 pub(crate) enum Peer {
-    V1(sdk::ConnectionTo<sdk::Agent>, v1::InitializeResponse),
-    V2(sdk::V2ConnectionTo<sdk::Agent>, v2::InitializeResponse),
+    V1(v1::ConnectionTo<sdk::Agent>, acp_v1::InitializeResponse),
+    V2(v2::ConnectionTo<sdk::Agent>, acp_v2::InitializeResponse),
 }
 
 pub(crate) enum Event {
     Initialized(Box<Peer>),
-    V1Update(Box<v1::SessionNotification>),
-    V2Update(Box<v2::UpdateSessionNotification>),
+    V1Update(Box<acp_v1::SessionNotification>),
+    V2Update(Box<acp_v2::UpdateSessionNotification>),
     Read(
-        Box<v1::ReadTextFileRequest>,
-        Responder<v1::ReadTextFileResponse>,
+        Box<acp_v1::ReadTextFileRequest>,
+        v1::Responder<acp_v1::ReadTextFileResponse>,
     ),
     Write(
-        Box<v1::WriteTextFileRequest>,
-        Responder<v1::WriteTextFileResponse>,
+        Box<acp_v1::WriteTextFileRequest>,
+        v1::Responder<acp_v1::WriteTextFileResponse>,
     ),
     V1Permission(
-        Box<v1::RequestPermissionRequest>,
-        Responder<v1::RequestPermissionResponse>,
+        Box<acp_v1::RequestPermissionRequest>,
+        v1::Responder<acp_v1::RequestPermissionResponse>,
     ),
     V2Permission(
-        Box<v2::RequestPermissionRequest>,
-        Responder<v2::RequestPermissionResponse>,
+        Box<acp_v2::RequestPermissionRequest>,
+        v2::Responder<acp_v2::RequestPermissionResponse>,
     ),
     Stderr(Vec<u8>),
 }
@@ -119,10 +121,10 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
     let (updates, reads, writes, permissions) =
         (send.clone(), send.clone(), send.clone(), send.clone());
     sdk::Client
-        .builder()
+        .v1()
         .name("maka-external-v1")
         .on_receive_notification(
-            async move |input: v1::SessionNotification, _| {
+            async move |input: acp_v1::SessionNotification, _| {
                 updates
                     .send(Event::V1Update(Box::new(input)))
                     .await
@@ -131,7 +133,7 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
             sdk::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |input: v1::ReadTextFileRequest, reply, _| {
+            async move |input: acp_v1::ReadTextFileRequest, reply, _| {
                 reads
                     .send(Event::Read(Box::new(input), reply))
                     .await
@@ -140,7 +142,7 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
             sdk::on_receive_request!(),
         )
         .on_receive_request(
-            async move |input: v1::WriteTextFileRequest, reply, _| {
+            async move |input: acp_v1::WriteTextFileRequest, reply, _| {
                 writes
                     .send(Event::Write(Box::new(input), reply))
                     .await
@@ -149,7 +151,7 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
             sdk::on_receive_request!(),
         )
         .on_receive_request(
-            async move |input: v1::RequestPermissionRequest, reply, _| {
+            async move |input: acp_v1::RequestPermissionRequest, reply, _| {
                 permissions
                     .send(Event::V1Permission(Box::new(input), reply))
                     .await
@@ -160,12 +162,17 @@ pub(super) fn v1(send: mpsc::Sender<Event>, files: bool) -> impl sdk::ConnectTo<
         .with_spawned(async move |peer| {
             let initialized = peer
                 .send_request(
-                    v1::InitializeRequest::new(ProtocolVersion::V1)
-                        .client_info(v1::Implementation::new("maka", env!("CARGO_PKG_VERSION")))
+                    acp_v1::InitializeRequest::new(ProtocolVersion::V1)
+                        .client_info(acp_v1::Implementation::new(
+                            "maka",
+                            env!("CARGO_PKG_VERSION"),
+                        ))
                         .client_capabilities(
-                            v1::ClientCapabilities::new().fs(v1::FileSystemCapabilities::new()
-                                .read_text_file(files)
-                                .write_text_file(files)),
+                            acp_v1::ClientCapabilities::new().fs(
+                                acp_v1::FileSystemCapabilities::new()
+                                    .read_text_file(files)
+                                    .write_text_file(files),
+                            ),
                         ),
                 )
                 .block_task()
@@ -189,7 +196,7 @@ pub(super) fn v2(
         .v2()
         .name("maka-external-v2")
         .on_receive_notification(
-            async move |input: v2::UpdateSessionNotification, _| {
+            async move |input: acp_v2::UpdateSessionNotification, _| {
                 updates
                     .send(Event::V2Update(Box::new(input)))
                     .await
@@ -198,7 +205,7 @@ pub(super) fn v2(
             sdk::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |input: v2::RequestPermissionRequest, reply, _| {
+            async move |input: acp_v2::RequestPermissionRequest, reply, _| {
                 permissions
                     .send(Event::V2Permission(Box::new(input), reply))
                     .await
@@ -208,14 +215,14 @@ pub(super) fn v2(
         )
         .with_spawned(async move |peer| {
             let initialized = peer
-                .send_request(v2::InitializeRequest::new(
+                .send_request(acp_v2::InitializeRequest::new(
                     ProtocolVersion::V2,
-                    v2::Implementation::new("maka", env!("CARGO_PKG_VERSION")),
+                    acp_v2::Implementation::new("maka", env!("CARGO_PKG_VERSION")),
                 ))
                 .block_task()
                 .await;
             let initialized = initialized.inspect_err(|error| {
-                retry.store(error.code == sdk::ErrorCode::ParseError, Ordering::Release);
+                retry.store(error.code == sdk::ErrorCode::PARSE_ERROR, Ordering::Release);
             })?;
             send.send(Event::Initialized(Box::new(Peer::V2(peer, initialized))))
                 .await
@@ -223,3 +230,6 @@ pub(super) fn v2(
             std::future::pending::<sdk::Result<()>>().await
         })
 }
+
+#[cfg(test)]
+mod tests;

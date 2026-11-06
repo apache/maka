@@ -18,7 +18,7 @@
  */
 
 use super::provider::{ModelRequest, Provider};
-use agent_client_protocol::schema::v2 as acp;
+use agent_client_protocol::v2::schema as acp;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::{
     application::{host::Client as Native, transport::wire::Reply},
@@ -217,7 +217,9 @@ pub async fn until_idle(
             .await
             .expect("SDK update stream closed before idle");
         let idle = match &update {
-            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle)) => {
+            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle))
+                if idle.stop_reason.is_some() =>
+            {
                 Some(idle.stop_reason.clone())
             }
             _ => None,

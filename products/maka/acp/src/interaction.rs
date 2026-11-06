@@ -18,27 +18,63 @@
  */
 
 //! Host interactions translated at the ACP boundary, without acquiring authority.
-use agent_client_protocol::schema::v2 as acp;
 use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
+use serde_json::{Map, Value};
 
 mod form;
 mod permission;
 mod schema;
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Capabilities {
+    pub form: bool,
+}
+
 pub enum Callback {
-    Permission(acp::RequestPermissionRequest),
-    Elicitation(acp::CreateElicitationRequest),
+    Permission(Permission),
+    Elicitation(Form),
 }
 pub enum Response {
-    Permission(acp::RequestPermissionResponse),
-    Elicitation(acp::CreateElicitationResponse),
+    Permission(Option<String>),
+    Elicitation(FormAnswer),
+}
+pub struct Permission {
+    pub session: String,
+    pub request_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub tool_id: Option<String>,
+    pub command: Option<(String, std::path::PathBuf)>,
+    pub input: Value,
+    pub options: Vec<PermissionChoice>,
+}
+pub struct PermissionChoice {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub kind: PermissionKind,
+}
+pub enum PermissionKind {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+}
+pub struct Form {
+    pub session: String,
+    pub tool_id: String,
+    pub message: String,
+    pub schema: Value,
+}
+pub enum FormAnswer {
+    Accept(Map<String, Value>),
+    Decline,
+    Cancel,
 }
 
 pub fn request(
     snapshot: &InteractionRecord,
-    capabilities: &acp::ClientCapabilities,
+    capabilities: &Capabilities,
 ) -> Result<Callback, crate::Error> {
     if snapshot.outcome.is_some() {
         return Err("Interaction is no longer pending".into());
@@ -87,6 +123,31 @@ pub fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::v2::schema as acp;
+
+    pub(super) enum Callback {
+        Permission(acp::RequestPermissionRequest),
+        Elicitation(acp::CreateElicitationRequest),
+    }
+    pub(super) fn request(
+        record: &InteractionRecord,
+        capabilities: &acp::ClientCapabilities,
+    ) -> Result<Callback, crate::Error> {
+        let caps = Capabilities {
+            form: capabilities
+                .elicitation
+                .as_ref()
+                .is_some_and(acp::ElicitationCapabilities::supports_form),
+        };
+        Ok(match super::request(record, &caps)? {
+            super::Callback::Permission(p) => {
+                Callback::Permission(crate::transport::v2::permission(p))
+            }
+            super::Callback::Elicitation(f) => {
+                Callback::Elicitation(crate::transport::v2::form(f)?)
+            }
+        })
+    }
     pub(super) fn snapshot(request: InteractionRequest) -> InteractionRecord {
         InteractionRecord {
             session_id: "session".into(),

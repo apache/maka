@@ -18,7 +18,7 @@
  */
 
 use crate::ports::Ports;
-use agent_client_protocol::schema::v1 as acp;
+use agent_client_protocol::v1::schema as acp;
 use maka_agent_facts::capability::FormField;
 use maka_agent_facts::capability::FormFieldSpec;
 use maka_agent_facts::capability::FormOption;
@@ -115,13 +115,13 @@ pub(crate) async fn permission_v1(
 }
 
 pub(crate) async fn permission_v2(
-    input: agent_client_protocol::schema::v2::RequestPermissionRequest,
+    input: agent_client_protocol::v2::schema::RequestPermissionRequest,
     session: &str,
     request: &Request,
     context: &Context,
     host: &Ports,
     rpc_id: &Value,
-) -> Result<agent_client_protocol::schema::v2::RequestPermissionResponse, CallbackError> {
+) -> Result<agent_client_protocol::v2::schema::RequestPermissionResponse, CallbackError> {
     if input.session_id.to_string() != session {
         return Err(CallbackError::invalid(
             "Callback belongs to another ACP session",
@@ -149,10 +149,10 @@ pub(crate) async fn permission_v2(
         rpc_id,
     )
     .await?;
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
     let outcome = match result {
         Some(id) => v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(id)),
-        None => v2::RequestPermissionOutcome::Cancelled,
+        None => v2::RequestPermissionOutcome::Cancelled(v2::CancelledPermissionOutcome::new()),
     };
     Ok(v2::RequestPermissionResponse::new(outcome))
 }

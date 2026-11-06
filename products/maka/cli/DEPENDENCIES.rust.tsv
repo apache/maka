@@ -12,9 +12,9 @@ aes-gcm@0.11.1		X										X
 aes-kw@0.3.1		X										X						
 aes@0.8.4		X										X						
 aes@0.9.3		X										X						
-agent-client-protocol-derive@3.5.0		X																
-agent-client-protocol-schema@1.12.0		X																
-agent-client-protocol@3.5.0		X																
+agent-client-protocol-derive@5.0.0		X																
+agent-client-protocol-schema@1.15.1		X																
+agent-client-protocol@5.0.0		X																
 ahash@0.8.12		X										X						
 aho-corasick@1.1.5												X					X	
 alacritty_terminal@0.26.0		X																
