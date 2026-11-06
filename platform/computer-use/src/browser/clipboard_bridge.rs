@@ -674,8 +674,9 @@ impl Bridge {
         turn: &str,
     ) -> Result<(), ToolError> {
         let socket = tab
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .clone();
         let mut events = socket.connection.subscribe();
@@ -1150,8 +1151,7 @@ mod tests {
                 websocket: None,
                 extension: None,
             },
-            socket: Some(socket),
-            socket_prepared: true,
+            connection: Some(TabConnection::Prepared(socket)),
             page_assets: Default::default(),
             origin_proof: None,
             navigation_admission: None,

@@ -26,6 +26,7 @@
 //! extension custody until the RPC settles, even when a close event already proved
 //! the public operation successful.
 
+use super::TabConnection;
 use crate::protocol::DialogAction;
 use maka_agent_facts::tools::ToolError;
 use serde::Serialize;
@@ -964,8 +965,9 @@ impl super::Tab {
         let request = prepared.request.clone();
         let events = controller.link.clone();
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("dialog connection is unavailable"))?
             .clone();
         let mut rpc: maka_agent_facts::tools::ToolFuture<()> = Box::pin(async move {

@@ -57,8 +57,9 @@ impl Browsers {
 impl Tab {
     async fn screenshot_css_scale(&self) -> Result<f64, ToolError> {
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?;
         let reply = socket
             .raw_observation(
@@ -154,8 +155,9 @@ impl Tab {
         }
         check_input(cancellation)?;
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?;
         let effect = self.read_effect()?;
         let mut budget = Some(ReadBudget {
@@ -184,7 +186,7 @@ impl Tab {
         let (sender, received) = tokio::sync::oneshot::channel();
         self.owned_input(cancellation, None, move |page, sequence, stop| {
             Box::pin(async move {
-                let socket = page.socket.as_ref().ok_or_else(|| failed("tab connection unavailable"))?;
+                let socket = page.connection.as_ref().map(TabConnection::socket).ok_or_else(|| failed("tab connection unavailable"))?;
                 // The exact page/claim connection is subscribed before start;
                 // its demultiplexer queues pre-reply events in arrival order.
                 let mut events = socket.connection.subscribe();

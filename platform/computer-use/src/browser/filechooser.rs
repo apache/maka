@@ -19,7 +19,9 @@
 
 //! File chooser handles belong to an existing tab, document and invocation turn.
 
-use super::{BrowserCall, BrowserIdentity, Browsers, Cdp, Tab, check_input, failed, origin};
+use super::{
+    BrowserCall, BrowserIdentity, Browsers, Cdp, Tab, TabConnection, check_input, failed, origin,
+};
 use crate::protocol::{BrowserFileChooserOptions, Handle};
 use cua_driver_core::browser::cdp_ws::CdpEvent;
 use futures_util::{FutureExt, future::BoxFuture, future::Shared};
@@ -651,8 +653,9 @@ impl Browsers {
         let store = tab.filechoosers.get_or_insert_with(Store::default).clone();
         let stop = cancellation.child_token();
         let socket = tab
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .expect("verified file chooser socket")
             .clone();
         let future = store.arm(socket, scope, timeout, stop.clone()).await?;
@@ -676,7 +679,12 @@ impl Browsers {
 impl Tab {
     pub(super) async fn cleanup_filechoosers_current(&mut self) -> Result<(), ToolError> {
         if let Some(store) = &self.filechoosers {
-            store.close(None, self.socket.clone()).await?;
+            store
+                .close(
+                    None,
+                    self.connection.as_ref().map(TabConnection::socket).cloned(),
+                )
+                .await?;
             self.filechoosers = None;
         }
         Ok(())
@@ -949,8 +957,9 @@ impl Tab {
             host: self.cursor_host.clone(),
             owner,
             socket: self
-                .socket
+                .connection
                 .as_ref()
+                .map(TabConnection::socket)
                 .expect("verified upload socket")
                 .clone(),
             proof,

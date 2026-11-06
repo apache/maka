@@ -31,6 +31,7 @@ struct Authority {
     attachment_failure: Option<ToolError>,
     attachment_wait_for_cancel: bool,
     attachment_started: Arc<Notify>,
+    attachment_cleanup: Option<Arc<Notify>>,
 }
 impl BrowserAuthorization for Authority {
     fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
@@ -48,6 +49,7 @@ impl BrowserAuthorization for Authority {
             failure: self.attachment_failure.clone(),
             wait_for_cancel: self.attachment_wait_for_cancel,
             started: self.attachment_started.clone(),
+            cleanup: self.attachment_cleanup.clone(),
         }))
     }
 }
@@ -57,6 +59,7 @@ struct Attachment {
     failure: Option<ToolError>,
     wait_for_cancel: bool,
     started: Arc<Notify>,
+    cleanup: Option<Arc<Notify>>,
 }
 impl BrowserAttachmentAuthorization for Attachment {
     fn check_metadata(&self, cancellation: CancellationToken) -> AuthorizationFuture {
@@ -78,10 +81,14 @@ impl BrowserAttachmentAuthorization for Attachment {
         let started = self.started.clone();
         let failure = self.failure.clone();
         let wait_for_cancel = self.wait_for_cancel;
+        let cleanup = self.cleanup.clone();
         Box::pin(async move {
             started.notify_one();
             if wait_for_cancel {
                 cancellation.cancelled().await;
+            }
+            if let Some(cleanup) = cleanup {
+                cleanup.notified().await;
             }
             failure.map_or(Ok(()), Err)
         })
@@ -428,6 +435,134 @@ async fn lost_transport_after_admission_is_uncertain_and_does_not_complete_host_
     ));
     assert!(fixture.parent.has_unsettled());
     assert!(fixture.worker.has_unsettled());
+}
+
+struct EffectInput(Arc<AtomicUsize>);
+impl Drop for EffectInput {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct PanickingEffect {
+    _input: EffectInput,
+}
+impl Future for PanickingEffect {
+    type Output = Result<(), ToolError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        panic!("fixture admitted effect polling panicked");
+    }
+}
+
+#[tokio::test]
+async fn admitted_effect_panic_retains_original_inputs_without_refusal_or_completion() {
+    let mut fixture = Fixture::new();
+    let host = Arc::new(Host::default());
+    let services = fixture
+        .prepare(Arc::new(Authority::default()), host.clone())
+        .await;
+    let dropped = Arc::new(AtomicUsize::new(0));
+    services
+        .effects
+        .as_ref()
+        .unwrap()
+        .spawn_guarded(
+            Box::pin(PanickingEffect {
+                _input: EffectInput(dropped.clone()),
+            }),
+            Box::new(|_| panic!("admitted inputs cannot be refused as unpolled")),
+        )
+        .unwrap();
+    let message = fixture.worker_message().await;
+    fixture.parent.handle(message).unwrap();
+    let mut admitted = host.admitted.lock().unwrap().pop().unwrap();
+    assert!(poll!(admitted.pending.as_mut()).is_pending());
+    let message = fixture.parent_message().await;
+    assert!(matches!(&message, ParentMessage::Admit { .. }));
+    fixture.worker.handle(message).unwrap();
+    let message = fixture.worker_message().await;
+    assert!(matches!(&message, WorkerMessage::EffectUncertain { .. }));
+    fixture.parent.handle(message).unwrap();
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    assert!(poll!(admitted.pending.as_mut()).is_pending());
+    assert!(matches!(
+        poll!(admitted.uncertainty.as_mut()),
+        Poll::Ready(ToolError::CleanupUnconfirmed(_))
+    ));
+    drop(services);
+    assert!(fixture.parent.has_unsettled());
+    assert!(fixture.worker.has_unsettled());
+    assert!(matches!(
+        fixture.worker_messages.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        fixture.parent_messages.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn release_then_seal_waits_for_original_authorization_cleanup() {
+    let mut fixture = Fixture::new();
+    let cleanup = Arc::new(Notify::new());
+    let authority = Arc::new(Authority {
+        attachment_wait_for_cancel: true,
+        attachment_cleanup: Some(cleanup.clone()),
+        ..Authority::default()
+    });
+    let services = fixture
+        .prepare(authority.clone(), Arc::new(Host::default()))
+        .await;
+    let token = remote_token(&fixture.worker);
+    let cancellation = CancellationToken::new();
+    let cancelled = cancellation.clone();
+    let attachment = services.attachment.as_ref().unwrap().clone();
+    let checking = tokio::spawn(async move {
+        attachment
+            .check(
+                BrowserAttachmentOrigin::Site("https://original.test".into()),
+                cancellation,
+            )
+            .await
+    });
+    let message = fixture.worker_message().await;
+    fixture.parent.handle(message).unwrap();
+    authority.attachment_started.notified().await;
+    cancelled.cancel();
+    let message = fixture.worker_message().await;
+    assert!(matches!(&message, WorkerMessage::CancelCheck { .. }));
+    fixture.parent.handle(message).unwrap();
+    assert!(checking.await.unwrap().is_err());
+    drop(services);
+    let message = fixture.worker_message().await;
+    assert!(matches!(&message, WorkerMessage::Release { token: actual } if *actual == token));
+    fixture.parent.handle(message).unwrap();
+    fixture.parent.seal(&identity());
+    let message = fixture.parent_message().await;
+    assert!(matches!(&message, ParentMessage::Sealed { token: actual } if *actual == token));
+    fixture.worker.handle(message).unwrap();
+    assert!(fixture.parent.has_unsettled());
+    assert!(matches!(
+        fixture.parent_messages.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    cleanup.notify_one();
+    let message = fixture.parent_message().await;
+    assert!(
+        matches!(&message, ParentMessage::Checked { token: actual, result: Err(_), .. } if *actual == token)
+    );
+    fixture.worker.handle(message).unwrap();
+    let message = fixture.parent_message().await;
+    assert!(matches!(&message, ParentMessage::Released { token: actual } if *actual == token));
+    fixture.worker.handle(message).unwrap();
+    assert!(!fixture.parent.has_unsettled());
+    assert!(!fixture.worker.has_unsettled());
+    assert!(matches!(
+        fixture.parent_messages.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]
