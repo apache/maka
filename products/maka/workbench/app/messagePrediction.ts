@@ -57,21 +57,58 @@ type Request = {
   operation: OriginalMutation | null;
 };
 
-let preferences: { revision: number; value: SettingsAssistantPreferences | null } | null = null;
-const observers = new Set<() => void>();
+type PreferencesState =
+  | { kind: 'unknown' }
+  | { kind: 'invalidated'; revision: number }
+  | { kind: 'ready'; value: SettingsAssistantPreferences };
+
+function createPreferencesOwner() {
+  let state: PreferencesState = { kind: 'unknown' };
+  const observers = new Set<() => void>();
+  const revision = () =>
+    state.kind === 'unknown'
+      ? null
+      : state.kind === 'invalidated'
+        ? state.revision
+        : state.value.revision;
+  const changed = () => {
+    for (const observe of observers) observe();
+  };
+  return {
+    revision,
+    value: () => (state.kind === 'ready' ? state.value : null),
+    observe(value: SettingsAssistantPreferences) {
+      const previous = revision();
+      if (previous !== null && value.revision < previous) return;
+      if (state.kind === 'ready' && state.value === value) return;
+      state = { kind: 'ready', value };
+      changed();
+    },
+    invalidate(next: number) {
+      const previous = revision();
+      if (previous !== null && next < previous) return;
+      state = { kind: 'invalidated', revision: next };
+      changed();
+    },
+    subscribe(observe: () => void) {
+      observers.add(observe);
+      return () => observers.delete(observe);
+    },
+  };
+}
+
+// Settings and conversations are separate bundles in the same window VM.
+const OWNER = Symbol.for('maka.prediction-preferences');
+const shared = globalThis as { [OWNER]?: ReturnType<typeof createPreferencesOwner> };
+const preferences = (shared[OWNER] ??= createPreferencesOwner());
 
 /** Share observed settings, so a saved change immediately retires old suggestions. */
 export function observePredictionPreferences(value: SettingsAssistantPreferences): void {
-  if (preferences && value.revision < preferences.revision) return;
-  if (preferences?.value === value) return;
-  preferences = { revision: value.revision, value };
-  for (const observe of observers) observe();
+  preferences.observe(value);
 }
 
 export function invalidatePredictionPreferences(revision: number): void {
-  if (preferences && revision < preferences.revision) return;
-  preferences = { revision, value: null };
-  for (const observe of observers) observe();
+  preferences.invalidate(revision);
 }
 
 /** One resident conversation retains only its current source and its original request. */
@@ -97,14 +134,18 @@ export function createMessagePrediction(options: Options) {
       request.operation?.cancel();
     }
   };
-  const owns = (ticket: Request) =>
-    alive &&
-    eligible &&
-    !dismissed &&
-    !ticket.cancelled &&
-    source === ticket.source &&
-    preferences?.revision === ticket.revision &&
-    preferences.value?.predictions.enabled === true;
+  const owns = (ticket: Request) => {
+    const config = preferences.value();
+    return (
+      alive &&
+      eligible &&
+      !dismissed &&
+      !ticket.cancelled &&
+      source === ticket.source &&
+      config?.revision === ticket.revision &&
+      config.predictions.enabled === true
+    );
+  };
 
   const generate = async (ticket: Request) => {
     try {
@@ -172,7 +213,8 @@ export function createMessagePrediction(options: Options) {
       .then(
         (value) => {
           if (!alive || source !== ticket.source) return;
-          settingsReady = value.revision >= (preferences?.revision ?? -1);
+          const revision = preferences.revision();
+          settingsReady = revision === null || value.revision >= revision;
           ticket.stale = !settingsReady;
           observePredictionPreferences(value);
           refresh();
@@ -196,7 +238,7 @@ export function createMessagePrediction(options: Options) {
       cancel();
       return;
     }
-    const config = preferences?.value;
+    const config = preferences.value();
     if (!settingsReady || !config) {
       publish(null);
       cancel();
@@ -228,10 +270,10 @@ export function createMessagePrediction(options: Options) {
   }
 
   const changedPreferences = () => {
-    if (!preferences?.value) settingsReady = false;
+    if (!preferences.value()) settingsReady = false;
     refresh();
   };
-  observers.add(changedPreferences);
+  const unsubscribe = preferences.subscribe(changedPreferences);
   const presentation: ComposerPrediction = {
     current: () => shown,
     dismiss(sourceTurnId) {
@@ -264,7 +306,7 @@ export function createMessagePrediction(options: Options) {
     dispose() {
       if (!alive) return;
       cancel();
-      observers.delete(changedPreferences);
+      unsubscribe();
       alive = false;
       shown = null;
     },

@@ -89,3 +89,144 @@ test('a late prediction cannot replace the next turn’s suggestion', async (t) 
     text: 'Review the new patch.',
   });
 });
+
+let bundleSequence = 0;
+async function bundles() {
+  const fixture = ++bundleSequence;
+  const settings = await import(`../app/messagePrediction.ts?fixture=${fixture}&bundle=settings`);
+  const conversation = await import(
+    `../app/messagePrediction.ts?fixture=${fixture}&bundle=conversation`
+  );
+  return { settings, conversation };
+}
+function deferred() {
+  let resolve;
+  const promise = new Promise((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+}
+function prediction(t, conversation, preferences) {
+  const requests = [];
+  const errors = [];
+  const controller = conversation.createMessagePrediction({
+    sessionId: 'conversation',
+    preferences,
+    changed() {},
+    report: (reason) => errors.push(reason),
+    async begin(input) {
+      const result = deferred();
+      const request = {
+        input,
+        cancelled: false,
+        finish(revision, suggestion) {
+          result.resolve({
+            kind: 'finished',
+            reply: {
+              receipt: {
+                kind: 'recorded',
+                outcome: {
+                  kind: 'returned',
+                  value: {
+                    sourceTurnId: input.expectedTurnId,
+                    policyRevision: revision,
+                    suggestion,
+                  },
+                },
+              },
+            },
+          });
+        },
+      };
+      requests.push(request);
+      return {
+        next: () => result.promise,
+        cancel() {
+          request.cancelled = true;
+        },
+      };
+    },
+  });
+  t.after(() => controller.dispose());
+  return { controller, requests, errors };
+}
+
+test('settings in one bundle retire another bundle’s suggestion and its late original result', async (t) => {
+  const { settings, conversation } = await bundles();
+  let preferences = { revision: 100, predictions: { enabled: true } };
+  settings.observePredictionPreferences(preferences);
+  const { controller, requests, errors } = prediction(t, conversation, async () => preferences);
+  controller.source('turn-one', 'live');
+  controller.eligible(true);
+  await setImmediate();
+  requests[0].finish(100, 'Review the first patch.');
+  await setImmediate();
+  assert.deepEqual(controller.presentation.current(), {
+    sourceTurnId: 'turn-one',
+    text: 'Review the first patch.',
+  });
+
+  preferences = { revision: 101, predictions: { enabled: false } };
+  settings.invalidatePredictionPreferences(101);
+  assert.equal(controller.presentation.current(), null);
+  await setImmediate();
+
+  controller.source('turn-two', 'live');
+  preferences = { revision: 102, predictions: { enabled: true } };
+  settings.observePredictionPreferences(preferences);
+  await setImmediate();
+  const original = requests.at(-1);
+  assert.deepEqual(original.input, {
+    sessionId: 'conversation',
+    expectedTurnId: 'turn-two',
+    trigger: 'live',
+  });
+  preferences = { revision: 103, predictions: { enabled: false } };
+  settings.invalidatePredictionPreferences(103);
+  assert.equal(original.cancelled, true);
+  original.finish(102, 'This result belongs to the retired settings.');
+  await setImmediate();
+  assert.equal(controller.presentation.current(), null);
+  assert.deepEqual(errors, []);
+});
+
+test('a cross-bundle invalidation fences an older settings read until current preferences arrive', async (t) => {
+  const { settings, conversation } = await bundles();
+  settings.observePredictionPreferences({ revision: 200, predictions: { enabled: true } });
+  settings.invalidatePredictionPreferences(201);
+  const reads = [];
+  const { controller, requests, errors } = prediction(t, conversation, () => {
+    const read = deferred();
+    reads.push(read);
+    return read.promise;
+  });
+  controller.source('turn-current', 'live');
+  controller.eligible(true);
+  settings.invalidatePredictionPreferences(202);
+  reads[0].resolve({ revision: 201, predictions: { enabled: true } });
+  await setImmediate();
+  assert.equal(controller.presentation.current(), null);
+  assert.equal(requests.length, 0);
+
+  reads[1].resolve({ revision: 202, predictions: { enabled: false } });
+  await setImmediate();
+  settings.observePredictionPreferences({ revision: 201, predictions: { enabled: true } });
+  await setImmediate();
+  assert.equal(requests.length, 0);
+
+  settings.observePredictionPreferences({ revision: 203, predictions: { enabled: true } });
+  await setImmediate();
+  const original = requests.at(-1);
+  assert.deepEqual(original.input, {
+    sessionId: 'conversation',
+    expectedTurnId: 'turn-current',
+    trigger: 'live',
+  });
+  original.finish(203, 'Use the current settings.');
+  await setImmediate();
+  assert.deepEqual(controller.presentation.current(), {
+    sourceTurnId: 'turn-current',
+    text: 'Use the current settings.',
+  });
+  assert.deepEqual(errors, []);
+});
