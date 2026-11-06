@@ -53,6 +53,8 @@ declare module './plugin-kernel.js' {
 }
 
 export interface PluginLlmGenerateInput {
+  /** Use the resolved model's least reasoning mode without changing the owning Session. */
+  readonly reasoning?: 'least';
   /** Optional configured connectionSlug::modelId for a tool-free auxiliary call. */
   readonly modelKey?: string;
   readonly prompt: string;

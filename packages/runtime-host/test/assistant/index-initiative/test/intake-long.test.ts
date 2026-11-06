@@ -56,9 +56,13 @@ async function setup(t: any, text: string) {
 }
 async function drain(f: any) {
   for (let i = 0; pending(f) && i < 200; i++) {
+    const due = (f.q.state().lastFinishedAt ?? 0) + f.q.state().intervalMs;
+    if (due > f.q.now()) f.advance(due - f.q.now());
     await f.q.intake.judge();
-    await f.q.dispatch();
-    await f.q.running;
+    if (await f.q.intake.next()) {
+      await f.q.dispatch();
+      await f.q.running;
+    }
   }
   assert.equal(pending(f), 0);
 }
@@ -364,9 +368,12 @@ test('an event that cannot fit is backed off on its own row instead of blocking 
   assert.equal(pending(f), 1);
   assert.equal(longCalls, 0, 'the deferred event is not retried on every tick');
   const deferred = Number(retry().retry_at);
-  f.advance(31000);
+  f.advance(15 * 60000);
   await assert.doesNotReject(f.q.intake.judge());
-  assert.ok(Number(retry().retry_at) > deferred, 'it retries once the backoff expires');
+  assert.ok(
+    Number(retry().retry_at) > deferred,
+    'it retries after backoff and the completed investigation cooldown',
+  );
   assert.equal(pending(f), 1);
 });
 
@@ -400,7 +407,7 @@ test('an unfittable event rotates behind other groups even after its deferral ex
   });
   f.add('healthy-after', 'New update', 'healthy');
   await f.q.intake.collect();
-  f.advance();
+  f.advance(15 * 60000);
   await f.q.intake.judge();
   assert.equal(calls, 1, 'oversized metadata cannot reach the model');
   f.advance(31000);

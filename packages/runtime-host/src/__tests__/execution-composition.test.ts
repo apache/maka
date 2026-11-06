@@ -6103,6 +6103,8 @@ async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHa
           text: JSON.stringify('Synthetic schedule changed'),
         }));
         await quick.control({ action: 'enable', eventIntake: true });
+        let intakeTime = quick.intake.sink.now();
+        t.mock.method(quick.intake.sink, 'now', () => intakeTime);
         await quick.intake.collect();
         feed.push({
           id: 'event',
@@ -6112,7 +6114,7 @@ async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHa
           occurredAt: Date.now(),
         });
         await quick.intake.collect();
-        await new Promise((resolve) => setTimeout(resolve, 1600));
+        intakeTime += 3 * 60000;
         await quick.intake.judge();
       } else await quick.control({ action: 'check' });
       await quick.tick();

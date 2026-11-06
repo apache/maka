@@ -2182,6 +2182,7 @@ export async function createExecutionRuntimeHostComposition(
           sessionId: invocation.sessionId,
           prompt: input.prompt,
           boundedInput: input.boundedInput,
+          reasoning: input.reasoning,
           ...(input.modelKey ? { modelKey: input.modelKey } : {}),
           ...(input.system ? { system: input.system } : {}),
           ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),

@@ -52,9 +52,13 @@ test('selected model budget packs full serialized input and reacts to a smaller 
   await f.q.intake.judge();
   assert.ok(pending(f) > 0);
   capacity = 3000;
+  f.advance(15 * 60000);
   await f.q.intake.judge();
   assert.ok(counts[1] < counts[0]);
-  for (let i = 0; i < 50 && pending(f); i++) await f.q.intake.judge();
+  for (let i = 0; i < 50 && pending(f); i++) {
+    f.advance(15 * 60000);
+    await f.q.intake.judge();
+  }
   assert.equal(pending(f), 0);
   assert.equal(
     counts.reduce((a, b) => a + b, 0),

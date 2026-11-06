@@ -110,7 +110,7 @@ test('baseline costs no model; new event starts investigation before 15 minutes'
   await f.q.tick();
   await f.q.running;
   assert.equal(f.counts().workerCalls, 1);
-  assert.match(f.prompts[0], /不局限于这些线索/);
+  assert.match(f.prompts[0], /围绕这些变化及必要的关联证据/);
   assert.doesNotMatch(f.prompts[0], /客户明早来/);
   assert.doesNotMatch(f.prompts[0], /这是定时唤醒/);
   await f.q.tick();
@@ -196,7 +196,7 @@ test('empty selection retains originals without waking or repeating them as back
   assert.equal(await f.q.intake.next(), undefined);
   f.add('b', '客户提前');
   await f.q.intake.collect();
-  f.advance();
+  f.advance(15 * 60000);
   f.ctx.llm.generate = async (input: any) => {
     assert.doesNotMatch(input.prompt, /尚未验收/);
     return {
@@ -275,6 +275,10 @@ test('events arriving during investigation remain for the next batch', async (t)
   await f.q.intake.judge();
   release();
   await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.intake.status().counts.find((row) => row.status === 'pending')?.count, 1);
+  f.advance(15 * 60000);
+  await f.q.intake.judge();
   assert.equal((await f.q.intake.next())?.ids.length, 1);
 });
 
@@ -370,7 +374,7 @@ test('one batch produces one hint, without selected IDs or an investigation chec
   f.agent.followup = async (text, options) => {
     assert.match(text, /明天的安排可能有冲突/);
     assert.match(text, /不准确.*不完整/);
-    assert.match(text, /不局限于这些线索或最近的增量/);
+    assert.match(text, /围绕这些变化及必要的关联证据/);
     assert.doesNotMatch(text, /闲聊|processedEventIds|QuickDiscoveryEvents|batchId/);
     await f.q.report({ key: 'discovery', messages: ['核实后有个建议'] }, 'worker');
     return followup(text, options);

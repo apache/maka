@@ -175,7 +175,7 @@ test('shared notebook imports only delivered quick messages and explicitly linke
   }
 });
 
-test('actual quick SendUser and user feedback are readable by all three workers without copying ordinary chat', async () => {
+test('ReplyDiscovery requires a valid source and preserves delivery and feedback across all workers', async () => {
   const f = await fixture();
   const text = '周末摄影展改到下午了，可以避开早上的安排。';
   let sentId = '',
@@ -188,10 +188,29 @@ test('actual quick SendUser and user feedback are readable by all three workers 
         const batch = await invoke('InboxCheck', {});
         for (const item of batch.items) {
           if (item.type === 'discovery') {
-            await invoke('SendUser', {
+            await assert.rejects(
+              invoke('ReplyDiscovery', {
+                messageId: 'missing-source',
+                messages: [{ text }],
+              }),
+            );
+            await assert.rejects(
+              invoke('ReplyDiscovery', {
+                messageId: 'invalid-source',
+                messages: [{ text, discoveryIds: ['missing'] }],
+              }),
+              /discoveryIds/,
+            );
+            const request = {
               messageId: 'quick-sent',
               messages: [{ text, discoveryIds: [item.id] }],
-            });
+            };
+            await invoke('ReplyDiscovery', request);
+            await invoke('ReplyDiscovery', request);
+            assert.equal(
+              f.workers.get('owner').transcript.filter((m: any) => m.text === text).length,
+              1,
+            );
             sentId = f.workers.get('owner').transcript.find((m: any) => m.text === text).id;
           } else if (item.id === 'reply') {
             await invoke('DiscoveryFeedback', { userMessageId: 'reply', messageId: sentId });

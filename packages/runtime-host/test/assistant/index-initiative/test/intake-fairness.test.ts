@@ -160,7 +160,7 @@ test('first event installs the discovery instructions and never postpones the pe
   await f.q.dispatch();
   await f.q.running;
   assert.equal(f.prompts.length, 2);
-  assert.match(f.prompts[1], /全局信息探索/);
+  assert.match(f.prompts[1], /定时快速检查/);
   assert.doesNotMatch(f.prompts[1], /新的客户安排/);
   assert.ok(f.q.state().lastPeriodicFinishedAt);
 });
@@ -175,7 +175,7 @@ test('screening more records cannot back off an already approved investigation i
   await f.q.intake.judge();
   f.add('later', '其他讨论');
   await f.q.intake.collect();
-  f.advance();
+  f.advance(15 * 60000);
   let release: any;
   f.ctx.llm.generate = async (input: any) => {
     await new Promise((r) => {

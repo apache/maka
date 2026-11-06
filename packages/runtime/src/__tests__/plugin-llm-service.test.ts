@@ -29,8 +29,12 @@ test('llm generation uses Host authority unless a matching adapter overrides it'
   const root = new Context();
   const agents = new PluginAgentService(root);
   const llm = new PluginLlmService(root, agents);
+  const reasoning: Array<'least' | undefined> = [];
   llm.bindRuntime({
-    generate: async (_input, invocation) => ({ text: invocation.sessionId, modelId: 'host' }),
+    generate: async (input, invocation) => {
+      reasoning.push(input.reasoning);
+      return { text: invocation.sessionId, modelId: 'host' };
+    },
   });
   const plugin = root.extend({
     maka: { rootId: 'profile', packageId: 'fixture', entryId: 'fixture', generation: 1 },
@@ -50,6 +54,8 @@ test('llm generation uses Host authority unless a matching adapter overrides it'
   };
   await agents.withInvocation(context, async () => {
     assert.equal((await llm.generate({ prompt: 'hello' })).text, 'session-a');
+    assert.equal((await llm.generate({ prompt: 'screen', reasoning: 'least' })).text, 'session-a');
+    assert.deepEqual(reasoning, [undefined, 'least']);
     assert.equal((await llm.generate({ prompt: 'hello', model: 'fixture/model' })).text, 'adapter');
   });
   await root.fiber.dispose();

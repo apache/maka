@@ -110,7 +110,7 @@ for (const intakeEnabled of [true, false]) {
     assert.equal(f.counts().workerCalls, 2, 'periodic discovery progresses during the outage');
     f.ctx.sources.authorize = authorize;
     f.agent.snapshot = async () => ({ agent: { status: 'idle' } });
-    f.advance(31000);
+    f.advance(15 * 60000);
     await f.q.dispatch();
     await f.q.running;
     assert.equal(
@@ -169,6 +169,7 @@ for (const capacity of [5500, 1000000]) {
       await f.q.running;
       assert.equal(f.q.state().lastError, null);
       assert.ok(f.prompts.length > 0);
+      f.advance(15 * 60000);
     }
     assert.deepEqual(seen, ids);
     assert.ok(f.prompts.length > 1);
@@ -266,6 +267,7 @@ test('old oversized captures recover on a fresh worker and retain the remaining 
   assert.equal(f.q.store.worker('poisoned')?.contextKey, 'legacy');
   assert.ok(f.q.intake.status().wakes.find((x: any) => x.status === 'pending')?.count > 0);
   await f.q.control({ action: 'configure', eventIntake: false });
+  f.advance(15 * 60000);
   await f.q.dispatch();
   await f.q.running;
   assert.equal(created, 1, 'normal legacy reuse continues on the recovered worker');
@@ -318,7 +320,7 @@ test('a hint captured hours ago cannot pass for a fresh discovery', async (t) =>
     'hints are ordered oldest first, so the stale one is not presented as the latest',
   );
   assert.ok(
-    prompt.includes('年龄大的线索很可能早已处理过'),
+    prompt.includes('年龄大的线索可能已处理'),
     'the prompt tells the worker how to read an old hint',
   );
   assert.equal(status(f, 'stale-hint'), 'delivered');

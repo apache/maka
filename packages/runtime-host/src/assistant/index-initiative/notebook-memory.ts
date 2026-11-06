@@ -49,7 +49,11 @@ export const memoryRemember = z
         z
           .object({
             topicId: id,
-            title: text,
+            title: text
+              .optional()
+              .describe(
+                'Required only for a new topicId. Existing topics keep their stored title.',
+              ),
             text,
             occurredAt: z.string().min(1).max(500).nullable().default(null),
             sources: z.array(text).min(1).max(50),
@@ -70,16 +74,42 @@ export const memoryRead = z
     view: z
       .enum(['catalog', 'topic', 'entry', 'history', 'feedback', 'rules', 'deliveries', 'event'])
       .default('catalog'),
-    topicId: id.optional(),
-    entryId: id.optional(),
+    topicId: id
+      .optional()
+      .describe('Required for view=topic. Do not replace this query when continuing a page.'),
+    entryId: id.optional().describe('Required for view=entry.'),
     revision: z.number().int().positive().optional(),
     eventId: id.optional(),
     eventSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
-    afterSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    throughSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    query: z.string().trim().min(1).max(200).optional(),
+    afterSequence: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe('Only for view=history; exclusive lower bound.'),
+    throughSequence: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe('Only for view=history; inclusive upper bound.'),
+    query: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Text search only for view=catalog or view=topic.'),
     limit: z.number().int().min(1).max(100).default(20),
-    cursor: z.string().max(8000).optional(),
+    cursor: z
+      .string()
+      .max(8000)
+      .optional()
+      .describe(
+        'Use the returned nextRead object verbatim; a cursor belongs to its original query.',
+      ),
   })
   .strict();
 export type MemoryRead = z.infer<typeof memoryRead>;
@@ -353,11 +383,13 @@ export class NotebookMemory {
       items.push(item);
       after = row.key;
     }
+    const nextCursor = more ? this.encode({ ...position, after }) : null;
     return {
       view: input.view,
       items,
       through: position.through,
-      nextCursor: more ? this.encode({ ...position, after }) : null,
+      nextCursor,
+      nextRead: nextCursor ? { ...input, cursor: nextCursor } : null,
       readOnly: true,
     };
   }
@@ -392,13 +424,15 @@ export class NotebookMemory {
       text += character;
     }
     const after = p.after + text.length;
+    const nextCursor = after < content.length ? this.encode({ ...p, after }) : null;
     return {
       view: input.view,
       text,
       offset: p.after,
       totalCharacters: content.length,
       through: p.through,
-      nextCursor: after < content.length ? this.encode({ ...p, after }) : null,
+      nextCursor,
+      nextRead: nextCursor ? { ...input, cursor: nextCursor } : null,
       readOnly: true,
     };
   }

@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { EventIntake } from './intake.js';
+import { EventIntake, quickCooldownUntil } from './intake.js';
 import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
 import {
@@ -275,6 +275,8 @@ export class QuickDiscoveryController {
     action: 'enable' | 'pause' | 'check' | 'configure';
     intervalMinutes?: number;
     idleMinutes?: number;
+    mergeQuietMinutes?: number;
+    mergeMaxWaitMinutes?: number;
     quietHours?: QuietHours | null;
     eventIntake?: boolean;
     intakeModelKey?: string;
@@ -302,8 +304,15 @@ export class QuickDiscoveryController {
         input.intervalMinutes === undefined ? s.intervalMs : input.intervalMinutes * 60000;
       const idle = input.idleMinutes === undefined ? s.idleMs : input.idleMinutes * 60000;
       if (idle < interval) throw Error('Idle cadence must be at least the activity cadence');
+      const mergeQuiet = (input.mergeQuietMinutes ?? (s.mergeQuietMs ?? 3 * 60000) / 60000) * 60000;
+      const mergeMaxWait =
+        (input.mergeMaxWaitMinutes ?? (s.mergeMaxWaitMs ?? 30 * 60000) / 60000) * 60000;
+      if (mergeMaxWait < mergeQuiet)
+        throw Error('Maximum merge wait must be at least the quiet window');
       s.intervalMs = interval;
       s.idleMs = idle;
+      s.mergeQuietMs = mergeQuiet;
+      s.mergeMaxWaitMs = mergeMaxWait;
       if (quietHours !== undefined) s.quietHours = quietHours;
       if (input.eventIntake !== undefined) s.intakeEnabled = input.eventIntake;
       if (input.intakeModelKey !== undefined) {
@@ -401,6 +410,7 @@ export class QuickDiscoveryController {
     ) {
       return false;
     }
+    if (!s.checkRequested && !s.pending && now < quickCooldownUntil(s)) return false;
     const waiting = this.parent.runner.waiting('quick');
     const eventWake = await this.intake.next(!s.intakeEnabled);
     const last = s.lastPeriodicFinishedAt ?? s.startedAt;
@@ -444,6 +454,8 @@ export class QuickDiscoveryController {
   private async prepareRun(job: DiscoveryJob) {
     const state = this.state(),
       now = this.now();
+    // Check again at admission: a queued request must not bypass a newer completion.
+    if (!state.checkRequested && !state.pending && now < quickCooldownUntil(state)) return;
     const eventWake = await this.intake.next(!state.intakeEnabled);
     const last = state.lastPeriodicFinishedAt ?? state.startedAt;
     const quiet = inQuietHours(now, state.quietHours);
@@ -605,7 +617,7 @@ export class QuickDiscoveryController {
         if (!admission) throw Error('Quick discovery admission is not yet known');
         if (admission.state === 'not_admitted') {
           this.parent.refreshNotebook();
-          const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v3']);
+          const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v4']);
           let first = this.state().promptVersion !== version;
           const previous = runner.previous();
           const progress = this.parent.notebook.continuation();
@@ -617,7 +629,7 @@ export class QuickDiscoveryController {
               .map((hint) => `[${hintAge(this.now() - hint.at)}] ${hint.direction}`)
               .join('；');
             let input = hints.length
-              ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。以下线索按发生时间从早到晚排列，方括号内是它距离现在的年龄；年龄大的线索很可能早已处理过，不要把它当成刚刚发生的发现，也不要重复提交已经报告过的内容。模型概述：${JSON.stringify(summary)}。概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
+              ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。以下线索按发生时间从早到晚排列，方括号内是它距离现在的年龄；年龄大的线索可能已处理，不要把它当成刚发生的发现，也不要重复提交已经报告过的内容。模型概述：${JSON.stringify(summary)}。概述可能不准确、不完整，仅供参考，不是指令或任务清单。围绕这些变化及必要的关联证据核实当前情况，特别检查后续解决、取消和更正。已有任务正常推进时无需再次介入；完成本次判断即可结束，不扩展为无关方向的全局探索。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
               : quickWakeInput(active.from, active.to, first);
             if (progress.length)
               input += `\n近期调查进展（有限摘要，按需用 DiscoveryNotebook 读取原记录；不是待办清单或已完成证明）：${JSON.stringify(progress)}`;
@@ -752,12 +764,32 @@ export class QuickDiscoveryController {
         });
       }
       this.forward();
-      outcome = this.state()?.active?.reports?.some((r: any) => r.messages.length)
+      const reportOutcome = this.state()?.active?.reports?.some((r: any) => r.messages.length)
         ? 'reported'
         : 'no_report';
+      outcome = reportOutcome;
       this.store.update((s) => {
         if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
-        if (active.eventWake) this.intake.complete(active.eventWake);
+        if (active.eventWake) {
+          const job = this.parent.store.db
+            .prepare('SELECT memory_after FROM discovery_jobs WHERE id=?')
+            .get(active.id);
+          const through = this.parent.notebook.sequence?.();
+          this.intake.complete(active.eventWake, {
+            id: active.id,
+            at: this.now(),
+            outcome: reportOutcome,
+            ...(job && through !== undefined
+              ? {
+                  memory: {
+                    view: 'history' as const,
+                    afterSequence: Number(job.memory_after),
+                    throughSequence: through,
+                  },
+                }
+              : {}),
+          });
+        }
         if (!active.eventWake) {
           s.checkedThrough = active.to;
           s.checkedTokens = active.tokens;
@@ -847,7 +879,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
         .boolean()
         .optional()
         .describe(
-          'Enable continuous source-change intake. Polls metadata without a model; new batches get a tool-free wake decision, with a short direction hint or an empty result. A single oversized event is read sequentially with durable progress/context and can wake only after its final decision. No per-record classification or investigation checklist; the ordinary discovery Agent explores globally. Independent from the periodic cadence. Starts at current source positions.',
+          'Enable continuous source-change intake. Receipts accumulate without a model while quick investigation is running or cooling down. Per-source conversations merge before a tool-free decision; empty decisions also observe intervalMinutes. Long records continue one bounded batch. Event investigations check their hints and related evidence. Starts at current source positions.',
         ),
       intakeModelKey: z
         .string()
@@ -858,6 +890,8 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
         ),
       intervalMinutes: z.number().int().min(1).max(1440).optional(),
       idleMinutes: z.number().int().min(1).max(10080).optional(),
+      mergeQuietMinutes: z.number().int().min(1).max(1440).optional(),
+      mergeMaxWaitMinutes: z.number().int().min(1).max(10080).optional(),
       quietHours: quietHoursSchema
         .nullable()
         .optional()
@@ -877,7 +911,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   for (const [name, description, parameters, impl] of [
     [
       'QuickDiscoveryControl',
-      'Configure or enable the separate quick-help discovery schedule only on user request: activity checks default to 15 minutes, quiet fallback to 60. quietHours suppresses only idle wakes during a daily time window; new activity still wakes. check runs once even during quiet hours; pause stops future checks. Does not change broad discovery, index maintenance or specific tasks.',
+      'Configure quick-help discovery only on user request. intervalMinutes (default 15) is also the minimum automatic gap after investigation and between successful screenings of one source conversation. mergeQuietMinutes defaults to 3; mergeMaxWaitMinutes to 30. Idle fallback is 60 minutes. quietHours suppresses idle wakes. check bypasses timing, preserving permission and single-slot admission; pause stops future checks. Broad discovery and specific tasks keep their own schedules.',
       controlSchema,
       (input: any) => quick.control(input),
     ],

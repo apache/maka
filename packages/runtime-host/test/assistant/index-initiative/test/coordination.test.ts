@@ -198,7 +198,7 @@ test('screening continues while broad is running; queued hints coalesce and late
   for (const id of ['one', 'two']) {
     f.add(id);
     await f.q.intake.collect();
-    f.advance();
+    f.advance(15 * 60000);
     await f.q.intake.judge();
     await f.q.dispatch();
   }
@@ -218,12 +218,15 @@ test('screening continues while broad is running; queued hints coalesce and late
   await f.q.dispatch();
   await f.q.running;
   assert.equal(f.counts().workerCalls, 1);
-  assert.equal((await f.q.intake.next())?.ids.length, 1);
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.intake.status().counts.find((row) => row.status === 'pending')?.count, 1);
   await f.q.dispatch();
   assert.equal(f.counts().workerCalls, 1, 'queued broad is served before another quick wake');
   assert.equal(c.status().running?.lane, 'broad');
   await broad.finish();
   f.agent.whenIdle = idle;
+  f.advance(15 * 60000);
+  await f.q.intake.judge();
   await f.q.dispatch();
   await f.q.running;
   assert.equal(f.counts().workerCalls, 2);

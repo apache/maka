@@ -154,7 +154,7 @@ export async function intakeFixture() {
     delivered,
     messages,
     sourceCalls,
-    advance: (n = 6000) => {
+    advance: (n = 3 * 60000 + 6000) => {
       now += n;
     },
     fail: (v: boolean) => {

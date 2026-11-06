@@ -64,11 +64,29 @@ function pages(book: Notebook, input: any) {
   let result: any = book.readMemory(input);
   const items = [...result.items];
   while (result.nextCursor) {
-    result = book.readMemory({ ...input, cursor: result.nextCursor });
+    result = book.readMemory(result.nextRead);
     items.push(...result.items);
   }
   return items;
 }
+
+test('existing topic notes use the stored title while new topics still require one', (t) => {
+  const book = fixture(t);
+  const { title: _, ...withoutTitle } = note('New evidence.');
+  commit(book, 'append', { notes: [withoutTitle] });
+  commit(book, 'append', { notes: [withoutTitle] });
+  commit(book, 'different-label', { notes: [{ ...note(), title: 'A different phrasing' }] });
+  assert.equal((book.readMemory({ view: 'catalog' }) as any).items[0].title, 'export');
+  assert.equal(pages(book, { view: 'topic', topicId: 'export', limit: 1 }).length, 3);
+  assert.throws(
+    () => commit(book, 'append', { notes: [{ ...withoutTitle, text: 'Changed retry' }] }),
+    /conflict/,
+  );
+  assert.throws(
+    () => commit(book, 'new', { notes: [{ ...withoutTitle, topicId: 'new' }] }),
+    /requires a title/,
+  );
+});
 
 test('legacy events migrate without changing originals or promoting observations to facts', (t) => {
   const file = directory(t);

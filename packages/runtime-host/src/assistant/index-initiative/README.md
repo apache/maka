@@ -20,9 +20,10 @@
 # Discovery execution
 
 Periodic broad discovery and quick discovery share one `DiscoveryRunner`.
-Broad exploration and judgement hold the same investigation slot. Source intake
-and screening can continue while an investigation runs; foreground Bot work
-uses its existing execution path.
+Broad exploration and judgement hold the same investigation slot. Source receipt
+continues while an investigation runs. Screening can run alongside broad discovery,
+but waits during quick investigation and its cooldown. Foreground Bot work uses
+its existing execution path.
 
 ## Authority and storage
 
@@ -64,6 +65,35 @@ Host execution snapshot.
 Positive absence permits redelivery; confirmed failure permits a new message
 identity. Stable notebook operation IDs and Bot message IDs protect settlement.
 
+## Quick discovery cadence
+
+Automatic event and periodic quick investigations both wait `intervalMinutes`
+(default 15) after a completed quick investigation. Admission rechecks the deadline,
+so an already queued event cannot bypass it. An explicit `check` bypasses timing,
+not permissions or the occupied investigation slot. Existing failure retries and
+unresolved recovery keep their own rules.
+
+Receipts merge by source and conversation. A new screening batch waits for
+`mergeQuietMinutes` (default 3) without new events, or `mergeMaxWaitMinutes`
+(default 30) from its oldest pending receipt. Successful screenings, including
+empty decisions, also observe the per-conversation `intervalMinutes` gap.
+These are eligibility conditions, not a promise to start while the slot is busy.
+Original receipts remain durable. Long-record continuations and failed batches
+retain their progress and retry rules; they are not new batches. Restart preserves
+receipt times, screening history and investigation cooldowns.
+
+The existing `intake_meta` stores bounded per-group screening decisions and the
+last associated investigation reference. A multi-group decision is not attributed
+as an individual conclusion to every source. Investigation references indicate
+which run used a thread's hints, not complete coverage, matter completion or user
+delivery. Screening does not copy owner history or run another summary model.
+It explicitly requests the selected model's least supported reasoning mode through
+the existing Host model path; the owner Session's setting is unchanged.
+
+Quick investigation checks the trigger and necessary related evidence, then may
+finish without reporting. Global open-ended exploration remains with broad
+discovery. Status exposes merging, cooldown, retry and pending-investigation states.
+
 An intake acknowledgement may commit before the scheduler records completion.
 The job retains `executionCompleted`, so recovery finishes settlement without
 rerunning the model. A business completion followed by lease expiry is likewise
@@ -80,7 +110,13 @@ records. Broad discovery also receives bounded catalog and feedback pages.
 Workers can read current entries and additional history on demand. Progress is
 not a coverage certificate, and moderate repeated investigation is allowed.
 
-Permissions, source scopes, provider retry policy and cadence remain unchanged.
+Existing-topic notes use their stored title; only new topics require a title.
+Paged reads include a complete `nextRead` request so the model can retain query
+and snapshot identity. `ReplyDiscovery` requires Inbox discovery IDs and uses the
+same atomic Bot outbox/association commit as `SendUser`. Ordinary chat remains
+available; unlinked historical messages are not guessed or backfilled.
+
+Permissions, source scopes, provider retry policy and broad cadence remain unchanged.
 This implementation does not add parallel investigation slots, distributed
 ownership, semantic deduplication or automatic risk-based execution.
 

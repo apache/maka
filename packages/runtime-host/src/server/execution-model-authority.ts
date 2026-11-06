@@ -198,6 +198,7 @@ export interface HostPluginModel {
   }): Promise<PluginLlmBudget>;
   generate(input: {
     readonly sessionId: string;
+    readonly reasoning?: 'least';
     readonly modelKey?: string;
     readonly prompt: string;
     readonly system?: string;
@@ -248,6 +249,7 @@ export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPlugin
       maxOutputTokens,
       abortSignal,
       boundedInput,
+      reasoning,
     }: Parameters<HostPluginModel['generate']>[0]) => {
       const header = await headerFor(sessionId, modelKey);
       return runHostAuxiliaryModelCall(authority, {
@@ -257,6 +259,7 @@ export function createHostPluginModel(input: HostGoalEvaluatorInput): HostPlugin
         callKind: 'main',
         callId: `plugin_${authority.newId()}`,
         abortSignal,
+        reasoning,
         buildRequest: (target) => {
           const budget = boundedInput
             ? auxiliaryModelBudget(target.connection, target.model, maxOutputTokens)

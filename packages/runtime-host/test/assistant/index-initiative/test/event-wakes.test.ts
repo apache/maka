@@ -26,7 +26,10 @@ import { initializeQuickDiscovery } from '../../../../src/assistant/index-initia
 async function hint(f: any, id: string, direction: string) {
   f.add(id);
   await f.q.intake.collect();
-  f.advance();
+  const screened = f.q.intakeStore.db
+    .prepare("SELECT count(*) n FROM intake_meta WHERE key LIKE 'screening:%'")
+    .get().n;
+  f.advance(screened ? 15 * 60000 : 3 * 60000);
   f.ctx.llm.generate = async () => ({ text: JSON.stringify(direction) });
   await f.q.intake.judge();
 }
@@ -200,7 +203,7 @@ test('a transient authorization failure between admission and hints keeps the wa
   );
 });
 
-test('new hints arriving during a wake are not consumed by that activation', async (t) => {
+test('new events arriving during a wake are not consumed by that activation', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());
   await f.q.intake.collect();
@@ -212,6 +215,10 @@ test('new hints arriving during a wake are not consumed by that activation', asy
   };
   await f.q.dispatch();
   await f.q.running;
+  assert.equal(await f.q.intake.next(), undefined);
+  assert.equal(f.q.intake.status().counts.find((row) => row.status === 'pending')?.count, 1);
+  f.advance(15 * 60000);
+  await f.q.intake.judge();
   const next = await f.q.intake.next();
   assert.equal(next?.ids.length, 1);
   assert.deepEqual(await f.q.intake.directions(next!), ['明天安排有变化']);
