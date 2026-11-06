@@ -528,8 +528,8 @@ export function createPlugins() {
     settings,
     renderer: (presentation) => (presentation == null ? undefined : renderers().get(presentation)),
     view,
-    renderView(target, contract, input) {
-      return renderEmbeddedView(manager, target, contract.id, input);
+    renderView(target, contract, input, options) {
+      return renderEmbeddedView(manager, target, contract.id, input, options);
     },
     render(reference: UiContributionRef, props: UiContributionProps) {
       return renderContribution(manager, reference, props);
