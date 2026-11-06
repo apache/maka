@@ -31,7 +31,7 @@ block2.workspace = true
 crossbeam-channel.workspace = true
 dispatch2.workspace = true
 objc2.workspace = true
-objc2-app-kit.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSStatusBar", "NSStatusBarButton", "NSStatusItem"] }
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
 objc2-core-text.workspace = true

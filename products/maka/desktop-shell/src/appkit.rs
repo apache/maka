@@ -18,8 +18,9 @@
  */
 
 //! The workbench in a window of NSH's AppKit backend, macOS's default. It has
-//! one Host: the window does not follow a Host that stops, and refuses a UI
-//! reload rather than pausing its input for one.
+//! one Host: closing destroys the UI, while Open builds a new UI on that same
+//! admitted connection. The window does not follow a Host that stops, and
+//! refuses a UI reload rather than pausing its input for one.
 
 use crate::{
     host::{self, Connection},
@@ -27,7 +28,7 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
+use nsh_platform_macos::{AppOptions, quit_app, run_resident_app_with_config, with_running_view};
 use tokio::{runtime::Runtime, sync::watch};
 
 pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
@@ -40,7 +41,8 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let directory = config
         .data_dir
         .as_ref()
-        .expect("Host admission sets the client directory");
+        .expect("Host admission sets the client directory")
+        .clone();
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
@@ -49,7 +51,7 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .get::<UiReload>()
         .expect("the admitted workbench owns its UI reload channel")
         .take_requests();
-    let config = shell.attach(config);
+    drop(config);
     carry_out(requests, &runtime);
     refuse_reloads(reloading, &runtime);
     let options = AppOptions {
@@ -60,9 +62,25 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         frame_autosave_name,
         ..Default::default()
     };
-    run_app_with_config(config, options, move |is_active| {
-        active.send_replace(is_active);
-    });
+    let ui_bindings = bindings.clone();
+    let ui_runtime = runtime.handle().clone();
+    let ui_shell = shell.clone();
+    run_resident_app_with_config(
+        options,
+        move || {
+            let mut config =
+                maka_workbench::configuration(ui_bindings.registry(None), ui_runtime.clone());
+            config.context = config.context.with(ui_bindings.reload());
+            config.data_dir = Some(directory.clone());
+            config.assets = Some(ui_bindings.assets());
+            config.chunk_loader = Some(ui_bindings.chunk_loader());
+            ui_shell.attach(config)
+        },
+        move |is_active| {
+            active.send_replace(is_active);
+        },
+        move || shell.release(),
+    );
     runtime.block_on(host::detach(bindings, &endpoint, epoch));
     runtime.shutdown_background();
     Ok(())
