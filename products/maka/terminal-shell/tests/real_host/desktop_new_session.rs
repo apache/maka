@@ -22,8 +22,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
     AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, ExternalPaths,
     FileDropEvent, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PlatformInput, TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point,
-    px, size,
+    MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TextInputTarget, TouchPhase,
+    WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -306,13 +306,20 @@ impl Desktop {
     }
 
     fn key(&self, name: &str, control: bool) {
-        let keystroke = Keystroke {
-            key: name.into(),
-            key_char: None,
-            modifiers: Modifiers {
+        self.key_with(
+            name,
+            Modifiers {
                 control,
                 ..Default::default()
             },
+        );
+    }
+
+    fn key_with(&self, name: &str, modifiers: Modifiers) {
+        let keystroke = Keystroke {
+            key: name.into(),
+            key_char: None,
+            modifiers,
         };
         self.platform
             .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
@@ -343,26 +350,24 @@ impl Desktop {
         .await;
     }
 
-    fn copy_input(&self) -> Option<String> {
-        // Outside an editor Ctrl+C interrupts, and its dialog refuses the focus
-        // being waited for.
-        self.platform.text_input_target()?;
+    async fn copy_input(&self) -> String {
+        self.target_after(None).await;
+        let _ = self.platform.take_clipboard_write();
         self.key("a", true);
         self.key("c", true);
-        self.platform
-            .take_clipboard_write()
-            .and_then(|item| item.text())
+        self.until("the selected draft was not copied", || {
+            self.platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await
     }
 
     async fn type_text(&self, text: &str) {
-        let _ = self.platform.take_clipboard_write();
-        self.until("the editor did not accept the draft", || {
-            self.platform.text_input_target()?;
-            self.key("a", true);
-            self.platform.paste(text).unwrap();
-            self.copy_input().filter(|copied| copied == text)
-        })
-        .await;
+        self.target_after(None).await;
+        self.key("a", true);
+        self.platform.paste(text).unwrap();
+        self.expect_text(text).await;
     }
 
     /// Enter does nothing until the typed draft can be sent.
@@ -372,25 +377,15 @@ impl Desktop {
     }
 
     async fn expect_text(&self, text: &str) {
-        let _ = self.platform.take_clipboard_write();
-        self.until("the expected draft did not appear in the editor", || {
-            self.copy_input().filter(|copied| copied == text)
-        })
-        .await;
-    }
-
-    async fn expect_editor_text(&self, expected: &str) {
-        self.until(
-            &format!("the native editor did not contain {expected:?}"),
-            || {
-                self.app
-                    .update(|cx| {
-                        self.window.update(cx, |view, window, cx| {
-                            view.text_for_range(0..u32::MAX as usize, &mut None, window, cx)
-                        })
-                    })
-                    .unwrap()
-                    .filter(|text| text == expected)
+        self.wait(
+            &format!("the expected draft {text:?} did not appear in the editor"),
+            async {
+                loop {
+                    let copied = self.copy_input().await;
+                    if copied == text {
+                        break;
+                    }
+                }
             },
         )
         .await;
@@ -456,6 +451,21 @@ impl Desktop {
         })
     }
 
+    async fn composer_height(
+        &self,
+        stage: &str,
+        ready: impl Fn(gpui::Pixels) -> bool,
+    ) -> gpui::Pixels {
+        self.until(stage, || {
+            let fields = self.controls("Focus message composer");
+            let [field] = fields.as_slice() else {
+                return None;
+            };
+            (field.size.height > px(0.) && ready(field.size.height)).then_some(field.size.height)
+        })
+        .await
+    }
+
     /// Where the window shows the one control labelled `label`, once it does.
     async fn control(&self, label: &str) -> Bounds<gpui::Pixels> {
         self.until(&format!("no single control labelled {label}"), || {
@@ -478,6 +488,36 @@ impl Desktop {
 
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         self.click_at(position, MouseButton::Left);
+    }
+
+    /// Scrolls whatever is under `position` down by `distance`.
+    fn scroll_at(&self, position: gpui::Point<gpui::Pixels>, distance: gpui::Pixels) {
+        self.platform
+            .dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.0), -distance)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            }))
+            .unwrap();
+        self.pump();
+    }
+
+    /// Scrolls the page until the control labelled `label` ends above the one
+    /// labelled `footer`, as a person reveals a row a fixed footer covers.
+    async fn reveal_above(&self, label: &str, footer: &str) {
+        let limit = self.control(footer).await.top();
+        let x = self.control(label).await.center().x;
+        self.retry(
+            &format!("{label} stayed under {footer}"),
+            || {
+                self.controls(label)
+                    .first()
+                    .is_some_and(|row| row.bottom() <= limit)
+            },
+            || self.scroll_at(point(x, limit - px(40.0)), px(120.0)),
+        )
+        .await;
     }
 
     fn click_at(&self, position: gpui::Point<gpui::Pixels>, button: MouseButton) {
@@ -746,7 +786,7 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
         .unwrap();
     desktop.target_after(None).await;
     let _ = desktop.platform.take_clipboard_write();
-    assert_eq!(desktop.copy_input().unwrap_or_default(), "");
+    assert!(desktop.controls("Send message").is_empty());
     assert!(
         desktop
             .controls(&format!(
@@ -1382,13 +1422,21 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
 async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let directory = fixture.directory.path().join("未命名文件夹 2");
+    // Observe the wrapped path before copying: Select All would cancel an
+    // insertion whose file intake is still pending.
+    let directory = fixture
+        .directory
+        .path()
+        .join(format!("{}未命名文件夹 2", "x".repeat(220)));
     std::fs::create_dir(&directory).unwrap();
     for (pending, blur) in [(false, false), (false, true), (true, true)] {
-        if pending {
+        let pending_height = if pending {
             desktop.new_draft().await;
             desktop.type_text("查看 ").await;
             desktop.key("right", false);
+            let before = desktop
+                .composer_height("the pending composer did not lay out", |_| true)
+                .await;
             assert!(desktop.app.update(|cx| {
                 desktop
                     .window
@@ -1400,20 +1448,49 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
                     })
                     .unwrap()
             }));
-            desktop
-                .expect_editor_text(&format!("查看 {}", directory.display()))
+            let height = desktop
+                .composer_height("the pasted directory did not wrap", |height| {
+                    height > before
+                })
                 .await;
-        }
+            desktop
+                .expect_text(&format!("查看 {}", directory.display()))
+                .await;
+            Some(height)
+        } else {
+            None
+        };
         let original = "前😀待替换 后";
         desktop.type_text(original).await;
-        desktop.app.update(|cx| {
-            desktop
-                .window
-                .update(cx, |view, window, cx| {
-                    view.set_selected_text_range(3..6, window, cx);
-                })
-                .unwrap();
-        });
+        let before = desktop
+            .composer_height("the short draft did not lay out", |height| {
+                pending_height.is_none_or(|pending| height < pending)
+            })
+            .await;
+        desktop.key("home", false);
+        for _ in 0..2 {
+            desktop.key("right", false);
+        }
+        for _ in 0..3 {
+            desktop.key_with(
+                "right",
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            );
+        }
+        let _ = desktop.platform.take_clipboard_write();
+        desktop
+            .until("the replacement range was not selected", || {
+                desktop.key("c", true);
+                desktop
+                    .platform
+                    .take_clipboard_write()
+                    .and_then(|item| item.text())
+                    .filter(|text| text == "待替换")
+            })
+            .await;
         if blur {
             desktop.key("tab", false);
             desktop
@@ -1445,11 +1522,21 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             })
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
+        let expanded = desktop
+            .composer_height("the dropped directory did not wrap", |height| {
+                height > before
+            })
+            .await;
         let expected = format!("前😀{} 后", directory.display());
-        desktop.expect_editor_text(&expected).await;
+        desktop.expect_text(&expected).await;
         assert_eq!(desktop.sessions().await.len(), 1);
         desktop.key("z", true);
-        desktop.expect_editor_text(original).await;
+        desktop.expect_text(original).await;
+        desktop
+            .composer_height("the restored draft did not shrink", |height| {
+                height < expanded
+            })
+            .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
     let (path, _) = image_file(&fixture);
@@ -1687,6 +1774,9 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         assert_eq!(outcome["discoveries"], 2);
     }
     desktop.artifact(&format!("connection-ready-{theme}-{layout}"));
+    desktop
+        .reveal_above("Manage models", "Delete connection")
+        .await;
     desktop.press("Manage models").await;
     desktop.control("Edit model gpt-4.1").await;
     desktop.press("Set default gpt-4.1").await;
@@ -2278,7 +2368,18 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             .controls("Open source conversation beside this one")
             .is_empty()
     );
-    desktop.press("Turn work details").await;
+    desktop
+        .retry(
+            "the completed child work details did not open",
+            || !desktop.controls("Process group").is_empty(),
+            || {
+                let controls = desktop.controls("Turn work details");
+                if controls.len() == 1 {
+                    desktop.press_at(controls[0].center());
+                }
+            },
+        )
+        .await;
     let group = desktop.control("Process group").await;
     desktop.press("Process group").await;
     let message = desktop.control("Agent message").await;
@@ -2511,9 +2612,10 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     )
     .await;
     let before = desktop.control("Focus message composer").await;
-    let draft = (0..200)
+    let mut draft = (0..200)
         .map(|i| format!("Traceback line {i}: a long pasted diagnostic with paths and details\n"))
         .collect::<String>();
+    draft.push_str("请检查 /skill:review 这个问题");
     // TerminalPlatform::paste injects IME text, which strips control characters.
     // Native clipboard paste keeps the diagnostic's line breaks.
     desktop
@@ -2588,32 +2690,28 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         Some((source, "en", "Local Host")),
     )
     .await;
-    desktop.control("Open Accessibility settings").await;
-    desktop
-        .control("Open Screen & System Audio Recording settings")
-        .await;
-    desktop.press("Show permission application in Finder").await;
+    desktop.press("Enable Accessibility…").await;
+    desktop.control("Requested accessibility").await;
+    desktop.press("Permission still not enabled?").await;
+    desktop.press("Show in Finder").await;
     desktop.control("Requested reveal_application").await;
     desktop.artifact("system-permission-native-guidance");
-    desktop.press("Open Accessibility settings").await;
-    desktop.control("Requested accessibility").await;
-    desktop.press("Cancel request").await;
-    desktop
-        .control("Request cancelled without granting access")
-        .await;
     for mode in ["Remote Host", "Older request"] {
         desktop.press(mode).await;
         desktop
             .until("remote or old request retained local actions", || {
-                (desktop
-                    .controls("Show permission application in Finder")
-                    .is_empty()
-                    && desktop.controls("Open Accessibility settings").is_empty())
+                (desktop.controls("Show in Finder").is_empty()
+                    && desktop.controls("Open Accessibility settings…").is_empty()
+                    && desktop.controls("Enable Accessibility…").is_empty())
                 .then_some(())
             })
             .await;
-        desktop.control("Cancel request").await;
+        desktop.control("Cancel setup").await;
     }
+    desktop.press("Cancel setup").await;
+    desktop
+        .control("Request cancelled without granting access")
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

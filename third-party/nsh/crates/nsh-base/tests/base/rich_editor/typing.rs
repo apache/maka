@@ -484,7 +484,11 @@ fn the_placeholder_hides_while_an_input_method_composes() {
 #[test]
 fn a_read_only_editor_ignores_typing_and_deleting() {
     let mut app = start_configured(paragraphs(&["ab"]), None, false);
-    let _ = app.type_text("id:editor", "xyz");
+    assert!(
+        app.type_text("id:editor", "xyz")
+            .unwrap_err()
+            .contains("not editable")
+    );
     keys(&mut app, &["end", "backspace", "enter"]);
     let _ = app.type_text("id:editor", "q");
     app.wait(Duration::from_millis(200)).unwrap();
@@ -495,7 +499,7 @@ fn a_read_only_editor_ignores_typing_and_deleting() {
 #[test]
 fn a_read_only_editor_still_moves_the_caret() {
     let mut app = start_configured(paragraphs(&["ab"]), None, false);
-    let _ = app.type_text("id:editor", "");
+    app.press("text:ab").unwrap();
     keys(&mut app, &["end"]);
     see(&mut app, "Sel 3-3");
 }

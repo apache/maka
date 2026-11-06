@@ -42,7 +42,7 @@ impl Presentation {
 }
 
 async fn component(scenario: &'static str) -> AppView {
-    let mut registry = Registry::ui_set("maka/host");
+    let mut registry = maka_workbench::bindings::ui_registry();
     registry.value("host", move || {
         Instance::new(Presentation {
             scenario: scenario.into(),
@@ -72,6 +72,12 @@ async fn component(scenario: &'static str) -> AppView {
     })
     .unwrap();
     view
+}
+
+fn draft_is(view: &AppView, expected: &str) -> bool {
+    view.accessibility_snapshot()
+        .iter()
+        .any(|node| node.label == format!("Draft {expected}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -179,19 +185,12 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
     view.handle_event(TerminalEvent::Paste("/insp".into()));
     support::click_button(&mut view, "/inspect").await;
     wait_view(&mut view, |screen| screen.contains("command:inspect")).await;
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some(""))
-    })
-    .await;
+    wait_view_state(&mut view, |view, _| draft_is(view, "")).await;
     view.handle_event(TerminalEvent::Paste("check @docs/Rel".into()));
+    wait_view(&mut view, |screen| screen.contains("files:Rel:ZG9jcw==")).await;
     support::click_button(&mut view, "docs/Release Notes.md").await;
-    wait_view_state(&mut view, |view, screen| {
-        screen.contains("files:Rel:ZG9jcw==")
-            && view.surface().input_context().is_some_and(|input| {
-                input.text.as_deref() == Some("check @\"docs/Release Notes.md\" ")
-            })
+    wait_view_state(&mut view, |view, _| {
+        draft_is(view, "check @\"docs/Release Notes.md\" ")
     })
     .await;
 }
@@ -207,10 +206,7 @@ async fn composer_tab_accepts_prediction_as_an_undoable_draft_then_navigates() {
     )));
     wait_view_state(&mut view, |view, screen| {
         screen.contains("No command")
-            && view
-                .surface()
-                .input_context()
-                .is_some_and(|input| input.text.as_deref() == Some("Review the changes."))
+            && draft_is(view, "Review the changes.")
             && !view
                 .accessibility_snapshot()
                 .iter()
@@ -233,12 +229,7 @@ async fn composer_tab_accepts_prediction_as_an_undoable_draft_then_navigates() {
     )));
     wait_focused_input(&mut view, "Message composer").await;
     shortcut(&mut view, 'z');
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some(""))
-    })
-    .await;
+    wait_view_state(&mut view, |view, _| draft_is(view, "")).await;
     view.handle_event(TerminalEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
@@ -271,10 +262,7 @@ async fn composer_prediction_preserves_reverse_tab_and_escape_restores_forward_t
         KeyModifiers::NONE,
     )));
     wait_focused_input(&mut view, "Message composer").await;
-    assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
-        Some("")
-    );
+    assert!(draft_is(&view, ""));
     wait_enabled_node(&mut view, "Use suggested message").await;
     view.handle_event(TerminalEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -311,12 +299,7 @@ async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chi
     })
     .await;
     support::click_button(&mut view, "Review changes").await;
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some("before /skill:review "))
-    })
-    .await;
+    wait_view_state(&mut view, |view, _| draft_is(view, "before /skill:review ")).await;
     view.handle_event(TerminalEvent::Key(KeyEvent::new(
         KeyCode::Backspace,
         KeyModifiers::NONE,
@@ -326,10 +309,5 @@ async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chi
         KeyCode::Backspace,
         KeyModifiers::NONE,
     )));
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some("before "))
-    })
-    .await;
+    wait_view_state(&mut view, |view, _| draft_is(view, "before ")).await;
 }

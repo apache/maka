@@ -16,6 +16,7 @@ ICONS = [
     'archive',
     'arrow-down',
     'arrow-up',
+    'book',
     'brain',
     'check',
     'chevron-down',

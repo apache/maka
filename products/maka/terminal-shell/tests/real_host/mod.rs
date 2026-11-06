@@ -51,10 +51,7 @@ async fn reconnect_preserves_the_last_edit_accepted_by_the_old_workbench() {
             .unwrap();
     }
     wait_editable_composer(&mut view).await;
-    assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
-        Some("SAVED_DRAFT_LAST_EDIT")
-    );
+    wait_view(&mut view, |screen| screen.contains("SAVED_DRAFT_LAST_EDIT")).await;
     support::wait_draft(&client, &fixture.session, "SAVED_DRAFT_LAST_EDIT").await;
     drop(view);
     bindings.close().await.unwrap();
@@ -106,6 +103,7 @@ async fn wait_focused_input(view: &mut AppView, label: &str) {
         })
     })
     .await;
+    commit_native_events(view).await;
 }
 
 async fn editable(view: &mut AppView, label: &str) {
@@ -228,10 +226,7 @@ async fn product_composition_sends_streams_and_restores_history_with_a_later_dra
     })
     .await;
     wait_editable_composer(&mut view).await;
-    assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
-        Some("A later draft remains private")
-    );
+    support::wait_draft(&reopened, &fixture.session, "A later draft remains private").await;
     support::click_button(&mut view, "Copy message").await;
     wait_view(&mut view, |screen| screen.contains("Message copied")).await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);

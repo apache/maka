@@ -22,6 +22,7 @@ import { Button, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
+import { closeCjkEmphasis } from './markdownEmphasis';
 import { Text } from 'nsh';
 import { Icon } from './Icon';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
@@ -45,7 +46,7 @@ export function BotReply(props: {
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
         {(message) => (
           <TextView
-            markdown={message().text}
+            markdown={closeCjkEmphasis(message().text)}
             extensions={mermaidExtensions}
             renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
             sourceId={`bot/${message().sequence}`}

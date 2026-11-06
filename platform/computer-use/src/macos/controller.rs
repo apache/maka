@@ -398,6 +398,18 @@ impl Controller {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Whether a fresh binding may share this owner; issued handles never revive it.
+    pub(crate) fn accepts_bindings(&self) -> bool {
+        matches!(
+            *self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("AX controller lifecycle poisoned"),
+            Lifecycle::Dormant | Lifecycle::Starting(_) | Lifecycle::Running(_)
+        )
+    }
+
     async fn transport(&self) -> Result<Arc<Transport>, ToolError> {
         loop {
             let pending = {

@@ -19,8 +19,8 @@
 
 import { mount, View, Text, signal } from 'nsh';
 import { Button } from 'nsh/base';
-import { SystemPermissionRequest } from '../../../workbench/app/SystemPermissionRequest';
-import { SystemPermissionActions } from '../../../workbench/app/InteractionComposer';
+import { ComputerPermissionSetup } from '../../../workbench/app/ComputerPermissionSetup';
+import type { ComputerPermissionClient } from '../../../workbench/app/computerPermissionSetupState';
 import { C, bodyTextStyle } from '../../../workbench/app/ui';
 
 const mode = signal('local');
@@ -33,6 +33,22 @@ const request = {
 };
 const actions = () =>
   mode() === 'local' ? ['accessibility', 'screen_recording', 'reveal_application'] : [];
+const status = () => ({
+  outcome: null,
+  requestable: mode() === 'local',
+  grants: request.grants.map((grant) => ({ grant, effective: false })),
+});
+const client: ComputerPermissionClient = {
+  status: async () => status(),
+  actions: async () => actions(),
+  request: async () => status(),
+  action: async (action) => {
+    result.set('Requested ' + action);
+  },
+  cancel: async () => {
+    result.set('Request cancelled without granting access');
+  },
+};
 
 mount(() => (
   <View style={{ flexGrow: 1, padding: 32, backgroundColor: C.background, gap: 16 }}>
@@ -48,16 +64,7 @@ mount(() => (
         <Text style={{ ...bodyTextStyle, color: C.text }}>Older request</Text>
       </Button>
     </View>
-    <SystemPermissionRequest
-      request={request}
-      canLocate={actions().includes('reveal_application')}
-    />
-    <SystemPermissionActions
-      request={request}
-      actions={actions()}
-      onCancel={() => result.set('Request cancelled without granting access')}
-      onAction={(action) => result.set('Requested ' + action)}
-    />
+    <ComputerPermissionSetup request={request} client={client} presentation="inline" />
     <Button accessibilityLabel={result()} onPress={() => {}}>
       <Text style={{ ...bodyTextStyle, color: C.text }}>{result()}</Text>
     </Button>

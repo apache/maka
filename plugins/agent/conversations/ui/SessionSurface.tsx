@@ -56,6 +56,7 @@ import {
   type ConversationPreviewInput,
   type ConversationSessionHandle,
   type ComposerSession,
+  type ComposerFocusHandle,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
@@ -354,7 +355,7 @@ export function createConversationUi(
   };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   const fileDragging = signal(false);
-  let editor: { focus(): void } | undefined;
+  let editor: ComposerFocusHandle | undefined;
   const composerSession = computed(() => {
     const owner = handle();
     return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
@@ -1570,23 +1571,30 @@ export function createConversationUi(
   // A side pane binds its conversation's keys within itself, so they take
   // over from the main pane's only while focus is there.
   const unbindKeys: (() => void)[] = [];
+  const unbindEditorKeys: (() => void)[] = [];
   cleanup(() => {
-    for (const unbind of unbindKeys.splice(0)) unbind();
+    for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
   });
-  const bindKeys = (within?: ViewRef) => {
+  const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
+    if (input)
+      unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
     const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
-    unbindKeys.push(keymap.bind('mod+p', () => invokeOwn('commands'), options));
-    if (ownTitleBar) unbindKeys.push(keymap.bind('mod+f', () => invokeOwn('find'), options));
-    unbindKeys.push(keymap.bind('mod+g', () => invokeOwn('models'), options));
-    unbindKeys.push(keymap.bind('mod+l', () => invokeOwn('latest'), options));
-    unbindKeys.push(keymap.bind('alt+up', () => invokeOwn('history-focus'), options));
-    unbindKeys.push(keymap.bind('alt+down', () => invokeOwn('activity-focus'), options));
-    if (within) return;
-    unbindKeys.push(keymap.bind('mod+o', () => invokeOwn('sessions'), options));
-    unbindKeys.push(keymap.bind('mod+n', () => invokeOwn('new'), options));
+    const bind = (key: string, action: () => void) => {
+      const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);
+      (input ? unbindEditorKeys : unbindKeys).push(unbind);
+    };
+    bind('mod+p', () => invokeOwn('commands'));
+    if (ownTitleBar) bind('mod+f', () => invokeOwn('find'));
+    bind('mod+g', () => invokeOwn('models'));
+    bind('mod+l', () => invokeOwn('latest'));
+    bind('alt+up', () => invokeOwn('history-focus'));
+    bind('alt+down', () => invokeOwn('activity-focus'));
+    if (side) return;
+    bind('mod+o', () => invokeOwn('sessions'));
+    bind('mod+n', () => invokeOwn('new'));
     if (ownTitleBar) {
-      unbindKeys.push(keymap.bind('mod+shift+]', () => stepSession(1), options));
-      unbindKeys.push(keymap.bind('mod+shift+[', () => stepSession(-1), options));
+      bind('mod+shift+]', () => stepSession(1));
+      bind('mod+shift+[', () => stepSession(-1));
     }
   };
   let sideKeys: ViewRef | undefined;
@@ -2031,6 +2039,11 @@ export function createConversationUi(
             if (workspace() !== next) workspace.set(next);
           },
         },
+        {
+          get loading() {
+            return input.surface !== 'overlays';
+          },
+        },
       );
     },
     session(input: ConversationSessionInput) {
@@ -2376,7 +2389,9 @@ export function createConversationUi(
                 </View>
               }
               attach={(node) => {
+                for (const unbind of unbindEditorKeys.splice(0)) unbind();
                 editor = node;
+                bindKeys(side ? paneRoot : undefined, node);
               }}
               commands={composerCommands}
               models={

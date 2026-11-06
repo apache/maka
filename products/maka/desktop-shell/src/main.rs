@@ -26,7 +26,7 @@
 //! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
 //! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
 //! the work it accepted. If that Host stops while the window is open, the
-//! GPUI window connects to the Root's next Host, which the launcher named by
+//! AppKit or GPUI window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
 //! On macOS, `MAKA_GPUI` selects the GPUI window (`window`) instead.
@@ -35,6 +35,10 @@
 mod appkit;
 #[cfg(windows)]
 mod direct2d;
+#[cfg(target_os = "macos")]
+mod permission_application;
+#[cfg(target_os = "macos")]
+mod permission_window;
 #[cfg(windows)]
 use direct2d as backend;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

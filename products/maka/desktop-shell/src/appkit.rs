@@ -20,15 +20,26 @@
 //! The workbench in a window of NSH's AppKit backend, macOS's default. It
 //! follows the Root's Host while keeping the workbench and local input alive.
 
+mod permissions;
+
 use crate::{
     host::{self, Connection, FIRST_PAUSE, RECONNECT_LIMIT, Root, STEADY},
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
-use maka_workbench::reload::Request;
+use maka_workbench::{bindings::SystemPermissionWindow, reload::Request};
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
-use std::time::Instant;
-use tokio::{runtime::Runtime, sync::watch};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
+use tokio::{
+    runtime::Runtime,
+    sync::{mpsc, watch},
+};
 
 pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
     let directory = first
@@ -43,7 +54,8 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let (quit, quitting) = watch::channel(false);
     carry_out(requests, &runtime);
     refuse_reloads(first.bindings.reload().take_requests(), &runtime);
-    let mut following = runtime.spawn(follow(first, root, quitting));
+    let windows = permission_requests(&first);
+    let mut following = runtime.spawn(follow(first, root, windows, quitting));
     let options = AppOptions {
         app_id: APP_ID.into(),
         title: TITLE.into(),
@@ -55,6 +67,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     run_app_with_config(config, options, move |is_active| {
         active.send_replace(is_active);
     });
+    permissions::close_all();
     quit.send_replace(true);
     runtime.block_on(async {
         // Admission can still be in flight when the window closes. Give it
@@ -109,16 +122,58 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
 }
 
-async fn follow(mut current: Connection, root: Root, mut quitting: watch::Receiver<bool>) {
+fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
+    let (send, receive) = mpsc::unbounded_channel();
+    connection.bindings.set_system_permission_windows(send);
+    receive
+}
+
+async fn follow(
+    mut current: Connection,
+    root: Root,
+    mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
+    mut quitting: watch::Receiver<bool>,
+) {
     let mut pause = FIRST_PAUSE;
     loop {
         let reached = Instant::now();
         if *quitting.borrow() {
             break;
         }
+        let alive = Arc::new(AtomicBool::new(true));
+        let stopped = host::stopped(current.endpoint.clone(), current.epoch);
+        tokio::pin!(stopped);
+        let reconnect = loop {
+            tokio::select! {
+                biased;
+                _ = quitting.changed() => break false,
+                () = &mut stopped => break true,
+                Some(request) = windows.recv() => {
+                    let alive = alive.clone();
+                    let config = current.config.clone();
+                    with_running_view(move |_| {
+                        if alive.load(Ordering::Acquire) {
+                            permissions::open(request, alive, &config);
+                        }
+                    });
+                }
+            }
+        };
+        alive.store(false, Ordering::Release);
+        // Reject queued and in-flight requests from the old Host generation.
+        windows.close();
+        while windows.try_recv().is_ok() {}
+        if !reconnect {
+            break;
+        }
+        let (closed, closing) = tokio::sync::oneshot::channel();
+        with_running_view(move |_| {
+            permissions::close_all();
+            let _ = closed.send(());
+        });
         tokio::select! {
             _ = quitting.changed() => break,
-            () = host::stopped(current.endpoint.clone(), current.epoch) => {}
+            _ = closing => {}
         }
         // Only the disconnected transport generation closes. Local journal
         // writes, native file selections and the JS workbench stay alive.
@@ -154,6 +209,7 @@ async fn follow(mut current: Connection, root: Root, mut quitting: watch::Receiv
                 Ok((endpoint, epoch)) => {
                     current.endpoint = endpoint;
                     current.epoch = epoch;
+                    windows = permission_requests(&current);
                     let _ = current
                         .config
                         .host

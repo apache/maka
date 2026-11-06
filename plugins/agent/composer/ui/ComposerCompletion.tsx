@@ -43,13 +43,17 @@ import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
 import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { createComposerPaste } from './composerPaste';
+import {
+  inputEditor,
+  type ComposerEditor,
+} from '../../../../products/maka/workbench/app/ComposerEditor';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
-type Editor = { sessionId: string | null; node: InputRef };
+type Editor = { sessionId: string | null; node: ComposerEditor };
 type Read = {
   serial: number;
   owner: ComposerSession;
-  editor: InputRef;
+  editor: ComposerEditor;
   text: string;
   selection: Selection;
   token: CompletionToken | null;
@@ -65,7 +69,7 @@ type Row = {
   id: string;
   title: string;
   detail?: string;
-  icon: 'paperclip' | 'file' | 'folder' | 'code' | 'command';
+  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command';
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -97,10 +101,10 @@ export function createComposerCompletion(options: Options) {
   const editor = signal<Editor | null>(null);
   const caret = signal<Bounds | null>(null);
   const selection = signal<Selection>({ start: 0, end: 0 });
-  const composing = signal(false);
+  const composing = () => !!editor()?.node.composing();
   const explicit = signal<Source | null>(null);
   const query = signal('');
-  const queryInput = signal<InputRef | null>(null);
+  const queryInput = signal<ComposerEditor | null>(null);
   const querySelection = signal<Selection>({ start: 0, end: 0 });
   const queryComposing = signal(false);
   const opened = signal<Read | null>(null);
@@ -248,7 +252,7 @@ export function createComposerCompletion(options: Options) {
             return tr('Use a skill');
           },
           detail: '/',
-          icon: 'code',
+          icon: 'book',
         }),
         ...options
           .commands()
@@ -370,7 +374,7 @@ export function createComposerCompletion(options: Options) {
           insert: skill.invocation,
           title: skill.name,
           detail: skill.description,
-          icon: 'code',
+          icon: 'book',
         }),
       ),
     );
@@ -635,47 +639,35 @@ export function createComposerCompletion(options: Options) {
     if (!target) return;
     const valid = () => current === read && owns(read);
     const unbind = [
-      keymap.bind(
-        'escape',
-        () => {
-          if (valid()) dismiss();
-        },
-        { when: 'always', within: target },
-      ),
+      target.bindKey('escape', () => {
+        if (valid()) dismiss();
+      }),
     ];
     if (loading() || rows().some((item) => !item.disabled)) {
       unbind.push(
-        keymap.bind(
+        target.bindKey(
           'down',
           () => {
             if (valid()) move(1);
           },
           {
-            when: 'always',
             repeat: true,
-            within: target,
           },
         ),
-        keymap.bind(
+        target.bindKey(
           'up',
           () => {
             if (valid()) move(-1);
           },
           {
-            when: 'always',
             repeat: true,
-            within: target,
           },
         ),
-        keymap.bind(
-          'enter',
-          () => {
-            if (!valid()) return;
-            const item = rows()[index()];
-            if (item) accept(item.action);
-          },
-          { when: 'always', within: target },
-        ),
+        target.bindKey('enter', () => {
+          if (!valid()) return;
+          const item = rows()[index()];
+          if (item) accept(item.action);
+        }),
       );
     }
     return () => unbind.forEach((remove) => remove());
@@ -724,16 +716,15 @@ export function createComposerCompletion(options: Options) {
       });
       close();
     },
-    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node)),
+    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node.anchor)),
     addButton(node: ViewRef) {
       addAnchor = node;
     },
-    attach(sessionId: string | null, node: InputRef) {
+    attach(sessionId: string | null, node: ComposerEditor) {
       directoryHint = null;
       editor.set({ sessionId, node });
       selection.set({ start: 0, end: 0 });
       caret.set(null);
-      composing.set(false);
       queryComposing.set(false);
       explicit.set(null);
     },
@@ -747,9 +738,6 @@ export function createComposerCompletion(options: Options) {
     },
     selection(owner: ComposerSession, event: Selection) {
       if (options.session() === owner) selection.set({ ...event });
-    },
-    composition(owner: ComposerSession | null, event: { composing: boolean }) {
-      if (options.session() === owner) composing.set(event.composing);
     },
     toggleAdd(target: { sessionId: string | null }) {
       const owner = options.session();
@@ -788,7 +776,7 @@ export function createComposerCompletion(options: Options) {
       list = node;
     },
     queryInput(node: InputRef) {
-      queryInput.set(node);
+      queryInput.set(inputEditor(node, queryComposing));
       querySelection.set({ start: 0, end: 0 });
       node.focus();
     },

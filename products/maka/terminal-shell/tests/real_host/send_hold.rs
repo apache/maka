@@ -77,7 +77,9 @@ async fn a_rejected_send_preserves_its_snapshot_and_the_next_draft() {
     support::click_button(&mut view, "Messages").await;
     // Check the composer only once the send has settled.
     let screen = wait_view_state(&mut view, |view, screen| {
-        screen.contains("/skill:missing-fixture first")
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == sent)
             && screen.contains("next draft")
             && screen.contains("Retry")
             && view

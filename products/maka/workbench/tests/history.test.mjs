@@ -27,6 +27,7 @@ import {
   replayStartCursor,
   updateHistoryMetadata,
 } from '../app/history.ts';
+import { hasSkillToken, skillTextGroups } from '../app/skillTokenText.ts';
 import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
 
 const user = (text, turnId, sequence) => ({
@@ -318,4 +319,17 @@ test('a script is shown as the tools it ran, and as itself only when it fails', 
   assert.deepEqual(failed.toolIds, ['exec', 'read']);
   assert.equal(failed.key, running.key, 'showing the script keeps the group open');
   assert.deepEqual(group(tool('exec', 1, [], { isError: false })).toolIds, ['exec']);
+});
+
+test('skill messages preserve adjacent UTF-8 chunks and do not join across unloaded gaps', () => {
+  const groups = skillTextGroups([
+    { offset: 0, text: '前😀 /ski' },
+    { offset: 12, text: 'll:review 后' },
+    { offset: 100, text: '/skill:partial' },
+  ]);
+  assert.deepEqual(groups, [
+    { offset: 0, text: '前😀 /skill:review 后' },
+    { offset: 100, text: '/skill:partial' },
+  ]);
+  assert.deepEqual(groups.map(hasSkillToken), [true, false]);
 });

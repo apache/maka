@@ -2059,6 +2059,14 @@ pub fn contract() -> Contract {
                     ),
                 ),
                 (
+                    "systemPermissionStatus".into(),
+                    method::<InteractionRead, SystemPermissionStatus>(MethodMode::Query),
+                ),
+                (
+                    "requestSystemPermission".into(),
+                    method::<RequestSystemPermission, SystemPermissionStatus>(MethodMode::Mutation),
+                ),
+                (
                     "respond".into(),
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
                 ),
