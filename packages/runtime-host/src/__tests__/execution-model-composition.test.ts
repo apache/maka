@@ -117,6 +117,7 @@ import {
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
   createHostPromptSuggestionModel,
+  createHostPluginModel,
   createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
@@ -4340,7 +4341,7 @@ test('production Host publishes and retires an implementation child patch', asyn
   }
 });
 
-test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async () => {
+test('Host auxiliary calls preserve Session reasoning and allow least reasoning for screening', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-deepseek-auxiliary-'));
   const provider = await startProvider();
   const capability = await resolveStorageRoot({
@@ -4409,6 +4410,31 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     assert.equal(request.url, '/v1/responses');
     assert.equal(request.authorization, `Bearer ${API_KEY}`);
     assert.deepEqual(request.body.reasoning, { effort: 'high' });
+    const plugin = createHostPluginModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      readSessionHeader: (id) => execution.sessionStore.readHeaderSnapshot(id),
+      requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
+    });
+    const call = {
+      sessionId: session.id,
+      prompt: 'Return an empty screening decision.',
+      maxOutputTokens: 2048,
+      boundedInput: true,
+      abortSignal: new AbortController().signal,
+    };
+    await plugin.generate({ ...call, reasoning: 'least' });
+    const screening = provider.requests.at(-1)!;
+    assert.equal(screening.authorization, `Bearer ${API_KEY}`);
+    assert.equal(screening.body.model, 'deepseek-v4-flash');
+    assert.deepEqual(screening.body.reasoning, { effort: 'low' });
+    assert.equal(
+      (await execution.sessionStore.readHeaderSnapshot(session.id))?.thinkingLevel,
+      'high',
+    );
+    await plugin.generate(call);
+    assert.deepEqual(provider.requests.at(-1)!.body.reasoning, { effort: 'high' });
   } finally {
     await owner.close();
     await provider.close();
@@ -6592,6 +6618,8 @@ async function handleProviderRequest(
         response,
         JSON.stringify({ kind: 'ranked', candidateRefs: ['whc_payments'] }),
       );
+    } else if (serialized.includes('Return an empty screening decision.')) {
+      respondProviderResponsesJsonText(response, JSON.stringify(''));
     } else {
       respondProviderResponsesText(response, RESPONSE_TEXT);
     }

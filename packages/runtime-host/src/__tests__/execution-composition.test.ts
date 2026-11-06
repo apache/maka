@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { QuickDiscoveryController } from '../assistant/index-initiative/quick.js';
+import { InitiativeController } from '../assistant/index-initiative/controller.js';
 import { BotStore } from '../assistant/bot/store.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -51,7 +53,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import type {
   AgentGraphIntentClaim,
   AgentGraphIntentClaimRequest,
@@ -5989,3 +5991,496 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
     }
   });
 });
+
+async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHandoff = false) {
+  let quick!: QuickDiscoveryController;
+  let parent!: InitiativeController;
+  const quickStart = QuickDiscoveryController.prototype.start;
+  const parentStart = InitiativeController.prototype.start;
+  t.mock.method(
+    QuickDiscoveryController.prototype,
+    'start',
+    function (this: QuickDiscoveryController, tickMs: number) {
+      quick = this;
+      return quickStart.call(this, tickMs);
+    },
+  );
+  t.mock.method(InitiativeController.prototype, 'start', function (this: InitiativeController) {
+    parent = this;
+    return parentStart.call(this);
+  });
+  await withCompositionRoot(async ({ root, owner }) => {
+    const entered = deferred<void>();
+    const boundary = deferred<void>();
+    const requested = deferred<void>();
+    const resumed = deferred<void>();
+    const broadEntered = deferred<void>();
+    const finishWorkers = deferred<void>();
+    let quickSession: string | undefined;
+    const runningSessions = new Set<string>();
+    const backendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        async prepareRunComposition(input: { runId: string; turnId: string }) {
+          await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+        }
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
+          runningSessions.add(context.sessionId);
+          if (!quickSession) {
+            quickSession = context.sessionId;
+            entered.resolve();
+            await boundary.promise;
+            assert.equal(await input.handoffBoundary!(new AbortController().signal, 3), 'pause');
+            runningSessions.delete(context.sessionId);
+            return;
+          }
+          if (context.sessionId === quickSession) resumed.resolve();
+          else broadEntered.resolve();
+          await finishWorkers.promise;
+          runningSessions.delete(context.sessionId);
+          yield {
+            type: 'complete',
+            id: randomUUID(),
+            turnId: input.turnId,
+            ts: Date.now(),
+            stopReason: 'end_turn',
+          };
+        }
+      })(context);
+    const residencies = new HostResidencyRegistry();
+    const first = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: backendFactory,
+      residencies,
+    });
+    let successorOwner: InteractiveRootOwner | undefined;
+    let successor: Awaited<ReturnType<typeof createCapturedExecutionComposition>> | undefined;
+    const caller: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'r5',
+      principal: 'local_owner',
+      principalKind: 'local_owner',
+      acquireResidency: () => residencies.acquire('r5'),
+    };
+    try {
+      const call = async (method: string, input: unknown) => {
+        const result = await first.composition.handlers['personal-assistant.call'](
+          { method, input } as any,
+          caller,
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+      };
+      await call('assistant.set-enabled', { enabled: true });
+      const chat = await first.manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        labels: ['personal-assistant'],
+      });
+      await call('assistant.bind', { sessionId: chat.id });
+      if (eventDriven) {
+        const feed: any[] = [];
+        t.mock.method(quick.ctx.sources, 'list', () => [
+          { id: 'synthetic', scope: { test: 1 }, changes: true },
+        ]);
+        t.mock.method(quick.ctx.sources, 'changes', async (_id: string, cursor?: string) => ({
+          items: cursor === undefined ? [] : feed.slice(Number(cursor)),
+          cursor: String(feed.length),
+          more: false,
+        }));
+        t.mock.method(quick.ctx.sources, 'authorize', async (_id: string, objects: any[]) =>
+          objects.map((item) => item.id),
+        );
+        t.mock.method(quick.ctx.llm, 'budget', async () => ({
+          modelId: 'synthetic',
+          maxInputTokens: 64000,
+          maxOutputTokens: 2048,
+          estimate: 'utf8-conservative',
+        }));
+        t.mock.method(quick.ctx.llm, 'generate', async () => ({
+          modelId: 'synthetic',
+          text: JSON.stringify('Synthetic schedule changed'),
+        }));
+        await quick.control({ action: 'enable', eventIntake: true });
+        let intakeTime = quick.intake.sink.now();
+        t.mock.method(quick.intake.sink, 'now', () => intakeTime);
+        await quick.intake.collect();
+        feed.push({
+          id: 'event',
+          group: 'synthetic',
+          object: { id: 'source', revision: '1', kind: 'synthetic', locator: { id: 'source' } },
+          content: 'Synthetic project changed',
+          occurredAt: Date.now(),
+        });
+        await quick.intake.collect();
+        intakeTime += 3 * 60000;
+        await quick.intake.judge();
+      } else await quick.control({ action: 'check' });
+      await quick.tick();
+      await entered.promise;
+      const activation = quick.state().active;
+      assert.ok(activation && !activation.executionCompleted);
+      if (eventDriven) assert.ok(activation.eventWake?.ids.length);
+      const hintStates = () =>
+        quick.intakeStore.db
+          .prepare('SELECT status FROM intake_wakes ORDER BY id')
+          .all()
+          .map((row) => row.status);
+      if (eventDriven) assert.deepEqual(hintStates(), ['pending']);
+      await quick.control({ action: 'pause' });
+      // Keep the observer alive, as in a normal Host upgrade.
+      const request = first.manager.requestRunHandoff.bind(first.manager);
+      first.manager.requestRunHandoff = (...args) => {
+        const r = request(...args);
+        requested.resolve();
+        return r;
+      };
+      const preparing = first.composition.prepareHandoff!(
+        'execution-composition-test',
+        new AbortController().signal,
+      );
+      await requested.promise;
+      boundary.resolve();
+      const preparation = await preparing;
+      assert.ok(preparation);
+      assert.equal(await preparation.seal(), true);
+      if (cancelHandoff) {
+        preparation.cancel();
+        await resumed.promise;
+        finishWorkers.resolve();
+        await quick.running;
+        assert.equal(quick.state().active, null);
+        assert.equal(quick.state().lastError, null);
+        assert.equal(parent.runner.previous()!.outcome, 'completed');
+        return;
+      }
+      assert.ok(await preparation.residencies());
+      await preparation.detach();
+      first.composition.beginDrain();
+      await first.composition.close();
+      await owner.close();
+      successorOwner = await tryAcquireInteractiveRootOwner(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
+      assert.ok(successorOwner);
+      successor = await createCapturedExecutionComposition(successorOwner, {
+        primaryBackendFactory: backendFactory,
+      });
+      await resumed.promise;
+      assert.ok(quickSession);
+      const proof = await successor.composition.handlers['turn.message.execution.query'](
+        { sessionId: quickSession, messageIds: [activation.messageId] },
+        caller,
+      );
+      assert.ok(proof.ok && proof.result.resolutions[0]?.state === 'owned', JSON.stringify(proof));
+      if (eventDriven) assert.deepEqual(hintStates(), ['pending'], 'handoff is not delivery');
+      const report = parent.ctx.tools
+        .resolve(quickSession, [])
+        .tools.find((tool: any) => tool.name === 'QuickDiscoveryReport')!;
+      const reported = await report.impl(
+        report.parameters.parse({ key: 'resumed', messages: [] }),
+        {
+          sessionId: quickSession,
+          turnId: proof.result.resolutions[0].turnId,
+          toolCallId: randomUUID(),
+          cwd: root,
+          abortSignal: new AbortController().signal,
+          emitOutput() {},
+        },
+      );
+      assert.equal(reported.accepted, true);
+      // Broad asks first. Recovery of already-owned work must precede new FIFO admission.
+      await parent.control('check', { sessionId: chat.id });
+      assert.equal(runningSessions.size, 1);
+      await quick.tick();
+      assert.equal(quick.state().active?.id, activation.id);
+      assert.equal(parent.runner.status().running?.lane, 'quick');
+      const remember = parent.ctx.tools
+        .resolve(quickSession, [])
+        .tools.find((tool: any) => tool.name === 'DiscoveryNotebookRemember');
+      assert.ok(remember);
+      const memoryInput = remember.parameters.parse({
+        key: 'resumed-knowledge',
+        executionId: activation.id,
+        expectedFeedbackRevision: parent.notebook.revision(),
+        notes: [
+          {
+            topicId: 'recovery',
+            title: 'Recovery',
+            text: 'Recovered investigation result',
+            sources: ['synthetic original'],
+          },
+        ],
+      });
+      await remember.impl(memoryInput, {
+        sessionId: quickSession,
+        turnId:
+          proof.ok && proof.result.resolutions[0]?.state === 'owned'
+            ? proof.result.resolutions[0].turnId
+            : '',
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      });
+      const memory = parent.notebook.readMemory({ view: 'topic', topicId: 'recovery' });
+      assert.ok('items' in memory);
+      assert.equal(memory.items.length, 1);
+      assert.equal(runningSessions.size, 1);
+      const observing = quick.running;
+      finishWorkers.resolve();
+      await observing;
+      assert.equal(quick.state().active, null);
+      if (eventDriven) assert.deepEqual(hintStates(), ['delivered']);
+      await parent.tick();
+      await broadEntered.promise;
+      assert.equal(quickSession, quick.state().workerSession, 'the original worker was reused');
+    } finally {
+      boundary.resolve();
+      finishWorkers.resolve();
+      first.composition.beginDrain();
+      await first.composition.close();
+      successor?.composition.beginDrain();
+      await successor?.composition.close();
+      await successorOwner?.close();
+    }
+  });
+}
+
+for (const eventDriven of [false, true]) {
+  test(
+    `natural quick handoff keeps its identity, slot and unfinished receipts (event ${eventDriven})`,
+    { timeout: 30000 },
+    (t) => assertQuickHandoff(t, eventDriven),
+  );
+}
+
+test(
+  'cancelling a sealed handoff still lets the original quick investigation complete',
+  { timeout: 30000 },
+  (t) => assertQuickHandoff(t, false, true),
+);
+
+for (const phase of ['discovery', 'judgement'] as const) {
+  test(`recovered broad ${phase} retains its identity and slot`, {
+    timeout: 30000,
+  }, async (t) => {
+    let quick!: QuickDiscoveryController;
+    let parent!: InitiativeController;
+    const quickStart = QuickDiscoveryController.prototype.start;
+    const parentStart = InitiativeController.prototype.start;
+    t.mock.method(
+      QuickDiscoveryController.prototype,
+      'start',
+      function (this: QuickDiscoveryController, ms: number) {
+        quick = this;
+        return quickStart.call(this, ms);
+      },
+    );
+    t.mock.method(InitiativeController.prototype, 'start', function (this: InitiativeController) {
+      parent = this;
+      return parentStart.call(this);
+    });
+    await withCompositionRoot(async ({ root, owner }) => {
+      const entered = deferred<void>(),
+        boundary = deferred<void>(),
+        requested = deferred<void>();
+      const resumed = deferred<void>(),
+        finish = deferred<void>(),
+        quickEntered = deferred<void>();
+      let heldSession = '',
+        heldTurn = '';
+      const prompts = new Map<string, string>();
+      const starts: Array<{ sessionId: string; continuation: boolean }> = [];
+      const factory: BackendFactory = (context) =>
+        new (class extends FakeBackend {
+          async prepareRunComposition(input: { runId: string; turnId: string }) {
+            await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+          }
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
+            const labels = context.header.labels ?? [];
+            const broad = labels.some(
+              (label) =>
+                label.startsWith('assistant-discovery:') ||
+                label.startsWith('assistant-judgement:'),
+            );
+            const target = labels.some((label) => label.startsWith(`assistant-${phase}:`));
+            if (broad) {
+              starts.push({ sessionId: context.sessionId, continuation: !!input.continuation });
+              if (!input.continuation) prompts.set(context.sessionId, input.text);
+            }
+            if (target && !heldSession) {
+              heldSession = context.sessionId;
+              heldTurn = input.turnId;
+              entered.resolve();
+              await boundary.promise;
+              assert.equal(await input.handoffBoundary!(new AbortController().signal, 3), 'pause');
+              return;
+            }
+            if (context.sessionId === heldSession) {
+              assert.equal(input.turnId, heldTurn);
+              assert.ok(input.continuation);
+              resumed.resolve();
+              await finish.promise;
+            }
+            if (broad) {
+              const output = /完成后把增量操作写入 ([^\n]+)，格式/.exec(
+                prompts.get(context.sessionId)!,
+              )?.[1];
+              assert.ok(output);
+              await writeFile(output, '{}');
+            }
+            if (labels.some((label) => label.startsWith('assistant-quick-discovery:')))
+              quickEntered.resolve();
+            yield {
+              type: 'complete',
+              id: randomUUID(),
+              turnId: input.turnId,
+              ts: Date.now(),
+              stopReason: 'end_turn',
+            };
+          }
+        })(context);
+      const residencies = new HostResidencyRegistry();
+      const first = await createCapturedExecutionComposition(owner, {
+        primaryBackendFactory: factory,
+        residencies,
+        assistantHomeDirectory: join(root, 'home'),
+      });
+      let nextOwner: InteractiveRootOwner | undefined;
+      let next: Awaited<ReturnType<typeof createCapturedExecutionComposition>> | undefined;
+      const caller: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'broad-recovery',
+        principal: 'local_owner',
+        principalKind: 'local_owner',
+        acquireResidency: () => residencies.acquire('broad-recovery'),
+      };
+      try {
+        const call = async (method: string, input: unknown) => {
+          const result = await first.composition.handlers['personal-assistant.call'](
+            { method, input } as any,
+            caller,
+          );
+          assert.equal(result.ok, true, JSON.stringify(result));
+        };
+        await call('assistant.set-enabled', { enabled: true });
+        const chat = await first.manager.createSession({
+          cwd: root,
+          llmConnectionId: FAKE_CONNECTION_ID,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+          labels: ['personal-assistant'],
+        });
+        await call('assistant.bind', { sessionId: chat.id });
+        await parent.control('check', { sessionId: chat.id });
+        await entered.promise;
+        const original = parent.store.get();
+        const executionId = `${original.pendingDraft.id}:${phase}`;
+        const remember = async (key: string) => {
+          const tools = parent.ctx.tools.resolve(heldSession, []).tools;
+          const read = tools.find((tool: any) => tool.name === 'DiscoveryNotebook')!;
+          const write = tools.find((tool: any) => tool.name === 'DiscoveryNotebookRemember')!;
+          const invocation = {
+            sessionId: heldSession,
+            turnId: heldTurn,
+            toolCallId: randomUUID(),
+            cwd: root,
+            abortSignal: new AbortController().signal,
+            emitOutput() {},
+          };
+          const view = await read.impl(read.parameters.parse({}), invocation);
+          assert.equal(view.executionId, executionId);
+          await write.impl(
+            write.parameters.parse({
+              key,
+              executionId,
+              expectedFeedbackRevision: view.feedbackRevision,
+              notes: [
+                {
+                  topicId: 'handoff',
+                  title: 'Handoff',
+                  text: key,
+                  sources: ['synthetic source'],
+                },
+              ],
+            }),
+            invocation,
+          );
+        };
+        await remember('before-recovery');
+        await parent.control('pause', { sessionId: chat.id });
+        // Normal handoff keeps the scheduler observer and its lease alive.
+        const request = first.manager.requestRunHandoff.bind(first.manager);
+        first.manager.requestRunHandoff = (...args) => {
+          const result = request(...args);
+          requested.resolve();
+          return result;
+        };
+        const preparing = first.composition.prepareHandoff!(
+          'execution-composition-test',
+          new AbortController().signal,
+        );
+        await requested.promise;
+        boundary.resolve();
+        const preparation = await preparing;
+        assert.ok(preparation);
+        assert.equal(await preparation.seal(), true);
+        assert.ok(await preparation.residencies());
+        await preparation.detach();
+        first.composition.beginDrain();
+        await first.composition.close();
+        await owner.close();
+        nextOwner = await tryAcquireInteractiveRootOwner(
+          await resolveStorageRoot({ path: root, kind: 'interactive' }),
+        );
+        assert.ok(nextOwner);
+        next = await createCapturedExecutionComposition(nextOwner, {
+          primaryBackendFactory: factory,
+          assistantHomeDirectory: join(root, 'home'),
+        });
+        await resumed.promise;
+        // The already-running Root must have its identity even before its first scheduler tick.
+        await remember('after-recovery');
+        await quick.control({ action: 'check', eventIntake: false });
+        await quick.tick();
+        assert.equal(quick.state().active, null);
+        await parent.tick();
+        assert.equal(parent.runner.status().running?.lane, 'broad');
+        assert.equal(parent.store.get().active.id, original.active.id);
+        assert.equal(
+          parent.store.get().enabled,
+          false,
+          'recovery must not re-enable paused checks',
+        );
+        finish.resolve();
+        await parent.running;
+        await pollFor(() => !parent.store.get().active);
+        assert.equal(parent.store.get().lastError, null);
+        const memory = parent.notebook.readMemory(parent.runner.previous()!.memory);
+        assert.ok('items' in memory);
+        const text = JSON.stringify(memory.items);
+        assert.match(text, /before-recovery/);
+        assert.match(text, /after-recovery/);
+        assert.equal(
+          starts.filter((start) => start.sessionId === heldSession && !start.continuation).length,
+          1,
+          'recovery never resubmits the original phase',
+        );
+        await quick.tick();
+        await quickEntered.promise;
+      } finally {
+        boundary.resolve();
+        finish.resolve();
+        first.composition.beginDrain();
+        await first.composition.close();
+        next?.composition.beginDrain();
+        await next?.composition.close();
+        await nextOwner?.close();
+      }
+    });
+  });
+}

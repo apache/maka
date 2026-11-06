@@ -1326,6 +1326,7 @@ export async function createExecutionRuntimeHostComposition(
     let recoveryTask: Promise<void> | undefined;
     let rootCloseTask: Promise<void> | undefined;
     let rootRecoveryCompleted = false;
+    let rootHandoffCommitted = false;
     let clientBoundRecovery: Promise<void> = Promise.resolve();
     let closeTask: Promise<void> | undefined;
     let backendInvalidationPoisoned = false;
@@ -2174,10 +2175,15 @@ export async function createExecutionRuntimeHostComposition(
       readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
     });
     pluginLlm.bindRuntime({
+      budget: (input, invocation) =>
+        pluginModel.budget({ sessionId: invocation.sessionId, ...input }),
       generate: (input, invocation) =>
         pluginModel.generate({
           sessionId: invocation.sessionId,
           prompt: input.prompt,
+          boundedInput: input.boundedInput,
+          reasoning: input.reasoning,
+          ...(input.modelKey ? { modelKey: input.modelKey } : {}),
           ...(input.system ? { system: input.system } : {}),
           ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
           abortSignal: input.signal ?? invocation.abortSignal,
@@ -2322,7 +2328,7 @@ export async function createExecutionRuntimeHostComposition(
     ) => {
       // Plugin activation precedes Root Turn recovery. A background timer must
       // not admit a new root against the still-empty in-memory admission chain.
-      if (!rootRecoveryCompleted || draining) {
+      if (!rootRecoveryCompleted || rootHandoffCommitted || draining) {
         throw new Error(
           'Runtime Host is not ready for Plugin Agent messages; retry after recovery',
         );
@@ -2434,6 +2440,9 @@ export async function createExecutionRuntimeHostComposition(
         submitAgentMessage(id, message, 'next_turn', initiator, options?.messageId),
       messageExecution: async (id, messageId, initiator) => {
         initiator.abortSignal.throwIfAborted();
+        // An owned receipt alone cannot prove that its Root is idle before recovery
+        // has installed resumed executions. Leave the outcome uncertain until then.
+        if (!rootRecoveryCompleted || rootHandoffCommitted || draining) return undefined;
         if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))
           throw new Error('Agent is outside the current ownership tree');
         const result = await messages.handlers['turn.message.execution.query'](
@@ -2461,10 +2470,18 @@ export async function createExecutionRuntimeHostComposition(
         if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
           throw new Error('Agent is outside the current ownership tree');
         }
-        const wait = coordinator.whenIdle(id);
-        if (!wait) return;
-        if (!signal) return wait;
+        signal ??= initiator.abortSignal;
         if (signal.aborted) throw signal.reason;
+        const wait = (async () => {
+          try {
+            await coordinator.whenIdle(id);
+          } finally {
+            // Detach ends the old physical execution, not its logical Turn. Keep the
+            // observer pending until its owner stops it, preserving durable work for
+            // the successor. This also fences waits begun after physical detach.
+            if (rootHandoffCommitted) await new Promise<void>(() => {});
+          }
+        })();
         let rejectAbort: ((reason: unknown) => void) | undefined;
         const aborted = new Promise<never>((_resolve, reject) => {
           rejectAbort = reject;
@@ -2490,7 +2507,10 @@ export async function createExecutionRuntimeHostComposition(
             ...describeAgent(session),
             ...(needsInput ? { status: 'waiting_for_user' } : {}),
           },
-          root: coordinator.readRootState(id),
+          root:
+            !rootRecoveryCompleted || rootHandoffCommitted || draining
+              ? { kind: 'reserved' }
+              : coordinator.readRootState(id),
           pendingInteractions: pending.length + boundaries.length,
         };
       },
@@ -4032,6 +4052,9 @@ export async function createExecutionRuntimeHostComposition(
             },
             detach: async () => {
               detached = true;
+              // Close background admission/settlement before resolving physical waits.
+              // The lifecycle owner's beginDrain follows only after detach has returned.
+              rootHandoffCommitted = true;
               signal.removeEventListener('abort', cancel);
               await prepared.detach();
               // Domain holds stay closed until the lifecycle owner drains us.
