@@ -1,5 +1,8 @@
 ## Summary
 
+<!-- Check the target branch before submitting:
+https://github.com/apache/maka/blob/main/CONTRIBUTING.md#where-to-start -->
+
 <!-- The problem this solves and the outcome it produces. If the approach
 is not the obvious one, say why. -->
 

@@ -23,6 +23,10 @@
 
 ## 从哪里开始
 
+**新功能从 `rust-preview` 开始开发，PR 也以该分支为目标。** 根据 [Discussion #6366](https://github.com/apache/maka/discussions/6366) 的决定，`main` 仅接受 0.2.x 的缺陷修复、安全修复、依赖更新、发版和文档工作。接手已有 issue 或 PR 前，先确认它针对哪套实现；`good first issue` 等标签不代表目标分支。
+
+两个分支使用不同的实现。`rust-preview` 的环境配置和验证请按 [Rust 贡献指南](https://github.com/apache/maka/blob/rust-preview/CONTRIBUTING.zh-CN.md) 操作；下文的环境配置和开发命令适用于 TypeScript `main`。
+
 缺陷修复、模型供应商支持、测试、性能优化和文档最容易被合并。想找活干，从 [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) 里挑一个，留言认领。提 issue 走 **Bug report** 或 **Feature request** 模板；安全问题走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。提问、想法和还不成熟的提案发到 [Discussions](https://github.com/apache/maka/discussions)——它会自动进到大家的邮箱，比 issue 更容易被看到。
 
 若要自助认领一个尚未分配的 issue，请单独评论 `take`（评论正文只能是这个单词）；评论 `untake` 可以解除自己的认领。其他认领文字不会触发该工作流。
@@ -87,6 +91,6 @@ npx knip --workspace packages/ui
 
 开 PR 时会自动填充 [`pull_request_template.md`](./.github/pull_request_template.md)；请在它的基础上填写，不要整段替换。
 
-分支名和标题遵循 [Conventional Commits](https://www.conventionalcommits.org/)：分支是 `<type>/<描述>`，标题是 `<type>(<scope>): <summary>`。本仓库用 squash 合并，标题会成为落到 `main` 上的提交信息；`git log` 里能看到实际在用的 type 和 scope。
+分支名和标题遵循 [Conventional Commits](https://www.conventionalcommits.org/)：分支是 `<type>/<描述>`，标题是 `<type>(<scope>): <summary>`。本仓库用 squash 合并，标题会成为落到目标分支上的提交信息；`git log` 里能看到实际在用的 type 和 scope。
 
 界面改动请附改动前后的截图或录屏。描述写短，用你自己的话——如果需要很多段落，多半是这个 PR 太大了。
