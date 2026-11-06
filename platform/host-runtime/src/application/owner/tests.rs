@@ -233,12 +233,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                     .runtime
                     .own_resource(&provider, "native provider")
                     .unwrap(),
-                close: Some(Box::pin(async move { closing.close().await })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: Some(native.clone()),
-                vm: None,
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async move { closing.close().await }),
+                    owner: CodeOwner::Native(native.clone()),
+                }),
             },
         );
         owner
@@ -266,12 +264,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                 exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource,
-                close: Some(Box::pin(async { Ok(()) })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: None,
-                vm: Some(vm),
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async { Ok(()) }),
+                    owner: CodeOwner::JavaScript { vm: Some(vm) },
+                }),
             },
         );
         owner
@@ -378,12 +374,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                     exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
                     resource,
-                    close: Some(Box::pin(async { Ok(()) })),
-                    initializing: false,
-                    closing: false,
-                    retiring: false,
-                    native_owner: None,
-                    vm: Some(index),
+                    lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                        close: Box::pin(async { Ok(()) }),
+                        owner: CodeOwner::JavaScript { vm: Some(index) },
+                    }),
                 },
             );
             owner
@@ -640,17 +634,15 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
                     .runtime
                     .own_resource(&activation, "native fixture")
                     .unwrap(),
-                close: Some(Box::pin(async move {
-                    if provider {
-                        closed.fetch_add(1, Ordering::SeqCst);
-                    }
-                    Ok(())
-                })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: None,
-                vm: None,
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async move {
+                        if provider {
+                            closed.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Ok(())
+                    }),
+                    owner: CodeOwner::Native(Arc::new(())),
+                }),
             },
         );
         if provider || !loading_consumer {
