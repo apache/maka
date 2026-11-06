@@ -50,7 +50,7 @@ export type AppUpdateStatus =
       state: 'error';
       currentVersion: string;
       message: string;
-      operation: 'check' | 'download' | 'install';
+      operation: 'check' | 'download' | 'verify' | 'install';
       latestVersion?: string;
     };
 
