@@ -32,7 +32,8 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState } from 'react';
-import { expect, fn, userEvent, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { expectComposerToolbar } from './composer-layout-checks';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer } from '@maka/ui';
 import { describeAntigravityModels } from '../../../packages/antigravity-acp-plugin/src/model-presentation';
@@ -150,10 +151,76 @@ const externalRecoveryArgs = {
 // Component-level frame: the full-width composer used by ChatComposerRegion.
 // The surrounding transcript is omitted; the Composer owns its production card and toolbar.
 const renderExternalRecovery: Story['render'] = (args) => (
-  <div style={{ display: 'grid', alignContent: 'end', minHeight: 320 }}>
+  <div data-recovery-fixture style={{ display: 'grid', alignContent: 'end', minHeight: 320 }}>
     <Composer {...args} onSend={fn()} onStop={fn()} />
   </div>
 );
+
+async function checkFeedbackLayout(canvasElement: HTMLElement) {
+  const frame = canvasElement.querySelector<HTMLElement>('[data-recovery-fixture]')!;
+  const card = canvasElement.querySelector<HTMLElement>('.maka-composer-astryx')!;
+  const feedback = canvasElement.querySelector<HTMLElement>('.maka-composer-feedback')!;
+  const previousWidth = frame.style.width;
+  try {
+    // Widths are the real conversation frame, including Composer's 24px
+    // outer insets. Exercise both sides of the card's 640px compact boundary
+    // and its supported 352px floor, in both resize directions.
+    const widths = [848, 696, 689, 688, 687, 541, 448, 400];
+    for (const width of [...widths, ...widths.toReversed()]) {
+      frame.style.width = `${width}px`;
+      await waitFor(async () => {
+        await expect(card.clientWidth).toBe(width - 48);
+        await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
+        const inputBox = card.getBoundingClientRect();
+        const feedbackBox = feedback.getBoundingClientRect();
+        await expect(Math.abs(feedbackBox.left - inputBox.left)).toBeLessThan(1);
+        await expect(Math.abs(feedbackBox.width - inputBox.width)).toBeLessThan(1);
+        await expect(feedbackBox.bottom).toBeLessThan(inputBox.top);
+        for (const status of canvasElement.querySelectorAll<HTMLElement>('.maka-executor-recovery, .maka-executor-notice')) {
+          await expect(feedback.contains(status)).toBe(true);
+          await expect(status.scrollWidth).toBeLessThanOrEqual(status.clientWidth + 1);
+          for (const button of status.querySelectorAll('button')) {
+            const box = button.getBoundingClientRect();
+            await expect(box.right).toBeLessThanOrEqual(inputBox.right);
+            await expect(box.bottom).toBeLessThan(inputBox.top);
+          }
+        }
+        expectComposerToolbar(card);
+      });
+    }
+  } finally {
+    frame.style.width = previousWidth;
+  }
+}
+
+// Real path: new task → choose an external Agent whose login has expired,
+// with a project selected. Recovery must not share the model toolbar's row.
+export const ExternalAgentSignIn: Story = {
+  args: {
+    ...externalRecoveryArgs,
+    activeSession: undefined,
+    sendBlocked: true,
+    workspacePicker: { label: 'maka', groups: [] },
+    executorPicker: {
+      ...externalRecoveryArgs.executorPicker,
+      fixed: false,
+      // External Agents supply their own mode labels. A long mode can reach
+      // the 180px cap while the model and project labels are shrinking.
+      catalog: externalRecoveryArgs.executorPicker.catalog.map(entry => ({
+        ...entry, readiness: 'authentication_required',
+        modes: [{ id: 'default', name: 'Default mode with a long external Agent label' }],
+      })),
+    },
+  },
+  render: renderExternalRecovery,
+  play: async ({ canvasElement, args }) => {
+    await checkFeedbackLayout(canvasElement);
+    const recovery = canvasElement.querySelector<HTMLElement>('.maka-executor-recovery')!;
+    await userEvent.click(within(recovery).getByRole('button', { name: '前往登录' }));
+    await expect(args.executorPicker!.onSetup).toHaveBeenCalledWith('antigravity');
+    await expect(args.executorPicker!.onSelect).not.toHaveBeenCalled();
+  },
+};
 
 // The harness supplies the Host catalog transition; Composer owns all toolbar layout.
 function ExternalRestoreTransition(args: React.ComponentProps<typeof Composer>) {
@@ -227,6 +294,7 @@ export const ExternalSessionRestoreFailed: Story = {
   },
   render: renderExternalRecovery,
   play: async ({ canvasElement }) => {
+    await checkFeedbackLayout(canvasElement);
     const recovery = canvasElement.querySelector<HTMLElement>('.maka-executor-recovery')!;
     await expect(recovery).toBeVisible();
     await expect(within(recovery).getByRole('button')).toBeEnabled();
@@ -251,6 +319,7 @@ export const ExternalSessionInspectionFailed: Story = {
   },
   render: renderExternalRecovery,
   play: async ({ canvasElement, args }) => {
+    await checkFeedbackLayout(canvasElement);
     const recovery = canvasElement.querySelector<HTMLElement>('.maka-executor-recovery')!;
     const notice = canvasElement.querySelector<HTMLElement>('.maka-executor-notice')!;
     await expect(recovery).toBeVisible();

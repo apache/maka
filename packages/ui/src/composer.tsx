@@ -604,6 +604,7 @@ export const Composer = forwardRef<
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
+  const [modelFeedbackContainer, setModelFeedbackContainer] = useState<HTMLDivElement | null>(null);
   /** Astryx's imperative handle on the contentEditable input. */
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
@@ -1938,6 +1939,7 @@ export const Composer = forwardRef<
     renderProviderMark={props.renderProviderMark}
     onOpenSettings={props.onOpenModelSettings}
     onPendingChange={setExecutorModelPending}
+    feedbackContainer={modelFeedbackContainer}
   />;
 
   return (
@@ -1996,6 +1998,14 @@ export const Composer = forwardRef<
         onDrop={onComposerDrop}
         onSubmit={submit}
       >
+        <div className="maka-composer-feedback" ref={setModelFeedbackContainer}>
+          {props.executorPicker?.fixed && <ComposerExecutorRecovery
+            key={props.activeSession?.id ?? activeDraftKey()}
+            executor={props.executorPicker}
+            disabled={props.disabled || props.pickersReadOnly}
+            onPendingChange={setExecutorRestorePending}
+          />}
+        </div>
         <AstryxChatComposer
           ref={composerAnchorRef}
           className="maka-composer-astryx"
@@ -2212,12 +2222,6 @@ export const Composer = forwardRef<
                 event.stopPropagation();
               }}
             >
-              {props.executorPicker?.fixed && <ComposerExecutorRecovery
-                key={props.activeSession?.id ?? activeDraftKey()}
-                executor={props.executorPicker}
-                disabled={props.disabled || props.pickersReadOnly}
-                onPendingChange={setExecutorRestorePending}
-              />}
               {((props.pendingSessionReferences?.length ?? 0) > 0 || props.pendingQuotes?.some((quote) => quote.sourceSessionId)) && (
                 <div className="maka-composer-session-references" role="group" aria-label={copy.stagedContext}>
                   {props.pendingSessionReferences?.map((session) => (
@@ -2534,26 +2538,16 @@ export const Composer = forwardRef<
                   />
                 </MakaClientSessionScope>
                 {props.contextUsage ? <ContextUsageAction {...props.contextUsage} /> : null}
-              </div>
-              {/* The project decides where a NEW chat starts, which makes it a
-                  parameter of this send like the model beside it — so it sits
-                  at the end of that group rather than in a header row of its
-                  own, which grew the card by a row for the draft state alone.
-                  Last in the group is what makes it cheap to lose: the first
-                  message creates the session and unmounts it, and nothing to
-                  its left moves. Not gated on `streaming`: `activeSession`
-                  already covers it.
-
-                  The wrapper is the popover's scope — Astryx's Layer renders
-                  the open menu next to the trigger rather than portaling it, so
-                  the palette rebinding and the pinned-footer rules attach
-                  here. */}
-              {props.workspacePicker &&
-              (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
-                <div className="maka-composer-workspace">
+                {/* Model and project labels share one flex budget so both
+                    truncate before the fixed controls are squeezed. Project
+                    selection is a new-chat send parameter; keep it last so
+                    creating the session unmounts it without moving the model.
+                    The wrapper also scopes the project's inline popover. */}
+                {props.workspacePicker &&
+                (!props.activeSession || props.workspacePicker.showForActiveSession) ? (
                   <WorkspacePicker workspacePicker={props.workspacePicker} />
-                </div>
-              ) : null}
+                ) : null}
+              </div>
               {/* Mode readouts sit after the model pair, so a mode turning on
                   or off never nudges the model and thinking pickers (#1897).
                   Same ghost icon button as ＋ and permission two slots left —
@@ -2699,7 +2693,7 @@ function ContextUsageAction(props: {
       tooltip={tooltip}
       onClick={props.onOpen}
     >
-      {label}
+      <span className="maka-context-usage-label">{label}</span>
     </UiButton>
   );
 }

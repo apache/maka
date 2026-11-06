@@ -203,7 +203,9 @@ async function mountShell(services: SessionCollaborationServices) {
     composer,
     document,
     open,
-    buttons: () => [...document.querySelectorAll('button[aria-label]')].map((button) => button.getAttribute('aria-label')),
+    actionButtons: () => [...document.querySelectorAll('button[aria-label]')]
+      .filter((button) => button.getAttribute('aria-readonly') !== 'true')
+      .map((button) => button.getAttribute('aria-label')),
     async send(text: string) {
       await act(async () => composer.current!.setText(text));
       await act(async () => {
@@ -240,13 +242,19 @@ test('switching to a shared Session and back keeps the one Composer and its owne
   const shell = await mountShell(guestServices({}));
   await shell.open(OWNED, false);
   const handle = shell.composer.current;
-  assert.ok(shell.buttons().includes('Add context'));
+  assert.ok(shell.actionButtons().includes('Add context'));
   await act(async () => shell.composer.current!.setText('owned draft'));
 
   await shell.open(SHARED, true);
   assert.equal(shell.composer.current, handle, 'a shared Session must not replace the Composer');
   assert.equal(shell.composer.current!.getText(), '');
-  assert.deepEqual(shell.buttons(), ['Send'], 'owner controls and pickers do not reach a Guest');
+  assert.deepEqual(shell.actionButtons(), ['Send'], 'owner controls and editable pickers do not reach a Guest');
+  const modelDisplay = shell.document.querySelector('.maka-model-switcher-trigger button');
+  assert.ok(modelDisplay);
+  assert.equal(modelDisplay.getAttribute('aria-readonly'), 'true');
+  assert.ok(modelDisplay.getAttribute('aria-label'), 'the read-only model retains its accessible label');
+  assert.equal(modelDisplay.getAttribute('aria-expanded'), 'false');
+  assert.equal(modelDisplay.getAttribute('aria-haspopup'), null);
 
   await shell.open(OWNED, false);
   assert.equal(shell.composer.current, handle);
