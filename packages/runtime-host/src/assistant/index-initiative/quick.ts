@@ -23,7 +23,14 @@ import { z } from 'zod';
 import { EventIntake } from './intake.js';
 import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
-import { DiscoveryExecutionEnded, requireIdleDiscovery, type DiscoveryJob } from './runner.js';
+import {
+  DiscoveryExecutionEnded,
+  requireIdleDiscovery,
+  type DiscoveryJob,
+  type DiscoveryAgent,
+  type DiscoveryRunner,
+} from './runner.js';
+import type { QuickActivation, QuickSubmission, QuickReport } from './work-types.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
@@ -428,11 +435,12 @@ export class QuickDiscoveryController {
     )
       return;
     this.ready();
+    // Runner already owns the job; active/pending are its work projection, not settings.
     const current = this.store.update((s) => {
       if ((!s.enabled && !s.checkRequested) || s.active) return;
       s.active = s.pending
         ? { ...s.pending, retrying: true }
-        : {
+        : ({
             id: job.id,
             startedAt: job.startedAt,
             from: s.checkedThrough ?? s.startedAt,
@@ -442,7 +450,7 @@ export class QuickDiscoveryController {
             reports: [],
             periodic: s.checkRequested || !eventWake || (now >= last + s.idleMs && !quiet),
             ...(eventWake ? { eventWake } : {}),
-          };
+          } satisfies QuickActivation);
       s.pending = null;
       s.checkRequested = false;
       s.lastError = null;
@@ -519,7 +527,7 @@ export class QuickDiscoveryController {
           key: input.key,
           fingerprint,
           messages: input.messages,
-        });
+        } satisfies QuickReport);
       ids = input.messages.map((_, i) => `quick:${s.active.id}:${hash(input.key)}:${i}`);
     });
     // Persist first, then hand off with stable IDs. A retry cannot enqueue duplicates.
@@ -547,14 +555,16 @@ export class QuickDiscoveryController {
           })
         )
           throw Error('Bot did not accept quick discovery');
+        // This receipt stays in the current job's work until settlement completes.
         this.store.update((state) => {
           (state.active.delivered ??= []).push(id);
         });
       }
   }
-  async run(agent: any, state: any) {
+  async run(agent: DiscoveryAgent, state: any) {
+    const runner: DiscoveryRunner = this.parent.runner;
     this.agent = agent;
-    const active = state.active;
+    const active: QuickActivation = state.active;
     // Observation only (#6309): the model window of this attempt, when it ran one.
     const startedAt = Date.now();
     let modelFrom: number | undefined;
@@ -566,13 +576,13 @@ export class QuickDiscoveryController {
         // An accepted message can outlive this process. Its payload cannot be rebuilt
         // with a new handoff/time under the same identity, nor replaced on uncertainty.
         // Only the Host's positive absence proof permits a fresh submission.
-        const admission = await agent.messageExecution(active.messageId);
+        const admission = await runner.readExecution(agent, active.messageId);
         if (!admission) throw Error('Quick discovery admission is not yet known');
         if (admission.state === 'not_admitted') {
           this.parent.refreshNotebook();
           const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v3']);
           let first = this.state().promptVersion !== version;
-          const previous = this.parent.runner.previous();
+          const previous = runner.previous();
           const progress = this.parent.notebook.continuation();
           const inputFor = (hints: WakeHint[]) => {
             // Sort oldest first and label each hint with its age: a capture can stay pending
@@ -671,7 +681,7 @@ export class QuickDiscoveryController {
           const capture = [...hints]
             .sort((a, b) => a.at - b.at)
             .map((hint) => `${hint.at}:${hint.direction}`);
-          const recorded = this.state().active.submission;
+          const recorded: QuickSubmission | undefined = this.state().active.submission;
           const sameCapture =
             recorded?.version === version &&
             recorded.sessionId === agent.sessionId &&
@@ -679,6 +689,7 @@ export class QuickDiscoveryController {
             recorded.capture.every((hint: string, index: number) => hint === capture[index]);
           const input = sameCapture ? recorded.input : inputFor(hints);
           if (recorded && !sameCapture) active.messageId = randomUUID();
+          // Persist the fixed submission in job.work before asking the Host to admit it.
           this.store.update((s) => {
             if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
             s.active.messageId = active.messageId;
@@ -688,14 +699,14 @@ export class QuickDiscoveryController {
               sessionId: agent.sessionId,
               capture,
               input,
-            };
+            } satisfies QuickSubmission;
             if (active.eventWake)
               s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
           });
           modelFrom = Date.now();
         }
         try {
-          await this.parent.runner.execute(
+          await runner.execute(
             'quick',
             agent,
             this.state().active.submission ?? { messageId: active.messageId },

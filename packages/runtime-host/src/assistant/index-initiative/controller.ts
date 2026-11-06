@@ -27,7 +27,13 @@ import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { DiscoveryRunner, DiscoveryExecutionEnded, type DiscoveryJob } from './runner.js';
+import {
+  DiscoveryRunner,
+  DiscoveryExecutionEnded,
+  type DiscoveryJob,
+  type DiscoveryAgent,
+} from './runner.js';
+import type { BroadDraft, BroadSubmission } from './work-types.js';
 
 export class InitiativeController {
   readonly notebook: Notebook;
@@ -271,6 +277,7 @@ export class InitiativeController {
     return { agent, messageId: submission.messageId };
   }
   private async prepareRun(job: DiscoveryJob) {
+    // Runner creates the job before worker selection or claim writes its projected work.
     const state = this.store.get();
     const agent = await this.worker(
       state,
@@ -328,15 +335,19 @@ export class InitiativeController {
       return this.ctx.agents.resume({ sessionId });
     });
   }
-  private async execute(agent: any, state: any) {
+  private async execute(agent: DiscoveryAgent, state: any) {
     this.ready();
     this.activeAgent = agent;
     await this.refreshNotebook(state);
     const role = state.active.phase === 'discovery' ? 'exploration' : 'judgement';
     // Persist the operation before running the model. A failed or interrupted draft
     // must resume in its original worker, with its original output still available.
-    const pending = state.pendingDraft ?? { id: state.active.id, phase: state.active.phase };
+    const pending: BroadDraft = state.pendingDraft ?? {
+      id: state.active.id,
+      phase: state.active.phase,
+    };
     if (pending.phase !== state.active.phase) throw Error('Pending draft phase mismatch');
+    // update() persists this draft in the current job's work JSON, atomically with settings.
     this.store.update((s) => {
       s.pendingDraft = pending;
     });
@@ -354,7 +365,7 @@ export class InitiativeController {
     while (!this.notebook.event(operationId)) {
       this.ready();
       await this.refreshNotebook(state);
-      let submission = this.store.get().pendingDraft.submission;
+      let submission: BroadSubmission | undefined = this.store.get().pendingDraft.submission;
       if (!submission) {
         mkdirSync(directory, { recursive: true, mode: 0o700 });
         writeFileSync(viewPath, this.notebook.seed(this.runner.previous()), { mode: 0o600 });
@@ -424,7 +435,7 @@ export class InitiativeController {
     rmSync(directory, { recursive: true, force: true });
   }
 
-  async run(agent: any, state: any) {
+  async run(agent: DiscoveryAgent, state: any) {
     const id = state.active.id;
     const startedAt = state.active.startedAt ?? Date.now();
     // Each Session the heartbeat drives and the window it was driven in, so the

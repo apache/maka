@@ -21,33 +21,56 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { awaitingUser } from '../execution-outcome.js';
 import type { InitiativeStore } from './store.js';
+import type {
+  TurnMessageExecutionResolution,
+  TurnMessageSubmitResult,
+} from '../../protocol/message.js';
+import type { DiscoveryLane, DiscoveryWorkByLane } from './work-types.js';
+export type { DiscoveryLane } from './work-types.js';
 
-export type DiscoveryLane = 'broad' | 'quick';
+/** Only the Host fields used by discovery; message ownership is not an execution outcome. */
+export interface DiscoveryAgent {
+  readonly sessionId: string;
+  messageExecution(
+    messageId: string,
+  ): Promise<Pick<TurnMessageExecutionResolution, 'state'> | undefined>;
+  followup(
+    input: string,
+    options: { messageId: string },
+  ): Promise<Pick<TurnMessageSubmitResult, 'disposition'>>;
+  whenIdle(signal: AbortSignal): Promise<void>;
+  snapshot(): Promise<{
+    agent?: { status?: string };
+    root?: { kind?: string };
+    pendingInteractions?: number;
+  }>;
+  cancel(): Promise<unknown>;
+}
 type State = 'preparing' | 'running' | 'settling' | 'recovering' | 'retry_wait' | 'done';
-export interface DiscoveryJob {
+export interface DiscoveryJob<L extends DiscoveryLane = DiscoveryLane> {
   id: string;
-  lane: DiscoveryLane;
+  lane: L;
   state: State;
   startedAt: number;
-  work: any;
+  work: DiscoveryWorkByLane[L];
 }
 export interface DiscoveryAdapter {
   store: InitiativeStore;
   ready(): void;
   request(): Promise<boolean>;
-  prepare(job: DiscoveryJob): Promise<any | undefined>;
-  recovery(): Promise<{ agent: any; messageId: string } | undefined>;
+  prepare(job: DiscoveryJob): Promise<DiscoveryAgent | undefined>;
+  recovery(): Promise<{ agent: DiscoveryAgent; messageId: string } | undefined>;
   reattach(): void;
   defer(cancelled: boolean): void;
   unfinished(): boolean;
-  run(agent: any): Promise<void | 'deferred'>;
+  run(agent: DiscoveryAgent): Promise<void | 'deferred'>;
   error(error: unknown): void;
 }
 
-const fields: Record<DiscoveryLane, readonly string[]> = {
+const fields = {
   broad: ['active', 'pendingDraft', 'pendingJudgement', 'candidateReport', 'retry', 'contextWake'],
   quick: ['active', 'pending', 'contextWake'],
-};
+} as const satisfies { [L in DiscoveryLane]: readonly (keyof DiscoveryWorkByLane[L])[] };
 const occupied = "state IN ('preparing','running','settling','recovering')";
 
 /** Cross-version continuation is deliberately unsupported; never silently discard work. */
@@ -105,11 +128,10 @@ export class DiscoveryRunner {
         if (!state?.runnerSchema) return state;
         this.store.fence();
         const configuration = { ...state };
-        const work: any = {};
-        for (const key of fields[lane]) {
-          if (state[key] !== undefined) work[key] = state[key];
-          delete configuration[key];
-        }
+        const work = Object.fromEntries(
+          fields[lane].filter((key) => state[key] !== undefined).map((key) => [key, state[key]]),
+        ) as DiscoveryWorkByLane[typeof lane];
+        for (const key of fields[lane]) delete configuration[key];
         const job = this.job(lane);
         if (job) {
           if (work.active && work.active.id !== job.id)
@@ -124,7 +146,7 @@ export class DiscoveryRunner {
       },
     });
   }
-  job(lane: DiscoveryLane): DiscoveryJob | undefined {
+  job<L extends DiscoveryLane>(lane: L): DiscoveryJob<L> | undefined {
     const row = this.store.db
       .prepare("SELECT * FROM discovery_jobs WHERE lane=? AND state!='done'")
       .get(lane);
@@ -134,7 +156,7 @@ export class DiscoveryRunner {
         lane,
         state: row.state as State,
         startedAt: Number(row.started_at),
-        work: JSON.parse(String(row.work)),
+        work: JSON.parse(String(row.work)) as DiscoveryWorkByLane[L],
       }
     );
   }
@@ -222,14 +244,9 @@ export class DiscoveryRunner {
           this.set(job, 'retry_wait');
           continue;
         }
-        const admission = await recovered.agent.messageExecution(recovered.messageId);
+        const admission = await this.readExecution(recovered.agent, recovered.messageId);
         adapter.ready();
-        if (
-          !admission ||
-          !['owned', 'pending', 'inbox', 'completed', 'not_admitted', 'cancelled'].includes(
-            admission.state,
-          )
-        ) {
+        if (!admission) {
           this.set(job, 'recovering', 'Host has not resolved this discovery submission');
           continue;
         }
@@ -291,7 +308,7 @@ export class DiscoveryRunner {
       this.set(job, 'retry_wait', error);
     }
   }
-  private launch(job: DiscoveryJob, adapter: DiscoveryAdapter, agent: any) {
+  private launch(job: DiscoveryJob, adapter: DiscoveryAdapter, agent: DiscoveryAgent) {
     let outcome: void | 'deferred';
     const task = adapter
       .run(agent)
@@ -327,10 +344,26 @@ export class DiscoveryRunner {
       )
       .run(Date.now(), this.sequence(), outcome, job.id);
   }
+  /** Validate plugin adapters against the Host query contract, including older inbox replies. */
+  async readExecution(agent: Pick<DiscoveryAgent, 'messageExecution'>, messageId: string) {
+    const execution = await agent.messageExecution(messageId);
+    switch (execution?.state) {
+      case undefined:
+        return undefined;
+      case 'pending':
+      case 'inbox':
+      case 'cancelled':
+      case 'not_admitted':
+      case 'owned':
+        return execution;
+      default:
+        throw Error('Unexpected Host message execution state');
+    }
+  }
   /** Shared exact-message observer. It never equates physical Host detach with completion. */
   async execute(
     lane: DiscoveryLane,
-    agent: any,
+    agent: DiscoveryAgent,
     submission: { messageId: string; input?: string },
     signal: AbortSignal,
   ) {
@@ -338,7 +371,7 @@ export class DiscoveryRunner {
     const job = this.job(lane);
     if (!job) throw Error('No discovery execution');
     adapter.ready();
-    const admission = await agent.messageExecution(submission.messageId);
+    const admission = await this.readExecution(agent, submission.messageId);
     if (!admission) throw Error('Discovery admission is not yet known');
     if (admission.state === 'not_admitted') {
       if (!submission.input) throw Error('An unadmitted discovery has no saved input');
@@ -350,8 +383,8 @@ export class DiscoveryRunner {
     for (;;) {
       signal.throwIfAborted();
       adapter.ready();
-      const execution = await agent.messageExecution(submission.messageId);
-      if (['owned', 'completed'].includes(execution?.state)) break;
+      const execution = await this.readExecution(agent, submission.messageId);
+      if (execution?.state === 'owned') break;
       if (execution?.state === 'cancelled') {
         this.set(job, 'settling');
         throw new DiscoveryExecutionEnded('Discovery wake was cancelled');
@@ -374,10 +407,11 @@ export class DiscoveryRunner {
         await delay(1000, undefined, { signal });
         continue;
       }
-      if (['failed', 'aborted', 'blocked'].includes(snapshot?.agent?.status)) {
+      const status = snapshot.agent?.status;
+      if (status && ['failed', 'aborted', 'blocked'].includes(status)) {
         this.set(job, 'settling');
         throw new DiscoveryExecutionEnded(
-          failure ? String(failure) : `Discovery ended with ${snapshot.agent.status}`,
+          failure ? String(failure) : `Discovery ended with ${status}`,
         );
       }
       if (failure) throw failure;

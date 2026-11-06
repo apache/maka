@@ -37,8 +37,10 @@ uses its existing execution path.
 
 The controllers' `active`, `pendingDraft` and quick `pending` fields are views of
 job working data, not a second persisted scheduler. Configuration and job updates
-commit in one scheduler transaction. A uniqueness constraint permits one occupied
-job; confirmed failures can wait for retry without occupying the slot.
+commit in one scheduler transaction. The broad and quick payload types are defined
+in `work-types.ts`; key writes and projection attachment document this boundary.
+A uniqueness constraint permits one occupied job; confirmed failures can wait for
+retry without occupying the slot.
 
 The Runner prepares jobs, reconciles exact message ownership and observes the
 Host. The two controllers supply investigation-specific preparation and results.
@@ -49,6 +51,10 @@ capture remain in the receipt store for a later investigation.
 A missing Host answer retains the submission and appears in
 `coordination.recovering`. It does not release the slot after a timer. Host handoff,
 queued admission and waiting for user interaction are not execution completion.
+The observer uses the existing `TurnMessageExecutionResolution` protocol: `pending`
+and `inbox` keep waiting, and `owned` permits observing the actual execution outcome.
+A `completed` query reply is invalid; completion is checked separately through the
+Host execution snapshot.
 Positive absence permits redelivery; confirmed failure permits a new message
 identity. Stable notebook operation IDs and Bot message IDs protect settlement.
 

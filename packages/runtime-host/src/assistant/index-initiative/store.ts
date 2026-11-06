@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { BroadActivation } from './work-types.js';
 export type DiscoveryContextMode = 'legacy' | 'scoped';
 
 /** Scheduler metadata only. Conversation history belongs to the ordinary Session. */
@@ -45,6 +46,7 @@ export class InitiativeStore {
       CREATE TABLE IF NOT EXISTS context_workers(session_id TEXT PRIMARY KEY, role TEXT NOT NULL, mode TEXT NOT NULL, context_key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_at INTEGER NOT NULL);`);
   }
+  /** Merges configuration with the attached job view; use configuration() for raw settings. */
   get(): any {
     const state = this.configuration();
     return this.projection ? this.projection.read(state) : state;
@@ -53,6 +55,9 @@ export class InitiativeStore {
   scope(namespace: string, directory = this.directory) {
     return new InitiativeStore(directory, this.owner, this, namespace);
   }
+  /** Runner attaches the working-state projection here. update()/save() split fields such
+   * as active and pendingDraft into discovery_jobs.work in the same DB transaction as
+   * configuration. A Runner job must already exist before non-empty work is written. */
   project(projection: { read: (state: any) => any; write: (state: any) => any }) {
     this.projection = projection;
   }
@@ -236,13 +241,14 @@ export class InitiativeStore {
       // already know instead of presenting it as a second investigation.
       const retried = s.retry;
       delete s.retry;
+      // With a Runner projection, this claim updates its pre-created job, not the settings row.
       s.active = {
         id: id ?? retried?.id ?? randomUUID(),
         startedAt: startedAt ?? retried?.startedAt ?? Date.now(),
         phase:
           s.pendingDraft?.phase ??
           (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
-      };
+      } satisfies BroadActivation;
       s.revision++;
       this.log('heartbeat', { id: s.active.id });
     });

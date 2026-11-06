@@ -42,7 +42,14 @@ export function laneFixture(runner: DiscoveryRunner, store: InitiativeStore, lan
       gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      return {};
+      return {
+        sessionId: lane,
+        messageExecution: async () => ({ state: 'owned' as const }),
+        followup: async () => ({ disposition: 'turn_started' as const }),
+        whenIdle: async () => {},
+        snapshot: async () => ({ agent: { status: 'idle' } }),
+        cancel: async () => {},
+      };
     },
     recovery: async () => undefined,
     reattach: () => {},

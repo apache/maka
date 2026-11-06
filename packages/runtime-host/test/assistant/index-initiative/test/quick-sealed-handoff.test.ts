@@ -78,3 +78,57 @@ test('an investigation awaiting user input keeps its slot and write identity', a
   f.q.abort.abort(Error('Test finished at user-input boundary'));
   await f.q.running;
 });
+
+test('an unsupported completed query state cannot finish an investigation', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.control({ action: 'check', eventIntake: false });
+  const query = f.agent.messageExecution;
+  f.agent.messageExecution = async () => ({ state: 'completed' }) as any;
+  await f.q.dispatch();
+  await f.q.running;
+  assert.match(f.q.state().lastError, /Unexpected Host message execution state/);
+  assert.equal(f.q.state().lastFinishedAt, undefined);
+  assert.equal(f.counts().workerCalls, 0);
+  assert.equal(f.parent.runner.status().running?.lane, 'quick');
+  f.agent.messageExecution = query;
+  await f.q.control({ action: 'check' });
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.counts().workerCalls, 1);
+});
+
+test('a protocol inbox reply waits for owned admission before settling', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.control({ action: 'check', eventIntake: false });
+  const query = f.agent.messageExecution;
+  const followup = f.agent.followup;
+  let inInbox = false;
+  let observed!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    observed = resolve;
+  });
+  f.agent.followup = async (input, options) => {
+    const result = await followup(input, options);
+    inInbox = true;
+    return result;
+  };
+  f.agent.messageExecution = async (id) => {
+    if (inInbox) {
+      observed();
+      return { state: 'inbox' } as any;
+    }
+    return query(id);
+  };
+  await f.q.dispatch();
+  await waiting;
+  assert.equal(f.q.state().lastFinishedAt, undefined);
+  assert.equal(f.parent.runner.status().running?.lane, 'quick');
+  inInbox = false;
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.ok(f.q.state().lastFinishedAt);
+  assert.equal(f.counts().workerCalls, 1);
+});
