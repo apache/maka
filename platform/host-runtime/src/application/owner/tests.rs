@@ -406,11 +406,11 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         while let Some(done) = owner.jobs.next().await {
             owner.complete(done);
             owner.drive();
-            if owner.closed {
+            if owner.is_closed() {
                 break;
             }
         }
-        assert!(owner.closed);
+        assert!(owner.is_closed());
     })
     .await
     .unwrap();
@@ -744,7 +744,7 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         0,
         "native close must wait for actual call cleanup"
     );
-    assert!(!owner.closed);
+    assert!(!owner.is_closed());
     gate.cleanup.notify_one();
     let done = owner.jobs.next().await.unwrap();
     owner.complete(done);
@@ -763,7 +763,7 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         owner.complete(done);
         owner.drive();
     }
-    assert!(owner.closed);
+    assert!(owner.is_closed());
     assert_eq!(closes.load(Ordering::SeqCst), 1);
 }
 

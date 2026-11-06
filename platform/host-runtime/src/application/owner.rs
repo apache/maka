@@ -264,7 +264,6 @@ pub(super) struct Owner {
     cleanup_error: Option<String>,
     closing: bool,
     closing_vms: bool,
-    closed: bool,
     shutdown_complete: bool,
 }
 impl Owner {
@@ -323,7 +322,6 @@ impl Owner {
             cleanup_error: None,
             closing: false,
             closing_vms: false,
-            closed: false,
             shutdown_complete: false,
         }
     }
@@ -361,7 +359,7 @@ impl Owner {
         };
         loop {
             self.drive();
-            if self.closed {
+            if self.is_closed() {
                 let snapshot = self.snapshot();
                 let updates = self.updates.clone();
                 // The closing acknowledgement follows all of this owner's drops,
@@ -2077,9 +2075,11 @@ impl Owner {
             }
             Done::VmsClosed => {
                 self.shutdown_complete = true;
-                self.closed = self.cleanup_error.is_none();
             }
         }
+    }
+    fn is_closed(&self) -> bool {
+        self.shutdown_complete && self.cleanup_error.is_none()
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -2093,7 +2093,7 @@ impl Owner {
             startup_error: self.startup_error.clone(),
             initialization_failures: self.initialization_failures.clone(),
             closing: self.closing,
-            closed: self.closed,
+            closed: self.is_closed(),
             shutdown_complete: self.shutdown_complete,
             cleanup_error: self.cleanup_error.clone(),
             instances: self
