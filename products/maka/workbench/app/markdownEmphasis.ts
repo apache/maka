@@ -117,6 +117,19 @@ function protectedRanges(text: string): Range[] {
   return found;
 }
 
+function wrapsAll(chars: readonly string[]): boolean {
+  if (chars.length <= 2) return false;
+  const open = chars[0];
+  const close = chars.at(-1)!;
+  if (!wraps(open, close)) return false;
+  let depth = 0;
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    if (chars[index] === open) depth += 1;
+    else if (chars[index] === close && --depth === 0) return false;
+  }
+  return depth === 1;
+}
+
 const inside = (ranges: readonly Range[], at: number) =>
   ranges.some(([start, end]) => at >= start && at < end);
 
@@ -124,37 +137,59 @@ type Edit = { start: number; end: number; text: string };
 
 /** The rewritten `**body**` for one pair, or null when it should stay as written. */
 function repair(paragraph: string, open: number, close: number, ranges: readonly Range[]) {
-  const before = [...paragraph.slice(0, open)].at(-1);
-  const after = [...paragraph.slice(close + 2)][0];
-  let chars = [...paragraph.slice(open + 2, close)];
+  const before = open > 0 ? [...paragraph.slice(Math.max(0, open - 2), open)].at(-1) : undefined;
+  const after = [...paragraph.slice(close + 2, close + 4)][0];
+  const chars = [...paragraph.slice(open + 2, close)];
   if (chars.length === 0 || isBlank(chars[0]) || isBlank(chars.at(-1)!)) return null;
   const blockedClose = isPunctuation(chars.at(-1)!) && !closesOn(after);
   const blockedOpen = isPunctuation(chars[0]) && !opensAfter(before);
   if (!blockedClose && !blockedOpen) return null;
+
+  let bodyStart = open + 2;
+  let bodyEnd = close;
   let leading = '';
   let trailing = '';
-  // A balanced wrapper around the whole bold text moves out as a pair.
-  if (chars.length > 2 && wraps(chars[0], chars.at(-1)!)) {
-    leading = chars.shift()!;
-    trailing = chars.pop()!;
-  } else if (blockedOpen) {
-    // An opening quote or bracket that does not wrap the text cannot move alone.
+
+  // Peel trailing clause/label punctuation (`PEEL`) that is plain prose.
+  while (chars.length > 1 && PEEL.has(chars.at(-1)!)) {
+    const char = chars.at(-1)!;
+    if (inside(ranges, bodyEnd - char.length)) break;
+    chars.pop();
+    bodyEnd -= char.length;
+    trailing = char + trailing;
+  }
+
+  // A balanced wrapper around the remaining bold text moves out as a pair when an edge is blocked.
+  const firstAfter = [...trailing][0] ?? after;
+  const stillBlockedClose = isPunctuation(chars.at(-1)!) && !closesOn(firstAfter);
+  const stillBlockedOpen = isPunctuation(chars[0]) && !opensAfter(before);
+  if (
+    (stillBlockedOpen || stillBlockedClose) &&
+    wrapsAll(chars) &&
+    !inside(ranges, bodyStart) &&
+    !inside(ranges, bodyEnd - chars.at(-1)!.length)
+  ) {
+    const openWrap = chars.shift()!;
+    const closeWrap = chars.pop()!;
+    bodyStart += openWrap.length;
+    bodyEnd -= closeWrap.length;
+    leading = openWrap;
+    trailing = closeWrap + trailing;
+  }
+
+  if (
+    chars.length === 0 ||
+    isBlank(chars[0]) ||
+    isBlank(chars.at(-1)!) ||
+    chars.every((char) => isPunctuation(char) || isBlank(char))
+  ) {
     return null;
   }
-  // Clause punctuation left at the end still blocks the closing marker.
-  const next = trailing || after;
-  if (isPunctuation(chars.at(-1)!) && !closesOn(next)) {
-    let peeled = '';
-    while (chars.length > 1 && PEEL.has(chars.at(-1)!)) peeled = chars.pop()! + peeled;
-    if (!peeled || isPunctuation(chars.at(-1)!)) return null;
-    // Those characters must be plain prose, not part of an escape or a code span.
-    const start = close - peeled.length;
-    if (inside(ranges, start) || inside(ranges, close - 1)) return null;
-    trailing = peeled + trailing;
-  }
-  if (chars.every((char) => isPunctuation(char) || isBlank(char))) return null;
-  // The pair must now be able to open and to close.
-  if (!opensAfter(leading ? undefined : before) && isPunctuation(chars[0])) return null;
+  // The pair must now be able to open and to close under CommonMark flank rules.
+  const openBefore = leading ? [...leading].at(-1) : before;
+  const closeAfter = trailing ? [...trailing][0] : after;
+  if (isPunctuation(chars[0]) && !opensAfter(openBefore)) return null;
+  if (isPunctuation(chars.at(-1)!) && !closesOn(closeAfter)) return null;
   return `${leading}**${chars.join('')}**${trailing}`;
 }
 
@@ -184,10 +219,14 @@ function fixParagraph(paragraph: string): string {
       pending = null;
       continue;
     }
-    const next = paragraph[at + 2];
-    const previous = at > 0 ? paragraph[at - 1] : undefined;
+    const next = [...paragraph.slice(at + 2, at + 4)][0];
+    const previous = at > 0 ? [...paragraph.slice(Math.max(0, at - 2), at)].at(-1) : undefined;
     const canClose = previous !== undefined && !isBlank(previous);
-    const canOpen = next !== undefined && next !== '\n' && !isBlank(next);
+    const canOpen =
+      next !== undefined &&
+      next !== '\n' &&
+      !isBlank(next) &&
+      (!isPunctuation(next) || opensAfter(previous) || OPENERS.includes(next));
     if (canClose && pending !== null) {
       const text = repair(paragraph, pending, at, ranges);
       if (text !== null) edits.push({ start: pending, end: at + 2, text });
@@ -203,18 +242,48 @@ function fixParagraph(paragraph: string): string {
 /** Strips the container prefixes (`>`, list markers) a fence line may sit behind. */
 const FENCE_PREFIX = String.raw`(?:[ \t]*>)*[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?`;
 const FENCE_OPEN = new RegExp(`^${FENCE_PREFIX}(\`{3,}|~{3,})(.*)$`, 'u');
+const THEMATIC_BREAK = /^([-*_])(?:[ \t]*\1){2,}[ \t]*$/u;
+const LIST_ITEM = /^([-*+]|\d{1,9}[.)])(?:([ \t]+)(.*))?$/u;
+
+function advanceCols(cols: number, text: string): number {
+  let current = cols;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === ' ') current += 1;
+    else if (text[index] === '\t') current += 4 - (current % 4);
+    else break;
+  }
+  return current;
+}
+
+function lineIndent(line: string): { cols: number; offset: number } {
+  let cols = 0;
+  let offset = 0;
+  while (offset < line.length) {
+    if (line[offset] === ' ') {
+      cols += 1;
+      offset += 1;
+    } else if (line[offset] === '\t') {
+      cols += 4 - (cols % 4);
+      offset += 1;
+    } else {
+      break;
+    }
+  }
+  return { cols, offset };
+}
 
 /**
- * `text` with bold pairs that CommonMark would leave open made to close. Fenced code is
- * skipped, as is any line indented as code; the rest is rewritten paragraph by paragraph.
+ * `text` with bold pairs that CommonMark would leave open made to close. Fenced and
+ * indented code blocks are skipped; the rest is rewritten paragraph by paragraph.
  */
 export function closeCjkEmphasis(text: string): string {
   if (!text.includes('**')) return text;
   const lines = text.split('\n');
   const out: string[] = [];
   let fence: string | null = null;
+  let indentedCodeCols: number | null = null;
+  const listStack: number[] = [];
   let paragraph: string[] = [];
-  let previousBlank = true;
   const flush = () => {
     if (paragraph.length) out.push(...fixParagraph(paragraph.join('\n')).split('\n'));
     paragraph = [];
@@ -227,7 +296,26 @@ export function closeCjkEmphasis(text: string): string {
       ).exec(line);
       if (closing && closing[1][0] === fence[0]) fence = null;
       out.push(line);
-      previousBlank = false;
+      continue;
+    }
+    if (indentedCodeCols !== null) {
+      if (line.trim() === '' || lineIndent(line).cols >= indentedCodeCols) {
+        out.push(line);
+        continue;
+      }
+      indentedCodeCols = null;
+    }
+    if (line.trim() === '') {
+      flush();
+      out.push(line);
+      continue;
+    }
+    const { cols, offset } = lineIndent(line);
+    while (listStack.length > 0 && listStack.at(-1)! > cols) listStack.pop();
+    const baseIndent = listStack.at(-1) ?? 0;
+    if (paragraph.length === 0 && cols >= baseIndent + 4) {
+      indentedCodeCols = baseIndent + 4;
+      out.push(line);
       continue;
     }
     const opening = FENCE_OPEN.exec(line);
@@ -236,26 +324,19 @@ export function closeCjkEmphasis(text: string): string {
       flush();
       fence = opening[1];
       out.push(line);
-      previousBlank = false;
       continue;
     }
-    if (line.trim() === '') {
-      flush();
-      out.push(line);
-      previousBlank = true;
-      continue;
-    }
-    // Four spaces after a blank line is code unless it starts a (nested) list item.
-    const indentedCode =
-      previousBlank && /^(?: {4,}|\t)/u.test(line) && !/^\s*(?:[-*+]|\d+[.)])\s/u.test(line);
-    if (indentedCode) {
-      flush();
-      out.push(line);
-      previousBlank = false;
-      continue;
+    const rest = line.slice(offset);
+    if (!THEMATIC_BREAK.test(rest)) {
+      const item = LIST_ITEM.exec(rest);
+      if (item && (item[2] !== undefined || rest.length === item[1].length)) {
+        const markerEnd = cols + item[1].length;
+        const contentCols = item[2] ? advanceCols(markerEnd, item[2]) : markerEnd + 1;
+        const indent = !item[3] || contentCols - markerEnd >= 5 ? markerEnd + 1 : contentCols;
+        listStack.push(indent);
+      }
     }
     paragraph.push(line);
-    previousBlank = false;
   }
   flush();
   return out.join('\n');

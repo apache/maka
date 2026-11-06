@@ -76,11 +76,17 @@ test('code, links, URLs, HTML and escapes stay byte-identical while the prose ne
     assert.equal(closeCjkEmphasis(text), text, text);
 });
 
-test('code blocks stay as written, including nested and look-alike fences', () => {
+test('code blocks stay as written, including multiline indented and nested fences', () => {
   for (const text of [
     '```md\n**回升能否守住：**如果\n```',
     '~~~\n**甲：**乙\n~~~',
     '    **原文：**继续',
+    '示例代码：\n\n    const a = 1;\n    const b = "**原文：**继续";',
+    '    const a = 1;\n\n    const b = 2;\n    const c = "**原文：**继续";',
+    // Six spaces after a blank line under `- ` is an indented code block inside the list item.
+    '- 列表项\n\n      const a = 1;\n      const b = "**原文：**继续";',
+    // Thematic break followed by four-space indented code block.
+    '- - -\n\n    const a = 1;\n    const b = "**原文：**继续";',
     // An inner fence with an info string does not close the outer one.
     '````markdown\n```python\n**重点：**这是代码示例\n```\n````',
     // A fence line with text after it does not close the block.
@@ -93,6 +99,10 @@ test('code blocks stay as written, including nested and look-alike fences', () =
     closeCjkEmphasis('```md\n**甲：**乙\n```\n**丙：**丁'),
     '```md\n**甲：**乙\n```\n**丙**：丁',
   );
+  assert.equal(
+    closeCjkEmphasis('    const a = 1;\n    const b = "**甲：**乙";\n\n**丙：**丁'),
+    '    const a = 1;\n    const b = "**甲：**乙";\n\n**丙**：丁',
+  );
   // Triple backticks that are an inline span, not a fence.
   assert.equal(
     closeCjkEmphasis('```foo``` 是内联代码\n**甲：**乙'),
@@ -100,7 +110,7 @@ test('code blocks stay as written, including nested and look-alike fences', () =
   );
 });
 
-test('lists, quotes and tables with code or links are fixed item by item', () => {
+test('lists, quotes and tables with code, links or loose continuations are fixed item by item', () => {
   const cases = [
     [
       '- **回升能否守住：**如果很快跌回 `3200` 下方则偏弱\n- **量能配合：**成交额需持续放大',
@@ -114,9 +124,32 @@ test('lists, quotes and tables with code or links are fixed item by item', () =>
       '- **主线方向：**关注半导体\n    - **细分环节：**设备与材料优先',
       '- **主线方向**：关注半导体\n    - **细分环节**：设备与材料优先',
     ],
+    [
+      '- 项目一\n\n    这是列表项内的缩进续行 **重点：**不是代码块\n    第二行 **结论：**也不是代码块',
+      '- 项目一\n\n    这是列表项内的缩进续行 **重点**：不是代码块\n    第二行 **结论**：也不是代码块',
+    ],
     ['> **结论：**短线观望为主', '> **结论**：短线观望为主'],
     ['- [x] **第一步：**已完成配置', '- [x] **第一步**：已完成配置'],
     ['**回撤控制：**若单日跌幅 >5% 则减仓', '**回撤控制**：若单日跌幅 >5% 则减仓'],
+  ];
+  for (const [input, expected] of cases) assert.equal(closeCjkEmphasis(input), expected, input);
+});
+
+test('labels ending in brackets, quotes, units, code, links or symbols before punctuation close', () => {
+  const cases = [
+    ['- **回升（短期）：**如果很快跌回 3200 下方', '- **回升（短期）**：如果很快跌回 3200 下方'],
+    ['- **营收增速 (YoY)：**同比增长 12%', '- **营收增速 (YoY)**：同比增长 12%'],
+    ['1. **方案 A（推荐）：**直接升级依赖', '1. **方案 A（推荐）**：直接升级依赖'],
+    ['- **涨幅 +12%：**创阶段新高', '- **涨幅 +12%**：创阶段新高'],
+    ['- **所谓的“核心资产”：**需要结合估值看', '- **所谓的“核心资产”**：需要结合估值看'],
+    ['- **检查 `config.toml`：**确认端口配置正确', '- **检查 `config.toml`**：确认端口配置正确'],
+    [
+      '- **详见 [官方文档](https://example.com)：**按步骤操作',
+      '- **详见 [官方文档](https://example.com)**：按步骤操作',
+    ],
+    ['- **风险提示🔥：**仓位不宜过重', '- **风险提示🔥**：仓位不宜过重'],
+    ['请参考**《操作指南》：**按步骤执行', '请参考《**操作指南**》：按步骤执行'],
+    ['这是**“核心指标”：**需要重点关注', '这是“**核心指标**”：需要重点关注'],
   ];
   for (const [input, expected] of cases) assert.equal(closeCjkEmphasis(input), expected, input);
 });
@@ -130,6 +163,9 @@ test('wrappers move out as a pair and nothing is half bold', () => {
     closeCjkEmphasis('这是 **“核心指标”**需要重点关注'),
     '这是 “**核心指标**”需要重点关注',
   );
+  assert.equal(closeCjkEmphasis('他说**“没问题，”**随后离开'), '他说“**没问题，**”随后离开');
+  // Two separate quoted spans do not form a single outer wrapper: unchanged rather than split.
+  assert.equal(closeCjkEmphasis('他说**“甲”和“乙”**都是重点'), '他说**“甲”和“乙”**都是重点');
   // A bracket that closes inside the bold text cannot be separated from its opener: unchanged.
   assert.equal(closeCjkEmphasis('**营收（同比 +12%）**增长明显'), '**营收（同比 +12%）**增长明显');
   // A unit is not clause punctuation and is never peeled out.
@@ -141,6 +177,7 @@ test('a literal ** is not paired with a real opener', () => {
     closeCjkEmphasis('计算 2 ** 3 之后，**结论：**成立'),
     '计算 2 ** 3 之后，**结论**：成立',
   );
+  assert.equal(closeCjkEmphasis('指针类型 T**，**结论：**成立'), '指针类型 T**，**结论**：成立');
 });
 
 test('bold made only of punctuation or spaces is not rewritten', () => {
