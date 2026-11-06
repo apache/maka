@@ -33,6 +33,140 @@ fn git(path: &Path, args: &[&str]) {
     );
 }
 
+fn stage(home: &Path) -> Stage {
+    let policy = Arc::new(
+        Policy {
+            default: Access::Read,
+            rules: vec![],
+            deny_globs: vec![],
+        }
+        .compile()
+        .unwrap(),
+    );
+    let sources = sources::home(home.to_str().unwrap(), policy).unwrap();
+    let source = sources
+        .iter()
+        .find(|source| source.location == Some(LocationId::UserMaka))
+        .unwrap();
+    Stage::new(source, "guide").unwrap()
+}
+
+fn previous_skill(stage: &Stage) {
+    stage.parent.create_dir("skills/guide").unwrap();
+    stage
+        .parent
+        .write("skills/guide/content.txt", "previous")
+        .unwrap();
+}
+
+#[test]
+fn failed_publication_restores_previous_skill_before_discarding_stage() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut stage = stage(temporary.path());
+    previous_skill(&stage);
+    let prepared = temporary.path().join(".maka").join(&stage.name);
+
+    // Missing prepared bytes make publication fail after the old skill is moved.
+    stage.publish(true).unwrap_err();
+    drop(stage);
+
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
+        "previous"
+    );
+    assert!(!prepared.exists());
+}
+
+#[test]
+fn failed_rollback_retains_previous_skill_without_replacing_concurrent_target() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut stage = stage(temporary.path());
+    previous_skill(&stage);
+    let prepared = temporary.path().join(".maka").join(&stage.name);
+
+    let error = stage
+        .publish_using(true, |root, from, to| {
+            rename(root, from, to)?;
+            if from == "skills/guide" {
+                root.create_dir("skills/guide")
+                    .map_err(|error| error.to_string())?;
+                root.write("skills/guide/content.txt", "concurrent")
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    drop(stage);
+
+    assert!(error.contains("restoring previous skill failed"));
+    assert_eq!(
+        std::fs::read_to_string(prepared.join("old/content.txt")).unwrap(),
+        "previous"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
+        "concurrent"
+    );
+}
+
+#[test]
+fn rename_error_after_moving_previous_skill_preserves_both_recovery_directories() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut stage = stage(temporary.path());
+    previous_skill(&stage);
+    child(&stage.directory, "next")
+        .unwrap()
+        .write("content.txt", "prepared")
+        .unwrap();
+    let prepared = temporary.path().join(".maka").join(&stage.name);
+
+    let error = stage
+        .publish_using(true, |root, from, to| {
+            rename(root, from, to)?;
+            Err("directory sync failed after rename".into())
+        })
+        .unwrap_err();
+    drop(stage);
+
+    assert!(error.contains("prepared directories retained"));
+    assert_eq!(
+        std::fs::read_to_string(prepared.join("old/content.txt")).unwrap(),
+        "previous"
+    );
+    assert_eq!(
+        std::fs::read_to_string(prepared.join("next/content.txt")).unwrap(),
+        "prepared"
+    );
+    assert!(!temporary.path().join(".maka/skills/guide").exists());
+}
+
+#[test]
+fn rollback_error_after_restoring_previous_skill_retains_stage() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut stage = stage(temporary.path());
+    previous_skill(&stage);
+    let prepared = temporary.path().join(".maka").join(&stage.name);
+
+    let error = stage
+        .publish_using(true, |root, from, to| {
+            rename(root, from, to)?;
+            if from.ends_with("/old") {
+                return Err("directory sync failed after restoring previous skill".into());
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    drop(stage);
+
+    assert!(error.contains("restoring previous skill failed"));
+    assert_eq!(
+        std::fs::read_to_string(temporary.path().join(".maka/skills/guide/content.txt")).unwrap(),
+        "previous"
+    );
+    assert!(prepared.is_dir());
+    assert!(!prepared.join("old").exists());
+}
+
 #[tokio::test]
 async fn git_snapshot_install_and_whole_directory_update_use_physical_locations() {
     use maka_event_log::{RootStore, root::RootNamespaces};

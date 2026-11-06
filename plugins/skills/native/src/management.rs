@@ -73,10 +73,13 @@ fn child(parent: &Dir, name: &str) -> Result<Dir, String> {
         .open_dir_nofollow(name)
         .map_err(|error| error.to_string())
 }
-fn rename(root: &Dir, from: String, to: String) -> Result<(), String> {
+fn rename(root: &Dir, from: &str, to: &str) -> Result<(), String> {
     entries::execute(
         root,
-        Operation::Rename { from, to },
+        Operation::Rename {
+            from: from.into(),
+            to: to.into(),
+        },
         &CancellationToken::new(),
         None,
     )
@@ -88,10 +91,21 @@ struct Stage {
     parent: Dir,
     name: String,
     directory: Dir,
-    preserve: std::cell::Cell<bool>,
+    target: String,
+    publication: Publication,
+}
+enum Publication {
+    Prepared,
+    MovingPrevious,
+    PreviousMoved,
+    RestoringPrevious,
+    Installed,
+    Replaced,
+    Removed,
+    Cleaned,
 }
 impl Stage {
-    fn new(source: &CapturedSource) -> Result<Self, String> {
+    fn new(source: &CapturedSource, id: &str) -> Result<Self, String> {
         let location = source
             .location
             .ok_or("This skill collection is read only")?;
@@ -111,14 +125,21 @@ impl Stage {
             parent,
             name,
             directory,
-            preserve: std::cell::Cell::new(false),
+            target: format!("skills/{id}"),
+            publication: Publication::Prepared,
         })
     }
-    fn publish(&self, id: &str, replace: bool) -> Result<(), String> {
-        let target = format!("skills/{id}");
+    fn publish(&mut self, replace: bool) -> Result<(), String> {
+        self.publish_using(replace, rename)
+    }
+    fn publish_using(
+        &mut self,
+        replace: bool,
+        mut rename: impl FnMut(&Dir, &str, &str) -> Result<(), String>,
+    ) -> Result<(), String> {
         let old = format!("{}/old", self.name);
         let next = format!("{}/next", self.name);
-        let previous = match self.parent.symlink_metadata(&target) {
+        let published = match self.parent.symlink_metadata(&self.target) {
             Ok(metadata) => {
                 if !replace {
                     return Err("A skill already exists at this location".into());
@@ -126,42 +147,62 @@ impl Stage {
                 if !metadata.is_dir() || metadata.is_symlink() {
                     return Err("Skill target must be an ordinary directory".into());
                 }
-                self.preserve.set(true);
-                rename(&self.parent, target.clone(), old.clone()).map_err(|error| {
+                // Rename may succeed before syncing its parents fails.
+                self.publication = Publication::MovingPrevious;
+                rename(&self.parent, &self.target, &old).map_err(|error| {
                     format!("{error}; prepared directories retained under {}", self.name)
                 })?;
-                true
+                self.publication = Publication::PreviousMoved;
+                Publication::Replaced
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Publication::Installed,
             Err(error) => return Err(error.to_string()),
         };
-        if let Err(error) = rename(&self.parent, next, target.clone()) {
-            if previous && let Err(rollback) = rename(&self.parent, old.clone(), target) {
-                self.preserve.set(true);
-                return Err(format!(
-                    "{error}; restoring previous skill failed: {rollback}; previous directory retained at {old}"
-                ));
+        if let Err(error) = rename(&self.parent, &next, &self.target) {
+            if matches!(self.publication, Publication::PreviousMoved) {
+                self.publication = Publication::RestoringPrevious;
+                rename(&self.parent, &old, &self.target).map_err(|rollback| {
+                    format!(
+                        "{error}; restoring previous skill failed: {rollback}; prepared directories retained under {}",
+                        self.name
+                    )
+                })?;
             }
-            self.preserve.set(false);
+            self.publication = Publication::Prepared;
             return Err(error);
         }
+        self.publication = published;
         Ok(())
     }
-    fn cleanup(&self) -> Result<(), String> {
+    fn remove(&mut self) -> Result<(), String> {
+        self.publication = Publication::MovingPrevious;
+        rename(&self.parent, &self.target, &format!("{}/old", self.name))?;
+        self.publication = Publication::Removed;
+        Ok(())
+    }
+    fn cleanup(&mut self) -> Result<(), String> {
         self.parent.remove_dir_all(&self.name).map_err(|error| {
             format!(
                 "Skill files changed, but temporary directory {} could not be removed: {error}",
                 self.name
             )
         })?;
-        self.preserve.set(false);
+        self.publication = Publication::Cleaned;
         Ok(())
     }
 }
 impl Drop for Stage {
     fn drop(&mut self) {
-        if !self.preserve.get() {
-            let _ = self.parent.remove_dir_all(&self.name);
+        match self.publication {
+            Publication::Prepared | Publication::Installed => {
+                let _ = self.parent.remove_dir_all(&self.name);
+            }
+            Publication::MovingPrevious
+            | Publication::PreviousMoved
+            | Publication::RestoringPrevious
+            | Publication::Replaced
+            | Publication::Removed
+            | Publication::Cleaned => {}
         }
     }
 }
@@ -386,7 +427,7 @@ impl Library {
                     {
                         return Err("Skill name must be a directory name".into());
                     }
-                    let stage = Stage::new(target)?;
+                    let mut stage = Stage::new(target, &id)?;
                     let next = child(&stage.directory, "next")?;
                     copy_tree(&source, &next, &scope.cancellation)?;
                     let _lock = managed.lock()?;
@@ -398,7 +439,7 @@ impl Library {
                         .to_string_lossy()
                         .into_owned();
                     let current = runtime.block_on(managed.registrations.read(&path))?;
-                    stage.publish(&id, false)?;
+                    stage.publish(false)?;
                     let recorded = runtime.block_on(managed.registrations.write(
                         &path,
                         current.revision,
@@ -480,7 +521,7 @@ impl Library {
                         &remote::read_manifest(&source).map_err(|error| error.to_string())?,
                     )
                     .map_err(|_| "Invalid SKILL.md")?;
-                    let stage = Stage::new(target)?;
+                    let stage = Stage::new(target, id)?;
                     copy_tree(
                         &source,
                         &child(&stage.directory, "next")?,
@@ -494,9 +535,9 @@ impl Library {
                         }),
                     )
                 } else {
-                    (Stage::new(target)?, None)
+                    (Stage::new(target, id)?, None)
                 };
-                let (stage, installation) = prepared;
+                let (mut stage, installation) = prepared;
                 let _lock = managed.lock()?;
                 if scope.cancellation.is_cancelled() {
                     return Err("Skill management cancelled".into());
@@ -509,14 +550,9 @@ impl Library {
                     );
                 }
                 if update {
-                    stage.publish(id, true)?;
+                    stage.publish(true)?;
                 } else {
-                    stage.preserve.set(true);
-                    rename(
-                        &stage.parent,
-                        format!("skills/{id}"),
-                        format!("{}/old", stage.name),
-                    )?;
+                    stage.remove()?;
                 }
                 let recorded = runtime.block_on(managed.registrations.write(
                     &path,
