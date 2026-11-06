@@ -51,3 +51,5 @@ export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dial
 export { ProviderEndpointField } from './provider-endpoint-field.js';
 
 export { ConnectionDefaultAction } from './connection-default-action.js';
+
+export { attachModelsSaveBarClearance } from './models-save-bar-clearance.js';
