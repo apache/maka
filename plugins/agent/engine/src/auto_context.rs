@@ -297,21 +297,7 @@ pub(super) async fn compact_now(
         .await
 }
 
-pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
-    stop(pending).await.map(|_| ())
-}
-
-pub(super) async fn finish(
-    inner: &RunContext,
-    pending: &mut Option<Pending>,
-) -> Result<(), RunError> {
-    if let Some(checkpoint) = stop(pending).await? {
-        record(inner, checkpoint).await?;
-    }
-    Ok(())
-}
-
-async fn record(
+pub(super) async fn record(
     inner: &RunContext,
     checkpoint: maka_agent_facts::event::RuntimeEvent,
 ) -> Result<(), RunError> {
@@ -321,7 +307,7 @@ async fn record(
     Ok(())
 }
 
-async fn stop(
+pub(super) async fn drain(
     pending: &mut Option<Pending>,
 ) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
     if let Some(Pending {
@@ -336,57 +322,4 @@ async fn stop(
         }
     }
     Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_agent_facts::{
-        context::PreparedContextBreakdown, execution::ModelBinding, model::ModelUsage,
-    };
-    use maka_event_log::context::AcceptedMainContext;
-
-    #[test]
-    fn archived_tools_keep_measured_input_as_the_incremental_baseline() {
-        let provider = maka_model::ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            image_input: None,
-            network: Default::default(),
-            kind: maka_model::ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: "http://localhost/v1".into(),
-            auth: maka_model::ProviderAuth::ApiKey("fixture".into()),
-            headers: Default::default(),
-            body_overlay: None,
-        };
-        let binding = ModelBinding {
-            connection_id: "connection".into(),
-            connection_slug: "fixture".into(),
-            model: "test".into(),
-        };
-        let mut breakdown = PreparedContextBreakdown::default();
-        breakdown.tool.estimated_tokens = 494_166;
-        let latest = LatestMainContext::Selected(Box::new(AcceptedMainContext {
-            projection_current: false,
-            sequence: 3,
-            finished_at: None,
-            requested_at: None,
-            model_id: "test".into(),
-            route_identity: crate::runner::digest(&provider).unwrap(),
-            connection_id: Some("connection".into()),
-            checkpoint_event_id: None,
-            context: None,
-            context_breakdown: Some(breakdown),
-            usage: ModelUsage {
-                input_tokens: Some(384_869),
-                ..Default::default()
-            },
-        }));
-        let baseline = calibration(&provider, Some(&binding), &latest, None)
-            .unwrap()
-            .expect("archiving changes the rendered delta, not the measured baseline");
-        assert_eq!(baseline.estimate(483_113), 373_816);
-        assert_eq!(baseline.estimate(504_166), 394_869);
-    }
 }

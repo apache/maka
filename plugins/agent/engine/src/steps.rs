@@ -466,7 +466,7 @@ async fn run_from(
                 }
                 Ok(model_attempt::Outcome::Response(output)) => output,
                 Ok(model_attempt::Outcome::ParkRetry(plan)) => {
-                    auto_context::drain(&mut pending).await?;
+                    let _ = auto_context::drain(&mut pending).await?;
                     if !tools.is_idle() || !effects.is_idle() {
                         return Err(RunError::ReconciliationRequired(
                             "model retry cannot park while execution remains active".into(),
@@ -634,16 +634,7 @@ async fn run_from(
     .catch_unwind()
     .await
     .unwrap_or_else(|_| Err(crate::cleanup::unconfirmed()));
-    let summary_cleanup = if matches!(
-        &result,
-        Ok(StepExit::Terminal(
-            maka_agent_facts::event::InvocationOutcome::Completed
-        ))
-    ) {
-        auto_context::finish(inner, &mut pending).await
-    } else {
-        auto_context::drain(&mut pending).await
-    };
+    let summary_cleanup = auto_context::drain(&mut pending).await;
     let tool_cleanup = tools.shutdown().await;
     if matches!(&result, Err(error) if error.is_cleanup_unconfirmed())
         || matches!(&summary_cleanup, Err(error) if error.is_cleanup_unconfirmed())
@@ -656,7 +647,7 @@ async fn run_from(
         return Err(crate::cleanup::unconfirmed());
     }
     tool_cleanup?;
-    summary_cleanup?;
+    let checkpoint = summary_cleanup?;
     if matches!(
         result,
         Ok(StepExit::Terminal(
@@ -690,6 +681,9 @@ async fn run_from(
                 }
                 error => RunError::Store(error),
             })?;
+        if let Some(checkpoint) = checkpoint {
+            auto_context::record(inner, checkpoint).await?;
+        }
     }
     result
 }
