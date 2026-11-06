@@ -33,6 +33,10 @@ import type {
   SettingsConnectionDetail,
   SettingsConnectionsRead,
   SettingsConnectionSummary,
+  SettingsDefaultModel,
+  SettingsModelChoice,
+  SettingsModelsPage,
+  SettingsModelsRead,
   SettingsProvider,
   SettingsProvidersPage,
   SettingsProviderSummary,
@@ -114,7 +118,7 @@ export type ModelEditor = {
     limits: SettingsModelLimitSettings | null;
   } | null;
 };
-export type SettingsPage = 'connections' | 'providers' | 'connection' | 'models' | 'model';
+export type SettingsPage = 'connections' | 'providers' | 'connection' | 'advanced' | 'model';
 export type ModelSettingsSnapshot = {
   page: SettingsPage;
   connections: SettingsConnectionSummary[];
@@ -150,6 +154,17 @@ const basis = (detail: Detail): ConnectionVersionBasis => ({
   connectionId: detail.target.connectionId,
   revision: detail.target.revision,
 });
+const fields = (detail: Detail) => ({
+  name: detail.name,
+  slug: detail.target.slug,
+  enabled: detail.enabled,
+  baseUrl:
+    typeof detail.target.configuration.baseUrl === 'string'
+      ? detail.target.configuration.baseUrl
+      : '',
+  serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
+  overlay: pretty(detail.editing!.requestBodyOverlay),
+});
 function overlay(text: string): Record<string, unknown> | null {
   let value: unknown;
   try {
@@ -171,7 +186,10 @@ export function createModelSettings(
   restored?: ModelSettingsSnapshot,
 ) {
   const { busy, error, notice, pending, pendingKnown, report, mutate, run } = operations;
-  const page = signal<SettingsPage>(restored?.page ?? 'connections');
+  // Snapshots from before the models list joined the connection page name it 'models'.
+  const page = signal<SettingsPage>(
+    (restored?.page as string) === 'models' ? 'connection' : (restored?.page ?? 'connections'),
+  );
   const connections = signal<SettingsConnectionSummary[]>(restored?.connections ?? []);
   const providers = signal<SettingsProviderSummary[]>(restored?.providers ?? []);
   const connectionQuery = signal(restored?.connectionQuery ?? '');
@@ -185,6 +203,8 @@ export function createModelSettings(
     connectionId: string;
     modelId: string;
   } | null>(restored?.defaultTarget ?? null);
+  const defaultModel = signal<SettingsDefaultModel | null>(null);
+  const modelChoices = signal<SettingsModelChoice[]>([]);
   const next = signal<number | null>(restored?.next ?? null);
   const providerNext = signal<number | null>(restored?.providerNext ?? null);
   const editor = signal<ConnectionEditor | null>(restored?.editor ?? null);
@@ -334,10 +354,33 @@ export function createModelSettings(
           continue;
         break;
       }
+      if (!more) await loadModelChoices(generation);
     } catch (reason) {
       if (generation === read) report(reason);
     } finally {
       if (alive && generation === read) loading.set(false);
+    }
+  };
+  const loadModelChoices = async (generation: number) => {
+    let choices: SettingsModelChoice[] = [];
+    let request: SettingsModelsRead = { kind: 'start' };
+    for (let restarts = 0; ; ) {
+      const result: SettingsModelsPage = await host.query('settings', 'models', request);
+      if (!alive || !active() || generation !== read) return;
+      if (result.kind === 'changed') {
+        if (++restarts > 2)
+          throw new UiError('The model catalog keeps changing. Retry to read the current choices.');
+        choices = [];
+        request = { kind: 'start' };
+        continue;
+      }
+      choices = [...choices, ...result.choices];
+      if (!result.next) {
+        modelChoices.set(choices);
+        defaultModel.set(result.defaultModel);
+        return;
+      }
+      request = { kind: 'continue', revision: result.revision, cursor: result.next };
     }
   };
   const loadProviders = async (more = false) => {
@@ -511,15 +554,7 @@ export function createModelSettings(
         instance: ++editorInstance,
         baseline: detail,
         provider,
-        name: detail.name,
-        slug: detail.target.slug,
-        enabled: detail.enabled,
-        baseUrl:
-          typeof detail.target.configuration.baseUrl === 'string'
-            ? detail.target.configuration.baseUrl
-            : '',
-        serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
-        overlay: pretty(detail.editing!.requestBodyOverlay),
+        ...fields(detail),
         apiKey: '',
       });
       credential.set(status);
@@ -590,19 +625,7 @@ export function createModelSettings(
     if (!alive || editor()?.instance !== captured) return null;
     // Advance the basis before the independent credential stage. A key failure
     // must retry this existing connection, never create another one.
-    editor.set({
-      ...editor()!,
-      baseline: detail,
-      name: detail.name,
-      slug: detail.target.slug,
-      enabled: detail.enabled,
-      serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
-      overlay: pretty(detail.editing!.requestBodyOverlay),
-      baseUrl:
-        typeof detail.target.configuration.baseUrl === 'string'
-          ? detail.target.configuration.baseUrl
-          : '',
-    });
+    editor.set({ ...editor()!, baseline: detail, ...fields(detail) });
     if (key !== 'unchanged') {
       const status = await readCredential(detail);
       if (!alive || editor()?.instance !== captured) return null;
@@ -763,18 +786,64 @@ export function createModelSettings(
       editor.set({ ...editor()!, apiKey: '' });
       discovery.set('idle');
       await loadConnections();
-      if (alive) notice.set(message('Connection reloaded.'));
     });
   };
-  const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) => {
+  const refreshConnection = async () => {
     const form = editor();
-    if (current(request) && form && !busy()) editor.set({ ...form, enabled: request.enabled });
+    if (!form?.baseline || dirty()) return;
+    const generation = ++read;
+    try {
+      const detail = await readDetail({ connectionId: form.baseline.target.connectionId });
+      const status = await readCredential(detail);
+      if (!alive || generation !== read || editor()?.instance !== form.instance || dirty()) return;
+      editor.set({ ...editor()!, baseline: detail, ...fields(detail) });
+      credential.set(status);
+    } catch (reason) {
+      if (generation === read) report(reason);
+    }
   };
-  const toggleServerSideCompaction = (request: ConnectionAction & { enabled: boolean }) => {
+  // A switch commits on its own. Typed text that is not saved yet stays in the
+  // editor; a connection that does not exist yet keeps the switch in its draft.
+  const applySwitch = (
+    request: ConnectionAction,
+    local: Partial<ConnectionEditor>,
+    changes: (original: Detail) => Record<string, unknown>,
+  ) => {
     const form = editor();
-    if (current(request) && form && !busy())
-      editor.set({ ...form, serverSideCompaction: request.enabled });
+    if (!current(request) || !form || busy()) return;
+    if (!form.baseline) {
+      editor.set({ ...form, ...local });
+      return;
+    }
+    const original = form.baseline;
+    return run(async () => {
+      const result = await mutate('settings', 'update', {
+        expected: basis(original),
+        changes: changes(original),
+      });
+      if (result.kind !== 'committed' || !result.connection) throw rejection(result);
+      const draft = editor();
+      if (!(await adopt(result.connection, form.instance, 'unchanged')) || !draft) return;
+      const before = fields(original);
+      editor.set({
+        ...editor()!,
+        name: draft.name === before.name ? editor()!.name : draft.name,
+        baseUrl: draft.baseUrl === before.baseUrl ? editor()!.baseUrl : draft.baseUrl,
+        overlay: draft.overlay === before.overlay ? editor()!.overlay : draft.overlay,
+      });
+      await loadConnections();
+    });
   };
+  const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) =>
+    applySwitch(request, { enabled: request.enabled }, () => ({ enabled: request.enabled }));
+  const toggleServerSideCompaction = (request: ConnectionAction & { enabled: boolean }) =>
+    applySwitch(request, { serverSideCompaction: request.enabled }, (original) => ({
+      configuration: {
+        ...original.target.configuration,
+        serverSideCompaction: request.enabled,
+      },
+      modelOverrides: original.editing!.modelOverrides,
+    }));
   const fetchModels = async (form: ConnectionEditor & { baseline: Detail }) => {
     discovery.set('fetching');
     try {
@@ -1004,11 +1073,8 @@ export function createModelSettings(
   const changeCodeLanguage = (request: ModelAction & { language: CodeLanguage }) => {
     if (currentModel(request)) changeModel({ codeModeLanguage: request.language });
   };
-  const showModels = (request: ConnectionAction) => {
-    if (current(request) && !busy() && !dirty() && editor()?.baseline) {
-      page.set('models');
-      error.set('');
-    }
+  const showAdvanced = (request: ConnectionAction) => {
+    if (current(request) && !busy() && page() === 'connection') page.set('advanced');
   };
   const saveModel = (request: ModelAction) => {
     if (!currentModel(request)) return;
@@ -1044,27 +1110,21 @@ export function createModelSettings(
       await loadConnections();
       if (alive) {
         model.set(null);
-        page.set('models');
+        page.set('connection');
         notice.set(message('Model saved.'));
       }
     });
   };
-  const setDefault = (request: ConnectionAction & { id: string | null }) => {
-    if (!current(request)) return;
-    const id = request.id;
+  const setDefault = (target: ModelSelection | null) => {
+    if (!alive || !active() || busy() || revision() === null) return;
     return run(async () => {
-      const form = editor();
-      if (!form?.baseline || revision() === null) return;
       const result = await mutate('settings', 'setDefault', {
         expectedCatalogRevision: revision(),
-        target:
-          id === null ? null : { connectionId: form.baseline.target.connectionId, modelId: id },
+        target,
       });
       if (result.kind !== 'committed') throw rejection(result);
       await loadConnections();
       changed();
-      if (alive)
-        notice.set(id ? message('Default model saved.') : message('Default model cleared.'));
     });
   };
   const confirm = (request: RemovalAction) => {
@@ -1134,7 +1194,7 @@ export function createModelSettings(
         await adopt(result.connection, form.instance);
         if (alive) {
           model.set(null);
-          page.set('models');
+          page.set('connection');
           notice.set(message('Model removed from this connection.'));
         }
       }
@@ -1194,10 +1254,10 @@ export function createModelSettings(
         return false;
       }
       model.set(null);
-      page.set('models');
+      page.set('connection');
       return false;
     }
-    if (page() === 'models') {
+    if (page() === 'advanced') {
       page.set('connection');
       return false;
     }
@@ -1222,6 +1282,11 @@ export function createModelSettings(
     else if (page() === 'connections') void loadConnections();
     else if (page() === 'providers') void loadProviders();
     else if (page() === 'model') void loadModelMetadata(modelAction());
+  };
+  const refresh = () => {
+    if (!alive || !active() || busy() || loading() || confirmation() || discardTarget()) return;
+    if (page() === 'connections') void loadConnections();
+    else if (page() === 'connection' || page() === 'advanced') void refreshConnection();
   };
   const reset = (target: ModelSelection | null = null) => {
     cancelRead();
@@ -1295,6 +1360,9 @@ export function createModelSettings(
     searchProviders,
     revision,
     defaultTarget,
+    defaultModel,
+    modelChoices,
+    next,
     editor,
     model,
     modelLoading,
@@ -1314,7 +1382,7 @@ export function createModelSettings(
       discardTarget.set(null);
       if (target === 'model') {
         model.set(null);
-        page.set('models');
+        page.set('connection');
       } else if (target === 'connection') leaveEditor();
     },
     keepEditing() {
@@ -1356,7 +1424,7 @@ export function createModelSettings(
     defaultThinking,
     changeTool,
     changeCodeLanguage,
-    showModels,
+    showAdvanced,
     saveModel,
     setDefault,
     confirm,
@@ -1381,6 +1449,7 @@ export function createModelSettings(
       ]),
     activate,
     deactivate,
+    refresh,
     reset,
     cancel() {
       if (page() === 'providers' && providerQuery() && !openingProvider()) {

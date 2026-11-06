@@ -195,6 +195,14 @@ function connectionEditor({
           next: null,
           defaultTarget: null,
         };
+      if (method === 'models')
+        return {
+          kind: 'ready',
+          revision: version,
+          choices: [],
+          defaultModel: { kind: 'none' },
+          next: null,
+        };
       throw new Error(`unexpected query ${endpoint}.${method}`);
     },
     async beginSetting(endpoint, method, input) {
@@ -319,21 +327,19 @@ function connectionEditor({
   };
 }
 
-test('server-side compaction is opt-in and survives saving and reopening a connection', async () => {
+test('server-side compaction is opt-in, applies on change and survives reopening a connection', async () => {
   const { owner, operations } = connectionEditor({ supportsCompaction: true });
   assert.equal(owner.supportsServerSideCompaction(), true);
   assert.equal(owner.editor().serverSideCompaction, false);
   assert.equal(owner.dirty(), false);
-  owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
-  assert.equal(owner.dirty(), true);
-  await owner.saveConnection(owner.action());
+  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
   assert.equal(operations.error(), '');
+  assert.equal(owner.dirty(), false);
   await owner.openConnection(owner.editor().baseline.target);
   assert.equal(operations.error(), '');
   assert.equal(owner.editor().serverSideCompaction, true);
   assert.equal(owner.dirty(), false);
-  owner.toggleServerSideCompaction({ ...owner.action(), enabled: false });
-  await owner.saveConnection(owner.action());
+  await owner.toggleServerSideCompaction({ ...owner.action(), enabled: false });
   await owner.openConnection(owner.editor().baseline.target);
   assert.equal(operations.error(), '');
   assert.equal(owner.editor().serverSideCompaction, false);

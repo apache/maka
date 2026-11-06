@@ -17,323 +17,170 @@
  * under the License.
  */
 
-import { effect, inputAction, platform, Scroll, signal, Text, View, type ScrollRef } from 'nsh';
-import { tr } from './locale';
+import { inputAction, platform, signal, View } from 'nsh';
 import { Button, Slider } from 'nsh/base';
+import type { LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
+import { tr } from './locale';
 import {
   assistantLanguages,
   type GeneralAction,
   type GeneralSettingsOwner,
 } from './generalSettingsState.ts';
-import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
-import { PredictionPreferences, PredictionSettings } from './PredictionSettings';
+import { PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
-import { appearance, colorThemes, paletteIds, textSizes, type ColorTheme } from './appearance';
+import { appearance, colorThemes, paletteIds, textSizes } from './appearance';
 import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
-import { ChoiceIndicator } from './ChoiceIndicator';
-import { Icon } from './Icon';
+import { LoadingIndicator } from './Loading';
 import {
-  bodyTextStyle,
-  captionTextStyle,
-  C,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  controlDisabledStyle,
-  defaultColors,
-  isDark,
-} from './ui';
+  SettingsBody,
+  SettingsButton,
+  SettingsFormFooter,
+  SettingsInput,
+  SettingsRow,
+  SettingsSection,
+  SettingsSelect,
+  SettingsSwitch,
+  SettingsTextArea,
+} from './SettingsPage';
+import { C, defaultColors, isDark } from './ui';
 
 export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   const owner = props.owner;
-  let scroll: ScrollRef | undefined;
-  let previousEditor: number | undefined;
-  effect(() => {
-    const editor = owner.editor()?.id;
-    if (editor === undefined || editor === previousEditor) return;
-    previousEditor = editor;
-    scroll?.scrollTo({ x: 0, y: 0, animated: false });
-  });
   return (
-    <Scroll
-      ref={(node) => {
-        scroll = node;
+    <Each of={[owner.action()]} key={(request) => JSON.stringify(request)}>
+      {(action) => {
+        const request = action();
+        if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
+        if (request.kind === 'globalInstructions')
+          return <GlobalInstructionsEditor owner={owner} request={request} />;
+        if (request.kind === 'predictions')
+          return <PredictionSettings owner={owner} request={request} />;
+        return <PreferenceEditor owner={owner} request={request} />;
       }}
-      style={{ flex: 1, minHeight: 0 }}
-    >
-      <View
-        style={{
-          padding: 8,
-          gap: 16,
-          height:
-            owner.editor()?.kind === 'globalInstructions' || owner.editor()?.kind === 'compaction'
-              ? '100%'
-              : undefined,
-        }}
-      >
-        <If when={owner.loading()}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>
-            {owner.editor()?.kind === 'globalInstructions'
-              ? tr('Reading global instructions…')
-              : tr('Reading preferences…')}
-          </Text>
-        </If>
-        <Each of={[owner.action()]} key={(request) => JSON.stringify(request)}>
-          {(action) => {
-            const request = action();
-            if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
-            if (request.kind === 'globalInstructions')
-              return <GlobalInstructionsEditor owner={owner} request={request} />;
-            if (request.kind === 'predictions')
-              return <PredictionSettings owner={owner} request={request} />;
-            return <PreferenceEditor owner={owner} request={request} />;
-          }}
-        </Each>
-      </View>
-    </Scroll>
+    </Each>
   );
 }
-
-// On the desktop the section text starts where the rows' text does, so the
-// language heading lines up with the switches and links below it.
-const textInset = { paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal };
 
 function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralAction }) {
   const owner = props.owner;
   const request = props.request;
+  const facts = owner.facts;
+  const toggle = (kind: 'instructions' | 'privacy' | 'titles' | 'predictions') =>
+    inputAction(owner.toggle, { request, kind });
+  const open = (kind: 'personalization' | 'compaction' | 'shell' | 'predictions') =>
+    inputAction(owner.open, { request, kind });
   return (
-    <View style={{ gap: 16 }}>
-      <Button
-        disabled={owner.loading() || owner.busy()}
-        onPress={inputAction(owner.reload, request)}
-        accessibilityLabel={tr('Refresh general preferences')}
-        focusStyle={controlFocusStyle()}
-        style={{ ...controlStyle, alignSelf: 'flex-start' }}
-        hoverStyle={controlHoverStyle()}
-        disabledStyle={controlDisabledStyle}
-      >
-        <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Refresh preferences')}</Text>
-      </Button>
-      {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
-      <If when={uiScale.supported || platform.isTerminal}>
-        <UiScaleSettings />
-      </If>
-      <If when={appearance.supported}>
-        <AppearanceSettings />
-      </If>
-      <If when={owner.facts()}>
-        <View style={{ gap: 8 }}>
-          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
-            {tr('Language')}
-          </Text>
-          <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
-            {tr('Language used by the interface and assistant.')}
-          </Text>
-          <If when={owner.facts()?.language == null}>
-            <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
-              {tr('Using the default language.')}
-            </Text>
-          </If>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            <Each of={assistantLanguages()} key={(language) => language.value}>
-              {(language) => (
-                <Button
-                  selected={(owner.facts()?.language ?? 'auto') === language().value}
-                  disabled={owner.disabled()}
-                  accessibilityLabel={tr('Language: {language}', { language: language().label })}
-                  onPress={inputAction(owner.language, { request, preference: language().value })}
-                  style={{
-                    ...controlStyle,
-                    minHeight: 40,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                  selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <ChoiceIndicator
-                    kind="radio"
-                    checked={(owner.facts()?.language ?? 'auto') === language().value}
-                    disabled={owner.disabled()}
-                  />
-                  <Text
-                    style={{
-                      ...bodyTextStyle,
-                      color:
-                        (owner.facts()?.language ?? 'auto') === language().value
-                          ? C.accent
-                          : C.text,
-                    }}
-                  >
-                    {language().label}
-                  </Text>
-                </Button>
-              )}
-            </Each>
-          </View>
-        </View>
-        <PredictionPreferences owner={owner} request={request} />
-        <View style={{ gap: 8 }}>
-          <PreferenceToggle
-            owner={owner}
-            request={request}
-            kind="instructions"
-            label={tr('Workspace instructions')}
-            enabled={owner.facts()?.workspaceInstructions ?? false}
-          />
-          <PreferenceToggle
-            owner={owner}
-            request={request}
-            kind="privacy"
-            label={tr('Incognito mode')}
-            enabled={owner.facts()?.incognitoActive ?? false}
-          />
-          <PreferenceToggle
-            owner={owner}
-            request={request}
-            kind="titles"
-            label={tr('Automatic shell titles')}
-            enabled={owner.facts()?.shell.titles ?? false}
-          />
-        </View>
-        <If when={platform.os === 'windows'}>
-          <Button
-            disabled={owner.disabled()}
-            onPress={inputAction(owner.open, { request, kind: 'shell' })}
-            accessibilityLabel={tr('Bash tool shell')}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            style={{
-              ...controlStyle,
-              minHeight: 56,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 12,
-            }}
-            disabledStyle={controlDisabledStyle}
-          >
-            <View style={{ flex: 1, minWidth: 0, gap: 4, pointerEvents: 'none' }}>
-              <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Bash tool shell')}</Text>
-              <Text style={{ ...captionTextStyle, color: C.muted }}>
-                {owner.facts()?.shell.preference === 'git_bash' ? tr('Git Bash') : tr('Automatic')}
-              </Text>
-            </View>
-            <Icon name="right" color={C.muted} />
-          </Button>
+    <SettingsBody>
+      <SettingsSection title={tr('Appearance & language')}>
+        <If when={appearance.supported}>
+          <AppearanceRows />
         </If>
-        <Button
-          disabled={owner.disabled()}
-          onPress={inputAction(owner.open, { request, kind: 'personalization' })}
-          accessibilityLabel={tr('Edit personalization')}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          style={{
-            ...controlStyle,
-            minHeight: 56,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 12,
-          }}
-          disabledStyle={controlDisabledStyle}
-        >
-          <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
-            <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Personalization')}</Text>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-              {owner.facts()?.displayName || tr('Display name')}
-            </Text>
-          </View>
-          <Icon name="right" color={C.muted} />
-        </Button>
-        <Button
-          disabled={owner.disabled()}
-          onPress={inputAction(owner.open, { request, kind: 'compaction' })}
-          accessibilityLabel={tr('Edit compaction prompt')}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          style={{
-            ...controlStyle,
-            minHeight: 56,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 12,
-          }}
-          disabledStyle={controlDisabledStyle}
-        >
-          <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
-            <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Compaction prompt')}</Text>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {tr('Instructions for summarizing conversation context.')}
-            </Text>
-          </View>
-          <Icon name="right" color={C.muted} />
-        </Button>
-      </If>
-      <Button
-        disabled={owner.blocked()}
-        onPress={inputAction(owner.openGlobal, request)}
-        accessibilityLabel={tr('Edit global instructions')}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-        style={{
-          ...controlStyle,
-          minHeight: 56,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 12,
-        }}
-        disabledStyle={controlDisabledStyle}
+        {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
+        <If when={uiScale.supported || platform.isTerminal}>
+          <UiScaleSettings />
+        </If>
+        <If when={facts()}>
+          <SettingsSelect
+            label={tr('Language')}
+            description={tr('Language used by the interface and assistant.')}
+            value={facts()?.language ?? 'auto'}
+            disabled={owner.disabled()}
+            choices={assistantLanguages().map((item) => ({ value: item.value, title: item.label }))}
+            change={(value) => owner.language({ request, preference: value as LanguagePreference })}
+          />
+        </If>
+      </SettingsSection>
+      <If
+        when={facts()}
+        else={
+          <If when={owner.loading()}>
+            <LoadingIndicator label={tr('Reading preferences…')} />
+          </If>
+        }
       >
-        <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
-          <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Global instructions')}</Text>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr('Edit the global AGENTS.md used by the assistant.')}
-          </Text>
-        </View>
-        <Icon name="right" color={C.muted} />
-      </Button>
-      <If when={owner.facts()?.workspaceInstructions === false}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Workspace instructions are off, so global instructions are not applied.')}
-        </Text>
+        <SettingsSection title={tr('Conversations')}>
+          <SettingsSwitch
+            label={tr('Message predictions')}
+            description={tr('Suggest your next message from the conversation.')}
+            checked={facts()?.predictions.enabled ?? false}
+            disabled={owner.disabled()}
+            onPress={toggle('predictions')}
+          />
+          <SettingsRow
+            label={tr('Prediction settings…')}
+            accessibilityLabel={tr('Configure message predictions')}
+            opens
+            disabled={owner.disabled()}
+            onPress={open('predictions')}
+          />
+          <SettingsSwitch
+            label={tr('Workspace instructions')}
+            checked={facts()?.workspaceInstructions ?? false}
+            disabled={owner.disabled()}
+            onPress={toggle('instructions')}
+          />
+          <SettingsSwitch
+            label={tr('Incognito mode')}
+            checked={facts()?.incognitoActive ?? false}
+            disabled={owner.disabled()}
+            onPress={toggle('privacy')}
+          />
+          <SettingsSwitch
+            label={tr('Automatic shell titles')}
+            checked={facts()?.shell.titles ?? false}
+            disabled={owner.disabled()}
+            onPress={toggle('titles')}
+          />
+          <If when={platform.os === 'windows'}>
+            <SettingsRow
+              label={tr('Bash tool shell')}
+              description={
+                facts()?.shell.preference === 'git_bash' ? tr('Git Bash') : tr('Automatic')
+              }
+              opens
+              disabled={owner.disabled()}
+              onPress={open('shell')}
+            />
+          </If>
+        </SettingsSection>
       </If>
-    </View>
-  );
-}
-
-function PreferenceToggle(props: {
-  owner: GeneralSettingsOwner;
-  request: GeneralAction;
-  kind: 'instructions' | 'privacy' | 'titles';
-  label: string;
-  enabled: boolean;
-}) {
-  return (
-    <Button
-      selected={props.enabled}
-      disabled={props.owner.disabled()}
-      accessibilityLabel={tr('{label}: {state}', {
-        label: props.label,
-        state: props.enabled ? tr('On') : tr('Off'),
-      })}
-      onPress={inputAction(props.owner.toggle, { request: props.request, kind: props.kind })}
-      style={{
-        ...controlStyle,
-        minHeight: 40,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-      }}
-      hoverStyle={controlHoverStyle()}
-      focusStyle={controlFocusStyle()}
-      disabledStyle={controlDisabledStyle}
-    >
-      <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>{props.label}</Text>
-      <ChoiceIndicator kind="switch" checked={props.enabled} disabled={props.owner.disabled()} />
-    </Button>
+      <SettingsSection
+        title={tr('Instructions')}
+        note={
+          facts()?.workspaceInstructions === false
+            ? tr('Workspace instructions are off, so global instructions are not applied.')
+            : undefined
+        }
+      >
+        <SettingsRow
+          label={tr('Global instructions')}
+          description={tr('Edit the global AGENTS.md used by the assistant.')}
+          accessibilityLabel={tr('Edit global instructions')}
+          opens
+          disabled={owner.blocked()}
+          onPress={inputAction(owner.openGlobal, request)}
+        />
+        <If when={facts()}>
+          <SettingsRow
+            label={tr('Compaction prompt')}
+            description={tr('Instructions for summarizing conversation context.')}
+            accessibilityLabel={tr('Edit compaction prompt')}
+            opens
+            disabled={owner.disabled()}
+            onPress={open('compaction')}
+          />
+          <SettingsRow
+            label={tr('Personalization')}
+            description={facts()?.displayName || tr('Display name')}
+            accessibilityLabel={tr('Edit personalization')}
+            opens
+            disabled={owner.disabled()}
+            onPress={open('personalization')}
+          />
+        </If>
+      </SettingsSection>
+    </SettingsBody>
   );
 }
 
@@ -353,106 +200,81 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
     return editor?.kind === 'compaction' ? editor.prompt : '';
   };
   return (
-    <View style={{ gap: 16, flex: request.kind === 'compaction' ? 1 : undefined, minHeight: 0 }}>
-      <Text style={{ ...captionTextStyle, color: C.muted }}>
-        {tr('Changes apply when you save this page.')}
-      </Text>
+    <SettingsBody
+      footer={
+        <SettingsFormFooter
+          saveLabel={tr('Save this preference')}
+          canSave={!owner.disabled() && owner.dirty()}
+          busy={owner.busy()}
+          save={inputAction(owner.save, request)}
+          cancel={inputAction(owner.cancel, request)}
+        />
+      }
+    >
       <If when={request.kind === 'shell'}>
-        <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Bash tool shell')}</Text>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr(
+        <SettingsSection
+          note={tr(
             'Automatic uses PowerShell first on Windows. Git Bash overrides only this Runtime Host.',
           )}
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Each
-            of={[
-              { value: 'auto' as const, label: tr('Automatic') },
-              { value: 'git_bash' as const, label: tr('Git Bash') },
-            ]}
-            key={(option) => option.value}
-          >
-            {(option) => (
-              <Button
-                selected={shellEditor()?.preference === option().value}
-                disabled={owner.disabled()}
-                onPress={inputAction(owner.editShell, {
-                  request,
-                  change: { preference: option().value },
-                })}
-                style={controlStyle}
-                focusStyle={controlFocusStyle()}
-                hoverStyle={controlHoverStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ ...bodyTextStyle, color: C.text }}>{option().label}</Text>
-              </Button>
-            )}
-          </Each>
-        </View>
-        <If when={shellEditor()?.preference === 'git_bash'}>
-          <SettingsField
-            label={tr('Git Bash executable')}
-            value={shellEditor()?.executable ?? ''}
-            change={(text) => owner.editShell({ request, change: { executable: text } })}
+        >
+          <SettingsSelect
+            label={tr('Bash tool shell')}
+            value={shellEditor()?.preference ?? 'auto'}
             disabled={owner.disabled()}
+            choices={[
+              { value: 'auto', title: tr('Automatic') },
+              { value: 'git_bash', title: tr('Git Bash') },
+            ]}
+            change={(value) =>
+              owner.editShell({
+                request,
+                change: { preference: value as 'auto' | 'git_bash' },
+              })
+            }
           />
-        </If>
+          <If when={shellEditor()?.preference === 'git_bash'}>
+            <SettingsInput
+              label={tr('Git Bash executable')}
+              value={shellEditor()?.executable ?? ''}
+              change={(text) => owner.editShell({ request, change: { executable: text } })}
+              disabled={owner.disabled()}
+            />
+          </If>
+        </SettingsSection>
       </If>
       <If when={request.kind === 'personalization'}>
-        <SettingsField
-          label={tr('Display name')}
-          value={name()}
-          change={(text) => owner.editName(request, text)}
-          disabled={owner.disabled()}
-        />
+        <SettingsSection>
+          <SettingsInput
+            label={tr('Display name')}
+            value={name()}
+            change={(text) => owner.editName(request, text)}
+            disabled={owner.disabled()}
+            autoFocus
+          />
+        </SettingsSection>
       </If>
       <If when={request.kind === 'compaction'}>
-        <SettingsEditor
-          label={tr('Compaction prompt')}
-          value={prompt()}
-          change={(text) => owner.editPrompt(request, text)}
-          disabled={owner.disabled()}
-        />
-        <Button
-          disabled={owner.disabled()}
-          accessibilityLabel={tr('Use Host default')}
-          onPress={inputAction(owner.useDefault, request)}
-          focusStyle={controlFocusStyle()}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          disabledStyle={controlDisabledStyle}
+        <SettingsSection
+          trailing={
+            <SettingsButton
+              label={tr('Use default prompt')}
+              accessibilityLabel={tr('Use Host default')}
+              tone="quiet"
+              disabled={owner.disabled()}
+              onPress={inputAction(owner.useDefault, request)}
+            />
+          }
         >
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Use default prompt')}</Text>
-        </Button>
+          <SettingsTextArea
+            label={tr('Compaction prompt')}
+            value={prompt()}
+            lines={16}
+            change={(text) => owner.editPrompt(request, text)}
+            disabled={owner.disabled()}
+          />
+        </SettingsSection>
       </If>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Button
-          disabled={owner.disabled() || !owner.dirty()}
-          onPress={inputAction(owner.save, request)}
-          accessibilityLabel={tr('Save this preference')}
-          focusStyle={{ backgroundColor: C.accentHover }}
-          style={{ ...controlStyle, alignSelf: 'flex-start', backgroundColor: C.accent }}
-          hoverStyle={{ backgroundColor: C.accentHover }}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.background, fontWeight: '500' }}>
-            {tr('Save')}
-          </Text>
-        </Button>
-        <Button
-          disabled={owner.busy()}
-          accessibilityLabel={tr('Cancel')}
-          onPress={inputAction(owner.cancel, request)}
-          focusStyle={controlFocusStyle()}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
-        </Button>
-      </View>
-    </View>
+    </SettingsBody>
   );
 }
 
@@ -461,171 +283,66 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
   const request = props.request;
   const document = owner.globalDocument;
   return (
-    <View style={{ gap: 16, flex: 1, minHeight: 0 }}>
-      <If when={document()}>
-        <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
-          {document()?.basis.path}
-        </Text>
-        <If when={document()?.basis.exists === false}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr('This file does not exist. Saving will create it.')}
-          </Text>
-        </If>
-        <SettingsEditor
-          label={tr('Global instructions')}
-          value={document()?.content ?? ''}
-          change={(content) => owner.editGlobal(request, content)}
-          disabled={owner.disabled()}
+    <SettingsBody
+      footer={
+        <SettingsFormFooter
+          saveLabel={tr('Save global instructions')}
+          canSave={!owner.saveDisabled()}
+          busy={owner.busy()}
+          save={inputAction(owner.save, request)}
+          cancel={inputAction(owner.cancel, request)}
+          extra={
+            <If when={owner.dirty() || document()?.conflict}>
+              <SettingsButton
+                label={tr('Reload (discard edits)')}
+                tone="quiet"
+                disabled={owner.blocked()}
+                onPress={inputAction(owner.reloadGlobal, request)}
+              />
+            </If>
+          }
         />
-        <If when={document()?.conflict}>
-          <Text style={{ ...captionTextStyle, color: C.warning }}>
-            {tr('Source changed. Your draft is preserved. Reload the source before saving again.')}
-          </Text>
-        </If>
+      }
+    >
+      <If when={owner.loading()}>
+        <LoadingIndicator label={tr('Reading global instructions…')} />
+      </If>
+      <If when={document()}>
+        <SettingsSection
+          title={document()?.basis.path}
+          note={
+            document()?.conflict
+              ? tr(
+                  'Source changed. Your draft is preserved. Reload the source before saving again.',
+                )
+              : document()?.basis.exists === false
+                ? tr('This file does not exist. Saving will create it.')
+                : owner.facts()?.workspaceInstructions === false
+                  ? tr('Workspace instructions are off, so global instructions are not applied.')
+                  : undefined
+          }
+        >
+          <SettingsTextArea
+            label={tr('Global instructions')}
+            value={document()?.content ?? ''}
+            lines={18}
+            monospace
+            change={(content) => owner.editGlobal(request, content)}
+            disabled={owner.disabled()}
+          />
+        </SettingsSection>
       </If>
       <If when={!document() && !owner.loading()}>
-        <Text style={{ ...bodyTextStyle, color: C.warning }}>
-          {tr('Source unavailable. Reload to try again.')}
-        </Text>
+        <SettingsRow label={tr('Source unavailable. Reload to try again.')} tone="muted" />
       </If>
-      <If when={owner.facts()?.workspaceInstructions === false}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Workspace instructions are off, so global instructions are not applied.')}
-        </Text>
-      </If>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Button
-          disabled={owner.saveDisabled()}
-          accessibilityLabel={tr('Save global instructions')}
-          onPress={inputAction(owner.save, request)}
-          focusStyle={{ backgroundColor: C.accentHover }}
-          style={{ ...controlStyle, backgroundColor: C.accent }}
-          hoverStyle={{ backgroundColor: C.accentHover }}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.background, fontWeight: '500' }}>
-            {tr('Save global instructions')}
-          </Text>
-        </Button>
-        <Button
-          disabled={owner.blocked()}
-          accessibilityLabel={tr('Reload (discard edits)')}
-          onPress={inputAction(owner.reloadGlobal, request)}
-          focusStyle={controlFocusStyle()}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-            {tr('Reload (discard edits)')}
-          </Text>
-        </Button>
-        <Button
-          disabled={owner.busy()}
-          accessibilityLabel={tr('Cancel')}
-          onPress={inputAction(owner.cancel, request)}
-          focusStyle={controlFocusStyle()}
-          style={controlStyle}
-          hoverStyle={controlHoverStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
-        </Button>
-      </View>
-    </View>
+    </SettingsBody>
   );
 }
 
-const themeLabel = (theme: ColorTheme) =>
+const themeLabel = (theme: (typeof colorThemes)[number]) =>
   ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
 const textSizeLabel = (scale: number) =>
   scale < 1 ? tr('Small') : scale === 1 ? tr('Default') : scale < 1.2 ? tr('Large') : tr('Larger');
-
-/** One row of choices under a heading, as the language's. */
-function ChoiceRow<T>(props: {
-  title: string;
-  detail: string;
-  choices: T[];
-  key(choice: T): string;
-  label(choice: T): string;
-  selected(): T;
-  choose(choice: T): void;
-}) {
-  return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
-        {props.title}
-      </Text>
-      <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>{props.detail}</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Each of={props.choices} key={props.key}>
-          {(choice) => (
-            <Button
-              selected={props.key(props.selected()) === props.key(choice())}
-              accessibilityLabel={`${props.title}: ${props.label(choice())}`}
-              onPress={inputAction((key: string) => {
-                const next = props.choices.find((value) => props.key(value) === key);
-                if (next !== undefined) props.choose(next);
-              }, props.key(choice()))}
-              style={{
-                ...controlStyle,
-                minHeight: 40,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-              }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <ChoiceIndicator
-                kind="radio"
-                checked={props.key(props.selected()) === props.key(choice())}
-              />
-              <Text
-                style={{
-                  ...bodyTextStyle,
-                  color: props.key(props.selected()) === props.key(choice()) ? C.accent : C.text,
-                }}
-              >
-                {props.label(choice())}
-              </Text>
-            </Button>
-          )}
-        </Each>
-      </View>
-    </View>
-  );
-}
-
-/** The desktop window's colors and text size. */
-function AppearanceSettings() {
-  return (
-    <View style={{ gap: 16 }}>
-      <ChoiceRow
-        title={tr('Appearance')}
-        detail={tr('Colors of the window and its menus.')}
-        choices={colorThemes}
-        key={(theme) => theme}
-        label={themeLabel}
-        selected={appearance.theme}
-        choose={appearance.chooseTheme}
-      />
-      <PaletteSettings />
-      <ChoiceRow
-        title={tr('Text size')}
-        detail={tr('Size of the text in the window.')}
-        choices={textSizes}
-        key={(scale) => String(scale)}
-        label={textSizeLabel}
-        selected={appearance.textSize}
-        choose={appearance.chooseTextSize}
-      />
-    </View>
-  );
-}
-
 const paletteLabel = (id: PaletteId) =>
   ({
     default: tr('Default'),
@@ -646,63 +363,50 @@ const paletteSwatch = (id: PaletteId) => {
   return [colors.background, colors.raised, colors.accent];
 };
 
-/** The desktop window's palette: presets, or one made from a hue and an accent. */
-function PaletteSettings() {
+function Swatch(props: { id: PaletteId }) {
   return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
-        {tr('Palette')}
-      </Text>
-      <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>
-        {tr('Background and accent colors of the window, in light and dark.')}
-      </Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Each of={paletteIds} key={(id) => id}>
-          {(id) => (
-            <Button
-              selected={appearance.palette() === id()}
-              accessibilityLabel={`${tr('Palette')}: ${paletteLabel(id())}`}
-              onPress={inputAction(appearance.choosePalette, id())}
-              style={{
-                ...controlStyle,
-                minHeight: 40,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-              }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <View
-                style={{
-                  flexDirection: 'row',
-                  borderRadius: 6,
-                  borderWidth: 1,
-                  borderColor: C.line,
-                  overflow: 'hidden',
-                }}
-              >
-                <Each of={paletteSwatch(id())} key={(_, index) => String(index)}>
-                  {(color) => <View style={{ width: 12, height: 20, backgroundColor: color() }} />}
-                </Each>
-              </View>
-              <Text
-                style={{
-                  ...bodyTextStyle,
-                  color: appearance.palette() === id() ? C.accent : C.text,
-                }}
-              >
-                {paletteLabel(id())}
-              </Text>
-            </Button>
-          )}
-        </Each>
-      </View>
+    <View
+      style={{
+        flexDirection: 'row',
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: C.line,
+        overflow: 'hidden',
+      }}
+    >
+      <Each of={paletteSwatch(props.id)} key={(_, index) => String(index)}>
+        {(color) => <View style={{ width: 8, height: 14, backgroundColor: color() }} />}
+      </Each>
+    </View>
+  );
+}
+
+function AppearanceRows() {
+  return (
+    <>
+      <SettingsSelect
+        label={tr('Appearance')}
+        value={appearance.theme()}
+        choices={colorThemes.map((theme) => ({ value: theme, title: themeLabel(theme) }))}
+        change={(value) => appearance.chooseTheme(value as (typeof colorThemes)[number])}
+      />
+      <SettingsSelect
+        label={tr('Palette')}
+        value={appearance.palette()}
+        preview={<Swatch id={appearance.palette()} />}
+        choices={paletteIds.map((id) => ({ value: id, title: paletteLabel(id) }))}
+        change={(value) => appearance.choosePalette(value as PaletteId)}
+      />
       <If when={appearance.palette() === 'custom'}>
         <CustomPalette />
       </If>
-    </View>
+      <SettingsSelect
+        label={tr('Text size')}
+        value={String(appearance.textSize())}
+        choices={textSizes.map((scale) => ({ value: String(scale), title: textSizeLabel(scale) }))}
+        change={(value) => appearance.chooseTextSize(Number(value))}
+      />
+    </>
   );
 }
 
@@ -727,32 +431,46 @@ function CustomPalette() {
     appearance.changeCustom({ accent }, true);
   };
   return (
-    <View style={{ gap: 12, paddingTop: 4, ...textInset }}>
-      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>{tr('Accent')}</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <Each of={accentSwatches} key={(color) => color}>
-          {(color) => (
-            <Button
-              accessibilityLabel={`${tr('Accent')}: ${color()}`}
-              selected={appearance.custom().accent === color()}
-              onPress={inputAction(chooseAccent, color())}
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 14,
-                borderWidth: 2,
-                borderColor: appearance.custom().accent === color() ? C.text : 'transparent',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-              focusStyle={{ borderColor: C.accent }}
-            >
-              <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: color() }} />
-            </Button>
-          )}
-        </Each>
-      </View>
-      <SettingsField
+    <>
+      <SettingsRow
+        label={tr('Accent')}
+        trailing={
+          <View
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              justifyContent: 'flex-end',
+              gap: 4,
+              flexShrink: 1,
+            }}
+          >
+            <Each of={accentSwatches} key={(color) => color}>
+              {(color) => (
+                <Button
+                  accessibilityLabel={`${tr('Accent')}: ${color()}`}
+                  selected={appearance.custom().accent === color()}
+                  onPress={inputAction(chooseAccent, color())}
+                  style={{
+                    width: 24,
+                    height: 24,
+                    borderRadius: 12,
+                    borderWidth: 2,
+                    borderColor: appearance.custom().accent === color() ? C.text : 'transparent',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  focusStyle={{ borderColor: C.accent }}
+                >
+                  <View
+                    style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: color() }}
+                  />
+                </Button>
+              )}
+            </Each>
+          </View>
+        }
+      />
+      <SettingsInput
         label={tr('Accent color (#rrggbb)')}
         value={typed()}
         placeholder="#4a6890"
@@ -762,38 +480,48 @@ function CustomPalette() {
           appearance.changeCustom({ accent: accent.toLowerCase() }, true);
         }}
       />
-      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>
-        {tr('Background hue')}
-      </Text>
-      <Slider
-        value={appearance.custom().hue}
-        min={0}
-        max={359}
-        step={1}
-        accessibilityLabel={tr('Background hue')}
-        onChange={({ value }) => appearance.changeCustom({ hue: value as number }, false)}
-        onChangeEnd={({ value }) => appearance.changeCustom({ hue: value as number }, true)}
-        indicatorStyle={sliderLook().indicatorStyle}
-        rangeStyle={sliderLook().rangeStyle}
-        thumbStyle={sliderLook().thumbStyle}
-      />
-      <Text style={{ color: C.secondary, fontSize: 13, fontWeight: '500' }}>
-        {tr('Background tint')}
-      </Text>
-      <Slider
-        value={Math.round(appearance.custom().tint * 100)}
-        min={0}
-        max={100}
-        step={5}
-        accessibilityLabel={tr('Background tint')}
-        onChange={({ value }) => appearance.changeCustom({ tint: (value as number) / 100 }, false)}
-        onChangeEnd={({ value }) =>
-          appearance.changeCustom({ tint: (value as number) / 100 }, true)
+      <SettingsRow
+        label={tr('Background hue')}
+        trailing={
+          <View style={{ width: '50%' }}>
+            <Slider
+              value={appearance.custom().hue}
+              min={0}
+              max={359}
+              step={1}
+              accessibilityLabel={tr('Background hue')}
+              onChange={({ value }) => appearance.changeCustom({ hue: value as number }, false)}
+              onChangeEnd={({ value }) => appearance.changeCustom({ hue: value as number }, true)}
+              indicatorStyle={sliderLook().indicatorStyle}
+              rangeStyle={sliderLook().rangeStyle}
+              thumbStyle={sliderLook().thumbStyle}
+            />
+          </View>
         }
-        indicatorStyle={sliderLook().indicatorStyle}
-        rangeStyle={sliderLook().rangeStyle}
-        thumbStyle={sliderLook().thumbStyle}
       />
-    </View>
+      <SettingsRow
+        label={tr('Background tint')}
+        trailing={
+          <View style={{ width: '50%' }}>
+            <Slider
+              value={Math.round(appearance.custom().tint * 100)}
+              min={0}
+              max={100}
+              step={5}
+              accessibilityLabel={tr('Background tint')}
+              onChange={({ value }) =>
+                appearance.changeCustom({ tint: (value as number) / 100 }, false)
+              }
+              onChangeEnd={({ value }) =>
+                appearance.changeCustom({ tint: (value as number) / 100 }, true)
+              }
+              indicatorStyle={sliderLook().indicatorStyle}
+              rangeStyle={sliderLook().rangeStyle}
+              thumbStyle={sliderLook().thumbStyle}
+            />
+          </View>
+        }
+      />
+    </>
   );
 }

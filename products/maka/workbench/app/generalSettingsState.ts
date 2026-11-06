@@ -496,7 +496,7 @@ export function createGeneralSettings(
               ? tr('Compaction prompt')
               : editor()?.kind === 'predictions'
                 ? tr('Message predictions')
-                : tr('General settings'),
+                : tr('General'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -533,10 +533,8 @@ export function createGeneralSettings(
       editor.set({ ...form, document: { ...form.document, content } });
     },
     recovered,
-    reload(request: GeneralAction) {
-      if (!current(request) || request.kind !== 'root' || operations.busy() || loading()) return;
-      operations.error.set('');
-      void load();
+    refresh() {
+      if (visible() && !editor() && !operations.busy() && !loading()) void load();
     },
     cancel(request: GeneralAction) {
       if (current(request)) back();

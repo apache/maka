@@ -275,6 +275,7 @@ export function createMcpSettings(
       if (result.kind !== 'saved') throw settingsRejection(result);
       if (alive) {
         deleting.set(null);
+        editor.set(null);
         operations.notice.set(tr('MCP server deleted.'));
         await load();
       }
@@ -309,9 +310,7 @@ export function createMcpSettings(
     remove,
     back,
     refresh: () => {
-      editor.set(null);
-      deleting.set(null);
-      void load();
+      if (!editor() && !deleting() && !scope.busy()) void load();
     },
     addArgument: () => {
       const draft = editor();

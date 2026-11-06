@@ -18,16 +18,276 @@
  */
 
 import { LoadingIndicator } from './Loading';
-import { List, Scroll, Text, View } from 'nsh';
-import { Input } from 'nsh/base';
 import type { McpSettingsOwner, McpEditor } from './mcpSettingsState';
 import { mcpLaunch, mcpDisabled } from './mcpSettingsState';
-import { ConfigurationScope, LocationChoices, ManageButton } from './ConfigurationScope';
-import { ChoiceIndicator } from './ChoiceIndicator';
-import { Icon } from './Icon';
-import { SettingsField } from './SettingsField';
+import { ConfigurationScope, LocationChoices } from './ConfigurationScope';
 import { tr } from './locale';
-import { C, bodyTextStyle, captionTextStyle, inputTextStyle } from './ui';
+import {
+  SettingsBody,
+  SettingsButton,
+  SettingsConfirm,
+  SettingsFields,
+  SettingsFormFooter,
+  SettingsInlineInput,
+  SettingsInput,
+  SettingsRow,
+  SettingsSearch,
+  SettingsSection,
+  SettingsSegmented,
+  SettingsSwitch,
+  SettingsTextArea,
+} from './SettingsPage';
+
+export function McpSettings(props: { owner: McpSettingsOwner }) {
+  const owner = props.owner;
+  return (
+    <If when={!owner.deleting()} else={<Removal owner={owner} />}>
+      <If when={owner.editor()} else={<ServerList owner={owner} />}>
+        <ServerEditor owner={owner} />
+      </If>
+    </If>
+  );
+}
+
+function ServerList(props: { owner: McpSettingsOwner }) {
+  const owner = props.owner;
+  const disabled = () => owner.busy() || owner.loading();
+  return (
+    <SettingsBody>
+      <SettingsSection>
+        <ConfigurationScope owner={owner.scope} />
+      </SettingsSection>
+      <If when={owner.rows().length > 8 || owner.query().trim()}>
+        <SettingsSearch
+          label={tr('Search MCP servers')}
+          value={owner.query()}
+          change={(value) => owner.query.set(value)}
+        />
+      </If>
+      <If when={owner.loading() && !owner.inventory()}>
+        <LoadingIndicator />
+      </If>
+      <If when={owner.inventory()}>
+        <SettingsSection title={tr('MCP servers')}>
+          <Each of={owner.rows()} key={(row) => `${row.location.location}:${row.entry.name}`}>
+            {(row) => (
+              <SettingsRow
+                label={row().entry.name}
+                tone={
+                  row().entry.shadowedBy || mcpDisabled(row().entry.configuration)
+                    ? 'muted'
+                    : undefined
+                }
+                description={[
+                  row().entry.shadowedBy
+                    ? tr('Overridden')
+                    : mcpDisabled(row().entry.configuration)
+                      ? tr('Disabled')
+                      : null,
+                  mcpLaunch(row().entry.configuration),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+                accessibilityLabel={tr('Edit MCP server {name} at {path}', {
+                  name: row().entry.name,
+                  path: row().location.path,
+                })}
+                opens
+                disabled={disabled()}
+                onPress={() => owner.open(row())}
+              />
+            )}
+          </Each>
+          <If when={!owner.rows().length}>
+            <SettingsRow label={tr('No MCP servers found.')} tone="muted" />
+          </If>
+        </SettingsSection>
+      </If>
+    </SettingsBody>
+  );
+}
+
+function ServerEditor(props: { owner: McpSettingsOwner }) {
+  const owner = props.owner;
+  const editor = () => owner.editor()!;
+  const disabled = () => owner.busy() || owner.loading();
+  const path = () =>
+    owner.inventory()?.locations.find((location) => location.location === editor().location)?.path;
+  const original = () =>
+    owner
+      .rows()
+      .find(
+        (row) =>
+          row.entry.name === editor().original && row.location.location === editor().location,
+      );
+  return (
+    <SettingsBody
+      footer={
+        <SettingsFormFooter
+          saveLabel={tr('Save MCP server')}
+          canSave={
+            !disabled() &&
+            !!editor().name.trim() &&
+            (!editor().enabled ||
+              !!(editor().transport === 'stdio' ? editor().command : editor().url))
+          }
+          busy={owner.busy()}
+          save={() => owner.save(editor())}
+          cancel={() => owner.back()}
+        />
+      }
+    >
+      <SettingsSection>
+        <If
+          when={editor().original}
+          else={
+            <LocationChoices
+              targets={owner.inventory()?.locations ?? []}
+              selected={editor().location}
+              choose={(location) => owner.change('location', location)}
+              disabled={disabled()}
+            />
+          }
+        >
+          <SettingsRow label={tr('Configuration location')} description={path()} />
+        </If>
+        <SettingsInput
+          label={tr('Server name')}
+          value={editor().name}
+          change={(value) => owner.change('name', value)}
+          readonly={!!editor().original}
+          disabled={disabled()}
+          autoFocus={!editor().original}
+        />
+        <SettingsSegmented
+          label={tr('Transport')}
+          value={editor().transport}
+          choices={[
+            { value: 'stdio', title: tr('Local command') },
+            { value: 'http', title: 'Streamable HTTP' },
+          ]}
+          disabled={disabled()}
+          change={(value) => owner.change('transport', value as McpEditor['transport'])}
+        />
+        <If when={editor().transport === 'stdio'}>
+          <SettingsInput
+            label={tr('Command')}
+            value={editor().command}
+            change={(value) => owner.change('command', value)}
+            placeholder="npx"
+            disabled={disabled()}
+          />
+        </If>
+        <If when={editor().transport === 'http'}>
+          <SettingsInput
+            label={tr('Server URL')}
+            value={editor().url}
+            change={(value) => owner.change('url', value)}
+            placeholder="https://example.com/mcp"
+            disabled={disabled()}
+          />
+        </If>
+        <SettingsSwitch
+          label={tr('Enabled')}
+          checked={editor().enabled}
+          disabled={disabled()}
+          onPress={() => owner.change('enabled', !editor().enabled)}
+        />
+      </SettingsSection>
+      <If when={editor().transport === 'stdio'}>
+        <SettingsSection
+          title={tr('Arguments')}
+          trailing={
+            <SettingsButton
+              label={tr('Add argument')}
+              tone="quiet"
+              icon="plus"
+              disabled={disabled()}
+              onPress={owner.addArgument}
+            />
+          }
+        >
+          <Each of={editor().args} key={(argument) => argument.id}>
+            {(argument) => (
+              <SettingsFields>
+                <SettingsInlineInput
+                  label={tr('Argument')}
+                  value={argument().value}
+                  change={(value) => owner.changeArgument({ id: argument().id, value })}
+                  disabled={disabled()}
+                />
+                <SettingsButton
+                  label={tr('Remove argument')}
+                  icon="trash"
+                  iconOnly
+                  tone="quiet"
+                  disabled={disabled()}
+                  onPress={() => owner.removeArgument(argument().id)}
+                />
+              </SettingsFields>
+            )}
+          </Each>
+          <If when={!editor().args.length}>
+            <SettingsRow label={tr('No arguments.')} tone="muted" />
+          </If>
+        </SettingsSection>
+      </If>
+      <SettingsSection>
+        <SettingsRow
+          label={tr('Advanced options')}
+          opens={!editor().advanced}
+          disabled={disabled()}
+          onPress={() => owner.change('advanced', !editor().advanced)}
+        />
+      </SettingsSection>
+      <If when={editor().advanced}>
+        <If when={editor().transport === 'stdio'}>
+          <SettingsSection>
+            <SettingsInput
+              label={tr('Working directory')}
+              value={editor().cwd}
+              change={(value) => owner.change('cwd', value)}
+              disabled={disabled()}
+            />
+          </SettingsSection>
+          <Pairs owner={owner} group="env" label={tr('Environment variables')} />
+          <SettingsSection title={tr('Forward Host environment variables (one per line)')}>
+            <SettingsTextArea
+              label={tr('Forward Host environment variables (one per line)')}
+              value={editor().passEnv}
+              lines={3}
+              monospace
+              change={(value) => owner.change('passEnv', value)}
+              disabled={disabled()}
+            />
+          </SettingsSection>
+        </If>
+        <If when={editor().transport === 'http'}>
+          <Pairs owner={owner} group="headers" label={tr('HTTP headers')} />
+          <Pairs
+            owner={owner}
+            group="headerEnv"
+            label={tr('Headers from Host environment variables')}
+          />
+        </If>
+      </If>
+      <If when={original()}>
+        <SettingsSection>
+          <SettingsRow
+            label={tr('Delete')}
+            accessibilityLabel={tr('Delete MCP server {name} at {path}', {
+              name: original()!.entry.name,
+              path: original()!.location.path,
+            })}
+            tone="danger"
+            disabled={disabled()}
+            onPress={() => owner.deleting.set(original()!)}
+          />
+        </SettingsSection>
+      </If>
+    </SettingsBody>
+  );
+}
 
 function Pairs(props: {
   owner: McpSettingsOwner;
@@ -36,356 +296,69 @@ function Pairs(props: {
 }) {
   const owner = props.owner;
   return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...bodyTextStyle, color: C.secondary }}>{props.label}</Text>
+    <SettingsSection
+      title={props.label}
+      trailing={
+        <SettingsButton
+          label={tr('Add row')}
+          tone="quiet"
+          icon="plus"
+          disabled={owner.busy()}
+          onPress={() => owner.addPair(props.group)}
+        />
+      }
+    >
       <Each of={owner.editor()?.[props.group] ?? []} key={(pair) => pair.id}>
         {(pair) => (
-          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-end' }}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <SettingsField
-                label={tr('Name')}
-                value={pair().name}
-                change={(value) =>
-                  owner.changePair({ group: props.group, id: pair().id, field: 'name', value })
-                }
-                disabled={owner.busy()}
-              />
-            </View>
-            <View style={{ flex: 2, minWidth: 0 }}>
-              <SettingsField
-                label={tr('Value')}
-                value={pair().value}
-                change={(value) =>
-                  owner.changePair({ group: props.group, id: pair().id, field: 'value', value })
-                }
-                masked={props.group !== 'headerEnv'}
-                disabled={owner.busy()}
-              />
-            </View>
-            <ManageButton
-              label={tr('Remove row')}
-              action={owner.removePair}
-              argument={{ group: props.group, id: pair().id }}
+          <SettingsFields>
+            <SettingsInlineInput
+              label={tr('Name')}
+              value={pair().name}
+              change={(value) =>
+                owner.changePair({ group: props.group, id: pair().id, field: 'name', value })
+              }
               disabled={owner.busy()}
-            >
-              <Icon name="trash" color={C.secondary} />
-            </ManageButton>
-          </View>
+            />
+            <SettingsInlineInput
+              label={tr('Value')}
+              value={pair().value}
+              grow={2}
+              masked={props.group !== 'headerEnv'}
+              change={(value) =>
+                owner.changePair({ group: props.group, id: pair().id, field: 'value', value })
+              }
+              disabled={owner.busy()}
+            />
+            <SettingsButton
+              label={tr('Remove row')}
+              icon="trash"
+              iconOnly
+              tone="quiet"
+              disabled={owner.busy()}
+              onPress={() => owner.removePair({ group: props.group, id: pair().id })}
+            />
+          </SettingsFields>
         )}
       </Each>
-      <ManageButton
-        label={tr('Add row')}
-        action={owner.addPair}
-        argument={props.group}
-        disabled={owner.busy()}
-      />
-    </View>
+      <If when={!(owner.editor()?.[props.group] ?? []).length}>
+        <SettingsRow label={tr('None')} tone="muted" />
+      </If>
+    </SettingsSection>
   );
 }
-export function McpSettings(props: { owner: McpSettingsOwner }) {
+
+function Removal(props: { owner: McpSettingsOwner }) {
   const owner = props.owner;
-  const disabled = () => owner.busy() || owner.loading();
+  const row = () => owner.deleting()!;
   return (
-    <View style={{ flex: 1, minHeight: 0, gap: 12 }}>
-      <ConfigurationScope owner={owner.scope} />
-      <If when={!owner.editor()}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Input
-            accessibilityLabel={tr('Search MCP servers')}
-            value={owner.query()}
-            onChange={({ value }) => owner.query.set(value)}
-            placeholder={tr('Search MCP servers')}
-            style={{
-              ...inputTextStyle,
-              color: C.text,
-              backgroundColor: C.background,
-              padding: 8,
-              flex: 1,
-              minWidth: 0,
-            }}
-          />
-          <ManageButton
-            label={tr('Refresh')}
-            action={owner.refresh}
-            argument={null}
-            disabled={disabled()}
-          />
-          <ManageButton
-            label={tr('Add MCP server')}
-            action={owner.open}
-            argument={null}
-            disabled={disabled() || !owner.inventory()?.locations.length}
-          />
-        </View>
-        <Each
-          of={owner.deleting() ? [owner.deleting()!] : []}
-          key={(row) => `${row.location.location}:${row.entry.name}`}
-        >
-          {(row) => (
-            <View
-              style={{
-                gap: 8,
-                padding: 12,
-                borderWidth: 1,
-                borderColor: C.danger,
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ ...bodyTextStyle, color: C.text }}>
-                {tr('Delete MCP server {name}?', { name: row().entry.name })}
-              </Text>
-              <Text style={{ userSelect: 'text', ...captionTextStyle, color: C.secondary }}>
-                {row().location.path}
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <ManageButton
-                  label={tr('Delete')}
-                  danger
-                  action={owner.remove}
-                  argument={row()}
-                  disabled={disabled()}
-                />
-                <ManageButton
-                  label={tr('Cancel')}
-                  action={owner.back}
-                  argument={null}
-                  disabled={owner.busy()}
-                />
-              </View>
-            </View>
-          )}
-        </Each>
-        <List
-          each={owner.rows()}
-          keyExtractor={(row) => `${row.location.location}:${row.entry.name}`}
-          estimatedItemSize={124}
-          style={{ flex: 1, minHeight: 0 }}
-        >
-          {(row) => (
-            <View
-              style={{
-                gap: 8,
-                padding: 12,
-                marginBottom: 8,
-                borderWidth: 1,
-                borderColor: C.line,
-                borderRadius: 8,
-                backgroundColor: C.background,
-              }}
-            >
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={{ ...bodyTextStyle, fontWeight: '600', color: C.text }}>
-                    {row().entry.name}
-                  </Text>
-                  <Text
-                    style={{
-                      ...captionTextStyle,
-                      color: row().entry.shadowedBy ? C.muted : C.success,
-                    }}
-                  >
-                    {row().entry.shadowedBy
-                      ? tr('Overridden')
-                      : mcpDisabled(row().entry.configuration)
-                        ? tr('Disabled')
-                        : tr('Effective')}
-                  </Text>
-                </View>
-                <ManageButton
-                  label={tr('Edit')}
-                  accessibilityLabel={tr('Edit MCP server {name} at {path}', {
-                    name: row().entry.name,
-                    path: row().location.path,
-                  })}
-                  action={owner.open}
-                  argument={row()}
-                  disabled={disabled()}
-                />
-                <ManageButton
-                  label={tr('Delete MCP server {name} at {path}', {
-                    name: row().entry.name,
-                    path: row().location.path,
-                  })}
-                  action={(entry) => owner.deleting.set(entry)}
-                  argument={row()}
-                  disabled={disabled()}
-                >
-                  <Icon name="trash" color={C.secondary} />
-                </ManageButton>
-              </View>
-              <Text style={{ userSelect: 'text', ...bodyTextStyle, color: C.secondary }}>
-                {mcpLaunch(row().entry.configuration)}
-              </Text>
-              <Text style={{ userSelect: 'text', ...captionTextStyle, color: C.muted }}>
-                {row().location.path}
-              </Text>
-            </View>
-          )}
-        </List>
-        <If when={!owner.loading() && owner.inventory() && !owner.rows().length}>
-          <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('No MCP servers found.')}</Text>
-        </If>
-      </If>
-      <If when={owner.editor()}>
-        <Scroll style={{ flex: 1, minHeight: 0 }}>
-          <View style={{ gap: 16 }}>
-            <If when={!owner.editor()?.original}>
-              <Text style={{ ...bodyTextStyle, color: C.text }}>
-                {tr('Configuration location')}
-              </Text>
-              <LocationChoices
-                targets={owner.inventory()?.locations ?? []}
-                selected={owner.editor()?.location ?? null}
-                choose={(location) => owner.change('location', location)}
-                disabled={disabled()}
-              />
-            </If>
-            <If when={owner.editor()?.original}>
-              <Text style={{ userSelect: 'text', ...captionTextStyle, color: C.muted }}>
-                {
-                  owner
-                    .inventory()
-                    ?.locations.find((location) => location.location === owner.editor()?.location)
-                    ?.path
-                }
-              </Text>
-            </If>
-            <SettingsField
-              label={tr('Server name')}
-              value={owner.editor()?.name ?? ''}
-              change={(value) => owner.change('name', value)}
-              readonly={!!owner.editor()?.original}
-              disabled={disabled()}
-            />
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Each of={['stdio', 'http'] as const} key={(transport) => transport}>
-                {(transport) => (
-                  <ManageButton
-                    label={transport() === 'stdio' ? tr('Local command') : 'Streamable HTTP'}
-                    action={(value: McpEditor['transport']) => owner.change('transport', value)}
-                    argument={transport()}
-                    selected={owner.editor()?.transport === transport()}
-                    disabled={disabled()}
-                  />
-                )}
-              </Each>
-            </View>
-            <If when={owner.editor()?.transport === 'stdio'}>
-              <SettingsField
-                label={tr('Command')}
-                value={owner.editor()?.command ?? ''}
-                change={(value) => owner.change('command', value)}
-                placeholder="npx"
-                disabled={disabled()}
-              />
-              <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Arguments')}</Text>
-              <Each of={owner.editor()?.args ?? []} key={(argument) => argument.id}>
-                {(argument) => (
-                  <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-end' }}>
-                    <View style={{ flex: 1 }}>
-                      <SettingsField
-                        label={tr('Argument')}
-                        value={argument().value}
-                        change={(value) => owner.changeArgument({ id: argument().id, value })}
-                        disabled={disabled()}
-                      />
-                    </View>
-                    <ManageButton
-                      label={tr('Remove argument')}
-                      action={owner.removeArgument}
-                      argument={argument().id}
-                      disabled={disabled()}
-                    >
-                      <Icon name="trash" color={C.secondary} />
-                    </ManageButton>
-                  </View>
-                )}
-              </Each>
-              <ManageButton
-                label={tr('Add argument')}
-                action={owner.addArgument}
-                argument={null}
-                disabled={disabled()}
-              />
-            </If>
-            <If when={owner.editor()?.transport === 'http'}>
-              <SettingsField
-                label={tr('Server URL')}
-                value={owner.editor()?.url ?? ''}
-                change={(value) => owner.change('url', value)}
-                placeholder="https://example.com/mcp"
-                disabled={disabled()}
-              />
-            </If>
-            <ManageButton
-              label={tr('Enabled')}
-              action={(value: boolean) => owner.change('enabled', value)}
-              argument={!owner.editor()?.enabled}
-              disabled={disabled()}
-            >
-              <ChoiceIndicator kind="switch" checked={owner.editor()?.enabled ?? true} />
-              <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Enabled')}</Text>
-            </ManageButton>
-            <ManageButton
-              label={tr('Advanced options')}
-              action={(value: boolean) => owner.change('advanced', value)}
-              argument={!owner.editor()?.advanced}
-              disabled={disabled()}
-              selected={owner.editor()?.advanced}
-            />
-            <If when={owner.editor()?.advanced}>
-              <If when={owner.editor()?.transport === 'stdio'}>
-                <SettingsField
-                  label={tr('Working directory')}
-                  value={owner.editor()?.cwd ?? ''}
-                  change={(value) => owner.change('cwd', value)}
-                  disabled={disabled()}
-                />
-                <Pairs owner={owner} group="env" label={tr('Environment variables')} />
-                <SettingsField
-                  label={tr('Forward Host environment variables (one per line)')}
-                  value={owner.editor()?.passEnv ?? ''}
-                  change={(value) => owner.change('passEnv', value)}
-                  multiline
-                  disabled={disabled()}
-                />
-              </If>
-              <If when={owner.editor()?.transport === 'http'}>
-                <Pairs owner={owner} group="headers" label={tr('HTTP headers')} />
-                <Pairs
-                  owner={owner}
-                  group="headerEnv"
-                  label={tr('Headers from Host environment variables')}
-                />
-              </If>
-            </If>
-          </View>
-        </Scroll>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <ManageButton
-            label={tr('Save MCP server')}
-            action={owner.save}
-            argument={owner.editor()}
-            disabled={
-              disabled() ||
-              !owner.editor()?.name.trim() ||
-              (owner.editor()?.enabled &&
-                !(owner.editor()?.transport === 'stdio'
-                  ? owner.editor()?.command
-                  : owner.editor()?.url))
-            }
-          />
-          <ManageButton
-            label={tr('Cancel')}
-            action={owner.back}
-            argument={null}
-            disabled={owner.busy()}
-          />
-        </View>
-      </If>
-      <If when={owner.loading()}>
-        <LoadingIndicator />
-      </If>
-    </View>
+    <SettingsConfirm
+      title={tr('Delete MCP server {name}?', { name: row().entry.name })}
+      body={row().location.path}
+      confirm={tr('Delete')}
+      destructive
+      disabled={owner.busy() || owner.loading()}
+      onConfirm={() => owner.remove(row())}
+      onCancel={() => owner.back()}
+    />
   );
 }
