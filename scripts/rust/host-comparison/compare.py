@@ -1335,42 +1335,9 @@ async def rust_setup(adapter, provider_url, workspace):
         for item in refreshed["connections"]
         if item["slug"] == "offline-comparison"
     )
-    # Traverse only public directory grants to obtain the exact scratch-workspace selection.
-    roots = await adapter.call(
-        "query", endpoint="agent", method="directories", input={"kind": "roots"}
-    )
-    root = next(
-        root for root in roots["roots"] if workspace.is_relative_to(Path(root["path"]))
-    )
-    directory = root
-    for segment in workspace.relative_to(Path(root["path"])).parts:
-        after = None
-        while True:
-            children = await adapter.call(
-                "query",
-                endpoint="agent",
-                method="directories",
-                input={
-                    "kind": "children",
-                    "selection": directory["selection"],
-                    "after": after,
-                },
-            )
-            selected = next(
-                (child for child in children["children"] if child["name"] == segment),
-                None,
-            )
-            if selected:
-                directory = selected
-                break
-            after = children["after"]
-            if after is None:
-                raise RuntimeError(
-                    f"Public directory grant lacks workspace segment {segment}"
-                )
     return {
         "model": {**basis, "modelId": "comparison-model"},
-        "workspace": {"kind": "directory", "selection": directory["selection"]},
+        "workspace": {"kind": "directory", "path": str(workspace)},
     }
 
 

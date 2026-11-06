@@ -778,7 +778,7 @@ async fn desktop_new_conversation_preserves_an_owned_worktree() {
         "create",
         json!({
             "title":"Isolated", "labels":[],
-            "workspace":{"kind":"isolated_git", "selection":roots["roots"][0]["selection"]}
+            "workspace":{"kind":"isolated_git", "path":roots["roots"][0]["path"]}
         }),
     )
     .await;
@@ -1078,7 +1078,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         "create",
         json!({
             "title":"Side conversation","labels":[],
-            "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
+            "workspace":{"kind":"directory","path":roots["roots"][0]["path"]}
         }),
     )
     .await;

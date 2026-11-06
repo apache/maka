@@ -378,7 +378,6 @@ function WorkspacePages(props: { busy: boolean }) {
             name: `Empty ${index}`,
             archived: false,
             available: false,
-            selection: null,
             path: null,
           }))
         : [],

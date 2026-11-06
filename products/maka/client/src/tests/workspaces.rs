@@ -27,10 +27,7 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
     for number in 0..10 {
         let client = if number % 2 == 0 { &first } else { &second };
         client
-            .set_recent_workspace(
-                format!("/project/{number}"),
-                Some(json!({"directory":number})),
-            )
+            .set_recent_workspace(format!("/project/{number}"), true)
             .await
             .unwrap();
     }
@@ -49,15 +46,11 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
             .collect::<Vec<_>>()
     );
     let recent = client
-        .set_recent_workspace(
-            "/project/3".into(),
-            Some(json!({"directory":"new identity"})),
-        )
+        .set_recent_workspace("/project/3".into(), true)
         .await
         .unwrap();
     assert_eq!(recent.len(), 10);
     assert_eq!(recent[0].path, "/project/3");
-    assert_eq!(recent[0].workspace, json!({"directory":"new identity"}));
     assert_eq!(
         recent
             .iter()
@@ -68,7 +61,7 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
     client.close().await.unwrap();
     let client = fixture.client().await;
     client
-        .set_recent_workspace("/project/3".into(), None)
+        .set_recent_workspace("/project/3".into(), false)
         .await
         .unwrap();
     client.close().await.unwrap();
@@ -87,7 +80,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let second = Fixture::new().await;
     let client = first.client().await;
     client
-        .set_recent_workspace("/first".into(), Some(json!({"directory":1})))
+        .set_recent_workspace("/first".into(), true)
         .await
         .unwrap();
     let host = HostClient::connect(&second.address, Some(second.host.epoch()))
@@ -99,7 +92,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let other = Client::new(host, journal, "receipts".into()).unwrap();
     assert!(other.recent_workspaces().await.unwrap().is_empty());
     other
-        .set_recent_workspace("/second".into(), Some(json!({"directory":2})))
+        .set_recent_workspace("/second".into(), true)
         .await
         .unwrap();
     assert_eq!(client.recent_workspaces().await.unwrap()[0].path, "/first");

@@ -55,7 +55,7 @@ pub(crate) fn prompt(language: maka_agent_facts::language::Language) -> &'static
 #[serde(deny_unknown_fields)]
 struct Intent {
     operation: RecoveryRef,
-    /// The coordinator's directory as the caller named it.
+    /// The coordinator's directory as the Host resolved it.
     workspace: String,
 }
 pub(crate) struct Hub {
@@ -226,8 +226,8 @@ impl Hub {
         let intent = match self.intent().await? {
             Some(intent) => intent,
             None => {
-                // Validate the selected directory before committing the immutable
-                // intent. A later replacement cannot retarget this coordinator.
+                // Resolve the selected directory before committing the immutable
+                // intent, which keeps the Host's canonical path.
                 let owner = &self.agent.0;
                 let located = maka_workspace_support::selected(
                     owner.workspace_roots.clone(),
@@ -236,14 +236,14 @@ impl Hub {
                     owner.managed_worktrees.clone(),
                 )
                 .await;
-                if !matches!(located, Ok(Some(_))) {
+                let Ok(Some(located)) = located else {
                     return Ok(Coordinator::Rejected {
                         reason: crate::contract::Rejection::WorkspaceUnavailable,
                     });
-                }
+                };
                 let candidate = Intent {
                     operation,
-                    workspace: input.workspace,
+                    workspace: located.path,
                 };
                 if scope.cancellation.is_cancelled() {
                     return Err("workhub_call_cancelled".into());

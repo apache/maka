@@ -210,8 +210,7 @@ fn root_page(roots: &[Root]) -> DirectoryPage {
 }
 pub fn fits<T: serde::Serialize>(value: &T) -> bool {
     serde_json::to_value(value)
-        .map(|value| value.to_string().len() <= PAGE_BYTES)
-        .unwrap_or(false)
+        .is_ok_and(|value| maka_plugin_core::json::check_delivery(&value, PAGE_BYTES).is_ok())
 }
 pub async fn query(
     roots: Vec<Root>,
@@ -235,7 +234,7 @@ pub async fn query_excluding(
         let (root, selected) = find(&roots, &path).ok_or("agent_directory_unavailable")?;
         if excluded
             .as_ref()
-            .is_some_and(|excluded| Path::new(&selected.path).starts_with(excluded))
+            .is_some_and(|excluded| path.starts_with(excluded))
         {
             return Err("agent_directory_unavailable".into());
         }
@@ -246,7 +245,7 @@ pub async fn query_excluding(
         }) {
             return Err("agent_directory_invalid".into());
         }
-        let segments = Path::new(&selected.path)
+        let segments = path
             .strip_prefix(root.directory.path())
             .map_err(|_| "agent_directory_unavailable")?
             .components()
@@ -275,7 +274,7 @@ pub async fn query_excluding(
         let mut children = Vec::new();
         let mut remaining = names.iter();
         for name in remaining.by_ref() {
-            let Some(child) = capture(root, &Path::new(&selected.path).join(name)) else {
+            let Some(child) = capture(root, &path.join(name)) else {
                 continue;
             };
             children.push(entry(child));
@@ -304,8 +303,7 @@ pub async fn query_excluding(
             children.pop();
             *after = children.last().map(|child| child.name.clone());
         }
-        directory::open(Path::new(&selected.path), &selected.identity)
-            .map_err(|_| "agent_directory_unavailable")?;
+        directory::open(&path, &selected.identity).map_err(|_| "agent_directory_unavailable")?;
         Ok(page)
     })
     .await
@@ -323,17 +321,16 @@ pub async fn initialize(
     private_root: &Path,
     control: &Path,
 ) -> Result<Option<Workspace>, String> {
-    let Some(path) = resolve_path(path, home) else {
-        return Ok(None);
-    };
     let roots = roots.to_vec();
+    let path = path.to_owned();
+    let home = home.map(Path::to_owned);
     let managed = managed.to_owned();
     let prepared = tokio::task::spawn_blocking(move || {
-        let (root, located) = find(&roots, &path)?;
-        let path = PathBuf::from(&located.path);
+        let path = resolve_path(&path, home.as_deref())?;
         if path.starts_with(&managed) {
             return None;
         }
+        let (root, located) = find(&roots, &path)?;
         let directory = directory::open(&path, &located.identity).ok()?;
         match workspace::read_directory_identity(path.clone(), directory.try_clone().ok()?) {
             Ok(_) => {}
@@ -441,15 +438,14 @@ async fn resolve(
     excluded: PathBuf,
     workspace_marker: bool,
 ) -> Result<Option<Located>, String> {
-    let Some(path) = resolve_path(path, home) else {
-        return Ok(None);
-    };
+    let path = path.to_owned();
+    let home = home.map(Path::to_owned);
     tokio::task::spawn_blocking(move || {
-        let (_, located) = find(&roots, &path)?;
-        let path = PathBuf::from(&located.path);
+        let path = resolve_path(&path, home.as_deref())?;
         if path.starts_with(&excluded) {
             return None;
         }
+        let (_, located) = find(&roots, &path)?;
         let directory = directory::open(&path, &located.identity).ok()?;
         if !workspace_marker {
             return Some(located);
@@ -602,7 +598,7 @@ mod tests {
         let found = located(app.display().to_string()).await.unwrap();
         let canonical = app.canonicalize().unwrap();
         assert_eq!(found.name, "app");
-        assert_eq!(found.path, canonical.to_str().unwrap());
+        assert_eq!(found.path, host_path(&canonical).unwrap());
         assert_eq!(found.identity, directory::capture(&app).unwrap().1);
         // Written with `.`, `..` and a trailing separator: the same directory.
         let dotted = format!("{}/./code/../code/app/", published.display());

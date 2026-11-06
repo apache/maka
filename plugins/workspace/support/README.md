@@ -25,7 +25,7 @@ Shares directory resolution and validation across workspace services. It opens c
 
 Child queries enumerate the selected directory before sorting and returning pages of up to 32 children with a 48 KiB byte target, allowing a complete first child to advance. Ordinary files do not prevent browsing child directories. Continue with the returned `after` cursor; each query revalidates the published root and selected directory identity.
 
-Selections have no separate directory-depth limit. Paths must still satisfy the Host's path representation and filesystem checks. ACP follows returned selections toward the requested canonical path, ignoring aliases that do not advance toward it.
+Paths have no separate directory-depth limit, but must still satisfy the Host's path representation and filesystem checks.
 
 The complete configured root set is returned without a separate page-size admission ceiling. Component and canonical-path validation preserve the original directory authority without imposing additional pathname byte limits.
 

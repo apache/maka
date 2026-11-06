@@ -268,10 +268,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+  const setRecentWorkspace = (path: string, remember: boolean) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -281,9 +281,7 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
-      report,
-    );
+    void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -1877,7 +1875,7 @@ export function createConversationUi(
       recentKnown.set(true);
       recentWorkspaces.set(recent);
       if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
-        await create(recent[0].workspace, null, recent[0].path, false);
+        await create({ kind: 'directory', path: recent[0].path }, null, recent[0].path, false);
     },
   });
   createPendingRecovery({
@@ -2454,11 +2452,11 @@ export function createConversationUi(
                     disabled={() => pendingSending() || pendingFileBusy()}
                     forget={(path) => {
                       recentOpen.set(false);
-                      void setRecentWorkspace(path, null).catch(report);
+                      void setRecentWorkspace(path, false).catch(report);
                     }}
                     choose={(item) => {
                       recentOpen.set(false);
-                      void create(item.workspace, selected(), item.path);
+                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
                     }}
                     browse={() => {
                       recentOpen.set(false);
