@@ -46,6 +46,7 @@ impl Driver {
         cancellation: &CancellationToken,
         language: Language,
         window_pixels: bool,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Self::invoke_with_coordinates(
             driver,
@@ -61,6 +62,8 @@ impl Driver {
             },
             #[cfg(target_os = "windows")]
             None,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -119,7 +122,7 @@ impl Driver {
                     .insert(
                         session
                             .native_desktop_owner()
-                            .map_err(|error| native_error(error, language))?,
+                            .map_err(|error| native_error(&error, language))?,
                     )
                     .clone(),
             }
@@ -142,7 +145,7 @@ impl Driver {
             _=cancellation.cancelled()=>{owner.seal();call.await},
             result=&mut call=>result,
         }
-        .map_err(|error| native_error(error, language))?;
+        .map_err(|error| native_error(&error, language))?;
         native_input_result(result, language)
     }
 

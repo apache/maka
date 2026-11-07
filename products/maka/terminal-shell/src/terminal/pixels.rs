@@ -310,9 +310,13 @@ pub(super) fn run(
                             return Ok(());
                         }
                         let pending = Arc::new(AtomicBool::new(false));
-                        let (commands, frames) =
-                            super::ui::spawn(config, pending.clone(), thread::current())
-                                .map_err(|error| error.to_string())?;
+                        let (commands, frames) = super::ui::spawn(
+                            config,
+                            pending.clone(),
+                            thread::current(),
+                            presentation.tmux,
+                        )
+                        .map_err(|error| error.to_string())?;
                         return super::drive(output, presentation, &commands, &frames, &pending);
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}

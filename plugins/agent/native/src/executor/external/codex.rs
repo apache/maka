@@ -309,7 +309,6 @@ struct Message {
     summary: std::collections::BTreeMap<u64, String>,
     reasoning: std::collections::BTreeMap<u64, String>,
     active_thinking: Option<(bool, u64)>,
-    has_thinking: bool,
     ended: bool,
 }
 impl Turn {
@@ -384,13 +383,12 @@ impl Turn {
                         return Ok(None);
                     }
                     let key = (is_content, index);
-                    let emitted = if message.has_thinking && message.active_thinking != Some(key) {
+                    let emitted = if message.active_thinking.is_some_and(|active| active != key) {
                         format!("\n\n{text}")
                     } else {
                         text.into()
                     };
                     message.active_thinking = Some(key);
-                    message.has_thinking = true;
                     Output::ThinkingDelta {
                         message_id: id.into(),
                         text: emitted,
@@ -470,7 +468,6 @@ impl Turn {
                                 && let Some(pos) = suffixes.iter().position(|(k, _)| *k == active)
                             {
                                 let (_, suffix) = suffixes.remove(pos);
-                                message.has_thinking = true;
                                 output
                                     .emit(Output::ThinkingDelta {
                                         message_id: id.clone(),
@@ -479,12 +476,11 @@ impl Turn {
                                     .await?;
                             }
                             for (key, suffix) in suffixes {
-                                let emitted = if message.has_thinking {
+                                let emitted = if message.active_thinking.is_some() {
                                     format!("\n\n{suffix}")
                                 } else {
                                     suffix
                                 };
-                                message.has_thinking = true;
                                 message.active_thinking = Some(key);
                                 output
                                     .emit(Output::ThinkingDelta {

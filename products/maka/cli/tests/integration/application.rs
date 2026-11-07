@@ -38,7 +38,7 @@ fn durable_application_commands_commit_read_cas_and_never_claim_readiness() {
     std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
     let commit = || {
-        Command::new(env!("CARGO_BIN_EXE_maka"))
+        Command::new(crate::maka_executable())
             .args([
                 "application",
                 "commit",
@@ -64,7 +64,7 @@ fn durable_application_commands_commit_read_cas_and_never_claim_readiness() {
     assert_eq!(source["deployment"], id);
     assert_eq!(source["revision"], 1);
     assert!(source.get("ready").is_none());
-    let read = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let read = Command::new(crate::maka_executable())
         .args([
             "application",
             "read",
@@ -98,7 +98,7 @@ fn source_rejection_diagnostics_cannot_execute_terminal_control_sequences() {
     )
     .unwrap();
     for command in ["check", "commit"] {
-        let mut process = Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut process = Command::new(crate::maka_executable());
         process.args(["application", command, "--input"]).arg(&path);
         if command == "commit" {
             process.arg("--root").arg(&root).args([
@@ -198,7 +198,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
             }
         }
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let output = Command::new(crate::maka_executable())
         .args([
             "application",
             "install-url",
@@ -254,7 +254,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     use maka_host_runtime::application::host::Configuration;
     use maka_packages::Package;
     use serde_json::json;
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("standalone-host");
@@ -265,7 +265,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     let deployment = uuid::Uuid::new_v4();
     let files_key = uuid::Uuid::new_v4();
     let consumer_key = uuid::Uuid::new_v4();
-    let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
+    let bundle = crate::product_bundle();
     let current = Package::read_from(&bundle.join("packages/workspace-files")).unwrap();
     // A same-ID fork is explicit configuration, not evidence of an old default.
     // The update policy replaces this declared bundled ID without guessing origin.
@@ -412,7 +412,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     })
     };
     let update = |apply: bool| {
-        let mut process = Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut process = Command::new(crate::maka_executable());
         process
             .args(["application", "update-defaults", "--root"])
             .arg(&root);
@@ -533,7 +533,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
         );
     }
     host.child = Some(
-        Command::new(env!("CARGO_BIN_EXE_maka"))
+        Command::new(crate::maka_executable())
             .args(["host", "serve", "--root"])
             .arg(&root)
             .stdin(std::process::Stdio::null())
@@ -579,7 +579,7 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
             "an update attempt must not stop the active Host"
         );
     }
-    let retired = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let retired = Command::new(crate::maka_executable())
         .args(["host", "retire", "--root"])
         .arg(&root)
         .args([

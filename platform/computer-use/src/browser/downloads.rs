@@ -227,8 +227,9 @@ impl Tab {
             return Ok(());
         };
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("Download tab is not attached"))?
             .clone();
         if let Some(controller) = &self.downloads {
@@ -260,7 +261,7 @@ impl Tab {
     /// Explicit Close still owns its current admitted operation. A held
     /// response must use that current socket, not a completed producer clone.
     pub(super) async fn cleanup_downloads_current(&mut self) -> Result<(), ToolError> {
-        let socket = self.socket.clone();
+        let socket = self.connection.as_ref().map(TabConnection::socket).cloned();
         if let Some(downloads) = self.downloads.as_mut() {
             let socket = socket.ok_or_else(|| {
                 cleanup("Explicit Close lost its current admitted browser transport")

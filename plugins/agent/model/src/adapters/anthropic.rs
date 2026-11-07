@@ -628,11 +628,12 @@ impl Payload {
 }
 struct Group {
     key: usize,
-    header: Value,
-    enabled: bool,
-    force_empty: bool,
-    opened: bool,
-    first: bool,
+    output: GroupOutput,
+}
+enum GroupOutput {
+    Suppressed,
+    Pending { header: Value, force_empty: bool },
+    Open { first: bool },
 }
 enum AfterDrain {
     Boundary(Record),
@@ -659,10 +660,10 @@ impl State {
         let Some(group) = &mut self.group else {
             return;
         };
-        if group.opened || !group.enabled {
+        let GroupOutput::Pending { header, .. } = &group.output else {
             return;
-        }
-        let mut header = serde_json::to_vec(&group.header).expect("small wire message header");
+        };
+        let mut header = serde_json::to_vec(header).expect("small wire message header");
         assert_eq!(header.pop(), Some(b'}'));
         header.extend_from_slice(b",\"content\":[");
         if !self.message_first {
@@ -670,13 +671,25 @@ impl State {
         }
         self.message_first = false;
         self.queue.push_back(header);
-        group.opened = true;
+        group.output = GroupOutput::Open { first: true };
     }
     fn close_group(&mut self) {
-        if self.group.as_ref().is_some_and(|group| group.force_empty) {
+        if self.group.as_ref().is_some_and(|group| {
+            matches!(
+                group.output,
+                GroupOutput::Pending {
+                    force_empty: true,
+                    ..
+                }
+            )
+        }) {
             self.open_group();
         }
-        if self.group.take().is_some_and(|group| group.opened) {
+        if self
+            .group
+            .take()
+            .is_some_and(|group| matches!(group.output, GroupOutput::Open { .. }))
+        {
             self.queue.push_back(b"]}".to_vec());
         }
     }
@@ -684,11 +697,14 @@ impl State {
         if let Some(info) = record.info.take() {
             self.group = Some(Group {
                 key: info.group,
-                force_empty: info.emit_message && info.header["role"] != "assistant",
-                header: info.header,
-                enabled: info.emit_message,
-                opened: false,
-                first: true,
+                output: if info.emit_message {
+                    GroupOutput::Pending {
+                        force_empty: info.header["role"] != "assistant",
+                        header: info.header,
+                    }
+                } else {
+                    GroupOutput::Suppressed
+                },
             });
         }
     }
@@ -703,13 +719,19 @@ impl State {
             self.system_first = false;
         } else {
             self.open_group();
-            let group = self.group.as_mut().ok_or_else(|| {
-                ModelError::Adapter("Anthropic wire block has no role group".into())
-            })?;
-            if !group.first {
+            let Some(Group {
+                output: GroupOutput::Open { first },
+                ..
+            }) = &mut self.group
+            else {
+                return Err(ModelError::Adapter(
+                    "Anthropic wire block has no open role group".into(),
+                ));
+            };
+            if !*first {
                 self.queue.push_back(vec![b',']);
             }
-            group.first = false;
+            *first = false;
         }
         let cursor = self.wire.source.open_at(record.position).ok_or_else(|| {
             ModelError::Adapter("Anthropic prepared source lacks indexed item reads".into())

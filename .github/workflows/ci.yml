@@ -308,7 +308,17 @@ jobs:
         id: compile
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
       - name: Verify selected suites
-        run: node scripts/ci.mjs verify '${{ matrix.id }}'
+        id: verify
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/ci.mjs verify '${{ matrix.id }}' 2>&1 | tee "$RUNNER_TEMP/maka-suite-verify.log"
+      - uses: actions/upload-artifact@v7
+        if: ${{ failure() && steps.verify.outcome == 'failure' }}
+        with:
+          name: ${{ matrix.id }}-failure-log-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/maka-suite-verify.log
+          if-no-files-found: error
       - uses: ./.github/actions/ci-cache
         if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
         env:

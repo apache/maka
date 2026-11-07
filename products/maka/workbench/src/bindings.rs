@@ -434,10 +434,15 @@ impl ApplicationHost {
         self.owner.reload.resume()
     }
 
-    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) {
-        let reload = self.owner.reload.clone();
+    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) -> Result<(), String> {
+        let pending = self.owner.reload.prepare(state)?;
         // Queue after this JS call, so replacing its engine cannot interrupt it.
-        cx.start(async move { reload.request(state) });
+        cx.start(async move {
+            if let Err(error) = pending.enqueue() {
+                eprintln!("maka-workbench: UI reload failed: {error}");
+            }
+        });
+        Ok(())
     }
 
     /// Resolve the original Markdown target once. Workspace bytes remain with

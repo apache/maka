@@ -193,6 +193,8 @@ impl Desktop {
         if let Some(label) = preview_ready {
             desktop.control(label).await;
         } else {
+            // The native input sink can focus before the saved draft is editable.
+            desktop.control("Focus message composer").await;
             desktop.target_after(None).await;
         }
         desktop
@@ -430,6 +432,7 @@ impl Desktop {
         let previous = self.platform.text_input_target();
         self.key("n", true);
         self.target_after(previous).await;
+        self.control("Focus message composer").await;
     }
 
     async fn attach(&self, path: &Path) {

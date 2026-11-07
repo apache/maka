@@ -30,7 +30,7 @@ async fn run(cwd: &Path, policy: &Sandbox, command: &str, timeout: u64) -> Outpu
     std::fs::write(&path, serde_json::to_vec(policy).unwrap()).unwrap();
     tokio::time::timeout(
         Duration::from_secs(15),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_maka"))
+        tokio::process::Command::new(crate::maka_executable())
             .arg("sandbox")
             .arg("run")
             .arg("--policy")
@@ -74,7 +74,7 @@ async fn shell_diagnostics_preserve_output_exit_and_enforce_policy_before_effect
     #[cfg(windows)]
     let command =
         "$b = [byte[]]::new(16777216); [Console]::OpenStandardOutput().Write($b, 0, $b.Length)";
-    let mut blocked = tokio::process::Command::new(env!("CARGO_BIN_EXE_maka"))
+    let mut blocked = tokio::process::Command::new(crate::maka_executable())
         .args(["sandbox", "run", "--policy"])
         .arg(cwd.join("policy.json"))
         .arg("--cwd")

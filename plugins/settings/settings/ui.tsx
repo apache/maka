@@ -433,8 +433,18 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     },
     async prepareReload(): Promise<Snapshot> {
       do {
-        await Promise.all([operations.whenIdle(), plugins.rootUi.whenIdle(), uiScale.whenIdle()]);
-      } while (operations.busy() || plugins.rootUi.busy() || uiScale.saving());
+        await Promise.all([
+          operations.whenIdle(),
+          plugins.rootUi.whenIdle(),
+          uiScale.whenIdle(),
+          appearance.whenIdle(),
+        ]);
+      } while (
+        operations.busy() ||
+        plugins.rootUi.busy() ||
+        uiScale.saving() ||
+        appearance.saving()
+      );
       return {
         route: route(),
         connections: connections.snapshot(),

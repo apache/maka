@@ -24,7 +24,16 @@ import type { OriginalMutation } from './host';
 type Trigger = 'live' | 'catch_up';
 type Suggestion = NonNullable<ReturnType<ComposerPrediction['current']>>;
 type Result = { sourceTurnId: string; policyRevision: number; suggestion: string | null };
-type Source = { turnId: string; trigger: Trigger; contextKey: string };
+type Source = {
+  readonly turnId: string;
+  readonly trigger: Trigger;
+  readonly contextKey: string;
+  settingsReady: boolean;
+  state:
+    | { kind: 'unsettled' }
+    | { kind: 'settled'; revision: number; value: Suggestion | null }
+    | { kind: 'dismissed' };
+};
 export function predictionTrigger(input: {
   completedTurnId: string | null;
   activeTurnId: string | null;
@@ -57,21 +66,58 @@ type Request = {
   operation: OriginalMutation | null;
 };
 
-let preferences: { revision: number; value: SettingsAssistantPreferences | null } | null = null;
-const observers = new Set<() => void>();
+type PreferencesState =
+  | { kind: 'unknown' }
+  | { kind: 'invalidated'; revision: number }
+  | { kind: 'ready'; value: SettingsAssistantPreferences };
+
+function createPreferencesOwner() {
+  let state: PreferencesState = { kind: 'unknown' };
+  const observers = new Set<() => void>();
+  const revision = () =>
+    state.kind === 'unknown'
+      ? null
+      : state.kind === 'invalidated'
+        ? state.revision
+        : state.value.revision;
+  const changed = () => {
+    for (const observe of observers) observe();
+  };
+  return {
+    revision,
+    value: () => (state.kind === 'ready' ? state.value : null),
+    observe(value: SettingsAssistantPreferences) {
+      const previous = revision();
+      if (previous !== null && value.revision < previous) return;
+      if (state.kind === 'ready' && state.value === value) return;
+      state = { kind: 'ready', value };
+      changed();
+    },
+    invalidate(next: number) {
+      const previous = revision();
+      if (previous !== null && next < previous) return;
+      state = { kind: 'invalidated', revision: next };
+      changed();
+    },
+    subscribe(observe: () => void) {
+      observers.add(observe);
+      return () => observers.delete(observe);
+    },
+  };
+}
+
+// Settings and conversations are separate bundles in the same window VM.
+const OWNER = Symbol.for('maka.prediction-preferences');
+const shared = globalThis as { [OWNER]?: ReturnType<typeof createPreferencesOwner> };
+const preferences = (shared[OWNER] ??= createPreferencesOwner());
 
 /** Share observed settings, so a saved change immediately retires old suggestions. */
 export function observePredictionPreferences(value: SettingsAssistantPreferences): void {
-  if (preferences && value.revision < preferences.revision) return;
-  if (preferences?.value === value) return;
-  preferences = { revision: value.revision, value };
-  for (const observe of observers) observe();
+  preferences.observe(value);
 }
 
 export function invalidatePredictionPreferences(revision: number): void {
-  if (preferences && revision < preferences.revision) return;
-  preferences = { revision, value: null };
-  for (const observe of observers) observe();
+  preferences.invalidate(revision);
 }
 
 /** One resident conversation retains only its current source and its original request. */
@@ -79,12 +125,9 @@ export function createMessagePrediction(options: Options) {
   let alive = true;
   let eligible = false;
   let source: Source | null = null;
-  let dismissed = false;
   let shown: Suggestion | null = null;
-  let settled: { source: Source; revision: number; value: Suggestion | null } | null = null;
   let request: Request | null = null;
   let reading: { source: Source; stale: boolean } | null = null;
-  let settingsReady = false;
 
   const publish = (value: Suggestion | null) => {
     if (!alive || shown === value) return;
@@ -97,14 +140,18 @@ export function createMessagePrediction(options: Options) {
       request.operation?.cancel();
     }
   };
-  const owns = (ticket: Request) =>
-    alive &&
-    eligible &&
-    !dismissed &&
-    !ticket.cancelled &&
-    source === ticket.source &&
-    preferences?.revision === ticket.revision &&
-    preferences.value?.predictions.enabled === true;
+  const owns = (ticket: Request) => {
+    const config = preferences.value();
+    return (
+      alive &&
+      eligible &&
+      ticket.source.state.kind !== 'dismissed' &&
+      !ticket.cancelled &&
+      source === ticket.source &&
+      config?.revision === ticket.revision &&
+      config.predictions.enabled === true
+    );
+  };
 
   const generate = async (ticket: Request) => {
     try {
@@ -136,14 +183,15 @@ export function createMessagePrediction(options: Options) {
           result.policyRevision !== ticket.revision
         )
           return;
-        settled = {
-          source: ticket.source,
+        const settled = {
+          kind: 'settled' as const,
           revision: ticket.revision,
           value:
             result.suggestion === null
               ? null
               : { sourceTurnId: result.sourceTurnId, text: result.suggestion },
         };
+        ticket.source.state = settled;
         publish(settled.value);
         return;
       }
@@ -154,9 +202,10 @@ export function createMessagePrediction(options: Options) {
         if (
           !ticket.cancelled &&
           source === ticket.source &&
-          (settled?.source !== ticket.source || settled.revision !== ticket.revision)
+          (ticket.source.state.kind !== 'settled' ||
+            ticket.source.state.revision !== ticket.revision)
         )
-          settled = { source: ticket.source, revision: ticket.revision, value: null };
+          ticket.source.state = { kind: 'settled', revision: ticket.revision, value: null };
         request = null;
         refresh();
       }
@@ -172,8 +221,9 @@ export function createMessagePrediction(options: Options) {
       .then(
         (value) => {
           if (!alive || source !== ticket.source) return;
-          settingsReady = value.revision >= (preferences?.revision ?? -1);
-          ticket.stale = !settingsReady;
+          const revision = preferences.revision();
+          ticket.source.settingsReady = revision === null || value.revision >= revision;
+          ticket.stale = !ticket.source.settingsReady;
           observePredictionPreferences(value);
           refresh();
         },
@@ -191,13 +241,13 @@ export function createMessagePrediction(options: Options) {
 
   function refresh() {
     if (!alive) return;
-    if (!eligible || !source || dismissed) {
+    if (!eligible || !source || source.state.kind === 'dismissed') {
       publish(null);
       cancel();
       return;
     }
-    const config = preferences?.value;
-    if (!settingsReady || !config) {
+    const config = preferences.value();
+    if (!source.settingsReady || !config) {
       publish(null);
       cancel();
       readPreferences();
@@ -208,8 +258,8 @@ export function createMessagePrediction(options: Options) {
       cancel();
       return;
     }
-    if (settled?.source === source && settled.revision === config.revision) {
-      publish(settled.value);
+    if (source.state.kind === 'settled' && source.state.revision === config.revision) {
+      publish(source.state.value);
       return;
     }
     publish(null);
@@ -228,15 +278,15 @@ export function createMessagePrediction(options: Options) {
   }
 
   const changedPreferences = () => {
-    if (!preferences?.value) settingsReady = false;
+    if (source && !preferences.value()) source.settingsReady = false;
     refresh();
   };
-  observers.add(changedPreferences);
+  const unsubscribe = preferences.subscribe(changedPreferences);
   const presentation: ComposerPrediction = {
     current: () => shown,
     dismiss(sourceTurnId) {
       if (source?.turnId !== sourceTurnId) return;
-      dismissed = true;
+      source.state = { kind: 'dismissed' };
       refresh();
     },
   };
@@ -249,22 +299,22 @@ export function createMessagePrediction(options: Options) {
           (source === null || source.contextKey === contextKey))
       )
         return;
-      source = turnId === null ? null : { turnId, trigger, contextKey };
-      dismissed = false;
-      settled = null;
-      settingsReady = false;
+      source =
+        turnId === null
+          ? null
+          : { turnId, trigger, contextKey, settingsReady: false, state: { kind: 'unsettled' } };
       refresh();
     },
     eligible(value: boolean) {
       if (!alive || eligible === value) return;
       eligible = value;
-      if (!value) settingsReady = false;
+      if (!value && source) source.settingsReady = false;
       refresh();
     },
     dispose() {
       if (!alive) return;
       cancel();
-      observers.delete(changedPreferences);
+      unsubscribe();
       alive = false;
       shown = null;
     },

@@ -43,15 +43,18 @@ pub struct Projection {
     preview_epoch: Option<String>,
     preview_attempt: Option<(String, String)>,
     preview_seed: HashMap<(String, String, MessageKind), String>,
-    canonical_pending: Option<(String, String)>,
     committed_parts: HashSet<(String, String, String)>,
     closed_steps: HashSet<(String, String)>,
-    assembly: Option<(
-        maka_agent_ports::session::history::RowPosition,
-        HistoryField,
-        String,
-        Meta,
-    )>,
+    assembly: Option<CanonicalAssembly>,
+}
+
+struct CanonicalAssembly {
+    turn_id: String,
+    message_id: String,
+    position: maka_agent_ports::session::history::RowPosition,
+    field: HistoryField,
+    text: String,
+    meta: Meta,
 }
 
 struct Tool {
@@ -65,7 +68,6 @@ struct Tool {
 impl Projection {
     pub fn chunk(&mut self, chunk: &HistoryChunk) -> Result<Vec<Update>, crate::Error> {
         if chunk.offset == 0 {
-            self.canonical_pending = Some((chunk.turn_id.clone(), chunk.message_id.clone()));
             self.preview_seed
                 .retain(|(turn, id, _), _| turn != &chunk.turn_id || id != &chunk.message_id);
             let mut meta = message_meta(&chunk.turn_id, &chunk.message_id);
@@ -78,13 +80,25 @@ impl Projection {
             if !chunk.attachments.is_empty() {
                 meta["maka"]["attachments"] = serde_json::to_value(&chunk.attachments)?;
             }
-            self.assembly = Some((chunk.position, chunk.field, String::new(), meta));
+            self.assembly = Some(CanonicalAssembly {
+                turn_id: chunk.turn_id.clone(),
+                message_id: chunk.message_id.clone(),
+                position: chunk.position,
+                field: chunk.field,
+                text: String::new(),
+                meta,
+            });
         }
-        let (sequence, field, text, _) = self
+        let CanonicalAssembly {
+            position,
+            field,
+            text,
+            ..
+        } = self
             .assembly
             .as_mut()
             .ok_or("History field starts with a missing fragment")?;
-        if *sequence != chunk.position || *field != chunk.field || text.len() as u64 != chunk.offset
+        if *position != chunk.position || *field != chunk.field || text.len() as u64 != chunk.offset
         {
             return Err("History field fragments are discontinuous".into());
         }
@@ -95,8 +109,8 @@ impl Projection {
         if text.len() as u64 != chunk.total_bytes {
             return Ok(vec![]);
         }
-        let (_, _, text, mut meta) = self.assembly.take().expect("complete field");
-        self.canonical_pending = None;
+        let CanonicalAssembly { text, mut meta, .. } =
+            self.assembly.take().expect("complete field");
         let kind = match (chunk.role, chunk.field) {
             (Role::User, _) => MessageKind::User,
             (Role::Assistant, HistoryField::Thinking) => MessageKind::Thinking,
@@ -184,16 +198,13 @@ impl Projection {
         }
         let mut updates = Vec::new();
         for part in parts {
-            if self
-                .canonical_pending
-                .as_ref()
-                .is_some_and(|(turn, id)| turn == turn_id && id == &part.message_id)
-                || self.committed_parts.contains(&(
-                    invocation_id.clone(),
-                    step_id.clone(),
-                    part.message_id.clone(),
-                ))
-            {
+            if self.assembly.as_ref().is_some_and(|assembly| {
+                &assembly.turn_id == turn_id && assembly.message_id == part.message_id
+            }) || self.committed_parts.contains(&(
+                invocation_id.clone(),
+                step_id.clone(),
+                part.message_id.clone(),
+            )) {
                 continue;
             }
             let PreviewField::Text { text_kind } = &part.field else {

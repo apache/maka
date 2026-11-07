@@ -198,6 +198,17 @@ export const suites = {
     cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
     extraInputs: embeddedInputs,
   },
+  'windows-skills': {
+    workspace: 'root',
+    packages: ['maka-skills-native'],
+    cargoArgs: ['--locked', '-p', 'maka-skills-native', '--lib'],
+  },
+  'windows-ci': {
+    workspace: 'root',
+    packages: [],
+    cargoArgs: [],
+    extraInputs: ['scripts/ci', 'scripts/ci.mjs', 'scripts/ci.test.mjs'],
+  },
   'windows-nsh': {
     workspace: 'nsh',
     packages: ['nsh-platform-windows', 'nsh-windows-app', 'nsh-windows-host', 'gallery-native'],
@@ -226,6 +237,22 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
+  'macos-terminal': {
+    workspace: 'root',
+    packages: ['maka-agent-native'],
+    cargoArgs: ['--locked', '-p', 'maka-agent-native', '--lib'],
+    filter:
+      'test(=owner::tests::terminal::terminal_raw_bytes_full_resize_replay_and_observer_cancellation_preserve_native_owner)',
+    extraInputs: [
+      'plugins/agent/native/src/owner/tests/terminal.rs',
+      'plugins/agent/native/src/owner/tests/processes.rs',
+      'plugins/agent/native/src/owner/tests/service_tools',
+      'plugins/workspace/workspace-processes/native',
+      'platform/process',
+      'platform/sandbox/src/seatbelt',
+      'plugins/agent/providers/data',
+    ],
+  },
   'windows-shell': {
     workspace: 'root',
     packages: ['maka-process', 'maka-settings-native', 'maka-agent-native'],
@@ -250,6 +277,7 @@ export const suites = {
       'test(macos::tcc::tests::)',
       'test(system_permission::process::tests::)',
       'test(desktop::worker::macos::tests::)',
+      'test(desktop::worker::native_owner::tests::)',
       'test(driver::tests::fresh_binding_replaces_failed_controller_without_restarting_old_owner)',
     ].join(' | '),
   },
@@ -314,9 +342,16 @@ export const workers = [
     id: `native-${os}`,
     suites:
       os === 'windows'
-        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
+        ? [
+            'native',
+            'windows-shell',
+            'windows-desktop',
+            'windows-skills',
+            'windows-nsh',
+            'windows-ci',
+          ]
         : os === 'macos'
-          ? ['native', 'macos-host']
+          ? ['native', 'macos-host', 'macos-terminal']
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',

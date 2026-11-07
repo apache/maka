@@ -25,6 +25,31 @@ use tokio::sync::oneshot;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
+#[tokio::test]
+async fn failed_startup_retains_the_original_cause_when_sql_close_is_unconfirmed() {
+    let error = OwnedConnection::open(
+        OpenOptions::temporary(),
+        ConnectionAuthority::Temporary,
+        |db| {
+            let statement = db.prepare("SELECT 1")?;
+            std::mem::forget(statement);
+            Err(crate::StoreError::InvalidTransition(
+                "initializer failed".into(),
+            ))
+        },
+    )
+    .await
+    .err()
+    .expect("both initialization and actual SQLite close fail");
+    let crate::StoreError::StartupCleanupFailed { cause, cleanup } = error else {
+        panic!("startup must preserve both failure causes");
+    };
+    assert!(
+        matches!(*cause, crate::StoreError::InvalidTransition(reason) if reason == "initializer failed")
+    );
+    assert!(matches!(*cleanup, crate::StoreError::CloseFailed(_)));
+}
+
 async fn open(directory: &Path) -> OwnedConnection {
     OwnedConnection::open(
         OpenOptions::file(directory.join("actor.sqlite"))

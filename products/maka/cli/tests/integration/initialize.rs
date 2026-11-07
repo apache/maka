@@ -29,7 +29,7 @@ use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 
 fn initialize(root: &Path, timeout: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_maka"))
+    Command::new(crate::maka_executable())
         .args([
             "host",
             "init",

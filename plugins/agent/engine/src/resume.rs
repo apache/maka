@@ -520,6 +520,9 @@ async fn resume_operation(
         } else {
             Err(ToolError::Failed("service call was not approved".into()))
         };
+        if let Err(error) = &native {
+            context.cleanup.observe_tool(error);
+        }
         let fatal_preparation = matches!(
             &native,
             Err(ToolError::Persistence(_)
@@ -586,13 +589,17 @@ async fn resume_operation(
         }
         crate::model_attempt::tool_result(settled.map(|output| output.to_json()))
     };
-    std::panic::AssertUnwindSafe(work)
+    let result = std::panic::AssertUnwindSafe(work)
         .catch_unwind()
         .await
         .unwrap_or_else(|_| {
             owner.cancellation.cancel();
-            Err(crate::cleanup::unconfirmed())
-        })
+            Err(context.cleanup.unconfirmed())
+        });
+    if let Err(error) = &result {
+        context.cleanup.observe(error);
+    }
+    result
 }
 
 fn publish_original_t2(store: Arc<SessionStore>, write: EventWrite) -> CommitFuture {

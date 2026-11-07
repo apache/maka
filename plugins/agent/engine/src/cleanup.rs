@@ -25,26 +25,40 @@ use std::sync::{
 };
 #[derive(Clone, Default)]
 pub(crate) struct Evidence(Arc<AtomicBool>);
-tokio::task_local! { static CURRENT: Evidence; }
 impl Evidence {
-    pub fn scope<F: std::future::Future>(
-        &self,
-        future: F,
-    ) -> impl std::future::Future<Output = F::Output> + use<F> {
-        CURRENT.scope(self.clone(), future)
-    }
     pub fn confirmed(&self) -> bool {
         !self.0.load(Ordering::Acquire)
     }
-}
-pub(crate) fn current() -> Evidence {
-    CURRENT.try_with(Clone::clone).unwrap_or_default()
-}
-#[track_caller]
-pub(crate) fn unconfirmed() -> crate::RunError {
-    let caller = std::panic::Location::caller();
-    let _ = CURRENT.try_with(|evidence| {
-        if !evidence.0.swap(true, Ordering::AcqRel) {
+
+    #[track_caller]
+    pub fn observe(&self, error: &crate::RunError) {
+        if error.is_cleanup_unconfirmed() {
+            self.mark();
+        }
+    }
+
+    #[track_caller]
+    pub fn observe_model(&self, error: &maka_model::ModelError) {
+        if error.cleanup_unconfirmed() {
+            self.mark();
+        }
+    }
+
+    #[track_caller]
+    pub fn observe_tool(&self, error: &maka_agent_facts::tools::ToolError) {
+        use maka_agent_facts::tools::ToolError;
+        if matches!(
+            error,
+            ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. }
+        ) {
+            self.mark();
+        }
+    }
+
+    #[track_caller]
+    fn mark(&self) {
+        let caller = std::panic::Location::caller();
+        if !self.0.swap(true, Ordering::AcqRel) {
             tracing::error!(
                 stage = "execution_cleanup_evidence",
                 outcome = "cleanup_unconfirmed",
@@ -54,12 +68,17 @@ pub(crate) fn unconfirmed() -> crate::RunError {
                 "cleanup unconfirmed"
             );
         }
-    });
-    crate::RunError::CleanupUnconfirmed
-}
+    }
 
-#[track_caller]
-pub(crate) fn preparation_failed(error: std::io::Error) -> crate::RunError {
-    let _ = unconfirmed();
-    crate::RunError::PreparationCleanup(error)
+    #[track_caller]
+    pub fn unconfirmed(&self) -> crate::RunError {
+        self.mark();
+        crate::RunError::CleanupUnconfirmed
+    }
+
+    #[track_caller]
+    pub fn preparation_failed(&self, error: std::io::Error) -> crate::RunError {
+        self.mark();
+        crate::RunError::PreparationCleanup(error)
+    }
 }

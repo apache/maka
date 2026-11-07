@@ -129,12 +129,12 @@ impl Engine {
                         )
                         .await;
                     if matches!(&settlement.result, Err(Error::CleanupUnconfirmed)) {
-                        crate::cleanup::unconfirmed();
+                        inner.cleanup.unconfirmed();
                     }
                     let outcome = match effects.settle().await {
                         Ok(()) => outcome(&settlement.result, &cancellation),
                         Err(error) => {
-                            crate::cleanup::unconfirmed();
+                            inner.cleanup.unconfirmed();
                             InvocationOutcome::Failed {
                                 class: "outcome_unknown".into(),
                                 model_failure: None,

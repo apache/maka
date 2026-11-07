@@ -189,7 +189,9 @@ async fn unconfirmed_stream_cleanup_never_reports_model_completion() {
             .unwrap(),
         b"frozen request backing".len() as u64
     );
-    close_retry(&mut retry).await.unwrap();
+    close_retry(&fixture.inner.cleanup, &mut retry)
+        .await
+        .unwrap();
     drop(arena);
     execution.finish();
     let stored = prefix(&fixture.inner.log).await;

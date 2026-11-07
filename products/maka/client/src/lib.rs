@@ -209,7 +209,6 @@ struct Scope {
     receipts: String,
     journal: Journal,
     requests: Mutex<BTreeMap<Uuid, Arc<Request>>>,
-    closing: AtomicBool,
     binding_retired: AtomicBool,
     upload_updates: tokio::sync::watch::Sender<()>,
     parent: Option<(Weak<Scope>, Uuid)>,
@@ -273,7 +272,6 @@ impl Client {
             journal,
             receipts,
             requests: Mutex::new(BTreeMap::new()),
-            closing: AtomicBool::new(false),
             binding_retired: AtomicBool::new(false),
             upload_updates: tokio::sync::watch::channel(()).0,
             parent: None,
@@ -293,7 +291,7 @@ impl Client {
     ) -> Result<(Self, BTreeMap<String, Vec<String>>)> {
         let capture = {
             let host = self.0.host.lock().await;
-            if self.0.closing.load(Ordering::Acquire) {
+            if self.0.opening_stop.is_cancelled() {
                 return Err("client scope is closing".into());
             }
             host.bind_ui(source, instance)
@@ -307,7 +305,6 @@ impl Client {
             receipts: self.0.receipts.clone(),
             journal: self.0.journal.clone(),
             requests: Mutex::new(BTreeMap::new()),
-            closing: AtomicBool::new(false),
             binding_retired: AtomicBool::new(false),
             upload_updates: self.0.upload_updates.clone(),
             parent: Some((Arc::downgrade(&self.0), id)),
@@ -319,7 +316,7 @@ impl Client {
         }));
         let owner = self.0.host.lock().await;
         self.0.children.lock().await.insert(id, child.clone());
-        let closing = self.0.closing.load(Ordering::Acquire);
+        let closing = self.0.opening_stop.is_cancelled();
         drop(owner);
         if closing {
             child.close().await?;
@@ -359,7 +356,7 @@ impl Client {
 
     pub async fn refresh(&self) -> Result<()> {
         let mut host = self.0.host.lock().await;
-        if self.0.closing.load(Ordering::Acquire) {
+        if self.0.opening_stop.is_cancelled() {
             return Err("client scope is closing".into());
         }
         host.refresh().await?;
@@ -373,12 +370,12 @@ impl Client {
         method: &str,
         input: Value,
         resources: Attachments,
-        operation: Option<Uuid>,
+        mutation: Option<(Uuid, std::fs::File)>,
     ) -> Result<(Arc<Request>, Description)> {
         let (opened, opening) = tokio::sync::oneshot::channel();
         {
             let host = self.0.host.lock().await;
-            if self.0.closing.load(Ordering::Acquire) {
+            if self.0.opening_stop.is_cancelled() {
                 return Err("client scope is closing".into());
             }
             let description = host.catalogue().describe(endpoint)?.clone();
@@ -393,20 +390,24 @@ impl Client {
                     () = client.0.opening_stop.cancelled() => Err("client scope is closing".into()),
                     result = call => result,
                 };
-                let result = match result {
-                    Ok(call) => {
+                let result = match (result, mutation) {
+                    (Ok(call), mutation) => {
+                        let (operation, preparation) = match mutation {
+                            Some((operation, preparation)) => (Some(operation), Some(preparation)),
+                            None => (None, None),
+                        };
                         let request = Arc::new(Request {
                             id: Uuid::new_v4(),
                             operation,
                             observation_ended: AtomicBool::new(false),
-                            preparation: std::sync::Mutex::new(None),
+                            preparation: std::sync::Mutex::new(preparation),
                             stop: CancellationToken::new(),
                             state: Mutex::new(State {
                                 call,
                                 phase: Phase::New,
                             }),
                         });
-                        if client.0.closing.load(Ordering::Acquire) {
+                        if client.0.opening_stop.is_cancelled() {
                             request.stop.cancel();
                         }
                         client
@@ -417,7 +418,7 @@ impl Client {
                             .insert(request.id, request.clone());
                         Ok((request, description))
                     }
-                    Err(error) => Err(error),
+                    (Err(error), _) => Err(error),
                 };
                 if let Err(Ok((request, _))) = opened.send(result) {
                     request.end_observation();
@@ -577,7 +578,7 @@ impl Client {
                 &operation.method,
                 input,
                 resources,
-                Some(operation.id),
+                Some((operation.id, preparation)),
             )
             .await?;
         if matches!(
@@ -594,10 +595,6 @@ impl Client {
             closed?;
             return Err("client operation target changed before opening its original call".into());
         }
-        *request
-            .preparation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(preparation);
         Ok(Mutation {
             client: self.clone(),
             request,
@@ -1274,7 +1271,6 @@ impl Client {
     /// Retire captured bindings without cancelling accepted mutations. Read calls
     /// stop immediately; original mutations retain this session until they settle.
     pub async fn retire(&self) -> Result<()> {
-        self.0.closing.store(true, Ordering::Release);
         self.0.opening_stop.cancel();
         let reads: Vec<_> = {
             let _host = self.0.host.lock().await;
@@ -1316,9 +1312,8 @@ impl Client {
     /// result does not prove physical cleanup; only this session's own close ack
     /// can release disconnected requests. Retain the scope if this returns an error.
     pub async fn close(&self) -> Result<()> {
-        self.0.closing.store(true, Ordering::Release);
-        self.0.shutdown.cancel();
         self.0.opening_stop.cancel();
+        self.0.shutdown.cancel();
         let mut host = self.0.host.lock().await;
         for request in self.0.requests.lock().await.values() {
             request.stop.cancel();

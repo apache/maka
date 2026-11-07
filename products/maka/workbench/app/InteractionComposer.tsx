@@ -208,9 +208,10 @@ export function InteractionComposer({
   const record = signal<InteractionRecord | null>(null);
   const child = signal<InteractionRecord | null>(null);
   const childTitle = signal('');
-  const loading = signal(false),
-    busy = signal(false),
-    uncertain = signal(false);
+  const phase = signal<'idle' | 'refreshing' | 'responding'>('idle');
+  const loading = () => phase() === 'refreshing';
+  const busy = () => phase() === 'responding';
+  const uncertain = signal(false);
   const pending = signal(false),
     error = createText();
   const scope = signal<InteractionScope>('once');
@@ -351,8 +352,7 @@ export function InteractionComposer({
   const blocked = () =>
     !alive ||
     confirming() ||
-    loading() ||
-    busy() ||
+    phase() !== 'idle' ||
     uncertain() ||
     !pending() ||
     !!record()?.outcome;
@@ -462,8 +462,8 @@ export function InteractionComposer({
     void readArguments(JSON.parse(owner.sourceJSON));
   };
   const refresh = async () => {
-    if (!alive || loading() || busy()) return;
-    loading.set(true);
+    if (!alive || phase() !== 'idle') return;
+    phase.set('refreshing');
     error.set('');
     try {
       const unresolved = await originalPending();
@@ -523,12 +523,12 @@ export function InteractionComposer({
         error.set(errorText(reason));
       }
     } finally {
-      if (alive) loading.set(false);
+      if (alive) phase.set('idle');
     }
   };
   createPendingRecovery({
     pending: () => uncertain(),
-    blocked: () => loading() || busy() || confirming(),
+    blocked: () => phase() !== 'idle' || confirming(),
     recover: refresh,
   });
   const refreshRendered = (owner: InteractionOwner) => {
@@ -536,7 +536,7 @@ export function InteractionComposer({
   };
   const respond = async (answer: InteractionAnswer) => {
     if (blocked() || (answer.kind !== request()?.kind && !cancels(answer))) return;
-    busy.set(true);
+    phase.set('responding');
     error.set('');
     try {
       const result = await control('respond', { sessionId, requestId, answer });
@@ -569,7 +569,7 @@ export function InteractionComposer({
         error.set(unresolved ? uiMessage('Syncing changes…') : errorText(reason));
       }
     } finally {
-      if (alive) busy.set(false);
+      if (alive) phase.set('idle');
     }
   };
   const submissionAnswer = (): InteractionAnswer | null => {

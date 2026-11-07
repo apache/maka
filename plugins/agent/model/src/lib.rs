@@ -165,11 +165,20 @@ impl ModelRequest {
 pub struct ModelStream {
     receiver: mpsc::Receiver<Result<Emission, ModelError>>,
     cancellation: CancellationToken,
-    worker: Option<tokio::task::JoinHandle<Result<(), StreamCleanupError>>>,
-    cleanup: Result<(), StreamCleanupError>,
-    finished: bool,
+    worker: StreamWorker,
+    output: StreamOutput,
     pending_delta: Option<delta::PendingDelta>,
-    ended: bool,
+}
+
+enum StreamWorker {
+    Running(tokio::task::JoinHandle<Result<(), StreamCleanupError>>),
+    Joined(Result<(), StreamCleanupError>),
+}
+
+enum StreamOutput {
+    Receiving,
+    Finished,
+    Ended,
 }
 
 /// Physical stream ownership was lost or a cancelled adapter failed to drain.
@@ -180,7 +189,7 @@ pub struct StreamCleanupError;
 
 impl ModelStream {
     pub async fn next(&mut self) -> Option<Result<Emission, ModelError>> {
-        if self.ended {
+        if matches!(self.output, StreamOutput::Ended) {
             return None;
         }
         loop {
@@ -191,42 +200,47 @@ impl ModelStream {
             } else {
                 self.pending_delta = None;
             }
-            let received = if let Some(worker) = self.worker.as_mut() {
-                tokio::select! {
-                    biased;
-                    event = self.receiver.recv() => event,
-                    result = worker => {
-                        self.worker = None;
-                        self.receiver.close();
-                        self.cleanup = result.unwrap_or(Err(StreamCleanupError));
-                        if self.cleanup.is_err() {
-                            self.ended = true;
-                            return Some(Err(ModelError::CleanupUnconfirmed));
+            let received = match &mut self.worker {
+                StreamWorker::Running(worker) => {
+                    tokio::select! {
+                        biased;
+                        event = self.receiver.recv() => event,
+                        result = worker => {
+                            let cleanup = result.unwrap_or(Err(StreamCleanupError));
+                            let unconfirmed = cleanup.is_err();
+                            self.worker = StreamWorker::Joined(cleanup);
+                            self.receiver.close();
+                            if unconfirmed {
+                                self.output = StreamOutput::Ended;
+                                return Some(Err(ModelError::CleanupUnconfirmed));
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
-            } else {
-                self.receiver.recv().await
+                StreamWorker::Joined(_) => self.receiver.recv().await,
             };
             let result = match received {
                 // Preserve the worker's cancellation/deadline cause, but do not
                 // keep journaling buffered output after cancellation.
                 Some(Ok(_)) if self.cancellation.is_cancelled() => continue,
-                Some(Ok(_)) if self.finished => {
+                Some(Ok(_)) if matches!(self.output, StreamOutput::Finished) => {
                     Err(ModelError::Adapter("event after model finish".into()))
                 }
                 Some(Ok(value)) => {
-                    self.finished = matches!(value.event, ModelEvent::Finished { .. });
+                    if matches!(value.event, ModelEvent::Finished { .. }) {
+                        self.output = StreamOutput::Finished;
+                    }
                     Ok(Some(value))
                 }
                 Some(Err(error)) => Err(error),
                 None => {
-                    self.ended = true;
+                    let finished = matches!(self.output, StreamOutput::Finished);
+                    self.output = StreamOutput::Ended;
                     if self.cancellation.is_cancelled() {
                         return Some(Err(ModelError::Cancelled));
                     }
-                    return (!self.finished).then(|| {
+                    return (!finished).then(|| {
                         Err(ModelError::Adapter(
                             "model stream ended without finish".into(),
                         ))
@@ -264,7 +278,7 @@ impl ModelStream {
                 }
                 Ok(Some(event)) => return Some(Ok(event)),
                 Err(error) => {
-                    self.ended = true;
+                    self.output = StreamOutput::Ended;
                     self.cancellation.cancel();
                     self.receiver.close();
                     return Some(Err(error));
@@ -278,10 +292,10 @@ impl ModelStream {
         self.receiver.close();
         self.pending_delta = None;
         while self.receiver.try_recv().is_ok() {}
-        if let Some(worker) = self.worker.take() {
-            self.cleanup = worker.await.unwrap_or(Err(StreamCleanupError));
+        match &mut self.worker {
+            StreamWorker::Running(worker) => worker.await.unwrap_or(Err(StreamCleanupError)),
+            StreamWorker::Joined(cleanup) => cleanup.clone(),
         }
-        self.cleanup.clone()
     }
 }
 
@@ -581,11 +595,9 @@ impl ModelExecutor {
         Ok(ModelStream {
             receiver,
             cancellation,
-            worker: Some(worker),
-            cleanup: Ok(()),
-            finished: false,
+            worker: StreamWorker::Running(worker),
+            output: StreamOutput::Receiving,
             pending_delta: None,
-            ended: false,
         })
     }
 }

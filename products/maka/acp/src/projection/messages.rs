@@ -207,6 +207,63 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_canonical_message_fences_preview_until_complete_replacement() {
+        let mut projection = Projection::default();
+        let preview = projection.preview(&preview_page(1, 0, 5, "draft")).unwrap();
+        assert_eq!(
+            crate::presentation::wire(&preview[0]).unwrap()["content"][0]["text"],
+            "draft"
+        );
+        let mut chunk = HistoryChunk {
+            model_part: None,
+            final_output: false,
+            has_references: false,
+            model: None,
+            origin: None,
+            compaction: None,
+            attachments: Vec::new(),
+            timing: None,
+            field: HistoryField::Body,
+            message_id: "message".into(),
+            turn_id: "turn".into(),
+            timestamp: 0,
+            role: Role::Assistant,
+            order: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
+            position: maka_agent_ports::session::history::RowPosition {
+                source_sequence: 1,
+                item_index: 0,
+            },
+            offset: 0,
+            total_bytes: 9,
+            text: "can".into(),
+            tool: None,
+        };
+        assert!(projection.chunk(&chunk).unwrap().is_empty());
+        assert!(
+            projection
+                .preview(&preview_page(2, 5, 6, "!"))
+                .unwrap()
+                .is_empty()
+        );
+        chunk.offset = 3;
+        chunk.text = "onical".into();
+        let complete = projection.chunk(&chunk).unwrap();
+        let complete = crate::presentation::wire(&complete[0]).unwrap();
+        assert_eq!(complete["sessionUpdate"], "agent_message");
+        assert_eq!(complete["messageId"], "message");
+        assert_eq!(complete["content"][0]["text"], "canonical");
+        assert!(
+            projection
+                .preview(&preview_page(3, 0, 5, "stale"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn committed_message_and_closed_step_discard_unfinished_old_seed() {
         let mut projection = Projection::default();
         assert!(

@@ -62,7 +62,7 @@ async fn private_namespace_routes_pipes_and_ptys_only_through_the_owned_gateway(
         };
         let executor = ShellExecutor::new(root.path(), sandbox)
             .unwrap()
-            .with_network_helper(env!("CARGO_BIN_EXE_maka").into());
+            .with_network_helper(crate::maka_executable());
         let command = format!(
             r#"
             /usr/bin/curl -fsS --max-time 3 http://{address} || exit 10

@@ -44,15 +44,9 @@ export function createRootUiSettings(
   active: () => boolean,
 ) {
   const query = signal('');
-  const busy = signal(false);
-  const idle = new Set<() => void>();
-  const whenIdle = () =>
-    busy() ? new Promise<void>((resolve) => idle.add(resolve)) : Promise.resolve();
-  const complete = () => {
-    if (alive) busy.set(false);
-    for (const resolve of idle) resolve();
-    idle.clear();
-  };
+  const task = signal<Promise<void> | null>(null);
+  const busy = () => task() !== null;
+  const whenIdle = () => task() ?? Promise.resolve();
   const error = createText();
   const notice = createTransientText();
   const pending = signal<ClientOperation[]>([]);
@@ -81,19 +75,25 @@ export function createRootUiSettings(
       throw reason;
     }
   };
-  const run = async (operation: () => Promise<void>) => {
-    if (!alive || !active() || busy()) return;
-    busy.set(true);
-    error.set('');
-    notice.set('');
-    try {
-      await operation();
-    } catch (reason) {
-      report(reason);
-    } finally {
-      await refreshPending().catch(report);
-      complete();
-    }
+  const run = (operation: () => Promise<void>): Promise<void> => {
+    if (!alive || !active() || busy()) return Promise.resolve();
+    const completion = Promise.resolve()
+      .then(async () => {
+        error.set('');
+        notice.set('');
+        try {
+          await operation();
+        } catch (reason) {
+          report(reason);
+        } finally {
+          await refreshPending().catch(report);
+        }
+      })
+      .finally(() => {
+        task.set(null);
+      });
+    task.set(completion);
+    return completion;
   };
   const choices = computed(() =>
     runtime.contributions().filter((item) => item.declaration.kind === 'root'),

@@ -114,6 +114,7 @@ struct AssistantGroup {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn capture(
     log: &Arc<SessionStore>,
+    cleanup: &crate::cleanup::Evidence,
     selection: SemanticSelection,
     language: Language,
     vision: bool,
@@ -129,8 +130,8 @@ pub(crate) async fn capture(
     let observer = cancellation.clone().drop_guard();
     let (reply, receive) = tokio::sync::oneshot::channel();
     let (delivered, acknowledged) = tokio::sync::oneshot::channel();
-    let evidence = crate::cleanup::current();
-    tokio::spawn(evidence.scope(async move {
+    let worker_cleanup = cleanup.clone();
+    tokio::spawn(async move {
         use futures_util::FutureExt;
         let result = std::panic::AssertUnwindSafe(capture_owned(
             captured,
@@ -144,10 +145,15 @@ pub(crate) async fn capture(
         .catch_unwind()
         .await;
         let result = match result {
-            Ok(result) => result,
+            Ok(result) => {
+                if let Err(error) = &result {
+                    worker_cleanup.observe(error);
+                }
+                result
+            }
             Err(_) => {
                 receipt.finish(Err("frozen capture worker panicked".into()));
-                let _ = reply.send(Err(crate::cleanup::unconfirmed()));
+                let _ = reply.send(Err(worker_cleanup.unconfirmed()));
                 return;
             }
         };
@@ -159,7 +165,7 @@ pub(crate) async fn capture(
                 } else {
                     retained.close().await.map_err(|error| {
                         let reason = error.to_string();
-                        let _ = crate::cleanup::preparation_failed(error);
+                        let _ = worker_cleanup.preparation_failed(error);
                         reason
                     })
                 }
@@ -175,17 +181,17 @@ pub(crate) async fn capture(
             }
         };
         receipt.finish(settled);
-    }));
+    });
     let result = receive
         .await
-        .map_err(|error| crate::cleanup::preparation_failed(io::Error::other(error)))?;
+        .map_err(|error| cleanup.preparation_failed(io::Error::other(error)))?;
     if result.is_ok() && delivered.send(()).is_err() {
         if let Ok(history) = result
             && let Err(error) = history.close().await
         {
-            return Err(crate::cleanup::preparation_failed(error));
+            return Err(cleanup.preparation_failed(error));
         }
-        return Err(crate::cleanup::unconfirmed());
+        return Err(cleanup.unconfirmed());
     }
     observer.disarm();
     result
@@ -427,7 +433,7 @@ async fn capture_owned(
     if result.is_err()
         && let Err(error) = arena.close().await
     {
-        return Err(crate::cleanup::preparation_failed(error));
+        return Err(RunError::PreparationCleanup(error));
     }
     result
 }

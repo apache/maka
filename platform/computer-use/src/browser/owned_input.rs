@@ -630,8 +630,9 @@ impl Tab {
             .clone()
             .ok_or_else(|| failed("Browser input requires its original Host settlement custody"))?;
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .clone();
         let admission = socket.preparation.before_owned_input().await?;

@@ -43,7 +43,6 @@ struct Worker {
     active: Arc<std::sync::Mutex<BTreeMap<String, Arc<Work>>>>,
     session: String,
     work: Arc<Work>,
-    reported: bool,
 }
 impl Registry {
     fn start(&self, session: &str, cancellation: CancellationToken) -> Option<Worker> {
@@ -61,7 +60,6 @@ impl Registry {
             active: self.active.clone(),
             session: session.to_owned(),
             work,
-            reported: false,
         })
     }
 
@@ -83,14 +81,14 @@ impl Registry {
 }
 impl Worker {
     fn complete(&mut self, success: bool) {
-        self.reported = true;
         self.work.completed.send_replace(Some(success));
     }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.active.lock().unwrap().remove(&self.session);
-        if !self.reported {
+        let completed = self.work.completed.borrow().is_some();
+        if !completed {
             self.work.completed.send_replace(Some(false));
         }
     }

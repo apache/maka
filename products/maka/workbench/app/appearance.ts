@@ -19,7 +19,7 @@
 
 // The desktop window's appearance (Settings › General): its colors, its
 // palette and its text size, kept in the app's storage. Terminals keep their own.
-import { host as shell, setColorScheme, signal, Storage, type Signal } from 'nsh';
+import { host as shell, setColorScheme, signal, Storage } from 'nsh';
 import { ownTitleBar } from './chrome';
 import { parseHex, presetRecipes, type PaletteId, type PaletteRecipe } from './colorPalette';
 
@@ -41,27 +41,14 @@ const THEME = 'appearance-theme';
 const TEXT_SIZE = 'appearance-text-size';
 const PALETTE = 'appearance-palette';
 const CUSTOM_PALETTE = 'appearance-custom-palette';
-// The root, Settings and each other UI package bundle their own copy of this
-// module. They share one state, kept on the global object, so a choice made in
-// Settings recolors every package's view, and the first to start loads it.
-const STATE = Symbol.for('maka.appearance');
-type State = {
-  theme: Signal<ColorTheme>;
-  textSize: Signal<number>;
-  palette: Signal<PaletteId>;
-  custom: Signal<PaletteRecipe>;
-  initialized: boolean;
-};
-const shared = globalThis as { [STATE]?: State };
-const state = (shared[STATE] ??= {
-  theme: signal<ColorTheme>('system'),
-  textSize: signal(1),
-  palette: signal<PaletteId>('default'),
-  // The custom palette starts from the first preset.
-  custom: signal<PaletteRecipe>(presetRecipes.mist),
-  initialized: false,
-});
-const { theme, textSize, palette, custom } = state;
+type StorageKey = typeof THEME | typeof TEXT_SIZE | typeof PALETTE | typeof CUSTOM_PALETTE;
+type Initialization =
+  | { kind: 'uninitialized'; pending: Set<StorageKey> }
+  | { kind: 'loading'; pending: Set<StorageKey> }
+  | { kind: 'ready' };
+type Persistence =
+  | { kind: 'idle' }
+  | { kind: 'saving'; pending: Map<StorageKey, string>; completion: Promise<void> };
 
 const validRecipe = (value: unknown): value is PaletteRecipe => {
   const recipe = value as PaletteRecipe | null;
@@ -73,78 +60,131 @@ const validRecipe = (value: unknown): value is PaletteRecipe => {
   );
 };
 
-const applyTextSize = (scale: number) =>
-  shell.call('appearance.textSize', { scale }).catch(() => undefined);
-
-export const appearance = {
-  supported: ownTitleBar,
-  theme,
-  textSize,
-  chooseTheme(value: ColorTheme) {
-    theme.set(value);
-    setColorScheme(value);
-    void Storage.setItem(THEME, value).catch(() => undefined);
-  },
-  chooseTextSize(scale: number) {
+function createAppearanceOwner() {
+  const theme = signal<ColorTheme>('system');
+  const textSize = signal(1);
+  const palette = signal<PaletteId>('default');
+  const custom = signal<PaletteRecipe>(presetRecipes.mist);
+  let initialization: Initialization = {
+    kind: 'uninitialized',
+    pending: new Set([THEME, TEXT_SIZE, PALETTE, CUSTOM_PALETTE]),
+  };
+  let persistence: Persistence = { kind: 'idle' };
+  const selected = (key: StorageKey) => {
+    if (initialization.kind !== 'ready') initialization.pending.delete(key);
+  };
+  const persist = (key: StorageKey, value: string) => {
+    if (persistence.kind === 'saving') {
+      persistence.pending.set(key, value);
+      return;
+    }
+    const pending = new Map<StorageKey, string>([[key, value]]);
+    const completion = Promise.resolve().then(async () => {
+      // Only the latest write to each of the four settings waits behind the active write.
+      for (;;) {
+        const next = pending.entries().next();
+        if (next.done) break;
+        const [key, value] = next.value;
+        pending.delete(key);
+        try {
+          await Storage.setItem(key, value);
+        } catch {
+          continue;
+        }
+      }
+      persistence = { kind: 'idle' };
+    });
+    persistence = { kind: 'saving', pending, completion };
+  };
+  const applyTextSize = (scale: number) =>
+    shell.call('appearance.textSize', { scale }).catch(() => undefined);
+  const chooseTextSize = (scale: number) => {
+    selected(TEXT_SIZE);
     textSize.set(scale);
     void applyTextSize(scale);
-    void Storage.setItem(TEXT_SIZE, String(scale)).catch(() => undefined);
-  },
-  palette,
-  custom,
-  /** The recipe in effect, or null for the default palette. */
-  recipe(): PaletteRecipe | null {
-    const id = palette();
-    return id === 'default' ? null : id === 'custom' ? custom() : presetRecipes[id];
-  },
-  choosePalette(value: PaletteId) {
-    palette.set(value);
-    void Storage.setItem(PALETTE, value).catch(() => undefined);
-  },
-  /** Changes the custom palette; `save` once the change ends (a slider let go). */
-  changeCustom(change: Partial<PaletteRecipe>, save: boolean) {
-    const next = { ...custom(), ...change };
-    if (!validRecipe(next)) return;
-    custom.set(next);
-    if (save) void Storage.setItem(CUSTOM_PALETTE, JSON.stringify(next)).catch(() => undefined);
-  },
-  /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
-  stepTextSize(step: number) {
-    const at = textSizes.indexOf(textSize());
-    const next = step === 0 ? 1 : textSizes[at + step];
-    if (next !== undefined && next !== textSize()) appearance.chooseTextSize(next);
-  },
-};
-
-export function initializeAppearance() {
-  if (state.initialized || !appearance.supported) return;
-  state.initialized = true;
-  void Storage.getItem(THEME)
-    .then((value) => {
-      if (value === 'light' || value === 'dark' || value === 'system') {
-        theme.set(value);
-        setColorScheme(value);
-      }
-    })
-    .catch(() => undefined);
-  void Storage.getItem(CUSTOM_PALETTE)
-    .then((value) => {
-      const recipe: unknown = value === null ? null : JSON.parse(value);
-      if (validRecipe(recipe)) custom.set(recipe);
-    })
-    .catch(() => undefined);
-  void Storage.getItem(PALETTE)
-    .then((value) => {
-      if (paletteIds.includes(value as PaletteId)) palette.set(value as PaletteId);
-    })
-    .catch(() => undefined);
-  void Storage.getItem(TEXT_SIZE)
-    .then((value) => {
-      const scale = Number(value);
-      if (value !== null && textSizes.includes(scale)) {
-        textSize.set(scale);
-        void applyTextSize(scale);
-      }
-    })
-    .catch(() => undefined);
+    persist(TEXT_SIZE, String(scale));
+  };
+  const restore = (key: StorageKey, apply: (value: string | null) => void) => {
+    if (initialization.kind === 'ready' || !initialization.pending.has(key))
+      return Promise.resolve();
+    return Storage.getItem(key)
+      .then((value) => {
+        if (initialization.kind === 'loading' && initialization.pending.delete(key)) apply(value);
+      })
+      .catch(() => undefined);
+  };
+  return {
+    supported: ownTitleBar,
+    theme: () => theme(),
+    textSize: () => textSize(),
+    palette: () => palette(),
+    custom: () => custom(),
+    chooseTheme(value: ColorTheme) {
+      selected(THEME);
+      theme.set(value);
+      setColorScheme(value);
+      persist(THEME, value);
+    },
+    chooseTextSize,
+    /** The recipe in effect, or null for the default palette. */
+    recipe(): PaletteRecipe | null {
+      const id = palette();
+      return id === 'default' ? null : id === 'custom' ? custom() : presetRecipes[id];
+    },
+    choosePalette(value: PaletteId) {
+      selected(PALETTE);
+      palette.set(value);
+      persist(PALETTE, value);
+    },
+    /** Changes the custom palette; `save` once the change ends (a slider let go). */
+    changeCustom(change: Partial<PaletteRecipe>, save: boolean) {
+      const next = { ...custom(), ...change };
+      if (!validRecipe(next)) return;
+      selected(CUSTOM_PALETTE);
+      custom.set(next);
+      if (save) persist(CUSTOM_PALETTE, JSON.stringify(next));
+    },
+    /** The next text size up (1) or down (-1), or the default (0): the View menu's. */
+    stepTextSize(step: number) {
+      const at = textSizes.indexOf(textSize());
+      const next = step === 0 ? 1 : textSizes[at + step];
+      if (next !== undefined && next !== textSize()) chooseTextSize(next);
+    },
+    saving: () => persistence.kind === 'saving',
+    whenIdle: () => (persistence.kind === 'saving' ? persistence.completion : Promise.resolve()),
+    initialize() {
+      if (initialization.kind !== 'uninitialized' || !ownTitleBar) return;
+      initialization = { kind: 'loading', pending: initialization.pending };
+      void Promise.all([
+        restore(THEME, (value) => {
+          if (value === 'light' || value === 'dark' || value === 'system') {
+            theme.set(value);
+            setColorScheme(value);
+          }
+        }),
+        restore(CUSTOM_PALETTE, (value) => {
+          const recipe: unknown = value === null ? null : JSON.parse(value);
+          if (validRecipe(recipe)) custom.set(recipe);
+        }),
+        restore(PALETTE, (value) => {
+          if (paletteIds.includes(value as PaletteId)) palette.set(value as PaletteId);
+        }),
+        restore(TEXT_SIZE, (value) => {
+          const scale = Number(value);
+          if (value !== null && textSizes.includes(scale)) {
+            textSize.set(scale);
+            void applyTextSize(scale);
+          }
+        }),
+      ]).then(() => {
+        initialization = { kind: 'ready' };
+      });
+    },
+  };
 }
+
+// Independent UI bundles share the window owner, including its in-flight reads and writes.
+const OWNER = Symbol.for('maka.appearance');
+const shared = globalThis as { [OWNER]?: ReturnType<typeof createAppearanceOwner> };
+export const appearance = (shared[OWNER] ??= createAppearanceOwner());
+export const initializeAppearance = appearance.initialize;

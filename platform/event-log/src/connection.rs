@@ -643,15 +643,7 @@ impl OwnedConnection {
                     .unwrap_or(Err(StoreError::Initialization));
                 if init.is_err() || ready.is_closed() {
                     let cleanup = close(connection, &authority, Vec::new());
-                    let result = match (init, cleanup.as_ref()) {
-                        (Err(cause), Ok(())) => Err(cause),
-                        (Err(cause), Err(cleanup)) => Err(StoreError::StartupCleanupFailed {
-                            cause: Box::new(cause),
-                            cleanup: Box::new(StoreError::CloseFailed(cleanup.clone())),
-                        }),
-                        _ => Err(StoreError::Initialization),
-                    };
-                    let _ = ready.send(result);
+                    let _ = ready.send(Err(init.err().unwrap_or(StoreError::Initialization)));
                     if let Some(registration) = &mut registration {
                         registration.complete(cleanup.is_ok());
                     }
@@ -904,10 +896,15 @@ impl OwnedConnection {
                 drop(retained);
                 let _ = closed.send(failure.map_or(Ok(()), Err));
             })?;
-        match initialized.await {
-            Ok(Ok(())) => Ok(handle),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(StoreError::Initialization),
+        match initialized.await.unwrap_or(Err(StoreError::Initialization)) {
+            Ok(()) => Ok(handle),
+            Err(cause) => match handle.shutdown().await {
+                Ok(()) => Err(cause),
+                Err(cleanup) => Err(StoreError::StartupCleanupFailed {
+                    cause: Box::new(cause),
+                    cleanup: Box::new(cleanup),
+                }),
+            },
         }
     }
     pub async fn run<T: Send + 'static>(

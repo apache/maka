@@ -79,7 +79,6 @@ members = [
     "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
-    "plugins/workhub/core",
     "tools/ui-build",
 ]
 resolver = "3"
@@ -186,7 +185,6 @@ maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
-maka-workhub = { path = "plugins/workhub/core" }
 pulldown-cmark = { version = "0.13.5", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "deflate", "socks"] }

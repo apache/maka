@@ -131,8 +131,7 @@ struct Tab {
     provider: Provider,
     generation: String,
     info: TabInfo,
-    socket: Option<Cdp>,
-    socket_prepared: bool,
+    connection: Option<TabConnection>,
     origin_proof: Option<origin::DocumentOrigin>,
     navigation_admission: Option<origin::NavigationAdmission>,
     extension_claim: Option<cua_driver_core::browser::ExtensionPhysicalClaim>,
@@ -162,6 +161,33 @@ struct Tab {
     clipboard_authorization: Option<std::sync::Arc<dyn crate::BrowserAttachmentAuthorization>>,
     attachment_settlement: Option<std::sync::Arc<dyn crate::OperationSettlement>>,
 }
+
+// Setup completion is independent of transport liveness and per-call admission.
+enum TabConnection {
+    Unprepared(Cdp),
+    Prepared(Cdp),
+}
+
+impl TabConnection {
+    fn socket(&self) -> &Cdp {
+        match self {
+            Self::Unprepared(socket) | Self::Prepared(socket) => socket,
+        }
+    }
+
+    fn socket_mut(&mut self) -> &mut Cdp {
+        match self {
+            Self::Unprepared(socket) | Self::Prepared(socket) => socket,
+        }
+    }
+
+    fn into_socket(self) -> Cdp {
+        match self {
+            Self::Unprepared(socket) | Self::Prepared(socket) => socket,
+        }
+    }
+}
+
 // A read spends one mechanical-I/O budget across its lazy authorization and
 // selector work. Host consent waits are deliberately outside these steps.
 struct ReadBudget {
@@ -1669,8 +1695,7 @@ impl Browsers {
                     provider,
                     generation,
                     info,
-                    socket: None,
-                    socket_prepared: false,
+                    connection: None,
                     page_assets: Default::default(),
                     origin_proof: None,
                     navigation_admission: None,
@@ -1949,8 +1974,9 @@ impl Browsers {
                 continue;
             }
             if tab
-                .socket
+                .connection
                 .as_ref()
+                .map(TabConnection::socket)
                 .is_some_and(|socket| !socket.connection.is_closed())
             {
                 let _ = tab
@@ -2120,7 +2146,7 @@ impl Tab {
     }
 
     async fn cleanup_clipboard_current(&mut self) -> Result<(), ToolError> {
-        let socket = self.socket.clone();
+        let socket = self.connection.as_ref().map(TabConnection::socket).cloned();
         if let Some(bridge) = self.clipboard.as_mut() {
             let socket = socket.ok_or_else(|| {
                 ToolError::CleanupUnconfirmed(
@@ -2160,8 +2186,7 @@ impl Tab {
         self.dialogs = None;
         self.dialog_host = None;
         self.clipboard_authorization = None;
-        self.socket = None;
-        self.socket_prepared = false;
+        self.connection = None;
         self.origin_proof = None;
         self.navigation_admission = None;
         self.extension_claim = None;
@@ -2345,12 +2370,12 @@ impl Tab {
                 invocation.turn(),
             )
             .map_err(failed)?;
-            if let Some(socket) = &mut self.socket {
+            if let Some(socket) = self.connection.as_mut().map(TabConnection::socket_mut) {
                 socket.extension_context = Some(wire.clone());
             }
             self.extension_wire = Some(wire);
         }
-        let before_services_frame = if self.socket.is_some() {
+        let before_services_frame = if self.connection.is_some() {
             Some(read_step_for(budget, cancellation, effect, self.frame()).await?)
         } else {
             None
@@ -2425,8 +2450,9 @@ impl Tab {
             };
             if expected {
                 let ready = self
-                    .socket
+                    .connection
                     .as_ref()
+                    .map(TabConnection::socket)
                     .ok_or_else(|| failed("tab connection unavailable"))?
                     .observe_in(
                         None,
@@ -2580,15 +2606,19 @@ impl Tab {
     }
     async fn connect_metadata(&mut self) -> Result<(), ToolError> {
         if self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .is_some_and(|socket| !socket.connection.is_closed())
         {
             return Ok(());
         }
         self.refs.clear();
         self.frame = None;
-        self.socket_prepared = false;
+        self.connection = self
+            .connection
+            .take()
+            .map(|connection| TabConnection::Unprepared(connection.into_socket()));
         let socket = match &self.provider {
             Provider::Cdp(provider) => {
                 let websocket = self
@@ -2627,20 +2657,37 @@ impl Tab {
                 }
             }
         };
-        self.socket = Some(socket);
+        self.connection = Some(TabConnection::Unprepared(socket));
         Ok(())
     }
 
     async fn verify(&mut self, call: BrowserCall<'_>) -> Result<(), ToolError> {
         self.refresh_info(call).await?;
         self.connect_metadata().await?;
-        if !self.socket_prepared {
-            let socket = self.socket.as_mut().expect("connected metadata channel");
-            let controller = dialogs::Controller::start(socket.clone());
-            controller.host_effects(self.dialog_host.clone());
-            socket.dialogs = Some(controller.link.clone());
-            self.dialogs = Some(controller);
-            self.frames = frames::Frames::default();
+        if matches!(self.connection, Some(TabConnection::Unprepared(_))) {
+            // Partial setup must retain this socket's subscriptions and queued events.
+            if self
+                .connection
+                .as_ref()
+                .map(TabConnection::socket)
+                .expect("connected metadata channel")
+                .dialogs
+                .is_none()
+            {
+                if let Some(controller) = self.dialogs.as_mut() {
+                    controller.close().await?;
+                }
+                let socket = self
+                    .connection
+                    .as_mut()
+                    .map(TabConnection::socket_mut)
+                    .expect("connected metadata channel");
+                let controller = dialogs::Controller::start(socket.clone());
+                controller.host_effects(self.dialog_host.clone());
+                socket.dialogs = Some(controller.link.clone());
+                self.dialogs = Some(controller);
+                self.frames = frames::Frames::default();
+            }
             self.request("Page.enable", json!({})).await?;
             if self
                 .dialogs
@@ -2650,15 +2697,19 @@ impl Tab {
             {
                 self.attach_frames().await?;
             }
-            self.socket_prepared = true;
+            self.connection = self
+                .connection
+                .take()
+                .map(|connection| TabConnection::Prepared(connection.into_socket()));
         }
         self.apply_pending_viewport(call).await?;
         self.ensure_downloads().await?;
         Ok(())
     }
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, ToolError> {
-        self.socket
+        self.connection
             .as_mut()
+            .map(TabConnection::socket_mut)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .request(method, params)
             .await
@@ -4035,7 +4086,7 @@ mod tests {
                 panic!("binding must return a tab handle");
             };
             let tab = browsers.targets.get_mut(&handle).unwrap();
-            assert!(tab.socket.is_none(), "binding must remain lazy");
+            assert!(tab.connection.is_none(), "binding must remain lazy");
             let mut budget = Some(
                 ReadBudget::new(&BrowserReadOptions {
                     timeout_ms: Some(if cancel_at_handshake { 3000 } else { 200 }),
@@ -4060,7 +4111,7 @@ mod tests {
                 "{result:?}"
             );
             assert!(
-                tab.socket.is_none(),
+                tab.connection.is_none(),
                 "a failed handshake cannot retain a socket"
             );
             tokio::time::timeout(Duration::from_secs(1), server)
@@ -4069,6 +4120,158 @@ mod tests {
                 .unwrap();
             browsers.close(&cursor).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn failed_page_setup_can_be_retried_on_the_same_metadata_connection() {
+        use futures_util::{SinkExt, StreamExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let websocket = format!("ws://{address}/devtools/page/page");
+        let tabs = [json!({
+            "id":"page", "title":"Fixture", "url":"https://source.example/", "type":"page",
+            "webSocketDebuggerUrl":websocket,
+        })];
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            serve_inventory(&listener, &tabs).await;
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            metadata_reply(&mut socket, "Page.enable", json!({})).await;
+            let request: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(request["method"], "Target.setAutoAttach");
+            for event in [
+                json!({"method":"Target.attachedToTarget","params":{
+                    "sessionId":"child-session", "targetInfo":{"type":"iframe","targetId":"child-target"}
+                }}),
+                json!({"method":"Page.javascriptDialogOpening","params":{
+                    "type":"alert", "message":"retained setup dialog", "url":"https://source.example/"
+                }}),
+                json!({"id":request["id"],"error":{"code":-32000,"message":"fixture Target.setAutoAttach failure"}}),
+            ] {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        event.to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            serve_inventory(&listener, &tabs).await;
+            let request: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(request["method"], "Page.handleJavaScriptDialog");
+            assert_eq!(request["params"]["accept"], true);
+            for event in [
+                json!({"method":"Page.javascriptDialogClosed","params":{}}),
+                json!({"id":request["id"],"result":{}}),
+            ] {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        event.to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            serve_inventory(&listener, &tabs).await;
+            metadata_reply(&mut socket, "Page.enable", json!({})).await;
+            metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
+            let child = metadata_reply(&mut socket, "Target.setAutoAttach", json!({})).await;
+            assert_eq!(child["sessionId"], "child-session");
+            let child = metadata_reply(&mut socket, "Page.enable", json!({})).await;
+            assert_eq!(child["sessionId"], "child-session");
+            metadata_reply(
+                &mut socket,
+                "Page.getFrameTree",
+                source_frame("retry-loader"),
+            )
+            .await;
+            let child = metadata_reply(&mut socket, "Page.getFrameTree", json!({"frameTree":{"frame":{
+                "id":"iframe", "loaderId":"iframe-loader", "parentId":"main", "url":"https://frame.example/"
+            }}})).await;
+            assert_eq!(child["sessionId"], "child-session");
+            let owner = metadata_reply(
+                &mut socket,
+                "DOM.getFrameOwner",
+                json!({"backendNodeId":42}),
+            )
+            .await;
+            assert_eq!(owner["params"]["frameId"], "iframe");
+            let _ = released.await;
+        });
+        let mut browsers = Browsers::default();
+        let provider = BrowserConnection {
+            id: "fixture".into(),
+            endpoint: format!("http://{address}"),
+        };
+        let context = decision_context(true).0;
+        let cancellation = CancellationToken::new();
+        let bound = browsers
+            .bind(
+                TabSource {
+                    provider: provider.into(),
+                    generation: format!("ws://{address}/devtools/browser/fixture"),
+                    info: TabInfo {
+                        id: "page".into(),
+                        title: "Fixture".into(),
+                        url: "https://source.example/".into(),
+                        kind: "page".into(),
+                        websocket: Some(websocket),
+                        extension: None,
+                    },
+                },
+                InitialState::Deferred,
+                &context,
+                &cancellation,
+                Language::En,
+            )
+            .await
+            .unwrap();
+        let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap() else {
+            panic!("fixture must bind a tab");
+        };
+        let tab = browsers.targets.get_mut(&handle).unwrap();
+        let failed = tokio::time::timeout(
+            Duration::from_secs(5),
+            tab.verify(BrowserCall::new(&context, &cancellation, Language::En)),
+        )
+        .await
+        .expect("the actual partial setup failure must be observable");
+        assert!(matches!(failed, Err(ToolError::Failed(message))
+            if message.contains("fixture Target.setAutoAttach failure")));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dialog = tab.active_dialog().await.expect("the one-time dialog event must remain visible");
+            assert_eq!(dialog.message, "retained setup dialog");
+            assert!(matches!(
+                tab.verify(BrowserCall::new(&context, &cancellation, Language::En)).await,
+                Err(ToolError::Failed(message)) if message.contains("JavaScript dialog is active")
+            ));
+            assert_eq!(tab.active_dialog().await.unwrap().metadata.id, dialog.metadata.id);
+            tab.handle_dialog(&dialog.metadata.id, DialogAction::Dismiss, None, &context, &cancellation)
+                .await
+                .unwrap();
+            assert!(tab.active_dialog().await.is_none());
+            tab.verify(BrowserCall::new(&context, &cancellation, Language::En))
+                .await
+                .unwrap();
+            assert_eq!(serde_json::to_value(tab.frames().await.unwrap()).unwrap(), json!([
+                {"id":"main","loader":"retry-loader","session":null,"parent":null},
+                {"id":"iframe","loader":"iframe-loader","session":"child-session","parent":"main"}
+            ]));
+            tab.disconnect().await.unwrap();
+        })
+        .await
+        .expect("explicit retry must reuse and finish the original metadata connection");
+        release.send(()).unwrap();
+        server.await.unwrap();
+        browsers
+            .close(&crate::cursor::Spec::default())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

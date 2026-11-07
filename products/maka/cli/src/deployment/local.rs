@@ -1008,7 +1008,10 @@ mod tests {
     }
 
     fn bundled_settings() -> maka_plugin_core::package::PackageSelection {
-        let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
+        let bundle = std::env::var_os("OUT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("OUT_DIR")))
+            .join("product");
         Package::read_from(&bundle.join("packages/settings"))
             .unwrap()
             .application_ref()
