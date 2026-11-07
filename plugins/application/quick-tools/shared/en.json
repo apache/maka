@@ -1,4 +1,7 @@
 {
+  "打开快捷工具设置": "Open Quick Tools Settings",
+  "加载中…": "Loading…",
+  "启用快捷键": "Enable hotkey",
   "网址缺少域名，请补全为 https://example.com。": "Add a domain to the URL, for example https://example.com.",
   "新建快捷链接": "Create Quicklink",
   "支持网站、应用深链和本地路径。网址可用 {query} 或 {参数名}。在条目设置中为每条链接设置别名和快捷键。": "Use a website, app deep link, or local path. Add {query} or {parameter} to a URL. Set each link’s alias and hotkey in Item Settings.",

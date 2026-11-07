@@ -20,6 +20,7 @@
 import {
   cleanup,
   effect,
+  host as surfaceHost,
   inputAction,
   platform,
   signal,
@@ -77,7 +78,10 @@ export function ModelSettings(props: {
   const operations = props.operations;
   const navigation = signal<Registration | null>(null);
   const rail = () => windowSize().width >= 880 && !compact();
-  const contributed = () => runtime.settings().find((item) => matches(item, props.route()));
+  const sections = () => runtime.settings().filter((item) =>
+    item.id !== 'quick-tools' || surfaceHost.params.nativeQuickTools === true
+  );
+  const contributed = () => sections().find((item) => matches(item, props.route()));
   const page = () => {
     const registered = navigation();
     return registered && registered.key === contributed()?.key ? registered.value : null;
@@ -90,7 +94,7 @@ export function ModelSettings(props: {
   effect(() => {
     if (!runtime.ready() || contributed()) return;
     const fallback =
-      runtime.settings().find((item) => matches(item, props.defaultRoute)) ?? runtime.settings()[0];
+      sections().find((item) => matches(item, props.defaultRoute)) ?? sections()[0];
     props.route.set(fallback ? { instance: fallback.instance.instance, id: fallback.id } : null);
   });
   const choose = (request: { from: string | null; to: string }) => {
@@ -101,7 +105,7 @@ export function ModelSettings(props: {
       request.from === request.to
     )
       return;
-    const target = runtime.settings().find((item) => item.key === request.to);
+    const target = sections().find((item) => item.key === request.to);
     if (!target) return;
     if (!operations.pending().length) {
       operations.error.set('');
@@ -207,7 +211,7 @@ export function ModelSettings(props: {
               {tr('Settings')}
             </Text>
           </If>
-          <Each of={runtime.settings()} key={(item) => item.key}>
+          <Each of={sections()} key={(item) => item.key}>
             {(item) => (
               <Button
                 accessibilityLabel={tr('Settings section {section}', {

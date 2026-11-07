@@ -48,6 +48,10 @@ export default {
           kind: 'settings',
           title: { fallback: 'General', translations: { 'zh-CN': '常规', 'zh-TW': '一般' } },
         },
+        'quick-tools': {
+          kind: 'settings',
+          title: { fallback: 'Quick Tools', translations: { 'zh-CN': '快捷工具', 'zh-TW': '快捷工具' } },
+        },
         connections: {
           kind: 'settings',
           title: {

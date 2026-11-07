@@ -25,6 +25,7 @@ import type {
   SettingsRoute,
   SettingsViewInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
+import { QuickToolsSettingsPage } from '../../../products/maka/workbench/app/QuickToolsSettingsPage';
 import { ModelSettings } from '../../../products/maka/workbench/app/ModelSettings';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
@@ -256,6 +257,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             </HostProvider>
           );
         },
+      },
+      'quick-tools': {
+        kind: 'settings',
+        render: () => <QuickToolsSettingsPage />,
       },
       general: {
         kind: 'settings',

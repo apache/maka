@@ -37,6 +37,7 @@ import type { OperationReply } from '../../../../packages/plugin-sdk/src/index.j
 import { C, isDark, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 import { Icon } from './Icon';
+import { serveQuickSettings } from './quickSettings';
 import { QuickShortcutRecorder } from './QuickShortcutRecorder';
 import { IconButton } from './ui';
 
@@ -201,10 +202,11 @@ export function QuickToolsSurface(props: {
     change('');
   };
   surfaceHost.on('quickTools.visibility', (value) => {
-    const event = value as { visible: boolean; home?: boolean; source?: { pid?: number } };
+    const event = value as { visible: boolean; home?: boolean; settings?: boolean; source?: { pid?: number } };
     if (event.visible) {
       engine.setSource(event.source?.pid);
       if (event.home) resetHome();
+      if (event.settings) settings.set(true);
       if (!query() && !page() && !editor() && !settings() && !actions()) orderLocked.set(false);
     } else commandHeld.set(false);
   });
@@ -215,6 +217,7 @@ export function QuickToolsSurface(props: {
         .catch(report);
   });
   const started = engine.start(locale());
+  if (surfaceHost.params.quickToolsPanel) serveQuickSettings(engine, started, version, ready, locale);
   void started
     .then(() => {
       if (alive) ready.set(true);

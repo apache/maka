@@ -13,7 +13,8 @@ pub enum Request {
     Load(Box<EngineConfig>),
     Shortcut(JsonValue),
     Error(JsonValue),
-    Show,
+    Show { settings: bool },
+    Settings(HostCall, bool),
     Hide,
     Modifiers(JsonValue),
     Assistant(HostCall),
@@ -50,6 +51,14 @@ impl Control {
         )
     }
     fn session_handlers(&self, host: &HostChannel, panel: bool) {
+        let send = self.send.clone();
+        host.handle("quickTools.settings", move |call| {
+            if let Err(error) = send.try_send(Request::Settings(call, panel)) {
+                if let Request::Settings(call, _) = error.into_inner() {
+                    call.reject("Quick Tools is busy");
+                }
+            }
+        });
         if panel {
             let send = self.send.clone();
             host.handle("quickTools.resize", move |call| {
@@ -107,7 +116,9 @@ impl Control {
         *self.main.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.host.clone());
         let send = self.send.clone();
         config.host.handle("quickTools.show", move |call| {
-            match send.try_send(Request::Show) {
+            match send.try_send(Request::Show {
+                settings: call.data()["settings"] == true,
+            }) {
                 Ok(()) => call.resolve(JsonValue::Null),
                 Err(_) => call.reject("Quick Tools is busy"),
             }
@@ -295,10 +306,12 @@ impl Control {
                             let _ = events.send("quickTools.execute", json!({"id":id}));
                         }
                     }
-                    Request::Show => {
+                    Request::Show { settings } => {
                         visible.set(true);
-                        let _ = events
-                            .send("quickTools.visibility", json!({"visible":true,"home":true}));
+                        let _ = events.send(
+                            "quickTools.visibility",
+                            json!({"visible":true,"home":true,"settings":settings}),
+                        );
                         if let Some(panel) = panel {
                             let _ = panel.update(cx, |view, window, cx| {
                                 position(window, None);
@@ -340,6 +353,22 @@ impl Control {
                             }
                         } else {
                             call.reject("Quick Tools window is unavailable");
+                        }
+                    }
+                    Request::Settings(call, from_panel) => {
+                        let destination = if from_panel {
+                            self.main.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                        } else {
+                            panel.map(|_| events.clone())
+                        };
+                        let result = destination
+                            .ok_or_else(|| "Quick Tools is unavailable".to_string())
+                            .and_then(|channel| {
+                                channel.send("quickTools.settings", call.data().clone())
+                            });
+                        match result {
+                            Ok(()) => call.resolve(JsonValue::Null),
+                            Err(error) => call.reject(error),
                         }
                     }
                     Request::ReadPreferences(call) => call.resolve(preferences.clone()),
