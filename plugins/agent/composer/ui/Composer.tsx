@@ -45,7 +45,6 @@ import {
   captionTextStyle,
   compact,
   controlFocusStyle,
-  controlHoverStyle,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
@@ -410,7 +409,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     flexShrink: 1,
                     gap: 8,
                   }}
-                  hoverStyle={{ backgroundColor: C.surface }}
+                  hoverStyle={{ backgroundColor: C.card }}
                   focusStyle={{ backgroundColor: C.raised }}
                 >
                   <Icon name="folder" color={C.secondary} />
@@ -440,7 +439,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={{ backgroundColor: C.surface }}
+                  hoverStyle={{ backgroundColor: C.card }}
                   focusStyle={{ backgroundColor: C.raised }}
                 >
                   <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
@@ -527,10 +526,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           accessibilityLabel={tr('Conversation composer')}
           style={{
             flexShrink: 0,
-            backgroundColor: C.raised,
+            backgroundColor: platform.isTerminal ? C.raised : C.card,
             borderRadius: cardRadius(),
             borderWidth: 1,
-            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.raised,
+            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.card,
             ...(platform.isTerminal
               ? {
                   paddingHorizontal: 16,
@@ -812,7 +811,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               verticalAlign: 'middle',
                               pointerEvents: 'auto',
                             }}
-                            hoverStyle={controlHoverStyle()}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>

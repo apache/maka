@@ -259,7 +259,13 @@ function App(
     })),
   );
   return (
-    <View style={{ flex: 1, minHeight: 0, backgroundColor: C.background }}>
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        backgroundColor: platform.isTerminal ? C.background : C.chrome,
+      }}
+    >
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}
@@ -306,7 +312,7 @@ function App(
             gap: 8,
             paddingHorizontal: 16,
             paddingVertical: 4,
-            backgroundColor: C.surface,
+            backgroundColor: C.chrome,
           }}
         >
           <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>

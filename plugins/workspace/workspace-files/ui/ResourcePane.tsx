@@ -71,7 +71,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           within: node,
         });
       }}
-      style={{ flex: 1, minHeight: 0, backgroundColor: C.background, padding: 8, gap: 8 }}
+      style={{ flex: 1, minHeight: 0, backgroundColor: C.panel, padding: 8, gap: 8 }}
     >
       <View
         desktop={props.docked ? windowDrag : undefined}
@@ -144,7 +144,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                     flexDirection: 'row',
                     alignItems: 'center',
                     borderRadius: 8,
-                    backgroundColor: resources.active() === tab().instance ? C.raised : C.surface,
+                    backgroundColor: resources.active() === tab().instance ? C.cardRaised : C.card,
                   }}
                 >
                   <Button

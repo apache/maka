@@ -432,6 +432,7 @@ function WorkspacePages(props: { busy: boolean }) {
         focusHandled={() => {}}
         attach={() => {}}
         close={() => {}}
+        collapse={() => {}}
         selectSession={async () => {}}
         create={async () => {}}
         newConversation={() => {}}

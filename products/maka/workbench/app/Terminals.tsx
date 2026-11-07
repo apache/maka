@@ -47,9 +47,9 @@ export function Terminals(props: { model: TerminalsModel }) {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: C.surface,
+            backgroundColor: C.card,
           }}
-          hoverStyle={controlHoverStyle()}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >

@@ -72,6 +72,7 @@ import {
 import {
   C,
   Header,
+  ViewSegment,
   captionTextStyle,
   controlStyle,
   toolbarControlStyle,
@@ -2842,14 +2843,14 @@ export function Conversation(props: ConversationProps) {
         flexBasis: 'auto',
         flexShrink: 0,
         minHeight: 0,
-        backgroundColor: C.background,
+        backgroundColor: C.panel,
       }}
     >
       <If when={attachmentMetadataFailed()}>
         <Button
           onPress={inputAction(retryAttachmentMetadata, sessionId)}
           style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={{ backgroundColor: C.surface }}
+          hoverStyle={{ backgroundColor: C.card }}
           focusStyle={{ backgroundColor: C.raised }}
         >
           <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -2878,6 +2879,22 @@ export function Conversation(props: ConversationProps) {
             <BotRestart restart={props.restartBot} />
           ) : undefined
         }
+        views={
+          platform.isTerminal || ownHandle.empty() ? undefined : (
+            <View role="tablist" style={{ flexDirection: 'row', gap: 2 }}>
+              <ViewSegment
+                label={tr('Chat')}
+                selected={reading() === 'chat'}
+                onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
+              />
+              <ViewSegment
+                label={tr('Trajectory')}
+                selected={reading() === 'trajectory'}
+                onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
+              />
+            </View>
+          )
+        }
       />
       <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
         <View
@@ -2905,7 +2922,8 @@ export function Conversation(props: ConversationProps) {
       </If>
       <View
         style={{
-          display: ownHandle.empty() ? 'none' : 'flex',
+          // The desktop's header holds these views.
+          display: ownHandle.empty() || !platform.isTerminal ? 'none' : 'flex',
           flexDirection: 'row',
           flexWrap: 'wrap',
           paddingHorizontal: 16,

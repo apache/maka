@@ -134,6 +134,7 @@ import {
 import {
   applicationMenu,
   ownTitleBar,
+  PANEL_INSET,
   windowTitle,
 } from '../../../../products/maka/workbench/app/chrome';
 import {
@@ -1880,6 +1881,7 @@ export function createConversationUi(
       browserRoot = node;
     },
     close: closeSidebar,
+    collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
     selectSession: selectBrowsed,
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
@@ -2370,7 +2372,7 @@ export function createConversationUi(
                       style={{
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
-                        backgroundColor: C.surface,
+                        backgroundColor: C.card,
                         // A card of its own on the desktop: square corners
                         // flush on the composer's rounded top read as notches.
                         ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
@@ -2422,7 +2424,7 @@ export function createConversationUi(
                               origin: selected(),
                             })}
                             style={controlStyle}
-                            hoverStyle={controlHoverStyle()}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...bodyTextStyle, color: C.accent }}>
@@ -2594,7 +2596,14 @@ export function createConversationUi(
                         backgroundColor: C.scrim,
                       }}
                     >
-                      <View style={{ backgroundColor: C.background }}>
+                      <View
+                        style={
+                          platform.isTerminal
+                            ? { backgroundColor: C.background }
+                            : // The panel's inset keeps the header on the window controls' center line.
+                              { backgroundColor: C.chrome, paddingTop: PANEL_INSET }
+                        }
+                      >
                         <Header
                           title={current.sessionId === null ? '' : tr('Sessions')}
                           commands={inputAction(invokeCommand, {
@@ -2610,7 +2619,7 @@ export function createConversationUi(
                           maxWidth: 640,
                           flex: 1,
                           minHeight: 0,
-                          backgroundColor: C.surface,
+                          backgroundColor: C.chrome,
                         }}
                       >
                         <WorkspaceBrowser

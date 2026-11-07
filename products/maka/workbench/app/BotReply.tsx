@@ -59,7 +59,7 @@ export function BotReply(props: {
             styles={{
               root: { ...bodyTextStyle, color: C.text },
               paragraph: bodyTextStyle,
-              code: { color: C.accentHover, backgroundColor: C.surface },
+              code: { color: C.accentHover, backgroundColor: C.card },
             }}
           />
         )}

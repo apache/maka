@@ -34,6 +34,8 @@ The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the bas
 
 - Depth comes from the `background`, `surface` and `raised` tokens first, then a line, then a shadow.
 - Each boundary uses one separator: a fill step, a line or a shadow, never two on the same edge.
+- The desktop window is an inverted L: the sidebar and the window's top edge share one base (`chrome`), and the content is one `panel`, radius 12, inset 8 from the window's top, right and bottom edges. The sidebar, the panel and the panel's header part by fill alone; panes side by side in the panel part by a line.
+- In both appearances the sidebar sits one step below the panel, and what rests on the panel (the composer, message bubbles, tool cards, code) one step above it (`card`, then `cardRaised` for what is filled on a card). `ui.tsx` maps these regions onto the tokens; call sites inside the panel use the regions, not the tokens.
 - Resting surfaces are flat. Shadows belong to what floats (menus, popovers, dialogs, tooltips), and that family shares one recipe.
 - Generic gradients, glowing borders, neon edges, glassmorphism, sparkle and decorative "thinking" are out.
 
@@ -65,6 +67,10 @@ The composer is the reference:
 
 Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar icons, workspace names and conversation titles share one left edge, and table text starts where code block text does.
 
+The shell keeps one header line. The window controls' row holds only the controls and the sidebar toggle at the sidebar's end (the panel's header takes the toggle while the sidebar is away). Each pane's header is the panel's first row, 32 points high, so its center is the window controls' center: the title, the workspace, then the pane's views as a compact segmented control at its end. Nothing else repeats the title.
+
+The sidebar recedes behind the conversations: navigation rows read in `secondary` with `muted` icons, conversation titles in `text`. Selected is a `raised` fill with the title at weight 500; unread and running show in one 16-point lane at the row's end (an accent dot, the loading indicator), the More button's place, so titles never move.
+
 ## States
 
 - Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
@@ -87,4 +93,4 @@ Settings pages are built from the parts in [`SettingsPage.tsx`](products/maka/wo
 
 ## Verification
 
-A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as `desktop_composer_keeps_one_inset` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.
+A visible change is reviewed in the real desktop renderer, in light and dark, at a narrow and a wide window. Geometry that must stay equal is asserted against resolved bounds, as the desktop tests' `shell_shares_its_lines` does: a screenshot judged by eye does not prove alignment. On macOS the headless test platform draws text in Helvetica rather than the system font, so judge typography and the centering of text beside icons with the real text system.

@@ -24,7 +24,14 @@ import { Button, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
-import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import {
+  controlsLeft,
+  controlsRight,
+  ownTitleBar,
+  PANEL_INSET,
+  TITLE_BAR_HEIGHT,
+  windowDrag,
+} from './chrome';
 import { appearance } from './appearance';
 import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
 
@@ -86,22 +93,38 @@ const paletteColor = (key: string, dark: boolean): string | undefined => {
     made = { recipe, dark, tokens: paletteTokens(recipe, dark) };
   return made.tokens[key as keyof PaletteTokens];
 };
+type Tone = keyof typeof DARK;
+// The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
+// below the content `panel` in both appearances, and what rests on the panel
+// (`card`, then `cardRaised`) steps up from it. The dark panel is `surface`, so
+// there each step is one token higher; terminals keep the light steps.
+const REGIONS = {
+  chrome: ['surface', 'background'],
+  panel: ['background', 'surface'],
+  card: ['surface', 'raised'],
+  cardRaised: ['raised', 'line'],
+} satisfies Record<string, [Tone, Tone]>;
 /** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
-export const C = Object.defineProperties(
-  {} as typeof DARK,
-  Object.fromEntries(
+export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
+  ...Object.fromEntries(
     Object.keys(DARK).map((key) => [
       key,
       {
         enumerable: true,
         get: () => {
           const dark = isDark();
-          return paletteColor(key, dark) ?? (dark ? DARK : LIGHT)[key as keyof typeof DARK];
+          return paletteColor(key, dark) ?? (dark ? DARK : LIGHT)[key as Tone];
         },
       },
     ]),
   ),
-);
+  ...Object.fromEntries(
+    Object.entries(REGIONS).map(([key, [light, dark]]) => [
+      key,
+      { enumerable: true, get: () => C[!platform.isTerminal && isDark() ? dark : light] },
+    ]),
+  ),
+});
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.isTerminal ? 16 : 24 };
@@ -163,8 +186,8 @@ const quietFocusStyle = () =>
         outlineColor: C.accent,
         outlineOffset: -2,
       };
-const quietHoverStyle = () => ({ backgroundColor: C.surface });
-const quietActiveStyle = () => ({ backgroundColor: C.raised });
+const quietHoverStyle = () => ({ backgroundColor: C.card });
+const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
   label: string;
@@ -258,17 +281,93 @@ export type BrowserHeader = {
   /** A pane beside another closes from its header instead of toggling the browser. */
   close?(): void;
 };
+/** Shows or hides the session browser; its icon previews the change on hover. */
+export function SidebarToggle(props: { expanded: boolean; toggle(): void }) {
+  const label = () =>
+    props.expanded ? tr('Collapse session browser') : tr('Expand session browser');
+  return (
+    <Button
+      class="group/sidebar-toggle"
+      onPress={props.toggle}
+      accessibilityLabel={label()}
+      tooltip={textTooltip(label)}
+      selected={props.expanded}
+      style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+      hoverStyle={platform.isTerminal ? { backgroundColor: C.surface } : controlHoverStyle()}
+      focusStyle={platform.isTerminal ? { backgroundColor: C.raised } : quietFocusStyle()}
+    >
+      <View
+        accessibilityElementsHidden
+        style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+      >
+        <View class="group-hover/sidebar-toggle:opacity-0">
+          <Icon name="sidebar" color={platform.isTerminal ? C.secondary : C.muted} />
+        </View>
+        <View
+          class="opacity-0 group-hover/sidebar-toggle:opacity-100"
+          style={{ position: 'absolute', left: 0, top: 0 }}
+        >
+          <Icon
+            name={props.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
+            color={platform.isTerminal ? C.secondary : C.muted}
+          />
+        </View>
+      </View>
+    </Button>
+  );
+}
+
+/** One segment of a pane's views in its header: a compact segmented control. */
+export function ViewSegment(props: { label: string; selected: boolean; onPress: () => void }) {
+  return (
+    <Button
+      role="tab"
+      accessibilityLabel={props.label}
+      selected={props.selected}
+      onPress={props.onPress}
+      style={{
+        height: 28,
+        paddingHorizontal: 8,
+        borderRadius: 8,
+        justifyContent: 'center',
+        backgroundColor: props.selected ? C.card : 'transparent',
+      }}
+      hoverStyle={quietHoverStyle()}
+      activeStyle={quietActiveStyle()}
+      focusStyle={quietFocusStyle()}
+    >
+      <Text
+        style={{
+          ...captionTextStyle,
+          color: props.selected ? C.text : C.secondary,
+          fontWeight: props.selected ? '500' : undefined,
+        }}
+      >
+        {props.label}
+      </Text>
+    </Button>
+  );
+}
+
+/**
+ * A pane's header. On the desktop it is the content panel's first row, 32
+ * points high, so with the panel's top inset its center line is the window
+ * controls' (`TITLE_BAR_HEIGHT`).
+ */
 export function Header(props: {
   title: string;
   workspace?: string;
   status?: 'loading' | 'stopping' | 'failed';
+  /** The command palette, which the terminal's header opens; the desktop's is in the menu bar. */
   commands(): void;
   browser: BrowserHeader;
   files?(): void;
   filesOpener?(node: ViewRef): void;
   /** Extra controls for this conversation, after the files button. */
   actions?: JSX.Element;
+  views?: JSX.Element;
 }) {
+  const desktop = !platform.isTerminal;
   const workspaceName = () => {
     const path = props.workspace;
     if (!path) return tr('Files');
@@ -279,6 +378,21 @@ export function Header(props: {
         .at(-1) || path
     );
   };
+  // The docked sidebar's title bar row holds the desktop's toggle.
+  const toggle = () =>
+    !props.browser.close && !(desktop && ownTitleBar && props.browser.navigationDocked);
+  // The desktop's panel is inset from the window's edges, so window controls
+  // over it need only what reaches past that inset.
+  const paddingLeft = () =>
+    !desktop
+      ? 16 + controlsLeft(!props.browser.navigationDocked)
+      : toggle()
+        ? Math.max(8, controlsLeft(!props.browser.navigationDocked) - PANEL_INSET)
+        : 16;
+  const paddingRight = () =>
+    desktop
+      ? Math.max(8, controlsRight(!props.browser.previewDocked) - PANEL_INSET)
+      : 16 + controlsRight(!props.browser.previewDocked);
   return (
     <View
       accessibilityElementsHidden={props.browser.hidden}
@@ -287,68 +401,38 @@ export function Header(props: {
         opacity: props.browser.hidden ? 0 : 1,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingLeft: 16 + controlsLeft(!props.browser.navigationDocked),
-        paddingRight: 16 + controlsRight(!props.browser.previewDocked),
-        height: ownTitleBar
-          ? TITLE_BAR_HEIGHT
-          : !platform.isTerminal && !props.title && !props.status
-            ? 32
-            : compact()
-              ? 32
-              : 48,
-        gap: 8,
-        borderBottomWidth: !platform.isTerminal && !props.title && !props.status ? 0 : 1,
+        paddingLeft: paddingLeft(),
+        paddingRight: paddingRight(),
+        height: desktop ? 32 : ownTitleBar ? TITLE_BAR_HEIGHT : compact() ? 32 : 48,
+        gap: desktop ? 4 : 8,
+        borderBottomWidth: desktop ? 0 : 1,
         borderBottomColor: C.line,
         pointerEvents: props.browser.hidden ? 'none' : 'auto',
       }}
     >
-      <If when={!props.browser.close}>
+      <If when={toggle()}>
+        <SidebarToggle expanded={props.browser.expanded} toggle={props.browser.toggle} />
+      </If>
+      <If when={!desktop}>
         <Button
-          class="group/sidebar-toggle"
-          onPress={props.browser.toggle}
-          accessibilityLabel={
-            props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
-          }
-          tooltip={textTooltip(() =>
-            props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'),
-          )}
-          selected={props.browser.expanded}
+          onPress={props.commands}
+          accessibilityLabel={tr('Open commands')}
+          tooltip={textTooltip(() => shortcut(tr('Commands'), 'mod+p'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
+          activeStyle={{ backgroundColor: C.line }}
         >
-          <View
-            accessibilityElementsHidden
-            style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
-          >
-            <View class="group-hover/sidebar-toggle:opacity-0">
-              <Icon name="sidebar" color={C.secondary} />
-            </View>
-            <View
-              class="opacity-0 group-hover/sidebar-toggle:opacity-100"
-              style={{ position: 'absolute', left: 0, top: 0 }}
-            >
-              <Icon
-                name={props.browser.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
-                color={C.secondary}
-              />
-            </View>
-          </View>
+          <Icon name="command" color={C.secondary} />
         </Button>
       </If>
-      <Button
-        onPress={props.commands}
-        accessibilityLabel={tr('Open commands')}
-        tooltip={textTooltip(() => shortcut(tr('Commands'), 'mod+p'))}
-        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-        hoverStyle={{ backgroundColor: C.surface }}
-        focusStyle={{ backgroundColor: C.raised }}
-        activeStyle={{ backgroundColor: C.line }}
-      >
-        <Icon name="command" color={C.secondary} />
-      </Button>
       <Text
-        style={[{ color: C.text, flex: 1, minWidth: 0, fontWeight: '500' }, { numberOfLines: 1 }]}
+        style={[
+          desktop
+            ? { color: C.text, flexShrink: 1, minWidth: 0, fontWeight: '600' }
+            : { color: C.text, flex: 1, minWidth: 0, fontWeight: '500' },
+          { numberOfLines: 1 },
+        ]}
       >
         {props.title}
       </Text>
@@ -360,26 +444,36 @@ export function Header(props: {
           onPress={props.files}
           style={{
             ...toolbarControlStyle,
+            ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 8,
+            gap: desktop ? 4 : 8,
             maxWidth: 240,
             minWidth: 0,
-            flexShrink: 1,
+            flexShrink: desktop ? 2 : 1,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
+          hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
+          activeStyle={desktop ? quietActiveStyle() : undefined}
+          focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >
-          <Icon name="folder" color={C.secondary} />
+          <Icon name="folder" color={desktop ? C.muted : C.secondary} size={desktop ? 14 : 16} />
           <Text
             style={[
-              { ...captionTextStyle, color: C.secondary, minWidth: 0, flexShrink: 1 },
+              {
+                ...captionTextStyle,
+                color: desktop ? C.muted : C.secondary,
+                minWidth: 0,
+                flexShrink: 1,
+              },
               { numberOfLines: 1 },
             ]}
           >
             {workspaceName()}
           </Text>
         </Button>
+      </If>
+      <If when={desktop}>
+        <View style={{ flex: 1 }} />
       </If>
       {props.actions}
       <If when={props.status}>
@@ -397,16 +491,17 @@ export function Header(props: {
           {props.status ? sessionStatusCaption[props.status] : ''}
         </Text>
       </If>
+      {props.views}
       <If when={props.browser.close}>
         <Button
           onPress={props.browser.close}
           accessibilityLabel={tr('Close side pane')}
           tooltip={textTooltip(() => tr('Close side pane'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
+          hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
+          focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >
-          <Icon name="close" color={C.secondary} />
+          <Icon name="close" color={desktop ? C.muted : C.secondary} />
         </Button>
       </If>
     </View>

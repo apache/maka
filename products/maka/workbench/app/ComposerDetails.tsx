@@ -177,7 +177,7 @@ export function ComposerDetails(props: {
         flexShrink: 0,
         backgroundColor: 'transparent',
       }}
-      hoverStyle={{ backgroundColor: C.raised }}
+      hoverStyle={{ backgroundColor: C.cardRaised }}
       focusStyle={{ backgroundColor: C.line }}
     >
       <Icon name="close" color={C.muted} />
@@ -196,7 +196,7 @@ export function ComposerDetails(props: {
             flexDirection: 'row',
             alignItems: 'center',
             borderRadius: controlStyle.borderRadius,
-            backgroundColor: !single() && selected() === 'todo' ? C.raised : 'transparent',
+            backgroundColor: !single() && selected() === 'todo' ? C.cardRaised : 'transparent',
           }}
         >
           <Button
@@ -210,9 +210,9 @@ export function ComposerDetails(props: {
               gap: 8,
               alignItems: 'center',
               flexShrink: 0,
-              backgroundColor: single() && selected() === 'todo' ? C.raised : 'transparent',
+              backgroundColor: single() && selected() === 'todo' ? C.cardRaised : 'transparent',
             }}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={{ backgroundColor: C.line }}
           >
             {todo.mark()}
@@ -238,7 +238,7 @@ export function ComposerDetails(props: {
           alignItems: 'center',
           gap: single() ? 4 : 0,
           borderRadius: controlStyle.borderRadius,
-          backgroundColor: !single() && selected() === 'todo' ? C.raised : 'transparent',
+          backgroundColor: !single() && selected() === 'todo' ? C.cardRaised : 'transparent',
         }}
       >
         <Button
@@ -255,7 +255,7 @@ export function ComposerDetails(props: {
             alignItems: 'center',
             backgroundColor: 'transparent',
           }}
-          hoverStyle={{ backgroundColor: C.raised }}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={{ backgroundColor: C.line }}
         >
           {todo.mark()}
@@ -283,9 +283,9 @@ export function ComposerDetails(props: {
             gap: 8,
             alignItems: 'center',
             ...(singleDesktop() ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
-            backgroundColor: !singleDesktop() && selected() === key ? C.raised : 'transparent',
+            backgroundColor: !singleDesktop() && selected() === key ? C.cardRaised : 'transparent',
           }}
-          hoverStyle={{ backgroundColor: C.raised }}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={{ backgroundColor: C.line }}
         >
           {otherMark(key)}
@@ -342,7 +342,7 @@ export function ComposerDetails(props: {
         style={{
           minHeight: 0,
           flexShrink: 1,
-          backgroundColor: C.surface,
+          backgroundColor: C.card,
           overflow: 'hidden',
           ...(platform.isTerminal
             ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }

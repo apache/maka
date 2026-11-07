@@ -476,7 +476,7 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
                   width: 32,
                   height: 32,
                   borderRadius: 8,
-                  backgroundColor: C.surface,
+                  backgroundColor: C.card,
                   alignItems: 'center',
                   justifyContent: 'center',
                 },
@@ -537,9 +537,9 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        backgroundColor: C.surface,
+        backgroundColor: C.card,
       }}
-      hoverStyle={controlHoverStyle()}
+      hoverStyle={{ backgroundColor: C.cardRaised }}
       focusStyle={controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
@@ -597,7 +597,7 @@ function FileRows(props: { model: CurrentFileModel; view: Extract<FileView, { ki
           if (mounted) props.model.position = { x: event.offset.x, y: event.offset.y };
         }}
         accessibilityLabel={tr('Captured file text')}
-        style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
+        style={{ flex: 1, minHeight: 0, backgroundColor: C.card }}
         header={<CapturedFileStatus model={props.model} selectable={false} />}
       >
         {(row) => (

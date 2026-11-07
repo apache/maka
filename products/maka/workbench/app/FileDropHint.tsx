@@ -44,7 +44,7 @@ export function FileDropHint(props: { radius: number }) {
           top: 0,
           bottom: 0,
           borderRadius: props.radius,
-          backgroundColor: C.raised,
+          backgroundColor: C.cardRaised,
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
