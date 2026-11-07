@@ -53,8 +53,7 @@ import {
   codeTextStyle,
   compact,
   controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
+  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
@@ -110,10 +109,10 @@ export function InteractionAction(props: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        backgroundColor: props.primary ? C.accent : props.selected ? C.raised : C.surface,
+        backgroundColor: props.primary ? C.accent : props.selected ? C.cardRaised : C.card,
       }}
-      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle()}
-      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle()}
+      hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.cardRaised }}
+      focusStyle={props.primary ? { backgroundColor: C.accentHover } : cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -734,7 +733,7 @@ export function InteractionComposer({
         style={{
           minHeight: 0,
           flexShrink: 1,
-          backgroundColor: C.surface,
+          backgroundColor: C.card,
           borderRadius: 16,
           borderWidth: 1,
           borderColor: C.line,
@@ -821,9 +820,7 @@ export function InteractionComposer({
                       'Approve this original call only. This does not grant access to future calls.',
                     )}
                   </Text>
-                  <View
-                    style={{ gap: 8, padding: 12, backgroundColor: C.background, borderRadius: 8 }}
-                  >
+                  <View style={{ gap: 8, padding: 12, backgroundColor: C.panel, borderRadius: 8 }}>
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Original arguments')}
                     </Text>
@@ -862,7 +859,7 @@ export function InteractionComposer({
                       style={{
                         gap: 8,
                         padding: 12,
-                        backgroundColor: C.background,
+                        backgroundColor: C.panel,
                         borderRadius: 8,
                       }}
                     >
@@ -957,11 +954,11 @@ export function InteractionComposer({
                                 gap: 12,
                                 backgroundColor:
                                   answers()[index()]?.value === option().label
-                                    ? C.raised
-                                    : C.surface,
+                                    ? C.cardRaised
+                                    : C.card,
                               }}
-                              hoverStyle={controlHoverStyle()}
-                              focusStyle={controlFocusStyle()}
+                              hoverStyle={{ backgroundColor: C.cardRaised }}
+                              focusStyle={cardFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
                               {/* As tall as the label's line, so the mark centres on it. */}
@@ -1045,7 +1042,7 @@ export function InteractionComposer({
                               paddingHorizontal: 12,
                               paddingVertical: compact() ? 4 : 8,
                               color: C.text,
-                              backgroundColor: C.background,
+                              backgroundColor: C.panel,
                               borderRadius: inputBorderRadius,
                               borderWidth: 1,
                               borderColor: C.line,

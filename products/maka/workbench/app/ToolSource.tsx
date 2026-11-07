@@ -151,7 +151,7 @@ export function OriginalToolSource(props: { source: ToolSource; label: string })
         <Button
           disabled={!source.error()}
           style={controlStyle}
-          hoverStyle={{ backgroundColor: C.raised }}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
           focusStyle={{ backgroundColor: C.line }}
           onPress={inputAction(source.read, {
             sessionId: source.original.sessionId,

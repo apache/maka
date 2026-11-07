@@ -49,6 +49,8 @@ const icons = {
   shield: { lucide: 'shield', glyph: '◇' },
   lock: { lucide: 'lock', glyph: '▣' },
   activity: { lucide: 'clock', glyph: '◌' },
+  bot: { lucide: 'bot', glyph: '◌' },
+  inbox: { lucide: 'inbox', glyph: '?' },
   thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },

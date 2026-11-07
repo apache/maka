@@ -118,9 +118,9 @@ export function MarkdownBody(props: {
             heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
             blockquote: { borderLeftColor: C.line, color: C.secondary },
             link: { color: C.accent },
-            code: { color: props.compact ? C.muted : C.accentHover, backgroundColor: C.surface },
+            code: { color: props.compact ? C.muted : C.accentHover, backgroundColor: C.card },
             codeBlock: {
-              backgroundColor: C.surface,
+              backgroundColor: C.card,
               borderColor: C.line,
               borderRadius: props.compact ? 8 : 12,
             },
@@ -146,8 +146,8 @@ export function MarkdownBody(props: {
               fontWeight: '600',
               borderColor: C.line,
             },
-            tableHead: { backgroundColor: C.raised },
-            tableRow: { backgroundColor: C.surface },
+            tableHead: { backgroundColor: C.cardRaised },
+            tableRow: { backgroundColor: C.card },
             rule: { backgroundColor: C.line },
           }}
         />

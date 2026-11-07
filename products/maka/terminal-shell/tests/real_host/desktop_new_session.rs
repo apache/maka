@@ -1551,6 +1551,46 @@ async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
     fixture.finish().await;
 }
 
+/// The window's shell lines its parts up (DESIGN.md "Alignment"): the panel's
+/// one header row is centered on the window controls' line with the sidebar's
+/// toggle, and the sidebar's icons, workspace names and conversation titles
+/// start at one left edge.
+async fn shell_shares_its_lines(desktop: &Desktop, docked: bool) {
+    // The panel's 8-point top inset plus half its 32-point header: the middle
+    // of the 48-point title bar the window controls are centered in.
+    let center = px(24.0);
+    let toggle = if docked {
+        if !desktop.controls("Expand session browser").is_empty() {
+            desktop.press("Expand session browser").await;
+        }
+        desktop.control("Collapse session browser").await
+    } else {
+        desktop.control("Expand session browser").await
+    };
+    for (name, bounds) in [
+        ("sidebar toggle", toggle),
+        ("Chat view", desktop.control("Chat").await),
+        ("Trajectory view", desktop.control("Trajectory").await),
+        ("workspace", desktop.control("Browse workspace files").await),
+    ] {
+        assert_eq!(
+            bounds.center().y,
+            center,
+            "the {name} must sit on the window controls' center line: {bounds:?}"
+        );
+    }
+    if docked {
+        let new = desktop.control("New conversation").await;
+        let group = desktop.control("Collapse workspace").await;
+        let row = desktop.control("Open conversation NSH real Agent").await;
+        assert_eq!(
+            (group.left(), row.left()),
+            (new.left(), new.left()),
+            "sidebar rows must share one left edge: new={new:?}, group={group:?}, row={row:?}"
+        );
+    }
+}
+
 async fn disconnected_desktop(
     theme: &str,
     appearance: nsh_core::platform::Appearance,
@@ -1566,6 +1606,7 @@ async fn disconnected_desktop(
     desktop.submit().await;
     let mut reply = desktop.request(&mut fixture).await;
     desktop.control("Stop response").await;
+    shell_shares_its_lines(&desktop, layout == "wide").await;
     let closing = tokio::spawn({
         let store = fixture.store.clone();
         async move { store.shutdown().await }

@@ -480,7 +480,7 @@ export function MessageRow({
                   paddingHorizontal: 16,
                   paddingVertical: 16,
                   borderRadius: 20,
-                  backgroundColor: C.surface,
+                  backgroundColor: C.card,
                   gap: 8,
                 }}
               >

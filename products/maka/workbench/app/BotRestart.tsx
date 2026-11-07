@@ -71,7 +71,7 @@ export function BotRestart(props: { restart(): Promise<void> }) {
         tooltip={textTooltip(() => tr('Start the Bot over'))}
         onPress={inputAction(() => asking.set(true), null)}
         style={{ ...toolbarControlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-        hoverStyle={{ backgroundColor: C.surface }}
+        hoverStyle={{ backgroundColor: C.card }}
         focusStyle={{ backgroundColor: C.raised }}
       >
         <Icon name="refresh" color={C.secondary} />

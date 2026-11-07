@@ -27,6 +27,8 @@ import { tr } from './locale';
 export const ownTitleBar = isAvailable && platform.desktop;
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
+/** How far the desktop's content panel sits from the window's top, right and bottom edges. */
+export const PANEL_INSET = 8;
 
 // The window's colors follow the system until Settings › General chooses
 // (`appearance.ts`); the system's menus and controls follow them too.
