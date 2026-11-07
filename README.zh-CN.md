@@ -27,7 +27,7 @@ Maka 提供终端工作台和原生桌面 shell。Runtime Host 统一管理执�
 
 ## 从源码运行
 
-需要 Rust stable、Node.js 26、npm 12.2.1 和 [just](https://github.com/casey/just)。原生 Computer Use 在 macOS 需要 Xcode Command Line Tools，在 Linux 需要 X11 开发库。
+需要 Rust stable、Node.js 26、npm 12.2.1 和 [just](https://github.com/casey/just)。macOS 构建时会编译 GPUI 的 Metal 着色器，因此还需要 Xcode 及其 Metal Toolchain：先打开一次 Xcode，用 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` 选中它，再运行 `xcodebuild -downloadComponent MetalToolchain`。仅有 Xcode Command Line Tools 时没有 `metal` 编译器。原生 Computer Use 在 Linux 还需要 X11 开发库。
 
 ```sh
 git clone https://github.com/apache/maka.git
