@@ -28,7 +28,10 @@ The [NSH design guide](third-party/nsh/website/docs/design-guides.md) is the bas
 - One region has one focus. An element earns its place by changing what the user does next.
 - With accent and decoration removed, the primary task, current selection and next step must still read.
 - Assistant messages stay quiet and free of avatars. Language and continuity carry the product's character.
-- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion. Expanded activity groups use the shared disclosure content inset for their members (32 points on desktop), matching tool details and thinking.
+- Messages between agents belong with tool activity, not in user bubbles. Keep their content folded by default, with source conversations and full text available on expansion.
+- A finished turn has one summary row: what it took and what it did (`Worked for 37s · 2 thoughts · 3 tools`), led by its status only when it failed or stopped. Expanding it shows the steps; their groups have no header of their own.
+- A turn is not indented. On desktop it has two lanes: the icon lane on the reading column's left edge holds the summary chevron, each step's icon and an expanded tool card's left edge; the text lane, 24 points to its right (`disclosureContentInset`), holds the summary text, step names, expanded thinking and the text inside the card. Thinking and tool steps share one row style and differ only by icon; a thinking step with nothing beyond its title does not expand.
+- A step's state sits in one fixed lane at the row's trailing edge and shows only error, rejection, stop or progress. A tool card names its tool and directory once, prefixes the command with `$`, and labels output only when it is stderr; an exit code shows only when non-zero.
 
 ## Surfaces and lines
 

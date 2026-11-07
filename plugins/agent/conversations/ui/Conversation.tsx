@@ -3086,9 +3086,17 @@ export function Conversation(props: ConversationProps) {
                         const images = computed(() =>
                           turnImages(projection().rowsById.values(), initial.turnId),
                         );
+                        const groups = computed(() =>
+                          projection().entries.filter(
+                            (item): item is ProcessGroup =>
+                              item.kind === 'process' && item.turnId === initial.turnId,
+                          ),
+                        );
                         return (
                           <TurnSummary
                             turn={turn}
+                            groups={groups}
+                            row={currentRow}
                             expanded={() => turnExpanded(turn())}
                             canFold={() => canFoldTurn(turn())}
                             images={{
