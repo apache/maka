@@ -74,7 +74,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CGFloat, CGSize};
 use objc2_foundation::{
     NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange,
-    NSString,
+    NSRect, NSString,
 };
 
 use crate::{
@@ -956,6 +956,33 @@ define_class!(
     unsafe impl NSObjectProtocol for TextArea {}
 
     impl TextArea {
+        /// A rich editor places a narrow native input at its document caret.
+        /// TextKit can return no rectangle once its buffer wraps out of view.
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        unsafe fn first_rect(&self, range: NSRange, actual_range: *mut NSRange) -> NSRect {
+            // SAFETY: the caller supplies a writable range pointer or null.
+            let rect: NSRect = unsafe {
+                msg_send![super(self), firstRectForCharacterRange: range, actualRange: actual_range]
+            };
+            let length = self.string().length();
+            if rect.size.height != 0.0
+                || range.location > length
+                || range.length > length - range.location
+            {
+                return rect;
+            }
+            let visible = self.visibleRect();
+            let Some(window) = self.window() else { return rect };
+            if visible.size.width <= 0.0 || visible.size.height <= 0.0 {
+                return rect;
+            }
+            if !actual_range.is_null() {
+                // SAFETY: the caller supplies a writable range pointer or null.
+                unsafe { actual_range.write(range) };
+            }
+            window.convertRectToScreen(self.convertRect_toView(visible, None))
+        }
+
         /// A click in an inactive window edits at once, as everywhere in
         /// the surface (the root accepts first clicks too).
         #[unsafe(method(acceptsFirstMouse:))]
@@ -2141,7 +2168,7 @@ pub(crate) fn blur_all(surface: &Rc<Surface>) {
 /// Ends editing and gives the keyboard focus to the surface's root. The
 /// window takes it first: the root refuses it while a field edits during a
 /// click (a click elsewhere leaves the focus in the field).
-fn to_root(window: &objc2_app_kit::NSWindow, surface: &Surface) {
+pub(crate) fn to_root(window: &objc2_app_kit::NSWindow, surface: &Surface) {
     window.makeFirstResponder(None);
     window.makeFirstResponder(Some(surface.root.ns()));
 }

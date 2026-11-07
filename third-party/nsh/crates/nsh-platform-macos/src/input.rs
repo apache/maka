@@ -687,9 +687,9 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
 }
 
 /// A secondary click at `(x, y)` (root coordinates): the nearest view
-/// around the one under it that listens to `onContextMenu` hears it. Text
-/// fields are AppKit's views, which show their own menu.
-fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) {
+/// around the one under it that listens to `onContextMenu` hears it. Otherwise
+/// a text selection offers Copy. Text fields show AppKit's own menu.
+fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, flags: NSEventModifierFlags) {
     let Some(hit) = pick(&surface.root, x, y) else {
         return;
     };
@@ -715,6 +715,9 @@ fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) 
         if input {
             return;
         }
+    }
+    if !hit.native {
+        crate::text::context_menu(surface, &hit.view, x, y);
     }
 }
 
@@ -1369,6 +1372,14 @@ fn down(
         find_press(surface, &hit.view, &views, x, y)
             .map(|p| p.clicked(modifiers(flags), clicks as u32))
     };
+    if selecting.is_some()
+        && !caught
+        && let Some(window) = surface.root.ns().window()
+    {
+        // Selecting output owns Copy and Select All instead of the field
+        // that was editing before the mouse press.
+        crate::text_input::to_root(&window, surface);
+    }
     match &selecting {
         Some(area) if crate::selectable_view::is_area(area) => {
             crate::selectable_view::down(surface, area, x, y, clicks, shift, press.is_some());

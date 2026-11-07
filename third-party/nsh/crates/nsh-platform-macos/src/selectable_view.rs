@@ -252,7 +252,7 @@ impl Active {
 
 impl AreaSelection {
     /// Whether `area` has the selection.
-    fn is(&self, area: &NshView) -> bool {
+    pub(crate) fn is(&self, area: &NshView) -> bool {
         self.active
             .borrow()
             .as_ref()
