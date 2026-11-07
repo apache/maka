@@ -17,7 +17,19 @@
  * under the License.
  */
 
-import { batch, cleanup, effect, platform, signal, Text, View, type JSX, type Signal } from 'nsh';
+import {
+  batch,
+  host as surfaceHost,
+  cleanup,
+  effect,
+  keymap,
+  platform,
+  signal,
+  Text,
+  View,
+  type JSX,
+  type Signal,
+} from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
@@ -34,6 +46,8 @@ import {
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { QuickToolsSurface } from './QuickTools';
+import { QuickToolsWindow } from './QuickToolsWindow';
 import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
@@ -67,6 +81,24 @@ function App(
   },
 ) {
   const { context, runtime } = props;
+  if (surfaceHost.params.quickToolsPanel === true) return <QuickToolsWindow {...props} />;
+  surfaceHost.on('quickTools.assistant', (value) => {
+    const id = (value as { sessionId?: string }).sessionId;
+    if (id) void openSession(id);
+  });
+  const nativeQuickTools = surfaceHost.params.nativeQuickTools === true;
+  const quickToolsOpened = signal(false);
+  if (!platform.isTerminal)
+    cleanup(
+      keymap.bind(
+        'alt+space',
+        () => {
+          if (nativeQuickTools) void surfaceHost.call('quickTools.show', {});
+          else quickToolsOpened.set(!quickToolsOpened());
+        },
+        { when: 'always' },
+      ),
+    );
   const configuration = context.configuration as unknown as Configuration;
   const saved = context.restored as SavedRoot | null;
   const selected = signal(saved === null ? nativeHost.initialSession : saved.sessionId);
@@ -128,6 +160,14 @@ function App(
     );
   const openSide = async (pane: SidePane, id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
+    if (nativeQuickTools && id) {
+      try {
+        await surfaceHost.call('quickTools.session.claim', { sessionId: id });
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    }
     const original = pane.id();
     const owner = pane.handle();
     try {
@@ -155,6 +195,14 @@ function App(
   };
   const openSession = async (id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
+    if (nativeQuickTools && id) {
+      try {
+        await surfaceHost.call('quickTools.session.claim', { sessionId: id });
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    }
     // A conversation is open in one pane at a time; selecting a side one moves it here.
     const from = id === null ? undefined : sideFor(id);
     if (from && !(await openSide(from, null))) return false;
@@ -182,6 +230,23 @@ function App(
       return false;
     }
   };
+  surfaceHost.on('quickTools.session.release', async (value) => {
+    const request = value as { sessionId: string; token: string };
+    let ok = true;
+    try {
+      const side = sideFor(request.sessionId);
+      if (side) ok = await openSide(side, null);
+      if (ok && selected() === request.sessionId) {
+        const owner = session();
+        if (owner && !(await owner.leave())) ok = false;
+        else selected.set(null);
+      }
+    } catch (error) {
+      report(error);
+      ok = false;
+    }
+    await surfaceHost.call('quickTools.session.reply', { token: request.token, ok });
+  });
   const connectionDetails = signal(false);
   const connectionDiagnostic = () => {
     const reason = runtime.updateError();
@@ -222,7 +287,16 @@ function App(
     },
     ...(platform.isTerminal ? {} : { besideSessionIds: besides }),
   };
-  function openBeside(id: string) {
+  async function openBeside(id: string) {
+    if (!alive || blocked() || id === selected() || sideFor(id)) return;
+    if (nativeQuickTools) {
+      try {
+        await surfaceHost.call('quickTools.session.claim', { sessionId: id });
+      } catch (error) {
+        report(error);
+        return;
+      }
+    }
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
     const room = sideRoom();
     if (room === 0) return;
@@ -266,6 +340,13 @@ function App(
         backgroundColor: platform.isTerminal ? C.background : C.chrome,
       }}
     >
+      <If when={!platform.isTerminal && !nativeQuickTools}>
+        <QuickToolsSurface
+          opened={quickToolsOpened}
+          close={() => quickToolsOpened.set(false)}
+          openAssistant={openSession}
+        />
+      </If>
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}

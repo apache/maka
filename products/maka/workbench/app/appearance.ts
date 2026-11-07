@@ -61,6 +61,7 @@ const validRecipe = (value: unknown): value is PaletteRecipe => {
 };
 
 function createAppearanceOwner() {
+  const ready = signal(!ownTitleBar);
   const theme = signal<ColorTheme>('system');
   const textSize = signal(1);
   const palette = signal<PaletteId>('default');
@@ -115,6 +116,14 @@ function createAppearanceOwner() {
   };
   return {
     supported: ownTitleBar,
+    ready,
+    sync(value: { theme: ColorTheme; textSize: number; palette: PaletteId; custom: PaletteRecipe }) {
+      theme.set(value.theme);
+      setColorScheme(value.theme);
+      textSize.set(value.textSize);
+      palette.set(value.palette);
+      custom.set(value.custom);
+    },
     theme: () => theme(),
     textSize: () => textSize(),
     palette: () => palette(),
@@ -178,6 +187,7 @@ function createAppearanceOwner() {
         }),
       ]).then(() => {
         initialization = { kind: 'ready' };
+        ready.set(true);
       });
     },
   };

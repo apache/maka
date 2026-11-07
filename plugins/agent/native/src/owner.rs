@@ -48,6 +48,7 @@ mod patches;
 mod predictions;
 mod preferences;
 mod projects;
+mod quick_tools;
 mod queue;
 mod recall;
 mod recap;

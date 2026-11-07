@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.symbols",
+  "name": "Emoji 与符号",
+  "version": "1.1.0",
+  "icon": "data:image/png;base64,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",
+  "description": "搜索并复制或粘贴常用 Emoji 和符号",
+  "permissions": ["clipboard.write", "paste"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "Emoji 与符号",
+      "kind": "工具",
+      "keywords": "emoji symbols biaoqing fuhao bq fh",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "locales": {
+    "en": {
+      "name": "Emoji & Symbols",
+      "description": "Search, copy, and paste common emoji and symbols",
+      "commands": {
+        "open": {
+          "name": "Emoji & Symbols",
+          "kind": "Tool",
+          "actions": {
+            "open": "Open"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "Emoji 与符号",
+      "description": "搜索并复制或粘贴常用 Emoji 和符号",
+      "commands": {
+        "open": {
+          "name": "Emoji 与符号",
+          "kind": "工具",
+          "actions": {
+            "open": "打开"
+          }
+        }
+      }
+    }
+  }
+}

@@ -180,6 +180,10 @@ impl Handler for Agent {
                 }
                 "checklist" => encode(owner.checklist(&decode(input)?).await?),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
+                "rankQuickTools" => {
+                    let operation=context.operation().ok_or("agent_mutation_required")?;
+                    encode(owner.rank_quick_tools(decode(input)?,context.scope(),operation,context.operation_scope().ok_or("agent_mutation_required")?.clone()).await?)
+                }
                 "predictNextMessage" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -238,6 +242,7 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "markBotRead" => encode(owner.mark_bot_read(decode(input)?).await?),
                 "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
                 "watchBotOutbox" => {
                     let input: BotOutboxRead = decode(input)?;
@@ -246,7 +251,7 @@ impl Handler for Agent {
                     loop {
                         changes.borrow_and_update();
                         let page = owner.bot_outbox(&input).await?;
-                        let observed = (page.session_id.clone(), page.through);
+                        let observed = (page.session_id.clone(), page.through, page.read_through);
                         if through.as_ref() != Some(&observed) {
                             through = Some(observed);
                             context.emit(encode(page)?).await?;

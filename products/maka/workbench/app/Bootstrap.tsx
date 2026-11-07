@@ -25,11 +25,13 @@ import { errorText, renderText } from './text';
 import { tr } from './locale';
 import { initializeAppearance } from './appearance';
 import { C } from './ui';
+import { initializeQuickPreferences } from './quickPreferences';
 import { LoadingState } from './Loading';
 
 function Bootstrap() {
   initializeAppearance();
   const plugins = createPlugins();
+  initializeQuickPreferences(plugins.runtime);
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
       <PluginInstances plugins={plugins} />

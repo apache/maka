@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.notes",
+  "name": "快速笔记",
+  "version": "1.1.0",
+  "icon": "snippet",
+  "description": "记录、搜索和编辑本地笔记",
+  "permissions": ["clipboard.write", "paste", "text.transliterate"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "快速笔记",
+      "kind": "工具",
+      "keywords": "notes biji bj memo",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "locales": {
+    "en": {
+      "name": "Quick Notes",
+      "description": "Create, search, and edit local notes",
+      "commands": {
+        "open": {
+          "name": "Quick Notes",
+          "kind": "Tool",
+          "actions": {
+            "open": "Open"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "快速笔记",
+      "description": "记录、搜索和编辑本地笔记",
+      "commands": {
+        "open": {
+          "name": "快速笔记",
+          "kind": "工具",
+          "actions": {
+            "open": "打开"
+          }
+        }
+      }
+    }
+  }
+}

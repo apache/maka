@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.chrome",
+  "name": "Chrome 标签页",
+  "version": "0.1.0",
+  "icon": "browser",
+  "description": "搜索、切换、固定和关闭 Chrome 标签页，通过本机扩展连接",
+  "permissions": ["browser.tabs.read", "browser.tabs.manage", "browser.tabs.connect"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "Chrome 标签页",
+      "kind": "工具",
+      "keywords": "chrome browser tabs biaoqian 浏览器 标签页",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "locales": {
+    "en": {
+      "name": "Chrome Tabs",
+      "description": "Search, switch, pin and close Chrome tabs through a local extension",
+      "commands": {
+        "open": {
+          "name": "Chrome Tabs",
+          "kind": "Tool",
+          "actions": {
+            "open": "Open"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "Chrome 标签页",
+      "description": "搜索、切换、固定和关闭 Chrome 标签页，通过本机扩展连接",
+      "commands": {
+        "open": {
+          "name": "Chrome 标签页",
+          "kind": "工具",
+          "actions": {
+            "open": "打开"
+          }
+        }
+      }
+    }
+  }
+}

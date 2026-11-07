@@ -46,6 +46,7 @@ mod host;
 mod linux;
 #[cfg(target_os = "linux")]
 mod placement;
+mod quick_tools;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod shell;
 #[cfg(target_os = "macos")]
@@ -152,6 +153,21 @@ fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Str
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--quick-tabs-native-host"))
+    {
+        let Some(socket) = std::env::args_os().nth(2) else {
+            return ExitCode::FAILURE;
+        };
+        return match quick_tools::chrome::native_host(std::path::Path::new(&socket)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(text) = answer(std::env::args_os().skip(1)) {
         println!("{text}");
         return ExitCode::SUCCESS;

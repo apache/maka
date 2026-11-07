@@ -258,6 +258,8 @@ export interface ComposerSession<Element = unknown> {
 }
 
 export interface ComposerViewInput<Element = unknown> {
+  quickTools?: boolean;
+  quickToolsBack?(): void;
   session(): ComposerSession<Element> | null;
   pending?(): {
     readonly id: string;

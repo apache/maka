@@ -1,0 +1,257 @@
+{
+  "apiVersion": 1,
+  "id": "maka.web.bilibili",
+  "name": "哔哩哔哩",
+  "version": "0.3.0",
+  "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAEi0lEQVR4nO1aW4gdRRA9rlExPr5URPD1JaggSsBEfxKNIvgEo/glPmKiiBBRyI9wjUbJj0EFYy6uO92zieBV0I+AKJLrA79cQ+BO1SxrJGR/AgpuRPM0eqV61uxec7tn7mP6zsgcqL/prsdUV1dXFVChQoW+EMa3QEfPIYgfRH1qKXwjiC6F4keheC3C6av9MW60z4SmD6C5fYoU/whNN3qTQUVroHluQQY6hpCf9cScn+9QfoHmEPDy/PlHj0PRydP501/QvCJ3/tDUtBhAPOEPBHR7brxVtH5e0e78Nb2O3KFpt10AQ4eh+M6h8xUXV/S3m7cPAyjrEVgsyDGE8b3D40kvpfIU4wTTt8JPEOTP0o3AJxDSQwPz0/xaBl5y/DbDGxrR2dD0cYa/chJh/FhfPNrtM6BpayblNW2BdzSbS6BoZwbhJGg91bPyit/N5PaKXoQX1KeWQtNqk3go2gRNdWh6D4qOZDMC6fk16aT402x/nmcX1tAmhPSkuYUas+cOR+m2/IlozbxAhzMKVQSSm+gTk6WKDn0hjG6DpqkCKDMYKfoeKl7V41/nje6Eo2Rk8gfaglp7LENg48bIBc6PPjQ6WqHonQIImbM38LhN+WdGLpw3I0TrO5V/f+ZiKPotw+J9UPSGeZFJllckEplM4kQ/petBh7Bz+qIFA2h+M8VtfjcMJA0uOpJ6xRNGZrcRtiYLwr3nQdNRx8dzCFs3oGwQmTuKJv/9qXQkqWSF9IDTUsN81fmGpvtTYsF98rwdd1jpK5Qdir9xHIO6RP/vskfLEsJ1uyn+Vix0wG6heBnKjpBudnjAfrkBTlg/2EFXouwQHewecBzOIDHRuhxlh+jg0hGVAXh4HlCfOst0jKSGMBlfM7S/KHtJtidFT+FRSA/YIWdtUf0gKWFv678g8W9dkLd1lMMV74GOriieATR/3T3QxOsGSGSetsj2ZbEMMB5f5rhqdvdtAEnEbPuGey8pjgECXu64ag70bwBHjpK1D+nFAJpXOPaZ7dsApupr3TdbI7QyQMuDB4R8veMIUN8eIGut+9J1xfGAZnOJqbL0VIPLAM0Tlj1/zVyc8XYNKl7bZY+5nu7s7nn86UUN6QAVMhXWfA807UqSFZ5AEF+FQSF7KAqSPWmX4dELqrdAq3oMwdsRKCIqD2hVHoDqCLArBpC9KeJ1BDUniA5WA9BROHtpPiY/vcw0Wz1gX0rjgDeg7NDxCw4PaLpnAhT9MFBJa9RIpl32OB5qb8vY+V3OKCld4bKi+/tkUYzjO4C3Zs5xzwZIkKTVKBtEZmfXmw6ZgU8DRa+4vYD/hKaX0YjOR9EhMsrMoJHZoZPocwqTMxdC0S/uBfNWkyEqxTXTOJWKbyFIZOEaNH9krUt06vEzxuML0IGQH0kfR/8fUDJe+zC6QvHmkQuYP70KK2rtMWjeXgAh86Lt6cOSAjlXrrZ52UjG9mX6tSdM8k1Q9MXIhR+Y6HOjS99Q8SozFq/54OiVyUwHjcxBvBJDQ609ZmrxAd+dXD28sVgUrzOyTUbXZjvnFSpUAPAPFgjpVS+yzgkAAAAASUVORK5CYII=",
+  "description": "使用 Chrome 当前账号查看、搜索收藏夹与观看历史；搜索视频和 UP 主，打开常用 B站页面",
+  "permissions": ["web.run", "web.connect", "system.open"],
+  "web": {
+    "runtime": "opencli",
+    "commands": [
+      {
+        "id": "search",
+        "site": "bilibili",
+        "command": "search",
+        "domain": "bilibili.com",
+        "access": "read"
+      },
+      {
+        "id": "me",
+        "site": "bilibili",
+        "command": "me",
+        "domain": "bilibili.com",
+        "access": "read"
+      },
+      {
+        "id": "folders",
+        "site": "bilibili",
+        "command": "folders",
+        "domain": "bilibili.com",
+        "access": "read",
+        "request": {
+          "origin": "https://api.bilibili.com",
+          "path": "/x/v3/fav/folder/created/list-all",
+          "params": ["up_mid"]
+        }
+      },
+      {
+        "id": "favorite-items",
+        "site": "bilibili",
+        "command": "favorite-items",
+        "domain": "bilibili.com",
+        "access": "read",
+        "request": {
+          "origin": "https://api.bilibili.com",
+          "path": "/x/v3/fav/resource/list",
+          "params": ["media_id", "pn", "ps", "keyword", "type"]
+        }
+      },
+      {
+        "id": "history-items",
+        "site": "bilibili",
+        "command": "history-items",
+        "domain": "bilibili.com",
+        "access": "read",
+        "request": {
+          "origin": "https://api.bilibili.com",
+          "path": "/x/web-interface/history/cursor",
+          "params": ["ps", "view_at", "type"]
+        }
+      },
+      {
+        "id": "history-search",
+        "site": "bilibili",
+        "command": "history-search",
+        "domain": "bilibili.com",
+        "access": "read",
+        "request": {
+          "origin": "https://api.bilibili.com",
+          "path": "/x/web-interface/history/search",
+          "params": ["keyword", "pn", "business"]
+        }
+      }
+    ]
+  },
+  "commands": [
+    {
+      "id": "open",
+      "name": "哔哩哔哩",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 open",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "home",
+      "name": "打开 B站首页",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 home",
+      "actions": [
+        {
+          "id": "home",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "dynamic",
+      "name": "打开 B站动态",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 dynamic",
+      "actions": [
+        {
+          "id": "dynamic",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "space",
+      "name": "打开我的 B站空间",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 个人空间 uid",
+      "actions": [
+        {
+          "id": "space",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "watchlater",
+      "name": "打开 B站稍后再看",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 watchlater",
+      "actions": [
+        {
+          "id": "watchlater",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "videos",
+      "name": "搜索 B站视频",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 videos",
+      "actions": [
+        {
+          "id": "open-video",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "users",
+      "name": "搜索 B站 UP 主",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 UP up主 users",
+      "actions": [
+        {
+          "id": "open-user",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "favorites",
+      "name": "B站收藏夹",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 favorites",
+      "actions": [
+        {
+          "id": "library-favorites",
+          "title": "打开"
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "name": "B站观看历史",
+      "kind": "哔哩哔哩",
+      "keywords": "bilibili bili b站 history",
+      "actions": [
+        {
+          "id": "library-history",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "locales": {
+    "en": {
+      "name": "Bilibili",
+      "description": "Open Home, Feed, My Space and Watch Later; search videos and creators in the quick panel",
+      "commands": {
+        "open": {
+          "name": "Bilibili",
+          "kind": "Bilibili",
+          "actions": {
+            "open": "Open"
+          }
+        },
+        "home": {
+          "name": "Open Bilibili Home",
+          "kind": "Bilibili",
+          "actions": {
+            "home": "Open"
+          }
+        },
+        "dynamic": {
+          "name": "Open Bilibili Feed",
+          "kind": "Bilibili",
+          "actions": {
+            "dynamic": "Open"
+          }
+        },
+        "space": {
+          "name": "Open My Bilibili Space",
+          "kind": "Bilibili",
+          "actions": {
+            "space": "Open"
+          }
+        },
+        "watchlater": {
+          "name": "Open Bilibili Watch Later",
+          "kind": "Bilibili",
+          "actions": {
+            "watchlater": "Open"
+          }
+        },
+        "videos": {
+          "name": "Search Bilibili Videos",
+          "kind": "Bilibili",
+          "actions": {
+            "open-video": "Open"
+          }
+        },
+        "users": {
+          "name": "Search Bilibili Creators",
+          "kind": "Bilibili",
+          "actions": {
+            "open-user": "Open"
+          }
+        },
+        "favorites": {
+          "name": "Bilibili Favorites",
+          "kind": "Bilibili",
+          "actions": {
+            "library-favorites": "Open"
+          }
+        },
+        "history": {
+          "name": "Bilibili Watch History",
+          "kind": "Bilibili",
+          "actions": {
+            "library-history": "Open"
+          }
+        }
+      }
+    }
+  }
+}

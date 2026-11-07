@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.links",
+  "name": "Quicklink · 快捷链接",
+  "version": "1.2.0",
+  "description": "保存常用网址与文件路径，使用命名参数快速打开搜索和项目链接",
+  "permissions": ["system.open", "text.transliterate"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "快捷链接",
+      "kind": "工具",
+      "keywords": "quicklinks kuaijie lianjie kjlj quicklink bookmark 书签 搜索模板",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "icon": "link",
+  "locales": {
+    "en": {
+      "name": "Quicklink",
+      "description": "Save URLs and file paths; use named parameters for searches and project links",
+      "commands": {
+        "open": {
+          "name": "Quicklinks",
+          "kind": "Tool",
+          "actions": {
+            "open": "Open"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "Quicklink · 快捷链接",
+      "description": "保存常用网址与文件路径，使用命名参数快速打开搜索和项目链接",
+      "commands": {
+        "open": {
+          "name": "快捷链接",
+          "kind": "工具",
+          "actions": {
+            "open": "打开"
+          }
+        }
+      }
+    }
+  }
+}

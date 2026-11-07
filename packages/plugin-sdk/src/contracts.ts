@@ -295,6 +295,18 @@ export const contracts = {
                 },
                 maxItems: 100,
               },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest SendUser text, bounded for list previews. Never internal model output.',
+                type: 'string',
+              },
               nextAfter: {
                 description: 'Pass as `after` to read the next page; absent when caught up.',
                 type: ['integer', 'null'],
@@ -303,7 +315,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'isBot', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
@@ -14197,6 +14209,120 @@ export const contracts = {
           },
           resources: {},
         },
+        markBotRead: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotMarkRead',
+            description:
+              'Acknowledge only the outbox sequence actually exposed in the foreground UI.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              through: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'through'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                description: 'The current Bot Session, whatever `sessionId` was asked for.',
+                type: ['string', 'null'],
+              },
+              isBot: {
+                description: 'Whether the Session that was read is, or once was, a Bot Session.',
+                type: 'boolean',
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest SendUser text, bounded for list previews. Never internal model output.',
+                type: 'string',
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+            },
+          },
+          resources: {},
+        },
         markRead: {
           mode: 'mutation',
           input: {
@@ -17975,6 +18101,72 @@ export const contracts = {
                 enum: ['delivered', 'cancelled', 'unknown'],
               },
             },
+          },
+          resources: {},
+        },
+        rankQuickTools: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentQuickToolRank',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              query: {
+                type: 'string',
+              },
+              candidates: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentQuickToolCandidate',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'query', 'candidates'],
+            $defs: {
+              AgentQuickToolCandidate: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  kind: {
+                    type: 'string',
+                  },
+                  uses: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'kind', 'uses'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentQuickToolRanking',
+            type: 'object',
+            properties: {
+              source: {
+                type: 'string',
+              },
+              ids: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['source', 'ids'],
           },
           resources: {},
         },
@@ -28422,6 +28614,18 @@ export const contracts = {
                 },
                 maxItems: 100,
               },
+              readThrough: {
+                description:
+                  'Durable, monotonic acknowledgement of messages actually shown to the user.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              preview: {
+                description:
+                  'Latest SendUser text, bounded for list previews. Never internal model output.',
+                type: 'string',
+              },
               nextAfter: {
                 description: 'Pass as `after` to read the next page; absent when caught up.',
                 type: ['integer', 'null'],
@@ -28430,7 +28634,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'isBot', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages', 'readThrough', 'preview'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',

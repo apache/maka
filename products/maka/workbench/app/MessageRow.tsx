@@ -91,6 +91,7 @@ type MessageRowToggle = {
 };
 
 export function MessageRow({
+  compact: quickTools,
   item,
   repeats,
   sessionId,
@@ -109,6 +110,7 @@ export function MessageRow({
   editMessage,
   failureActions,
 }: {
+  compact?: boolean;
   item: () => Row;
   /** How many identical failures this row stands for. */
   repeats?: () => number;
@@ -268,14 +270,14 @@ export function MessageRow({
         };
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
-        const menu = platform.isTerminal || compact() ? undefined : createMessageMenu();
+        const menu = platform.isTerminal || compact() || quickTools ? undefined : createMessageMenu();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
         const message = (
           <View
             class={menu && 'group'}
-            style={{ paddingVertical: user() ? 16 : 0, gap: 0, width: '100%' }}
+            style={{ paddingVertical: user() ? (quickTools ? 6 : 16) : 0, gap: 0, width: '100%' }}
           >
             <If
               when={user()}
@@ -310,7 +312,21 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
+                        <Text
+                          style={[
+                            {
+                              color: C.text,
+                              ...bodyTextStyle,
+                              ...(quickTools
+                                ? {
+                                    fontSize: 14,
+                                    lineHeight: 22,
+                                  }
+                                : {}),
+                            },
+                            { userSelect: 'text' },
+                          ]}
+                        >
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
                       </If>
@@ -471,11 +487,11 @@ export function MessageRow({
               <View
                 style={{
                   alignSelf: 'flex-end',
-                  maxWidth: '78%',
-                  paddingHorizontal: 16,
-                  paddingVertical: 16,
-                  borderRadius: 20,
-                  backgroundColor: C.card,
+                  maxWidth: quickTools ? '80%' : '78%',
+                  paddingHorizontal: quickTools ? 10 : 16,
+                  paddingVertical: quickTools ? 7 : 16,
+                  borderRadius: quickTools ? 8 : 20,
+                  backgroundColor: quickTools ? C.raised : C.card,
                   gap: 8,
                 }}
               >
@@ -494,6 +510,8 @@ export function MessageRow({
               <View
                 class={revealed}
                 style={{
+                  marginBottom: quickTools ? -24 : 0,
+                  opacity: quickTools ? 0 : 1,
                   alignSelf: 'flex-end',
                   width: '78%',
                   minWidth: 0,
@@ -506,6 +524,7 @@ export function MessageRow({
                   // The last glyph ends where the bubble does.
                   marginRight: platform.isTerminal ? 0 : -8,
                 }}
+                hoverStyle={{ opacity: 1 }}
               >
                 <If when={timestamp()}>
                   <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
@@ -519,7 +538,7 @@ export function MessageRow({
                   through={through}
                   menu={menu}
                 />
-                {editMessage?.(row, () => rowKey(row()), menu)}
+                {!quickTools && editMessage?.(row, () => rowKey(row()), menu)}
               </View>
             </If>
           </View>

@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.assistant",
+  "name": "个人助手",
+  "version": "1.1.0",
+  "icon": "star",
+  "description": "在快捷窗口中继续个人助手会话，或发送当前输入",
+  "permissions": ["assistant.open"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "个人助手",
+      "kind": "对话",
+      "keywords": "assistant AI chat gerenzhushou grzs 聊天",
+      "actions": [
+        {
+          "id": "open",
+          "title": "打开会话"
+        }
+      ]
+    }
+  ],
+  "locales": {
+    "en": {
+      "name": "Personal Assistant",
+      "description": "Continue your assistant chat in Quick Tools or send the current input",
+      "commands": {
+        "open": {
+          "name": "Personal Assistant",
+          "kind": "Chat",
+          "actions": {
+            "open": "Open chat"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "个人助手",
+      "description": "在快捷窗口中继续个人助手会话，或发送当前输入",
+      "commands": {
+        "open": {
+          "name": "个人助手",
+          "kind": "对话",
+          "actions": {
+            "open": "打开会话"
+          }
+        }
+      }
+    }
+  }
+}

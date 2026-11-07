@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import {
+  QuickToolsBar,
+  QuickToolsMark,
+} from '../../../../products/maka/workbench/app/QuickToolsBar';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   cleanup,
@@ -2097,6 +2101,322 @@ export function createConversationUi(
     session(input: ConversationSessionInput) {
       bind(input.shell);
       input.attach(sessionHandle);
+      const composer = () => (
+        <ComposerView
+          quickTools={Boolean(input.shell.quickToolsBack)}
+          quickToolsBack={input.shell.quickToolsBack}
+          dropFiles={(drop) => {
+            dropFiles = drop;
+          }}
+          fileDragging={fileDragging}
+          blocked={reloading}
+          active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
+          session={composerSession}
+          pending={() => (selected() === null && pendingWorkspace() ? pendingComposer() : null)}
+          stopAction={stopAction}
+          needsConnection={noConnections}
+          request={
+            <View style={{ minHeight: 0, flexShrink: 1 }}>
+              <If when={selected() === null && workspaceError()}>
+                <View
+                  style={{
+                    marginBottom: 8,
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    columnGap: 12,
+                    rowGap: 4,
+                  }}
+                >
+                  <Text
+                    tooltip={textTooltip(workspaceError)}
+                    style={{ ...bodyTextStyle, color: C.secondary }}
+                  >
+                    {tr('Folder unavailable')}
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Button
+                      accessibilityLabel={tr('Choose another folder…')}
+                      onPress={inputAction(() => recentOpen.set(true), null)}
+                      style={controlStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
+                    </Button>
+                    <Button
+                      accessibilityLabel={tr('Retry folder')}
+                      onPress={inputAction(() => {
+                        void checkWorkspace();
+                      }, null)}
+                      style={controlStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
+                    </Button>
+                  </View>
+                </View>
+              </If>
+              <Each<ConversationHandle>
+                of={handle() ? [handle()!] : []}
+                key={(owner: ConversationHandle) => owner.sessionId}
+              >
+                {(item) => {
+                  const owner = item();
+                  return (
+                    <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
+                      <Each
+                        of={owner.interactions().entries.slice(0, 1)}
+                        key={(entry) => entry.requestId}
+                      >
+                        {(entry) => (
+                          <InteractionComposer
+                            sessionId={owner.sessionId}
+                            requestId={entry().requestId}
+                            control={control}
+                            openBeside={shell()?.openBeside}
+                            focusComposer={focusComposer}
+                            confirming={() =>
+                              connectionLost() ||
+                              !owner.connected() ||
+                              busy() ||
+                              !controlsKnown()
+                            }
+                          />
+                        )}
+                      </Each>
+                    </View>
+                  );
+                }}
+              </Each>
+              <If when={!connectionLost() && status()}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 4,
+                    flexShrink: 0,
+                  }}
+                >
+                  <Text
+                    style={[
+                      {
+                        ...bodyTextStyle,
+                        flex: 1,
+                        minWidth: 0,
+                        color: C.muted,
+                      },
+                      { userSelect: 'text' },
+                    ]}
+                  >
+                    {status()}
+                  </Text>
+                  <Button
+                    accessibilityLabel={tr('Dismiss action feedback')}
+                    onPress={inputAction(() => status.set(''), null)}
+                    style={{
+                      ...controlStyle,
+                      width: 32,
+                      height: 32,
+                      paddingHorizontal: 0,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
+                  >
+                    <Icon name="close" color={C.muted} />
+                  </Button>
+                </View>
+              </If>
+              <If
+                when={
+                  !connectionLost() &&
+                  (handle()?.connected() ?? true) &&
+                  (error() ||
+                    working() ||
+                    !controlsKnown() ||
+                    controls().length ||
+                    forkNotice()?.id === selected())
+                }
+              >
+                <Scroll
+                  accessibilityLabel={tr('Action feedback')}
+                  style={{
+                    minHeight: bodyTextStyle.lineHeight + 16,
+                    flexShrink: 1,
+                    backgroundColor: C.card,
+                    // A card of its own on the desktop: square corners
+                    // flush on the composer's rounded top read as notches.
+                    ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
+                  }}
+                  contentStyle={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    gap: 8,
+                  }}
+                >
+                  <If when={error()}>
+                    <Text
+                      style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}
+                    >
+                      {error()}
+                    </Text>
+                  </If>
+                  <If when={working()}>
+                    <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                      {switching()
+                        ? tr('Saving draft before switching…')
+                        : tr('Confirming action…')}
+                    </Text>
+                  </If>
+                  <If when={forkNotice()?.id === selected()}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <Icon name="fork" color={C.secondary} />
+                      <Text
+                        style={{
+                          ...bodyTextStyle,
+                          flex: 1,
+                          color: C.muted,
+                        }}
+                      >
+                        {tr(
+                          'This is a fork of {title}. The original conversation is unchanged.',
+                          { title: forkNotice()!.title },
+                        )}
+                      </Text>
+                      <Button
+                        onPress={inputAction(openBrowsed, {
+                          id: forkNotice()!.source,
+                          origin: selected(),
+                        })}
+                        style={controlStyle}
+                        hoverStyle={{ backgroundColor: C.cardRaised }}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Text style={{ ...bodyTextStyle, color: C.accent }}>
+                          {tr('Back to original')}
+                        </Text>
+                      </Button>
+                    </View>
+                  </If>
+                  <If when={!controlsKnown() || controls().length > 0}>
+                    <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                      {tr('Syncing changes…')}
+                    </Text>
+                  </If>
+                </Scroll>
+              </If>
+            </View>
+          }
+          attach={(node) => {
+            for (const unbind of unbindEditorKeys.splice(0)) unbind();
+            editor = node;
+            bindKeys(side ? paneRoot : undefined, node);
+          }}
+          commands={composerCommands}
+          models={
+            <>
+              <If when={selected() === null && pendingWorkspace() !== null}>
+                <ModelSelect
+                  owner={pendingModel}
+                  instance={pendingModelInstance}
+                  current={() => alive && selected() === null && pendingWorkspace() !== null}
+                  toggle={() =>
+                    pendingModelInstance.set(
+                      pendingModelInstance() === null ? ++overlayInstance : null,
+                    )
+                  }
+                  close={(instance) => {
+                    if (pendingModelInstance() !== instance) return false;
+                    pendingModelInstance.set(null);
+                    return true;
+                  }}
+                  manage={({ instance, model, page }) => {
+                    if (pendingModelInstance() !== instance) return;
+                    pendingModelInstance.set(null);
+                    shell()?.openSettings(model, page);
+                  }}
+                  select={async (_instance, backend) => {
+                    if (pendingSending()) return;
+                    updatePending({ backend, modelChosen: true });
+                    await pendingModel.refreshModel();
+                  }}
+                />
+              </If>
+              <Each<ConversationHandle>
+                of={handle() ? [handle()!] : []}
+                key={(owner: ConversationHandle) => owner.sessionId}
+              >
+                {(item) => {
+                  const owner = item();
+                  return (
+                    <ModelSelect
+                      owner={owner}
+                      running={() => owner.invocation() !== null}
+                      instance={() => {
+                        const current = overlay();
+                        return current?.kind === 'models' &&
+                          current.sessionId === owner.sessionId
+                          ? current.instance
+                          : null;
+                      }}
+                      current={() => selected() === owner.sessionId && handle() === owner}
+                      toggle={toggleModels}
+                      close={(instance) => closeModels(owner, instance)}
+                      manage={manageModels}
+                      select={(instance, backend) => chooseModel(owner, instance, backend)}
+                    />
+                  );
+                }}
+              </Each>
+            </>
+          }
+          chooseWorkspace={inputAction(invokeCommand, {
+            id: 'workspace',
+            sessionId: selected(),
+          })}
+          workspacePicker={
+            platform.isTerminal || side ? undefined : (
+              <RecentWorkspaces
+                path={() =>
+                  selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
+                }
+                recent={recentWorkspaces}
+                open={recentOpen}
+                changed={(open) => recentOpen.set(open)}
+                disabled={() => pendingSending() || pendingFileBusy()}
+                forget={(path) => {
+                  recentOpen.set(false);
+                  void setRecentWorkspace(path, false).catch(report);
+                }}
+                choose={(item) => {
+                  recentOpen.set(false);
+                  void create({ kind: 'directory', path: item.path }, selected(), item.path);
+                }}
+                browse={() => {
+                  recentOpen.set(false);
+                  invokeOwn('workspace');
+                }}
+              />
+            )
+          }
+          settings={inputAction(invokeCommand, {
+            id: 'settings',
+            sessionId: selected(),
+          })}
+        />
+      );
       return (
         <viewRuntimeContext.Provider value={runtime}>
           <View
@@ -2114,7 +2434,7 @@ export function createConversationUi(
             onFileDragLeave={() => fileDragging.set(false)}
             style={{ flex: 1, minHeight: 0 }}
           >
-            <If when={selected() === null}>
+            <If when={selected() === null && (shell()?.headerShown?.() ?? true)}>
               <View>
                 <Header
                   title=""
@@ -2126,6 +2446,12 @@ export function createConversationUi(
                 />
               </View>
             </If>
+            <If when={Boolean(input.shell.quickToolsBar)}>
+              <QuickToolsBar openSettings={() => input.shell.quickToolsBar?.openSettings()}>
+                <QuickToolsMark />
+                <View style={{ flex: 1, minWidth: 0 }}>{composer()}</View>
+              </QuickToolsBar>
+            </If>
             <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
               {(id) => (
                 <Conversation
@@ -2136,6 +2462,8 @@ export function createConversationUi(
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
                   }
                   foreground={foreground}
+                  headerShown={() => shell()?.headerShown?.() ?? true}
+                  quickTools={Boolean(input.shell.quickToolsBack)}
                   control={control}
                   continuationPending={() =>
                     !controlsKnown() ||
@@ -2227,318 +2555,7 @@ export function createConversationUi(
                 />
               )}
             </Each>
-            <ComposerView
-              dropFiles={(drop) => {
-                dropFiles = drop;
-              }}
-              fileDragging={fileDragging}
-              blocked={reloading}
-              active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
-              session={composerSession}
-              pending={() => (selected() === null && pendingWorkspace() ? pendingComposer() : null)}
-              stopAction={stopAction}
-              needsConnection={noConnections}
-              request={
-                <View style={{ minHeight: 0, flexShrink: 1 }}>
-                  <If when={selected() === null && workspaceError()}>
-                    <View
-                      style={{
-                        marginBottom: 8,
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        columnGap: 12,
-                        rowGap: 4,
-                      }}
-                    >
-                      <Text
-                        tooltip={textTooltip(workspaceError)}
-                        style={{ ...bodyTextStyle, color: C.secondary }}
-                      >
-                        {tr('Folder unavailable')}
-                      </Text>
-                      <View style={{ flexDirection: 'row', gap: 8 }}>
-                        <Button
-                          accessibilityLabel={tr('Choose another folder…')}
-                          onPress={inputAction(() => recentOpen.set(true), null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
-                        </Button>
-                        <Button
-                          accessibilityLabel={tr('Retry folder')}
-                          onPress={inputAction(() => {
-                            void checkWorkspace();
-                          }, null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
-                        </Button>
-                      </View>
-                    </View>
-                  </If>
-                  <Each<ConversationHandle>
-                    of={handle() ? [handle()!] : []}
-                    key={(owner: ConversationHandle) => owner.sessionId}
-                  >
-                    {(item) => {
-                      const owner = item();
-                      return (
-                        <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
-                          <Each
-                            of={owner.interactions().entries.slice(0, 1)}
-                            key={(entry) => entry.requestId}
-                          >
-                            {(entry) => (
-                              <InteractionComposer
-                                sessionId={owner.sessionId}
-                                requestId={entry().requestId}
-                                control={control}
-                                openBeside={shell()?.openBeside}
-                                focusComposer={focusComposer}
-                                confirming={() =>
-                                  connectionLost() ||
-                                  !owner.connected() ||
-                                  busy() ||
-                                  !controlsKnown()
-                                }
-                              />
-                            )}
-                          </Each>
-                        </View>
-                      );
-                    }}
-                  </Each>
-                  <If when={!connectionLost() && status()}>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                        paddingHorizontal: 12,
-                        paddingVertical: 4,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Text
-                        style={[
-                          {
-                            ...bodyTextStyle,
-                            flex: 1,
-                            minWidth: 0,
-                            color: C.muted,
-                          },
-                          { userSelect: 'text' },
-                        ]}
-                      >
-                        {status()}
-                      </Text>
-                      <Button
-                        accessibilityLabel={tr('Dismiss action feedback')}
-                        onPress={inputAction(() => status.set(''), null)}
-                        style={{
-                          ...controlStyle,
-                          width: 32,
-                          height: 32,
-                          paddingHorizontal: 0,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                        hoverStyle={controlHoverStyle()}
-                        focusStyle={controlFocusStyle()}
-                      >
-                        <Icon name="close" color={C.muted} />
-                      </Button>
-                    </View>
-                  </If>
-                  <If
-                    when={
-                      !connectionLost() &&
-                      (handle()?.connected() ?? true) &&
-                      (error() ||
-                        working() ||
-                        !controlsKnown() ||
-                        controls().length ||
-                        forkNotice()?.id === selected())
-                    }
-                  >
-                    <Scroll
-                      accessibilityLabel={tr('Action feedback')}
-                      style={{
-                        minHeight: bodyTextStyle.lineHeight + 16,
-                        flexShrink: 1,
-                        backgroundColor: C.card,
-                        // A card of its own on the desktop: square corners
-                        // flush on the composer's rounded top read as notches.
-                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
-                      }}
-                      contentStyle={{
-                        paddingHorizontal: 16,
-                        paddingVertical: 8,
-                        gap: 8,
-                      }}
-                    >
-                      <If when={error()}>
-                        <Text
-                          style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}
-                        >
-                          {error()}
-                        </Text>
-                      </If>
-                      <If when={working()}>
-                        <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                          {switching()
-                            ? tr('Saving draft before switching…')
-                            : tr('Confirming action…')}
-                        </Text>
-                      </If>
-                      <If when={forkNotice()?.id === selected()}>
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 8,
-                          }}
-                        >
-                          <Icon name="fork" color={C.secondary} />
-                          <Text
-                            style={{
-                              ...bodyTextStyle,
-                              flex: 1,
-                              color: C.muted,
-                            }}
-                          >
-                            {tr(
-                              'This is a fork of {title}. The original conversation is unchanged.',
-                              { title: forkNotice()!.title },
-                            )}
-                          </Text>
-                          <Button
-                            onPress={inputAction(openBrowsed, {
-                              id: forkNotice()!.source,
-                              origin: selected(),
-                            })}
-                            style={controlStyle}
-                            hoverStyle={{ backgroundColor: C.cardRaised }}
-                            focusStyle={controlFocusStyle()}
-                          >
-                            <Text style={{ ...bodyTextStyle, color: C.accent }}>
-                              {tr('Back to original')}
-                            </Text>
-                          </Button>
-                        </View>
-                      </If>
-                      <If when={!controlsKnown() || controls().length > 0}>
-                        <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                          {tr('Syncing changes…')}
-                        </Text>
-                      </If>
-                    </Scroll>
-                  </If>
-                </View>
-              }
-              attach={(node) => {
-                for (const unbind of unbindEditorKeys.splice(0)) unbind();
-                editor = node;
-                bindKeys(side ? paneRoot : undefined, node);
-              }}
-              commands={composerCommands}
-              models={
-                <>
-                  <If when={selected() === null && pendingWorkspace() !== null}>
-                    <ModelSelect
-                      owner={pendingModel}
-                      instance={pendingModelInstance}
-                      current={() => alive && selected() === null && pendingWorkspace() !== null}
-                      toggle={() =>
-                        pendingModelInstance.set(
-                          pendingModelInstance() === null ? ++overlayInstance : null,
-                        )
-                      }
-                      close={(instance) => {
-                        if (pendingModelInstance() !== instance) return false;
-                        pendingModelInstance.set(null);
-                        return true;
-                      }}
-                      manage={({ instance, model, page }) => {
-                        if (pendingModelInstance() !== instance) return;
-                        pendingModelInstance.set(null);
-                        shell()?.openSettings(model, page);
-                      }}
-                      select={async (_instance, backend) => {
-                        if (pendingSending()) return;
-                        updatePending({ backend, modelChosen: true });
-                        await pendingModel.refreshModel();
-                      }}
-                    />
-                  </If>
-                  <Each<ConversationHandle>
-                    of={handle() ? [handle()!] : []}
-                    key={(owner: ConversationHandle) => owner.sessionId}
-                  >
-                    {(item) => {
-                      const owner = item();
-                      return (
-                        <ModelSelect
-                          owner={owner}
-                          running={() => owner.invocation() !== null}
-                          instance={() => {
-                            const current = overlay();
-                            return current?.kind === 'models' &&
-                              current.sessionId === owner.sessionId
-                              ? current.instance
-                              : null;
-                          }}
-                          current={() => selected() === owner.sessionId && handle() === owner}
-                          toggle={toggleModels}
-                          close={(instance) => closeModels(owner, instance)}
-                          manage={manageModels}
-                          select={(instance, backend) => chooseModel(owner, instance, backend)}
-                        />
-                      );
-                    }}
-                  </Each>
-                </>
-              }
-              chooseWorkspace={inputAction(invokeCommand, {
-                id: 'workspace',
-                sessionId: selected(),
-              })}
-              workspacePicker={
-                platform.isTerminal || side ? undefined : (
-                  <RecentWorkspaces
-                    path={() =>
-                      selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
-                    }
-                    recent={recentWorkspaces}
-                    open={recentOpen}
-                    changed={(open) => recentOpen.set(open)}
-                    disabled={() => pendingSending() || pendingFileBusy()}
-                    forget={(path) => {
-                      recentOpen.set(false);
-                      void setRecentWorkspace(path, false).catch(report);
-                    }}
-                    choose={(item) => {
-                      recentOpen.set(false);
-                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
-                    }}
-                    browse={() => {
-                      recentOpen.set(false);
-                      invokeOwn('workspace');
-                    }}
-                  />
-                )
-              }
-              settings={inputAction(invokeCommand, {
-                id: 'settings',
-                sessionId: selected(),
-              })}
-            />
+            <If when={!input.shell.quickToolsBar}>{composer()}</If>
             <If when={recoveredFork()}>
               <Button
                 onPress={inputAction(openBrowsed, {

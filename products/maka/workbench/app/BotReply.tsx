@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { View } from 'nsh';
+import { View, cleanup, type ViewRef } from 'nsh';
 import { Button, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
@@ -29,12 +29,15 @@ import { C, bodyTextStyle, captionTextStyle } from './ui';
 
 /** Messages the Bot sent with `SendUser`, shown as its reply in the Chat view. */
 export function BotReply(props: {
+  compact?: boolean;
   messages: () => BotTranscriptMessage[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
+  tailRef?(node: ViewRef | null): void;
   /** The worker whose finished run this reply reports, when the Turn was started by one. */
   worker?: { title: () => string; exists: () => boolean; open(): void };
 }) {
+  cleanup(() => props.tailRef?.(null));
   const recordLabel = () => {
     const title = props.worker?.title().trim() ?? '';
     return title
@@ -42,28 +45,80 @@ export function BotReply(props: {
       : tr('View the record of the worker');
   };
   return (
-    <View selectable style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
-      <Each of={props.messages()} key={(message) => String(message.sequence)}>
+    <View
+      selectable
+      style={{ width: '100%', paddingVertical: props.compact ? 6 : 8, gap: props.compact ? 8 : 16 }}
+    >
+      <Each
+        of={props.compact ? [...props.messages()].reverse() : props.messages()}
+        key={(message) => String(message.sequence)}
+      >
         {(message) => (
-          <TextView
-            markdown={closeCjkEmphasis(message().text)}
-            extensions={mermaidExtensions}
-            renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
-            sourceId={`bot/${message().sequence}`}
-            selectable
-            contentStyle={{ rowGap: 16 }}
-            options={{ preserveLineBreaks: true }}
-            labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
-            onScrollIntent={props.userScroll}
-            onLinkPress={(event) => void props.openLink(event.url, () => false)}
-            styles={{
-              root: { ...bodyTextStyle, color: C.text },
-              paragraph: bodyTextStyle,
-              code: { color: C.accentHover, backgroundColor: C.card },
-            }}
-          />
+          <View
+            style={{ flexDirection: 'row', gap: props.compact ? 8 : 0, alignItems: 'flex-start' }}
+          >
+            <If when={props.compact}>
+              <View
+                style={{
+                  width: 24,
+                  height: 24,
+                  flexShrink: 0,
+                  borderRadius: 6,
+                  backgroundColor: C.surface,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginTop: 2,
+                }}
+              >
+                <Text style={{ fontSize: 16, lineHeight: 24 }}>🤖</Text>
+              </View>
+            </If>
+            <View
+              style={
+                props.compact
+                  ? {
+                      backgroundColor: C.raised,
+                      borderRadius: 8,
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      flex: 1,
+                      marginRight: 32,
+                      minWidth: 0,
+                    }
+                  : { width: '100%' }
+              }
+            >
+              <TextView
+                markdown={closeCjkEmphasis(message().text)}
+                extensions={mermaidExtensions}
+                renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
+                sourceId={`bot/${message().sequence}`}
+                selectable
+                contentStyle={{ rowGap: props.compact ? 8 : 16 }}
+                options={{ preserveLineBreaks: true }}
+                labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
+                onScrollIntent={props.userScroll}
+                onLinkPress={(event) => void props.openLink(event.url, () => false)}
+                styles={{
+                  root: {
+                    ...bodyTextStyle,
+                    color: C.text,
+                    ...(props.compact
+                      ? {
+                          fontSize: 14,
+                          lineHeight: 22,
+                        }
+                      : {}),
+                  },
+                  paragraph: props.compact ? { fontSize: 14, lineHeight: 22 } : bodyTextStyle,
+                  code: { color: C.accentHover, backgroundColor: C.card },
+                }}
+              />
+            </View>
+          </View>
         )}
       </Each>
+      <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
       <If when={props.worker?.exists()}>
         <Button
           accessibilityLabel={recordLabel()}

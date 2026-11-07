@@ -52,12 +52,14 @@ pub type Result<T> = std::result::Result<T, String>;
 const CONTROL_METHODS: &[&str] = &[
     "create",
     "predictNextMessage",
+    "rankQuickTools",
     "trustProjectMcp",
     "selectBackend",
     "compact",
     "resume",
     "setCompactionPrompt",
     "markRead",
+    "markBotRead",
     "stop",
     "stopComputerApp",
     "respond",
@@ -1065,7 +1067,7 @@ impl Client {
             .pending_controls(&self.0.source, &owner)
             .await?
             .into_iter()
-            .filter(|operation| operation.method != "predictNextMessage")
+            .filter(|operation| !matches!(operation.method.as_str(), "predictNextMessage" | "rankQuickTools"))
             .collect())
     }
     /// Stop prompting for this original without cancelling, replaying, or changing its outcome.

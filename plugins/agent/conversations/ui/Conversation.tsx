@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { quickAssistantOrder } from '../../../application/quick-tools/shared/assistant-layout';
 import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
@@ -277,6 +278,8 @@ type ConversationProps = {
   connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
+  headerShown?(): boolean;
+  quickTools?: boolean;
   browser(): BrowserHeader;
   files?(): void;
   filesOpener(node: ViewRef): void;
@@ -409,7 +412,7 @@ export function Conversation(props: ConversationProps) {
   }>({ revision: -1, through: 0, hasUnread: false, tailMessageId: null });
   const readExposure = signal<object>({});
   const changedReadExposure = () => {
-    if (readState().hasUnread) readExposure.set({});
+    readExposure.set({});
   };
   const acknowledging = signal(false);
   const landmarks = signal<{ through: number; items: AgentHistoryLandmark[] }>({
@@ -779,7 +782,20 @@ export function Conversation(props: ConversationProps) {
     previouslyVisible = visible;
   });
   const displayByKey = computed(() => new Map(display().map((item) => [item.key, item])));
-  const displayKeys = computed(() => display().map((item) => item.key));
+  const displayKeys = computed(() => {
+    if (!props.quickTools) return display().map((item) => item.key);
+    return quickAssistantOrder(
+      display().map((item) => {
+        const row = item.kind === 'row' ? projection().rowsById.get(item.rowId) : undefined;
+        return {
+          key: item.key,
+          kind: item.kind,
+          turn: 'turnId' in item ? item.turnId : row?.turnId,
+          role: row?.role,
+        };
+      }),
+    );
+  });
   const navigationItems = computed<TurnNavigationItem[]>(() => {
     const items = new Map<string, TurnNavigationItem>();
     for (const item of landmarks().items) {
@@ -1340,7 +1356,8 @@ export function Conversation(props: ConversationProps) {
         (await resetHistory(historyDestination.position, observed.through))
       ) {
         await loadTurnStart();
-        list?.scrollToEnd({ animated: false });
+        if (props.quickTools) list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+        else list?.scrollToEnd({ animated: false });
       }
       if (!alive) return;
       immediateTranscriptRetry = true;
@@ -2571,7 +2588,8 @@ export function Conversation(props: ConversationProps) {
           if (state.list) state.list.scrollToEnd({ animated: false });
           else state.opening = 'bottom';
         }
-        list?.scrollToEnd({ animated: false });
+        if (props.quickTools) list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+        else list?.scrollToEnd({ animated: false });
       };
       // The loaded window already reaches the latest row and follows new ones:
       // scroll it in place, keeping the rows above, without waiting on the Host.
@@ -2639,6 +2657,65 @@ export function Conversation(props: ConversationProps) {
       return observe();
     },
   };
+  const botTails = signal(new Map<string, ViewRef>());
+  const botReadPending = signal(false);
+  let botReadAttempt: { sequence: number; exposure: object; node: ViewRef } | null = null;
+  effect(() => {
+    const state = bot.readState();
+    const latest = state.latest;
+    const enabled = () =>
+      alive &&
+      props.visible() &&
+      props.foreground() &&
+      botView() === 'bot' &&
+      reading() === 'chat' &&
+      ready() &&
+      atHistoryTail() &&
+      !awayFromLatest() &&
+      navigation() === null &&
+      innerReader() === null;
+    const node = latest?.turnId ? botTails().get(latest.turnId) : undefined;
+    const exposed = latest?.turnId && visibleRows().has(`bot/${latest.turnId}`);
+    if (!enabled()) {
+      botReadAttempt = null;
+      return;
+    }
+    if (!exposed || !node || !list || !latest || state.through <= state.readThrough) return;
+    const exposure = readExposure();
+    if (
+      botReadPending() ||
+      (botReadAttempt?.sequence === latest.sequence &&
+        botReadAttempt.exposure === exposure &&
+        botReadAttempt.node === node)
+    )
+      return;
+    botReadAttempt = { sequence: latest.sequence, exposure, node };
+    botReadPending.set(true);
+    void (async () => {
+      const viewport = list;
+      if (!viewport) return;
+      const [tail, outer] = await Promise.all([node.measure(), viewport.measure()]);
+      if (
+        !tail ||
+        !outer ||
+        !enabled() ||
+        bot.readState().latest?.sequence !== latest.sequence ||
+        botTails().get(latest.turnId!) !== node ||
+        !visibleRows().has(`bot/${latest.turnId}`)
+      )
+        return;
+      const y = tail.pagePosition.y + tail.bounds.size.height;
+      if (y <= outer.pagePosition.y || y > outer.pagePosition.y + outer.bounds.size.height) return;
+      const attempt = await host.control('markBotRead', { sessionId, through: latest.sequence });
+      const reply = attempt.reply as OperationReply;
+      if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
+        throw new UiError('The read confirmation is still unknown.');
+    })()
+      .catch(report)
+      .finally(() => {
+        botReadPending.set(false);
+      });
+  });
   const readTarget = () => {
     const observed = readState();
     const exposure = readExposure();
@@ -2869,7 +2946,7 @@ export function Conversation(props: ConversationProps) {
         flexBasis: 'auto',
         flexShrink: 0,
         minHeight: 0,
-        backgroundColor: C.panel,
+        backgroundColor: props.quickTools ? C.surface : C.panel,
       }}
     >
       <If when={attachmentMetadataFailed()}>
@@ -2884,44 +2961,46 @@ export function Conversation(props: ConversationProps) {
           </Text>
         </Button>
       </If>
-      <Header
-        title={title() || tr('Untitled conversation')}
-        workspace={workspace()}
-        status={
-          stopping()
-            ? 'stopping'
-            : run() === 'loading'
-              ? 'loading'
-              : run() === 'failed'
-                ? 'failed'
-                : undefined
-        }
-        commands={props.commands}
-        browser={props.browser()}
-        files={props.files}
-        filesOpener={props.filesOpener}
-        actions={
-          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
-            <BotRestart restart={props.restartBot} />
-          ) : undefined
-        }
-        views={
-          platform.isTerminal || ownHandle.empty() ? undefined : (
-            <View role="tablist" style={{ flexDirection: 'row', gap: 2 }}>
-              <ViewSegment
-                label={tr('Chat')}
-                selected={reading() === 'chat'}
-                onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
-              />
-              <ViewSegment
-                label={tr('Trajectory')}
-                selected={reading() === 'trajectory'}
-                onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
-              />
-            </View>
-          )
-        }
-      />
+      <If when={props.headerShown?.() ?? true}>
+        <Header
+          title={title() || tr('Untitled conversation')}
+          workspace={workspace()}
+          status={
+            stopping()
+              ? 'stopping'
+              : run() === 'loading'
+                ? 'loading'
+                : run() === 'failed'
+                  ? 'failed'
+                  : undefined
+          }
+          commands={props.commands}
+          browser={props.browser()}
+          files={props.files}
+          filesOpener={props.filesOpener}
+          actions={
+            bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
+              <BotRestart restart={props.restartBot} />
+            ) : undefined
+          }
+          views={
+            platform.isTerminal || ownHandle.empty() ? undefined : (
+              <View role="tablist" style={{ flexDirection: 'row', gap: 2 }}>
+                <ViewSegment
+                  label={tr('Chat')}
+                  selected={reading() === 'chat'}
+                  onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
+                />
+                <ViewSegment
+                  label={tr('Trajectory')}
+                  selected={reading() === 'trajectory'}
+                  onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
+                />
+              </View>
+            )
+          }
+        />
+      </If>
       <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
         <View
           style={{
@@ -2949,7 +3028,7 @@ export function Conversation(props: ConversationProps) {
       <View
         style={{
           // The desktop's header holds these views.
-          display: ownHandle.empty() || !platform.isTerminal ? 'none' : 'flex',
+          display: props.quickTools || ownHandle.empty() || !platform.isTerminal ? 'none' : 'flex',
           flexDirection: 'row',
           flexWrap: 'wrap',
           paddingHorizontal: 16,
@@ -3012,7 +3091,7 @@ export function Conversation(props: ConversationProps) {
           minHeight: 0,
           width: '100%',
           // Keep the desktop rail clear of the list, whose scroll bar ends beside it.
-          paddingRight: railInset(),
+          paddingRight: props.quickTools ? 0 : railInset(),
         }}
       >
         <View
@@ -3032,7 +3111,8 @@ export function Conversation(props: ConversationProps) {
               }}
               each={displayKeys()}
               onScrollIntent={(event) => {
-                if (event.intent === 'start') void navigateStart().catch(report);
+                if (event.intent === 'start' && props.quickTools) ownHandle.jumpLatest(null);
+                else if (event.intent === 'start') void navigateStart().catch(report);
                 else cancelNavigation();
               }}
               onBlur={() => {
@@ -3047,7 +3127,10 @@ export function Conversation(props: ConversationProps) {
               }}
               estimatedItemSize={96}
               maintainVisibleContentPosition={
-                atHistoryTail() && innerReader() === null && navigation() === null
+                !props.quickTools &&
+                atHistoryTail() &&
+                innerReader() === null &&
+                navigation() === null
                   ? { autoscrollToBottomThreshold: 32 }
                   : {}
               }
@@ -3055,7 +3138,8 @@ export function Conversation(props: ConversationProps) {
               // beside the reading column; the matching left inset keeps that
               // column centered in the window.
               contentStyle={{
-                paddingLeft: railInset(),
+                paddingLeft: props.quickTools ? 0 : railInset(),
+                paddingTop: props.quickTools ? 26 : 0,
                 paddingBottom: platform.isTerminal ? 0 : 16,
               }}
               style={{ flex: 1, minHeight: 0 }}
@@ -3063,7 +3147,10 @@ export function Conversation(props: ConversationProps) {
                 changedReadExposure();
                 awayFromLatest.set(
                   !atHistoryTail() ||
-                    event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
+                    (props.quickTools
+                      ? event.offset.y > 32
+                      : event.offset.y <
+                        Math.max(0, event.contentSize.height - event.size.height) - 32),
                 );
                 const reader = innerReader();
                 const row = reader === null ? undefined : projection().rowsById.get(reader);
@@ -3079,12 +3166,12 @@ export function Conversation(props: ConversationProps) {
                   event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
                 )
                   innerReader.set(null);
-                if (event.offset.y <= 32) void loadOlder();
+                if (event.offset.y <= 32) void (props.quickTools ? loadNewer() : loadOlder());
                 if (
                   event.offset.y >=
                   Math.max(0, event.contentSize.height - event.size.height) - 32
                 )
-                  void loadNewer();
+                  void (props.quickTools ? loadOlder() : loadNewer());
               }}
               empty={
                 <If when={!ready()}>
@@ -3230,6 +3317,13 @@ export function Conversation(props: ConversationProps) {
                         };
                         return (
                           <BotReply
+                            compact={props.quickTools}
+                            tailRef={(node) => {
+                              const next = new Map(botTails());
+                              if (node) next.set(initial.turnId, node);
+                              else next.delete(initial.turnId);
+                              botTails.set(next);
+                            }}
                             worker={
                               worker() !== undefined && canOpenWorker()
                                 ? {
@@ -3261,6 +3355,7 @@ export function Conversation(props: ConversationProps) {
                       const row = () => currentRow(initial.rowId) ?? first;
                       return (
                         <MessageRow
+                          compact={props.quickTools}
                           item={row}
                           repeats={() => {
                             const item = displayByKey().get(initial.rowId);

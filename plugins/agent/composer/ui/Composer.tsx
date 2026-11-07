@@ -17,6 +17,12 @@
  * under the License.
  */
 
+import {
+  quickFieldText,
+  quickEditorInset,
+  quickFieldHeight,
+  quickFieldStyle,
+} from '../../../../products/maka/workbench/app/QuickToolsBar';
 import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
@@ -56,6 +62,8 @@ import { ComposerCompletion, createComposerCompletion } from './ComposerCompleti
 import { createComposerPaste } from './composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
+import { createQuickComposerHistory } from '../../../application/quick-tools/runtime/composer-history';
+import { qt } from '../../../application/quick-tools/shared/i18n';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
@@ -66,6 +74,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     active: props.active,
   });
   const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
+  const quickHistory = createQuickComposerHistory({
+    session: props.session,
+    node: () => predictionEditor()?.node ?? null,
+    active: props.active,
+    composing: completion.composing,
+    completionOpen: () => completion.opened() !== null,
+  });
+  const sendWithHistory: typeof completion.send = (action) => {
+    quickHistory.remember(action.text);
+    completion.send(action);
+  };
   const suggestedMessage = () => {
     const owner = props.session();
     if (
@@ -253,6 +272,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (completion.composing()) return;
     const suggestion = suggestedMessage();
     if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
+    else if (props.quickToolsBack) props.quickToolsBack();
     else props.stopAction()();
   };
   effect(() => {
@@ -335,7 +355,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 backend: props.session()!.backend(),
               })
             : props.session()
-              ? inputAction(completion.send, {
+              ? inputAction(sendWithHistory, {
                   owner: props.session()!.sessionId,
                   text: props.session()!.draft(),
                   backend: props.session()!.backend(),
@@ -386,11 +406,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         width: '100%',
         // The conversation column's width: the box lines up with the
         // messages and the turn navigation beside them.
-        maxWidth: 800,
+        maxWidth: props.quickTools ? undefined : 800,
         alignSelf: 'center',
-        paddingHorizontal: 16,
-        paddingTop: hero() || platform.isTerminal ? 0 : 12,
-        paddingBottom: hero() || !platform.isTerminal ? 16 : 8,
+        paddingHorizontal: props.quickTools ? 0 : 16,
+        paddingTop: props.quickTools || hero() || platform.isTerminal ? 0 : 12,
+        paddingBottom: props.quickTools ? 0 : hero() || !platform.isTerminal ? 16 : 8,
       }}
     >
       <If when={hero()}>
@@ -526,10 +546,20 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           accessibilityLabel={tr('Conversation composer')}
           style={{
             flexShrink: 0,
-            backgroundColor: platform.isTerminal ? C.raised : C.card,
-            borderRadius: cardRadius(),
-            borderWidth: 1,
-            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.card,
+            backgroundColor: props.quickTools
+              ? 'transparent'
+              : platform.isTerminal
+                ? C.raised
+                : C.card,
+            borderRadius: props.quickTools ? 0 : cardRadius(),
+            borderWidth: props.quickTools ? 0 : 1,
+            borderColor: fileDragging()
+              ? C.accent
+              : platform.isTerminal
+                ? C.line
+                : props.quickTools
+                  ? 'transparent'
+                  : C.card,
             ...(platform.isTerminal
               ? {
                   paddingHorizontal: 16,
@@ -537,7 +567,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   paddingBottom: 8,
                   gap: 12,
                 }
-              : { padding: 8, gap: 8 }),
+              : { padding: props.quickTools ? 0 : 8, gap: props.quickTools ? 0 : 8 }),
             minHeight: hero() && !compact() ? 120 : undefined,
           }}
         >
@@ -607,10 +637,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       platform.isTerminal
                         ? { gap: 8 }
                         : {
-                            gap: 8,
+                            gap: props.quickTools ? 0 : 8,
                             flexGrow: 1,
-                            paddingHorizontal: 8,
-                            paddingTop: 4,
+                            paddingHorizontal: props.quickTools ? 0 : 8,
+                            paddingTop: props.quickTools ? 0 : 4,
                           },
                       { pointerEvents: 'box-none' },
                     ]}
@@ -657,7 +687,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     </If>
                     <View
                       style={{
-                        minHeight: hero() && !compact() ? 40 : 24,
+                        minHeight: props.quickTools
+                          ? quickFieldHeight
+                          : hero() && !compact()
+                            ? 40
+                            : 24,
                         maxHeight: compact() ? 64 : 144,
                       }}
                     >
@@ -677,7 +711,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         readonly={owner ? !owner.editable() : !local || local.sending()}
                         onChange={
                           owner
-                            ? ({ value }) => completion.change(owner, value)
+                            ? ({ value }) => {
+                                quickHistory.change(value);
+                                completion.change(owner, value);
+                              }
                             : local
                               ? ({ value }) => completion.change(local, value)
                               : undefined
@@ -724,7 +761,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         }
                         onSelectionChange={
                           owner
-                            ? (event) => completion.selection(owner, event)
+                            ? (event) => {
+                                quickHistory.selection(event);
+                                completion.selection(owner, event);
+                              }
                             : local
                               ? (event) => {
                                   selection.set({ ...event });
@@ -749,7 +789,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                                     sourceTurnId: suggestion.sourceTurnId,
                                     text: suggestion.text,
                                   });
-                                else completion.submit(owner, event);
+                                else {
+                                  quickHistory.remember(event.text);
+                                  completion.submit(owner, event);
+                                }
                               }
                             : local
                               ? (event) => completion.submitPending(local, event.text)
@@ -759,7 +802,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           suggestedMessage() !== null
                             ? ''
                             : owner || local
-                              ? tr('Message or run a task…')
+                              ? props.quickTools
+                                ? qt('给个人助手发消息…')
+                                : tr('Message or run a task…')
                               : tr('Choose a workspace to begin…')
                         }
                         style={[
@@ -769,6 +814,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             flexShrink: 1,
                             color: C.text,
                             ...bodyTextStyle,
+                            ...(props.quickTools
+                              ? { ...quickFieldStyle(), paddingVertical: quickEditorInset }
+                              : {}),
                             ...(owner !== null && suggestedMessage() !== null
                               ? {
                                   position: 'absolute',
@@ -782,13 +830,37 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           { pointerEvents: owner || local ? 'auto' : 'none' },
                         ]}
                       />
+                      <If when={owner !== null && quickHistory.offered()}>
+                        <Text
+                          style={{
+                            ...bodyTextStyle,
+                            ...(props.quickTools ? quickFieldText : {}),
+                            position: 'absolute',
+                            top: props.quickTools ? quickEditorInset : 0,
+                            left: 0,
+                            color: `${C.muted}80`,
+                            pointerEvents: 'none',
+                            numberOfLines: 1,
+                          }}
+                        >
+                          <Text style={{ color: 'transparent' }}>{owner?.draft()}</Text>
+                          {quickHistory.offered()?.slice(owner?.draft().length ?? 0)}
+                        </Text>
+                      </If>
                       <If when={owner !== null && suggestedMessage() !== null}>
                         <Text
                           accessibilityLabel={tr('Suggested message: {message}', {
                             message: suggestedMessage()!.text,
                           })}
                           style={[
-                            { ...bodyTextStyle, color: `${C.muted}80`, minHeight: 24 },
+                            {
+                              ...bodyTextStyle,
+                              color: `${C.muted}80`,
+                              minHeight: 24,
+                              ...(props.quickTools
+                                ? { ...quickFieldText, paddingTop: quickEditorInset }
+                                : {}),
+                            },
                             { pointerEvents: 'box-none' },
                           ]}
                         >
@@ -802,6 +874,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               text: suggestedMessage()!.text,
                             })}
                             style={{
+                              display: props.quickTools ? 'none' : 'flex',
                               height: 24,
                               paddingHorizontal: 8,
                               borderRadius: 4,
@@ -829,6 +902,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           <View
             style={[
               {
+                display: props.quickTools ? 'none' : 'flex',
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: platform.isTerminal ? 8 : 4,
@@ -910,7 +984,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         accessibilityLabel={tr('Add to queue')}
                         tooltip={textTooltip(() => tr('Send after this turn'))}
                         disabled={sendDisabled() || completion.isCommand()}
-                        onSelect={inputAction(completion.send, {
+                        onSelect={inputAction(sendWithHistory, {
                           owner: owner().sessionId,
                           text: owner().draft(),
                           backend: owner().backend(),

@@ -84,13 +84,23 @@ function host({
   current = SESSION,
   former = [],
 } = {}) {
-  const state = { messages, hold, fail, releases: [], waiting: [], reads: [], subscribed: 0 };
+  const state = {
+    messages,
+    hold,
+    fail,
+    readThrough: 0,
+    releases: [],
+    waiting: [],
+    reads: [],
+    subscribed: 0,
+  };
   const query = async (_endpoint, _method, input) => {
     // The Host reports the current Bot, and whether the asked Session is or was a Bot.
     const asked = input.sessionId ?? current;
     const isBot = asked === current || former.includes(asked);
     const through = isBot ? state.messages.length : 0;
-    if (input.limit === 0) return { sessionId: current, isBot, through, messages: [] };
+    if (input.limit === 0)
+      return { sessionId: current, isBot, through, readThrough: state.readThrough, messages: [] };
     state.reads.push(input.after ?? 0);
     if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
     if (state.fail) throw new Error('outbox read failed');
@@ -590,4 +600,25 @@ test('worker catalog observation cancellation rebinds without clearing current w
   currentCleanup();
   await settle();
   assert.equal(streams[1].closed, true);
+});
+
+test('read receipts from another window update without replaying the outbox', async () => {
+  const { state, host: h, announce } = host({ messages: [message(1, 'a'), message(2, 'b')] });
+  const core = createBotTranscriptCore(h, SESSION, () => {});
+  await core.started;
+  await settle();
+  assert.equal(core.readState().through, 2);
+  assert.equal(core.readState().readThrough, 0);
+  state.readThrough = 1;
+  announce();
+  await settle();
+  assert.equal(core.readState().readThrough, 1);
+  assert.equal(core.readState().latest.sequence, 2);
+  assert.deepEqual(state.reads, [0]);
+  state.messages.push(message(3, 'b'));
+  announce();
+  await settle();
+  assert.equal(core.readState().latest.sequence, 3);
+  assert.equal(core.readState().readThrough, 1);
+  core.close();
 });

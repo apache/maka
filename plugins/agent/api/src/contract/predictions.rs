@@ -44,3 +44,20 @@ pub struct MessagePrediction {
     pub policy_revision: u64,
     pub suggestion: Option<String>,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentQuickToolRank")]
+pub struct QuickToolRank {
+    pub session_id: String,
+    pub query: String,
+    pub candidates: Vec<QuickToolCandidate>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentQuickToolCandidate")]
+pub struct QuickToolCandidate { pub id:String, pub name:String, pub kind:String, pub uses:u32 }
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentQuickToolRanking")]
+pub struct QuickToolRanking { pub source:String, pub ids:Vec<String> }

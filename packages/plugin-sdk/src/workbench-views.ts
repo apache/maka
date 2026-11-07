@@ -28,6 +28,11 @@ export * from './workspace-view.js';
 export interface ConversationShell {
   sessionId(): string | null;
   visible(): boolean;
+  /** False when the embedding shell supplies its own conversation header. */
+  headerShown?(): boolean;
+  /** Launcher-owned compact assistant, with its editor above newest-first messages. */
+  quickToolsBack?(): void;
+  quickToolsBar?: { openSettings(): void };
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;

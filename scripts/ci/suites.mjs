@@ -37,6 +37,8 @@ export const productInputs = [
   'packages/plugin-sdk',
   'patches',
   'plugins/shared',
+  'plugins/application/quick-tools',
+  'scripts/quick-tools',
   'scripts/plugins',
   'scripts/rust/product.mjs',
 ];

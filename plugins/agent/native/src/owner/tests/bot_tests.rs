@@ -1632,3 +1632,94 @@ async fn bot_code_mode_nests_delegation_schedules_and_send_user_while_finishing_
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn bot_read_receipts_are_monotonic_and_do_not_clear_new_messages() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let f = bot_fixture("http://127.0.0.1:1/v1").await;
+        let opened = open(&f).await;
+        let session = opened["sessionId"].as_str().unwrap();
+        f.owner
+            .bot
+            .append(
+                session,
+                "turn",
+                "first",
+                "first",
+                &["one".into(), "two\nlines".into()],
+                1,
+            )
+            .await
+            .unwrap();
+        let initial = outbox(&f).await;
+        assert_eq!(initial["through"], 2);
+        assert_eq!(initial["readThrough"], 0);
+        assert_eq!(initial["preview"], "two lines");
+        let first = f
+            .mutation(
+                2,
+                "markBotRead",
+                json!({"sessionId":session,"through":1}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["readThrough"], 1);
+        // A new message arrives while another window is acknowledging the old head.
+        f.owner
+            .bot
+            .append(session, "turn", "second", "second", &["three".into()], 2)
+            .await
+            .unwrap();
+        let seen = f
+            .mutation(
+                2,
+                "markBotRead",
+                json!({"sessionId":session,"through":2}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen["through"], 3);
+        assert_eq!(seen["readThrough"], 2);
+        let stale = f
+            .mutation(
+                2,
+                "markBotRead",
+                json!({"sessionId":session,"through":1}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale["readThrough"], 2);
+        assert!(
+            f.mutation(
+                2,
+                "markBotRead",
+                json!({"sessionId":session,"through":4}),
+                Uuid::new_v4()
+            )
+            .await
+            .is_err()
+        );
+        // Reopening reads the persisted cursor, without relying on the UI's counters.
+        assert_eq!(outbox(&f).await["readThrough"], 2);
+        assert_eq!(open(&f).await["sessionId"], session);
+        assert_eq!(outbox(&f).await["readThrough"], 2);
+        let ordinary = f.create("ordinary").await;
+        assert!(
+            f.mutation(
+                2,
+                "markBotRead",
+                json!({"sessionId":ordinary,"through":0}),
+                Uuid::new_v4()
+            )
+            .await
+            .is_err()
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

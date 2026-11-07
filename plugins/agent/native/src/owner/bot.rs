@@ -389,6 +389,40 @@ impl Bot {
             }
         }
     }
+    async fn mark_read(&self, session: &str, through: u64) -> Result<(), StoreError> {
+        let head = self
+            .read::<Head>(&head_key(session))
+            .await?
+            .1
+            .unwrap_or_default()
+            .through;
+        if through > head {
+            return Err(StoreError::Unavailable("bot_read_beyond_head".into()));
+        }
+        let key = format!("outbox/{session}/read");
+        loop {
+            let (revision, previous) = self.read::<Head>(&key).await?;
+            if previous.unwrap_or_default().through >= through {
+                return Ok(());
+            }
+            match self
+                .storage
+                .batch(vec![Self::mutation(
+                    key.clone(),
+                    revision,
+                    &Head { through },
+                )?])
+                .await
+            {
+                Ok(_) => {
+                    self.changed.send_replace(());
+                    return Ok(());
+                }
+                Err(StoreError::Conflict { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
     async fn page(
         &self,
         session: &str,
@@ -939,6 +973,21 @@ impl Owner {
             _ => Ok(true),
         }
     }
+    pub async fn mark_bot_read(&self, input: BotMarkRead) -> Result<BotOutbox, String> {
+        if !self.owns(&input.session_id) || !self.bot.is(&input.session_id) {
+            return Err("bot_session_unavailable".into());
+        }
+        self.bot
+            .mark_read(&input.session_id, input.through)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.bot_outbox(&BotOutboxRead {
+            session_id: Some(input.session_id),
+            after: 0,
+            limit: 0,
+        })
+        .await
+    }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         let session_id = self.bot.session();
         let target = input.session_id.clone().or_else(|| session_id.clone());
@@ -966,10 +1015,49 @@ impl Owner {
         let next_after = more
             .then(|| messages.last().map(|message| message.sequence))
             .flatten();
+        let (read_through, preview) = if let Some(session) = target.as_ref().filter(|_| is_bot) {
+            let read = self
+                .bot
+                .read::<Head>(&format!("outbox/{session}/read"))
+                .await
+                .map_err(|error| error.to_string())?
+                .1
+                .unwrap_or_default()
+                .through
+                .min(through);
+            let latest = if through > 0 {
+                self.bot
+                    .read::<BotMessage>(&message_key(session, through))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .1
+            } else {
+                None
+            };
+            (
+                read,
+                latest
+                    .map(|message| {
+                        message
+                            .text
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .chars()
+                            .take(160)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )
+        } else {
+            (0, String::new())
+        };
         Ok(BotOutbox {
             enabled: self.settings.bot,
             session_id,
             is_bot,
+            read_through,
+            preview,
             through,
             messages,
             next_after,

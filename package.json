@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
+    "@jackwener/browsermcp": "0.0.37",
     "esbuild": "0.28.2",
     "husky": "^9.1.7",
     "patch-package": "8.0.1",

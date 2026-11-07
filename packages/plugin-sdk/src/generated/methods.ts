@@ -734,6 +734,14 @@ export interface ServiceMethods {
          */
         messages: AgentBotOutboxOutput_AgentBotMessage[];
         /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest SendUser text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
+        /**
          * Pass as `after` to read the next page; absent when caught up.
          */
         nextAfter?: number | null;
@@ -1019,6 +1027,47 @@ export interface ServiceMethods {
       input: Runtime.AgentMcpConfigurationChange;
       output: Runtime.AgentMcpConfigurationResult;
     };
+    markBotRead: {
+      mode: 'mutation';
+      /**
+       * Acknowledge only the outbox sequence actually exposed in the foreground UI.
+       */
+      input: {
+        sessionId: string;
+        through: number;
+      };
+      output: {
+        enabled: boolean;
+        /**
+         * The current Bot Session, whatever `sessionId` was asked for.
+         */
+        sessionId?: string | null;
+        /**
+         * Whether the Session that was read is, or once was, a Bot Session.
+         */
+        isBot: boolean;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentMarkBotReadOutput_AgentBotMessage[];
+        /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest SendUser text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
+        /**
+         * Pass as `after` to read the next page; absent when caught up.
+         */
+        nextAfter?: number | null;
+      };
+    };
     markRead: {
       mode: 'mutation';
       input: Runtime.AgentMarkRead;
@@ -1161,6 +1210,18 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentQueueMessage;
       output: Runtime.AgentQueueMessageResult;
+    };
+    rankQuickTools: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        query: string;
+        candidates: AgentRankQuickToolsInput_AgentQuickToolCandidate[];
+      };
+      output: {
+        source: string;
+        ids: string[];
+      };
     };
     readFile: {
       mode: 'subscription';
@@ -1478,6 +1539,14 @@ export interface ServiceMethods {
          * @maxItems 100
          */
         messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
+        /**
+         * Durable, monotonic acknowledgement of messages actually shown to the user.
+         */
+        readThrough: number;
+        /**
+         * Latest SendUser text, bounded for list previews. Never internal model output.
+         */
+        preview: string;
         /**
          * Pass as `after` to read the next page; absent when caught up.
          */
@@ -2501,6 +2570,33 @@ export interface AgentLoadedHistoryCheckpointHistoryInput_Cursor {
   position: AgentLoadedHistoryCheckpointHistoryInput_HistoryRowPosition;
   offset: number;
 }
+/**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentMarkBotReadOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
+}
 export interface AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession {
   id: string;
   revision: number;
@@ -2528,6 +2624,12 @@ export interface AgentPublishCheckpointOutput_AgentHistoryCheckpointObject {
 export interface AgentPublishCheckpointOutput_AgentCheckpointWorkspaceNotice {
   consistency: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceConsistency;
   warning: AgentPublishCheckpointOutput_AgentCheckpointWorkspaceWarning;
+}
+export interface AgentRankQuickToolsInput_AgentQuickToolCandidate {
+  id: string;
+  name: string;
+  kind: string;
+  uses: number;
 }
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
   revision: string;

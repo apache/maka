@@ -115,6 +115,7 @@ impl Handler for CounterHandler {
                 }
                 "send"
                 | "selectBackend"
+                | "rankQuickTools"
                 | "editQueue"
                 | "requestSystemPermission"
                 | "create"
@@ -232,6 +233,7 @@ impl Fixture {
                 "queueMessage":{"mode":"query","input":{},"output":{},"resources":{}},
                 "send":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "selectBackend":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "rankQuickTools":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stop":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stopComputerApp":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "respond":{"mode":"mutation","input":{},"output":{},"resources":{}},
@@ -392,6 +394,7 @@ impl Fixture {
                                     "send".into(),
                                     "uploadAttachment".into(),
                                     "selectBackend".into(),
+                                    "rankQuickTools".into(),
                                     "stop".into(),
                                     "stopComputerApp".into(),
                                     "respond".into(),
@@ -505,6 +508,20 @@ async fn send(client: &Client, id: Uuid) -> Mutation {
         )
         .await
         .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quick_ranking_retains_control_custody_without_manual_recovery_prompt() {
+    let fixture=Fixture::new().await;
+    let client=fixture.client().await;
+    let ranking=client.control(Uuid::new_v4(),"rankQuickTools",json!({"sessionId":"session-one","query":"notes","candidates":[]})).await.unwrap();
+    ranking.prepare().await.unwrap();
+    let original=client.operation_for_control(ranking.id()).await.unwrap();
+    assert_eq!(original.session_id.as_deref(),Some("session-one"));
+    assert!(!client.pending_controls().await.unwrap().iter().any(|operation|operation.id==ranking.id()));
+    ranking.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -815,4 +832,16 @@ async fn automatic_recovery_does_not_cancel_an_opening_in_an_independent_client(
     })
     .await
     .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bot_read_receipt_uses_shell_control_custody() {
+    let fixture = Fixture::new().await;
+    let client = fixture.client().await;
+    let receipt = client.control(Uuid::new_v4(), "markBotRead", json!({"sessionId":"session-one","through":2})).await.unwrap();
+    let original = client.operation_for_control(receipt.id()).await.unwrap();
+    assert_eq!(original.session_id.as_deref(), Some("session-one"));
+    receipt.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.finish().await;
 }

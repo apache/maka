@@ -412,6 +412,7 @@ export function executor(
     } else if (id === 'native' && ['darwin', 'win32'].includes(process.platform)) {
       await nextest(id, false, filter, extra);
     } else if (id === 'contracts') {
+      await node(['--test', 'products/maka/workbench/tests/quick-tools.test.mjs']);
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);
       await node([
         'node_modules/typescript/bin/tsc',

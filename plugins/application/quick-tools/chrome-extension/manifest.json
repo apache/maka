@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Maka Tabs",
+  "version": "0.1.0",
+  "description": "Search and manage Chrome tabs from Maka Quick Tools. Local connection only.",
+  "permissions": ["tabs", "nativeMessaging", "alarms"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Reconnect to Maka"
+  },
+  "incognito": "not_allowed",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo+iwdhfnBPpRpW72Ykf34s/qhn7uiyK1c+TX/aT93HyDmR/QpJV+FygEQIT8ltYv0A0PY3l2d8rATLWCVBqPkqR45uwwIcZBHosYJWHRcustEnqLClApAsO4aoI7OSWMSI2mCIJ/KNCciokcx8TSSnkcEvFbCXVVCpD0AzKYEWOHyqKJNDnCcnIgcEsoNIkzjopg7YQBkg8nmjoFCjAg5A3dJjmh+ALAQDsDnm5IYd4XQiuZaQpAe0cCT+CJT+9kFKMWLIsoOfHQKbnQ1dZsMoP2GOAHc4YDuGo4Mc92xW/keSGfSM7BQg4Ehg0wNjX8DYdm8fFsiqCRNtE1FlwQfQIDAQAB"
+}

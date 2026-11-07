@@ -1,0 +1,51 @@
+{
+  "apiVersion": 1,
+  "id": "maka.applications",
+  "name": "应用启动器",
+  "version": "1.1.0",
+  "description": "应用启动器",
+  "permissions": ["applications.list", "system.open", "system.reveal"],
+  "commands": [
+    {
+      "id": "open",
+      "name": "应用启动器",
+      "kind": "工具",
+      "keywords": "applications yingyong yy",
+      "actions": [
+        {
+          "id": "browse",
+          "title": "打开"
+        }
+      ]
+    }
+  ],
+  "icon": "application",
+  "locales": {
+    "en": {
+      "name": "Applications",
+      "description": "Applications",
+      "commands": {
+        "open": {
+          "name": "Applications",
+          "kind": "Tool",
+          "actions": {
+            "browse": "Open"
+          }
+        }
+      }
+    },
+    "zh-CN": {
+      "name": "应用启动器",
+      "description": "应用启动器",
+      "commands": {
+        "open": {
+          "name": "应用启动器",
+          "kind": "工具",
+          "actions": {
+            "browse": "打开"
+          }
+        }
+      }
+    }
+  }
+}

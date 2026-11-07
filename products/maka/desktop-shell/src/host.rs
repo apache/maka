@@ -59,6 +59,8 @@ impl Connection {
         let mut config = maka_workbench::configuration(bindings.registry(None), runtime);
         config.context = config.context.with(bindings.reload());
         config.data_dir = Some(directory);
+        maka_workbench::quick_tools::attach(&mut config);
+        crate::quick_tools::attach(&mut config);
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
         Ok(Self {

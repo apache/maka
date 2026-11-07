@@ -5292,6 +5292,7 @@ version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61b195dc605f81aa181bec9b3bd14e26cc71b903e4644f6af578ca9772c7a710"
 dependencies = [
+ "core_maths",
  "icu_collections",
  "icu_locale_fallback",
  "icu_provider",
@@ -6705,6 +6706,8 @@ dependencies = [
 name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
+ "block2 0.6.2",
  "embed-resource",
  "maka-event-log",
  "maka-host-runtime",
@@ -6713,10 +6716,15 @@ dependencies = [
  "nsh-platform-linux",
  "nsh-platform-macos",
  "nsh-platform-windows",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "raw-window-handle",
+ "rmcp",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
  "tokio",
  "uuid",
 ]
@@ -7625,6 +7633,8 @@ dependencies = [
  "base64 0.23.1",
  "clipboard-rs 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "clipboard-win",
+ "futures-util",
+ "icu_segmenter",
  "image",
  "maka-agent-api",
  "maka-agent-facts",
@@ -7632,6 +7642,7 @@ dependencies = [
  "maka-capabilities",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-js-runtime",
  "maka-packages",
  "maka-plugin-core",
  "maka-process",
@@ -10368,6 +10379,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-wrap"
+version = "10.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
+dependencies = [
+ "futures",
+ "indexmap 2.14.2",
+ "nix 0.31.3",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "prodash"
 version = "31.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11299,6 +11324,7 @@ dependencies = [
  "libc",
  "pastey",
  "pin-project-lite",
+ "process-wrap",
  "rand 0.10.3",
  "reqwest",
  "schemars 1.2.3",

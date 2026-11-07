@@ -121,6 +121,20 @@ pub struct BotOutbox {
     pub through: u64,
     #[schemars(length(max = 100))]
     pub messages: Vec<BotMessage>,
+    /// Durable, monotonic acknowledgement of messages actually shown to the user.
+    pub read_through: u64,
+    /// Latest SendUser text, bounded for list previews. Never internal model output.
+    pub preview: String,
     /// Pass as `after` to read the next page; absent when caught up.
     pub next_after: Option<u64>,
+}
+
+/// Acknowledge only the outbox sequence actually exposed in the foreground UI.
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentBotMarkRead")]
+pub struct BotMarkRead {
+    pub session_id: String,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub through: u64,
 }

@@ -23,6 +23,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+rmcp = { version = "=3.8.0", default-features = false, features = ["client", "transport-child-process"] }
+base64 = "0.23.1"
+sha2.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-workbench.workspace = true
@@ -42,5 +45,11 @@ nsh-platform-linux.workspace = true
 nsh-platform-windows.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
+objc2 = "0.6"
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession", "std", "NSEvent", "NSWorkspace", "NSRunningApplication", "block2"] }
+block2 = "0.6.2"
 raw-window-handle = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,23 @@
+{
+  "apiVersion": 1,
+  "id": "maka.suggestions",
+  "name": "AI 选项建议",
+  "version": "1.1.0",
+  "icon": "star",
+  "description": "使用个人助手配置的模型推荐快捷选项",
+  "permissions": ["model.rank"],
+  "suggestions": true,
+  "commands": [],
+  "locales": {
+    "en": {
+      "name": "AI Suggestions",
+      "description": "Suggest actions using the model configured for the personal assistant",
+      "commands": {}
+    },
+    "zh-CN": {
+      "name": "AI 选项建议",
+      "description": "使用个人助手配置的模型推荐快捷选项",
+      "commands": {}
+    }
+  }
+}

@@ -1776,6 +1776,10 @@ pub fn contract() -> Contract {
                     method::<ChecklistRead, Checklist>(MethodMode::Query),
                 ),
                 (
+                    "rankQuickTools".into(),
+                    method::<QuickToolRank, QuickToolRanking>(MethodMode::Mutation),
+                ),
+                (
                     "predictNextMessage".into(),
                     method::<PredictNextMessage, MessagePrediction>(MethodMode::Mutation),
                 ),
@@ -1794,6 +1798,10 @@ pub fn contract() -> Contract {
                 (
                     "openBot".into(),
                     method::<BotOpen, BotOpened>(MethodMode::Mutation),
+                ),
+                (
+                    "markBotRead".into(),
+                    method::<BotMarkRead, BotOutbox>(MethodMode::Mutation),
                 ),
                 (
                     "botOutbox".into(),

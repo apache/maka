@@ -27,6 +27,7 @@ type Query = (
   sessionId?: string | null;
   /** Whether the asked Session is, or once was, a Bot Session. */
   isBot: boolean;
+  readThrough?: number;
   through: number;
   nextAfter?: number | null;
   messages: BotTranscriptMessage[];
@@ -73,6 +74,8 @@ export function createBotTranscriptCore(
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
   let cursor = 0;
+  let readThrough = 0;
+  let latest: BotTranscriptMessage | undefined;
 
   const catchUp = async (through: number) => {
     while (alive && cursor < through) {
@@ -81,6 +84,7 @@ export function createBotTranscriptCore(
       const next = new Map(byTurn);
       for (const message of page.messages) {
         cursor = message.sequence;
+        latest = message;
         if (!message.turnId) continue;
         next.set(message.turnId, [...(next.get(message.turnId) ?? []), message]);
       }
@@ -93,7 +97,9 @@ export function createBotTranscriptCore(
   const sync = async (): Promise<void> => {
     const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
     if (!alive || !head.isBot) return;
+    readThrough = head.readThrough ?? 0;
     await catchUp(head.through);
+    changed();
   };
 
   let ready: () => void = () => {};
@@ -202,6 +208,7 @@ export function createBotTranscriptCore(
       resume();
       return fromKnown() === 'bot';
     },
+    readState: () => ({ through: cursor, readThrough, latest }),
     forTurn: (turnId: string): BotTranscriptMessage[] => byTurn.get(turnId) ?? [],
     close() {
       alive = false;
