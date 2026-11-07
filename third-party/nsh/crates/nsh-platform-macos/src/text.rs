@@ -2044,6 +2044,39 @@ pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     true
 }
 
+/// The default context menu of selected output, after application handlers.
+pub(crate) fn context_menu(
+    surface: &std::rc::Rc<crate::surface::Surface>,
+    view: &crate::view::NshView,
+    x: f32,
+    y: f32,
+) {
+    let selected = surface.selection.with_range().as_ref() == Some(view)
+        || (surface.selection.area.has_selection()
+            && crate::selectable_view::target(view)
+                .is_some_and(|area| surface.selection.area.is(&area)));
+    if !selected {
+        return;
+    }
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{NSMenu, NSMenuItem};
+    use objc2_foundation::NSString;
+    let menu = NSMenu::initWithTitle(NSMenu::alloc(surface.mtm), &NSString::new());
+    // SAFETY: the root implements copy: and lives throughout menu tracking.
+    let item = unsafe {
+        let item = NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(surface.mtm),
+            &NSString::from_str("Copy"),
+            Some(objc2::sel!(copy:)),
+            &NSString::new(),
+        );
+        item.setTarget(Some(surface.root.ns()));
+        item
+    };
+    menu.addItem(&item);
+    crate::chrome::track_menu(surface, &menu, Some((x, y)));
+}
+
 /// Selects all of the last pressed selectable text or selectable view (the
 /// Edit menu's Select All). False if there is none.
 pub(crate) fn select_all(surface: &crate::surface::Surface) -> bool {
