@@ -842,3 +842,18 @@ export function SettingsConfirm(props: {
     </SettingsBody>
   );
 }
+
+/** Asks before leaving a page with unsaved changes; the name says which draft. */
+export function SettingsDiscard(props: { name?: string; onDiscard(): void; onKeep(): void }) {
+  return (
+    <SettingsConfirm
+      title={tr('Discard unsaved changes?')}
+      body={props.name}
+      confirm={tr('Discard changes')}
+      cancel={tr('Keep editing')}
+      destructive
+      onConfirm={props.onDiscard}
+      onCancel={props.onKeep}
+    />
+  );
+}

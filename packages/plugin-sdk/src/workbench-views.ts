@@ -112,6 +112,8 @@ export interface SettingsPageNavigation {
   navigation(): string;
   backLabel?(): string;
   back(): boolean;
+  /** Runs `next` now, or after the user discards the page's unsaved changes. */
+  leave?(next: () => void): void;
   busy?(): boolean;
   /** The page's one command, drawn beside its title. */
   action?(): SettingsPageAction | null;
