@@ -114,7 +114,7 @@ export function openingUserMessage(
   return null;
 }
 
-/** Whether the user wrote this message, rather than the Host generating it (a Plan execution, WorkHub). */
+/** Whether the user wrote this message, rather than the Host generating it (a Goal or Plan execution). */
 export function userAuthored(row: Row): boolean {
   return row.origin === undefined;
 }

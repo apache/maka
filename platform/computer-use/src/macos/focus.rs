@@ -642,8 +642,7 @@ struct Suppression {
 struct MonitorState {
     current: Focus,
     previous: Option<Focus>,
-    last_viewbridge_suppressed: bool,
-    last_suppression_resource: Option<Weak<Resource>>,
+    last_viewbridge_suppression: Option<Weak<Resource>>,
     suppression: Option<Suppression>,
     registrations: Vec<Weak<Enforcer>>,
     resolver: Resolver,
@@ -705,8 +704,7 @@ impl Runtime {
             state: Mutex::new(MonitorState {
                 current,
                 previous: None,
-                last_viewbridge_suppressed: false,
-                last_suppression_resource: None,
+                last_viewbridge_suppression: None,
                 suppression: None,
                 registrations: Vec::new(),
                 resolver,
@@ -997,11 +995,10 @@ impl Runtime {
             }) {
                 state.suppression = None;
             }
-            if state.last_viewbridge_suppressed
-                && let Some(resource) = state
-                    .last_suppression_resource
-                    .as_ref()
-                    .and_then(Weak::upgrade)
+            if let Some(resource) = state
+                .last_viewbridge_suppression
+                .as_ref()
+                .and_then(Weak::upgrade)
                 && let Ok(permit) = resource.admit()
             {
                 permit.complete(Ok(()));
@@ -1087,24 +1084,21 @@ impl Runtime {
                 }
             }
         }
-        let release_receipt = receipt.as_ref().map(Arc::downgrade);
-        let suppressed = if release {
-            receipt
-                .and_then(|resource| resource.admit().ok())
-                .is_some_and(|permit| {
-                    let result = u32::try_from(event.integer_value_field(71))
-                        .map_err(failed)
-                        .map(|id| self.apis.release_key_focus(id) == 0);
-                    let success = result.as_ref().is_ok_and(|released| *released);
-                    permit.complete(result.map(|_| ()));
-                    success
-                })
+        let suppression = if release {
+            receipt.and_then(|resource| {
+                let permit = resource.admit().ok()?;
+                let result = u32::try_from(event.integer_value_field(71))
+                    .map_err(failed)
+                    .map(|id| self.apis.release_key_focus(id) == 0);
+                let success = result.as_ref().is_ok_and(|released| *released);
+                permit.complete(result.map(|_| ()));
+                success.then(|| Arc::downgrade(&resource))
+            })
         } else {
-            false
+            None
         };
         if new.auxiliary() {
-            state.last_viewbridge_suppressed = suppressed;
-            state.last_suppression_resource = release_receipt;
+            state.last_viewbridge_suppression = suppression;
         }
         Disposition::Keep
     }

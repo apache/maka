@@ -67,6 +67,10 @@ pub struct RichEditorProps {
     /// read-only too. A read-only editor still selects and copies.
     #[prop(default = true)]
     pub editable: Prop<bool>,
+    /// Leaves Tab and Shift+Tab to the platform's focus navigation.
+    /// App key bindings can still capture them explicitly.
+    #[prop(default)]
+    pub tab_navigation: Prop<bool>,
     /// Shown in an empty textblock while the document has no content
     /// (Tiptap's placeholder extension): the one the selection is in, at
     /// the document's top level, while the document can be edited (`showOnlyCurrent`, `includeChildren`,
@@ -196,6 +200,9 @@ pub enum RichEditorEvent {
     /// The selection changed.
     #[args(selection)]
     SelectionChange(RichEditorSelection),
+    /// An input method started or ended composition, including cancellation.
+    #[args(composing)]
+    CompositionChange(bool),
     /// Files were pasted (images, files copied in a file manager): the
     /// selection is where the app inserts them.
     #[args(paste)]

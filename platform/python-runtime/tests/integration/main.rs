@@ -19,3 +19,9 @@
 
 mod code_mode;
 mod runtime;
+
+fn python_worker() -> std::path::PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_maka-python-worker")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_maka-python-worker").into())
+}

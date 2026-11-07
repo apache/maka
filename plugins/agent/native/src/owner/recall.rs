@@ -37,7 +37,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(crate) struct Recall {
     pub(super) store: Arc<maka_event_log::RootStore>,
-    pub(super) configuration: Arc<maka_config::ConfigurationStore>,
     pub(super) prefix: String,
     pub(super) data_source: crate::contract::DataSource,
     pub(super) enabled: bool,
@@ -68,16 +67,6 @@ impl Recall {
         } else {
             self.store.session(id).await.map_err(persistence)
         }
-    }
-    async fn private(&self) -> Result<bool, ToolError> {
-        Ok(self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(failed)?
-            .policy
-            .privacy
-            .incognito_active)
     }
     async fn metadata(
         &self,
@@ -120,9 +109,6 @@ impl Recall {
     async fn check(&self, call: &Scope) -> Result<(), ToolError> {
         if call.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(failed("Recall cancelled"));
-        }
-        if self.private().await? {
-            return Err(failed("Recall is unavailable in privacy mode"));
         }
         if let Some(invocation) = call.identity.agent() {
             if !self.enabled {
@@ -370,7 +356,7 @@ impl maka_tools::request::RequestBinding for Recall {
     ) -> maka_tools::request::BindingFuture {
         let recall = Arc::new(self.clone());
         Box::pin(async move {
-            let unavailable = !recall.enabled || recall.private().await?;
+            let unavailable = !recall.enabled;
             if request.cancellation.is_cancelled() || recall.stop.is_cancelled() {
                 return Err(failed("Recall cancelled"));
             }

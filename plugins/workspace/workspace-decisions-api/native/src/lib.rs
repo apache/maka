@@ -212,7 +212,6 @@ impl Handler for Service {
                     let engine = maka_decisions_api::decision::DecisionsApi {
                         settings: owner.repository.clone(),
                         http: Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority))),
-                        preferences: Arc::new(network::Preferences(owner.configuration.clone())),
                     };
                     match engine
                         .configured(context.scope(), input, snapshot.settings)

@@ -30,6 +30,8 @@ mod canonical_insert;
 mod catalog_changes;
 pub mod checkpoints;
 mod commits;
+mod content;
+pub(crate) mod snapshots;
 pub use commits::SessionSubscription;
 pub mod connection;
 pub mod context;
@@ -47,6 +49,7 @@ pub mod message_interrupts;
 pub mod message_queue;
 pub mod message_resolution;
 pub mod message_sources;
+pub mod migration;
 mod model_items;
 pub mod observation;
 pub mod plugins;
@@ -82,8 +85,8 @@ use std::sync::Arc;
 
 mod writeback;
 
+use connection::OpenOptions;
 use connection::{ConnectionAuthority, OwnedConnection};
-use sqlx::sqlite::SqliteConnectOptions;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -135,8 +138,6 @@ pub enum StoreError {
     HistoryUnsettled,
     #[error("invalid event transition: Session contains an unresolved prior provider tool effect")]
     HistoryProviderEffectUnresolved,
-    #[error("invalid event transition: managed Session history requires its owner's lifecycle")]
-    ManagedSession,
     #[error("catalog revision changed from {expected} to {actual}")]
     RevisionConflict { expected: String, actual: String },
     #[error("invalid event transition: {0}")]
@@ -157,22 +158,28 @@ pub enum StoreError {
     ReadCacheTransaction {
         #[source]
         cause: Box<StoreError>,
-        transaction: sqlx::Error,
+        transaction: rusqlite::Error,
     },
     #[error(transparent)]
     Projection(#[from] maka_presentation::ProjectionError),
     #[error("event log mutex poisoned")]
     Poisoned,
     #[error("event commit outcome unknown: {0}")]
-    CommitUnknown(sqlx::Error),
+    CommitUnknown(rusqlite::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error("database migration failed: {0}")]
+    Migration(String),
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
-    #[error(transparent)]
-    Migration(#[from] sqlx::migrate::MigrateError),
+    Shared(Arc<StoreError>),
+    #[error("{cause}; database rollback failed: {cleanup}")]
+    RollbackFailed {
+        #[source]
+        cause: Arc<StoreError>,
+        cleanup: rusqlite::Error,
+    },
     #[error("database initialization worker failed")]
     Initialization,
     #[error("database connection closed before accepting the operation")]
@@ -190,9 +197,20 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
 }
 
+impl StoreError {
+    /// Return the original cause of a failure shared by grouped writes.
+    pub fn underlying(&self) -> &Self {
+        match self {
+            Self::Shared(error) => error.underlying(),
+            Self::RollbackFailed { cause, .. } => cause.underlying(),
+            error => error,
+        }
+    }
+}
+
 pub struct EventLog {
     expected_session: Option<Arc<str>>,
-    // The independent owner drains SQLx and closes it before releasing its lease.
+    // The independent owner drains SQLite work and closes the connection before releasing its lease.
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
     commits: commits::CommitHub,
@@ -202,7 +220,6 @@ pub struct EventLog {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OpenPurpose {
     Execution,
-    RootControl,
     ApplicationInspection,
 }
 
@@ -291,15 +308,6 @@ impl EventLog {
         root_owner: Option<Arc<root::RootOwner>>,
         purpose: OpenPurpose,
     ) -> Result<Self, StoreError> {
-        Self::open_owned_with_control(path, root_owner, purpose, None).await
-    }
-
-    async fn open_owned_with_control(
-        path: &Path,
-        root_owner: Option<Arc<root::RootOwner>>,
-        purpose: OpenPurpose,
-        control: Option<connection::control::ReadOnlyControl>,
-    ) -> Result<Self, StoreError> {
         // A symlink alias must share the same lease and SQLite sidecars.
         let path = match path.canonicalize() {
             Ok(path) => path,
@@ -341,9 +349,7 @@ impl EventLog {
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push(".writer.lock");
         let acquired = match purpose {
-            OpenPurpose::Execution | OpenPurpose::RootControl => {
-                root::FileLease::acquire(Path::new(&lock_path))
-            }
+            OpenPurpose::Execution => root::FileLease::acquire(Path::new(&lock_path)),
             OpenPurpose::ApplicationInspection => {
                 root::FileLease::acquire_existing(Path::new(&lock_path))
             }
@@ -356,52 +362,36 @@ impl EventLog {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let options = match purpose {
-            OpenPurpose::Execution | OpenPurpose::RootControl => SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true)
-                .query_planner_stability(true),
+            OpenPurpose::Execution => OpenOptions::file(&path).create(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
-        let initialize_control = control.clone();
-        let connection = OwnedConnection::open_with_control(
+        let connection = OwnedConnection::open(
             options,
-            ConnectionAuthority::Writer {
-                lease,
-                root: root_owner.clone(),
+            match purpose {
+                OpenPurpose::Execution => ConnectionAuthority::Writer {
+                    lease,
+                    root: root_owner.clone(),
+                },
+                OpenPurpose::ApplicationInspection => ConnectionAuthority::Inspection {
+                    lease,
+                    root: root_owner.clone(),
+                },
             },
-            move |connection| {
-                Box::pin(async move {
-                    match purpose {
-                        OpenPurpose::Execution => {
-                            schema::initialize_connection_with_control(
-                                connection,
-                                initialize_control.as_ref(),
-                            )
-                            .await
-                        }
-                        OpenPurpose::RootControl => {
-                            root_store::initialize_control(connection).await
-                        }
-                        OpenPurpose::ApplicationInspection => {
-                            application_inspection::initialize(connection).await
-                        }
-                    }
-                })
+            move |connection| match purpose {
+                OpenPurpose::Execution => schema::initialize_connection(connection),
+                OpenPurpose::ApplicationInspection => {
+                    application_inspection::initialize(connection)
+                }
             },
-            control,
         )
         .await?;
         let high_water = connection
             .run(move |connection| {
-                Box::pin(async move {
-                    sequence_number(
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
-                        )
-                        .fetch_one(connection)
-                        .await?,
-                    )
-                })
+                sequence_number(connection.query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
+                    [],
+                    |row| row.get(0),
+                )?)
             })
             .await;
         let high_water = match high_water {

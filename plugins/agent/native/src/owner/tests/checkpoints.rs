@@ -56,14 +56,14 @@ async fn input(f: &Fixture, session: &str, expected: Value) -> Value {
         .await
         .unwrap();
     assert_eq!(preview["rootSessionId"], session);
-    json!({"sessionId":session,"expectedRevision":expected,"confirmedSubtreeDigest":preview["subtreeDigest"]})
+    json!({"sessionId":session,"expectedRevision":expected,"confirmedSubtreeDigest":preview["subtreeDigest"],"workspaceConsistency":null})
 }
 async fn publish(f: &Fixture, input: Value, operation: Uuid) -> (RecoveryRef, Receipt) {
     let client = f.app.client();
     let prepared = client
         .prepare_mutation(
             f.binding(2).await,
-            "publishHistoryCheckpoint".into(),
+            "publishCheckpoint".into(),
             input,
             scope(&f.issuer, true),
             operation,
@@ -108,7 +108,7 @@ async fn read(
     let mut ended = false;
     while let Some(frame) = stream.recv().await {
         match frame["kind"].as_str().unwrap() {
-            "native_history_v1" => {
+            "checkpoint" => {
                 assert!(begin.is_null());
                 begin = frame;
             }
@@ -148,6 +148,10 @@ async fn turn(f: &Fixture, listener: &TcpListener, session: &str, text: &str) {
 }
 #[path = "checkpoints/benchmark.rs"]
 mod benchmark;
+#[path = "checkpoints/load.rs"]
+mod load;
+#[path = "checkpoints/workspace.rs"]
+mod workspace;
 
 async fn close(f: &Fixture) {
     f.app.shutdown().await.unwrap();
@@ -190,7 +194,7 @@ async fn host_publication_preserves_original_bytes_after_live_history_and_head_m
         turn(&f, &listener, &session, "after checkpoint").await;
         let observation = f
             .query(
-                "historyCheckpointReceipt",
+                "checkpointReceipt",
                 json!({"reference":reference,"input":original}),
             )
             .await
@@ -228,7 +232,7 @@ async fn host_publication_preserves_original_bytes_after_live_history_and_head_m
         );
         let receipt = f
             .query(
-                "historyCheckpointReceipt",
+                "checkpointReceipt",
                 json!({"reference":reference,"input":original}),
             )
             .await
@@ -253,7 +257,7 @@ async fn busy_source_is_not_queued_or_republished_by_receipt_lookup() {
         let (reference,receipt)=publish(&f,original.clone(),operation).await;
         assert!(matches!(receipt,Receipt::Recorded {outcome:OperationOutcome::Unknown {ref diagnostic},..} if diagnostic=="agent_history_checkpoint_busy"));
         response(&mut socket).await; f.drained().await;
-        let receipt=f.query("historyCheckpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
+        let receipt=f.query("checkpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
         assert_eq!(receipt["publication"]["state"]["kind"],"interrupted");
         assert!(f.query("historyCheckpointHead",json!({"sessionId":session})).await.unwrap().is_null());
         let current=input(&f,&session,Value::Null).await;
@@ -272,7 +276,7 @@ async fn host_policy_identity_original_fingerprint_and_close_are_enforced() {
         .client()
         .prepare_mutation(
             f.binding(2).await,
-            "publishHistoryCheckpoint".into(),
+            "publishCheckpoint".into(),
             original.clone(),
             scope(&f.issuer, false),
             Uuid::new_v4(),
@@ -297,14 +301,14 @@ async fn host_policy_identity_original_fingerprint_and_close_are_enforced() {
     changed["expectedRevision"] = json!(Uuid::new_v4());
     assert!(
         f.query(
-            "historyCheckpointReceipt",
+            "checkpointReceipt",
             json!({"reference":reference,"input":changed})
         )
         .await
         .is_err()
     );
     assert!(
-        f.mutation(2, "publishHistoryCheckpoint", changed, operation)
+        f.mutation(2, "publishCheckpoint", changed, operation)
             .await
             .is_err()
     );
@@ -312,7 +316,7 @@ async fn host_policy_identity_original_fingerprint_and_close_are_enforced() {
     foreign.namespace = id(99);
     assert!(
         f.query(
-            "historyCheckpointReceipt",
+            "checkpointReceipt",
             json!({"reference":foreign,"input":original})
         )
         .await
@@ -322,7 +326,7 @@ async fn host_policy_identity_original_fingerprint_and_close_are_enforced() {
     absent.operation = Uuid::new_v4();
     let result = f
         .query(
-            "historyCheckpointReceipt",
+            "checkpointReceipt",
             json!({"reference":absent,"input":original}),
         )
         .await
@@ -354,7 +358,7 @@ async fn root_reopen_disambiguates_domain_success_without_fabricating_host_clean
         // A real SQL failure after the separate checkpoint transaction commits.
         // Install in every possible Host operation partition, not the Session partition.
         for path in f.runtime_databases() {
-            rusqlite::Connection::open(path).unwrap().execute_batch("CREATE TRIGGER checkpoint_host_failure BEFORE UPDATE ON application_operations WHEN json_extract(OLD.request_json,'$.method')='publishHistoryCheckpoint' BEGIN SELECT RAISE(ABORT,'fixture lost Host settlement'); END;").unwrap();
+            rusqlite::Connection::open(path).unwrap().execute_batch("CREATE TRIGGER checkpoint_host_failure BEFORE UPDATE ON application_operations WHEN json_extract(OLD.request_json,'$.method')='publishCheckpoint' BEGIN SELECT RAISE(ABORT,'fixture lost Host settlement'); END;").unwrap();
         }
         let (reference,receipt)=publish(&f,original.clone(),Uuid::new_v4()).await;
         assert!(matches!(receipt,Receipt::Unavailable {..}),"{receipt:?}");
@@ -374,7 +378,7 @@ async fn root_reopen_disambiguates_domain_success_without_fabricating_host_clean
         provide_all(&mut registry).unwrap();
         let app=Application::start_from_store(store.clone(),deployment,registry,issuer.clone(),Arc::new(Grant(issuer.clone(),None)),Some(maka_host_js::factory(Default::default()))).await.unwrap();
         app.ready().await.unwrap();
-        let receipt=query(&app,&issuer,"historyCheckpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
+        let receipt=query(&app,&issuer,"checkpointReceipt",json!({"reference":reference,"input":original})).await.unwrap();
         assert_eq!(receipt["publication"]["state"],json!({"kind":"published","head":head}));
         assert_eq!(receipt["operation"]["outcome"]["kind"],"unresolved");
         assert_eq!(receipt["operation"]["cleanup"]["kind"],"unconfirmed");
@@ -422,7 +426,7 @@ async fn cancellation_drains_bounded_reader_and_corruption_never_emits_success()
             .await
             .unwrap();
         let first = stream.recv().await.unwrap();
-        assert_eq!(first["kind"], "native_history_v1");
+        assert_eq!(first["kind"], "checkpoint");
         stream.cancel();
         let completion = stream.completion().await;
         assert!(completion.result.is_err());
@@ -432,7 +436,7 @@ async fn cancellation_drains_bounded_reader_and_corruption_never_emits_success()
         let path = f
             .root
             .join("history-checkpoints/objects")
-            .join(first["bundle"]["digest"].as_str().unwrap());
+            .join(head["manifest"]["digest"].as_str().unwrap());
         std::fs::write(path, b"damaged").unwrap();
         assert!(
             read(&f.app, &f.issuer, &session, head["revision"].clone())
@@ -509,7 +513,7 @@ async fn model_scope_and_missing_recovery_grant_cannot_read_checkpoint_receipts(
     workspaces::publish_with_policy(&mut f, roots, policy).await;
     assert_eq!(
         f.query(
-            "historyCheckpointReceipt",
+            "checkpointReceipt",
             json!({"reference":reference,"input":original})
         )
         .await

@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum Key {
     Creation(String),
+    CheckpointLoad(String),
     // Session gates precede binding gates for operations that need both.
     Session(String),
     Work(String),
@@ -46,7 +47,6 @@ pub(super) struct Gates {
 }
 #[derive(Default)]
 struct Lifetime {
-    closing: bool,
     active: usize,
     recovering: bool,
     unconfirmed: Vec<crate::connection::custody::Custody>,
@@ -86,13 +86,15 @@ impl Gates {
         self.stop.clone()
     }
     pub(super) fn close(&self) {
-        self.lifetime.lock().unwrap().closing = true;
-        self.stop.cancel();
+        {
+            let _lifetime = self.lifetime.lock().unwrap();
+            self.stop.cancel();
+        }
         self.changed.notify_waiters();
     }
     pub(super) fn start_work(&self) -> Result<(), StoreError> {
         let mut lifetime = self.lifetime.lock().unwrap();
-        if lifetime.closing {
+        if self.stop.is_cancelled() {
             return Err(StoreError::ConnectionClosed);
         }
         if lifetime.recovering {
@@ -108,7 +110,7 @@ impl Gates {
         self: &Arc<Self>,
     ) -> Result<(RecoveryPin, tokio::sync::oneshot::Receiver<()>), StoreError> {
         let mut lifetime = self.lifetime.lock().unwrap();
-        if lifetime.closing {
+        if self.stop.is_cancelled() {
             return Err(StoreError::ConnectionClosed);
         }
         if lifetime.recovering || lifetime.active != 0 {
@@ -138,7 +140,7 @@ impl Gates {
     }
     pub(super) fn shutdown_ready(&self) -> Option<bool> {
         let lifetime = self.lifetime.lock().unwrap();
-        (lifetime.closing && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty()))
+        (self.stop.is_cancelled() && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty()))
             .then_some(!lifetime.unconfirmed.is_empty())
     }
     /// Called only by the Root lifecycle owner, never a SQL actor.
@@ -149,7 +151,9 @@ impl Gates {
             changed.as_mut().enable();
             {
                 let lifetime = self.lifetime.lock().unwrap();
-                if lifetime.closing && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty()) {
+                if self.stop.is_cancelled()
+                    && (lifetime.active == 0 || !lifetime.unconfirmed.is_empty())
+                {
                     return !lifetime.unconfirmed.is_empty();
                 }
             }

@@ -12,9 +12,9 @@ aes-gcm@0.11.1		X										X
 aes-kw@0.3.1		X										X						
 aes@0.8.4		X										X						
 aes@0.9.3		X										X						
-agent-client-protocol-derive@3.5.0		X																
-agent-client-protocol-schema@1.12.0		X																
-agent-client-protocol@3.5.0		X																
+agent-client-protocol-derive@5.0.0		X																
+agent-client-protocol-schema@1.15.1		X																
+agent-client-protocol@5.0.0		X																
 ahash@0.8.12		X										X						
 aho-corasick@1.1.5												X					X	
 alacritty_terminal@0.26.0		X																
@@ -80,7 +80,6 @@ base64@0.23.1		X										X
 base64ct@1.8.3		X										X						
 bincode@1.3.3												X						
 bindgen@0.72.1					X													
-bindgen@0.73.2					X													
 bit_field@0.10.3		X										X						
 bit-set@0.10.0		X										X						
 bit-set@0.8.0		X										X						
@@ -600,7 +599,6 @@ maka-external-agent@0.2.0		X
 maka-files-native@0.2.0		X																
 maka-fs-tools@0.2.0		X																
 maka-goal@0.2.0		X																
-maka-graph@0.2.0		X																
 maka-host-js@0.2.0		X																
 maka-host-runtime@0.2.0		X																
 maka-interactions-api@0.2.0		X																

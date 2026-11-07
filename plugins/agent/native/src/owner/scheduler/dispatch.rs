@@ -52,12 +52,10 @@ impl Owner {
         if !match &basis.background_kind {
             BackgroundKind::Schedule => self.settings.scheduled_tasks,
             BackgroundKind::Goal(_) => self.settings.goals,
-            BackgroundKind::Plan(_) => false,
         } {
             return Err(match &basis.background_kind {
                 BackgroundKind::Schedule => "scheduler_disabled",
                 BackgroundKind::Goal(_) => "goal_disabled",
-                BackgroundKind::Plan(_) => "plan_disabled",
             }
             .into());
         }
@@ -109,10 +107,7 @@ impl Owner {
             return Err("agent_closed".into());
         }
         let id = &target.session_id;
-        if self.graph_selected(id).await? {
-            return Err("graph_background_conflict".into());
-        }
-        let session = self.session(id).await?;
+        let session = self.mutable_session(id).await?;
         if session.configuration.workspace != target.workspace
             || session.configuration.permissions != target.permissions
             || session.configuration.boundary_revision != target.boundary_revision
@@ -155,16 +150,15 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        let current = self.session(id).await?;
+        let current = self.mutable_session(id).await?;
         if current.configuration != session.configuration || current.archived {
             return Err("scheduler_authorization_changed".into());
         }
-        if self.graph_selected(id).await? {
-            return Err("graph_background_conflict".into());
-        }
 
+        let selected_catalog = self.mcp_projects.with_client(id, selected_catalog)?;
         Ok(MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
@@ -172,7 +166,6 @@ impl Owner {
                 &snapshot,
                 language,
             )),
-            graph: None,
             collaboration_mode: CollaborationMode::Agent,
             background_kind: kind,
             tool_discovery: self.settings.tool_discovery,

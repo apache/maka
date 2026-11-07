@@ -24,6 +24,7 @@ mod diagrams;
 mod files;
 mod links;
 mod mutation;
+mod permission_window;
 mod plugins;
 mod settings;
 mod system_permission;
@@ -33,6 +34,7 @@ mod ui_services;
 mod uploads;
 
 pub use mutation::OriginalMutation;
+pub use permission_window::SystemPermissionWindow;
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
@@ -62,6 +64,8 @@ struct Owner {
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
     staged_images: StdMutex<HashMap<Uuid, Arc<maka_ui_support::file::FileSnapshot>>>,
+    permission_windows:
+        StdMutex<Option<tokio::sync::mpsc::UnboundedSender<SystemPermissionWindow>>>,
 }
 struct Scope {
     owner: Arc<Owner>,
@@ -83,6 +87,8 @@ pub struct ApplicationHost {
 enum ApplicationClient {
     Root,
     Ui(Arc<ui_services::Services>),
+    // Setup windows retain the exact admitted connection, never a rebindable UI source.
+    Permission(Client),
 }
 
 impl ApplicationClient {
@@ -90,6 +96,7 @@ impl ApplicationClient {
         match self {
             Self::Root => Ok(owner.client.clone()),
             Self::Ui(services) => services.client().await,
+            Self::Permission(client) => Ok(client.clone()),
         }
     }
 
@@ -102,13 +109,14 @@ impl ApplicationClient {
         let was_retired = client.binding_retired();
         match operation(client.clone()).await {
             Ok(value) => Ok(value),
-            Err(_) if !was_retired && client.binding_retired() => {
+            Err(error) if !was_retired && client.binding_retired() => {
                 let fresh = match self {
                     Self::Root => {
                         owner.client.refresh().await?;
                         owner.client.clone()
                     }
                     Self::Ui(services) => services.client().await?,
+                    Self::Permission(_) => return Err(error),
                 };
                 operation(fresh).await
             }
@@ -120,12 +128,16 @@ impl ApplicationClient {
         match self {
             Self::Root => Ok(owner.client.clone()),
             Self::Ui(services) => services.local_client().await,
+            Self::Permission(client) => Ok(client.clone()),
         }
     }
 
     async fn refresh(&self, owner: &Owner) -> Result<(), String> {
         match self {
             Self::Root => owner.client.refresh().await,
+            Self::Permission(_) => Err(
+                "Reopen permission setup from its conversation to adopt a new Host binding".into(),
+            ),
             Self::Ui(services) => {
                 owner.read_ui(serde_json::json!({})).await?;
                 services.client().await?;
@@ -143,6 +155,10 @@ impl ApplicationClient {
         match self {
             Self::Root => Ok((owner.client.clone(), endpoint, JsonValue::Null)),
             Self::Ui(services) => services.mutation_context(&endpoint).await,
+            Self::Permission(_) => Err(
+                "Permission setup uses the original human controls, not generic UI mutations"
+                    .into(),
+            ),
         }
     }
 
@@ -150,6 +166,7 @@ impl ApplicationClient {
         match self {
             Self::Root => Ok(uri),
             Self::Ui(services) => services.asset_uri(&uri),
+            Self::Permission(_) => Err("Permission setup does not resolve package assets".into()),
         }
     }
 }
@@ -170,6 +187,7 @@ impl Bindings {
                 plugins: Default::default(),
                 reload: Default::default(),
                 staged_images: Default::default(),
+                permission_windows: Default::default(),
             }),
         }
     }
@@ -185,6 +203,14 @@ impl Bindings {
 
     pub fn reload(&self) -> crate::reload::UiReload {
         self.owner.reload.clone()
+    }
+
+    /// Installs the shell's dedicated system-permission window presenter.
+    pub fn set_system_permission_windows(
+        &self,
+        sender: tokio::sync::mpsc::UnboundedSender<SystemPermissionWindow>,
+    ) {
+        *self.owner.permission_windows.lock().unwrap() = Some(sender);
     }
 
     /// Native objects own subscriptions; the launcher owns calls and durable recovery.
@@ -220,14 +246,23 @@ pub fn ui_set_description() -> nsh_core::element::description::SetDescription {
 }
 
 fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 'static) -> Registry {
+    let mut registry = ui_registry();
+    registry.value("host", make_host);
+    registry
+}
+
+/// Native workbench components and classes, independent of the Host connection.
+#[must_use]
+pub fn ui_registry() -> Registry {
     let mut registry = Registry::ui_set("maka/host");
+    registry.register::<crate::composer_input::ComposerInput>();
+    registry.class::<crate::composer_input::ComposerInputState>();
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
     registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
-    registry.value("host", make_host);
     registry
 }
 
@@ -400,10 +435,15 @@ impl ApplicationHost {
         self.owner.reload.resume()
     }
 
-    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) {
-        let reload = self.owner.reload.clone();
+    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) -> Result<(), String> {
+        let pending = self.owner.reload.prepare(state)?;
         // Queue after this JS call, so replacing its engine cannot interrupt it.
-        cx.start(async move { reload.request(state) });
+        cx.start(async move {
+            if let Err(error) = pending.enqueue() {
+                eprintln!("maka-workbench: UI reload failed: {error}");
+            }
+        });
+        Ok(())
     }
 
     /// Resolve the original Markdown target once. Workspace bytes remain with
@@ -621,6 +661,98 @@ impl ApplicationHost {
         })
         .await?;
         Ok(Instance::new(original))
+    }
+
+    /// Whether this shell presents system permissions in a dedicated window.
+    #[getter]
+    pub fn system_permission_window(&self) -> bool {
+        self.owner
+            .permission_windows
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|sender| !sender.is_closed())
+    }
+
+    /// Opens the original pending request, preserving this UI's Host scope.
+    pub async fn open_system_permission_setup(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            permission_window::open(owner, source, session_id, request_id).await
+        })
+        .await
+    }
+
+    /// Reads effective grants on the Host, never in the desktop process.
+    pub async fn system_permission_status(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            source
+                .read(&owner, |client| {
+                    let input =
+                        serde_json::json!({"sessionId": session_id, "requestId": request_id});
+                    async move {
+                        require_contract(
+                            AGENT,
+                            "systemPermissionStatus",
+                            &client.describe(AGENT).await?.contract,
+                        )?;
+                        client.query(AGENT, "systemPermissionStatus", input).await
+                    }
+                })
+                .await
+        })
+        .await
+    }
+
+    /// Requests one OS grant through a human-only, journaled Host operation.
+    pub async fn request_system_permission(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+        grant: String,
+    ) -> Result<JsonValue, String> {
+        use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let grant: maka_agent_facts::interaction::SystemPermissionGrant =
+                serde_json::from_value(serde_json::Value::String(grant)).map_err(|error| error.to_string())?;
+            let client = source.resolve(&owner).await?;
+            require_contract(AGENT, "requestSystemPermission", &client.describe(AGENT).await?.contract)?;
+            let grant_value = serde_json::to_value(grant).map_err(|error| error.to_string())?;
+            let original = client.pending_controls().await?.into_iter().find(|operation| {
+                operation.method == "requestSystemPermission"
+                    && operation.session_id.as_deref() == Some(session_id.as_str())
+                    && operation.correlation["requestId"] == request_id
+                    && operation.correlation["grant"] == grant_value
+            });
+            let (id, reply) = if let Some(original) = original {
+                client.operation_for_control(original.id).await?;
+                (original.id, client.recover(original.id).await?)
+            } else {
+                let id = Uuid::new_v4();
+                let mutation = client.control(id, "requestSystemPermission", serde_json::json!({
+                    "sessionId": session_id, "requestId": request_id, "grant": grant,
+                })).await?;
+                mutation.prepare().await?;
+                (id, mutation.confirm().await?)
+            };
+            match reply.receipt {
+                Receipt::Recorded { outcome: OperationOutcome::Returned { value }, cleanup: OperationCleanup::Confirmed } => Ok(value),
+                _ => Err(format!("The permission request has no confirmed result. Recover original operation {id} before requesting again.")),
+            }
+        }).await
     }
 
     pub async fn system_permission_actions(

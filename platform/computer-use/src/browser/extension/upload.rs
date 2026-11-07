@@ -426,7 +426,7 @@ impl Tab {
             || lease
                 .extension
                 .as_ref()
-                .and_then(|state| state.claim.as_ref())
+                .and_then(|state| state.physical_claim())
                 .is_none_or(|known| {
                     known.claim_id() != claim.claim_id() || known.target_id() != claim.target_id()
                 })

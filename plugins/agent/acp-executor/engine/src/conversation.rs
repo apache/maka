@@ -19,7 +19,7 @@
 
 use crate::ports::Ports;
 use crate::{Agent, Error, digest, driver::Driver, transport::Connection};
-use agent_client_protocol::schema::v1 as acp;
+use agent_client_protocol::v1::schema as acp;
 use maka_agent_ports::executor;
 use maka_capabilities::storage::Data;
 use maka_capabilities::storage::Mutation;
@@ -51,7 +51,7 @@ pub(crate) struct Record {
     pub state: State,
     pub defaults: Vec<acp::SessionConfigOption>,
     #[serde(default)]
-    pub v2_defaults: Option<Vec<agent_client_protocol::schema::v2::SessionConfigOption>>,
+    pub v2_defaults: Option<Vec<agent_client_protocol::v2::schema::SessionConfigOption>>,
 }
 
 pub(crate) struct Journal {
@@ -124,7 +124,7 @@ pub(crate) struct Live {
     pub connection: Connection,
     pub session_id: String,
     pub options: Vec<acp::SessionConfigOption>,
-    pub v2_options: Option<Vec<agent_client_protocol::schema::v2::SessionConfigOption>>,
+    pub v2_options: Option<Vec<agent_client_protocol::v2::schema::SessionConfigOption>>,
 }
 
 type Slot = Arc<tokio::sync::Mutex<Option<Live>>>;

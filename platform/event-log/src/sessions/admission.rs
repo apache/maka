@@ -18,43 +18,39 @@
  */
 
 use crate::{EventLog, StoreError};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::params;
 
 /// Shares the accepted work's transaction: a retiring Session cannot accept new
 /// work, and an accepted use makes a preparing revision no longer disposable.
-pub(crate) async fn retain(
-    connection: &mut SqliteConnection,
-    session: &str,
-) -> Result<(), StoreError> {
-    super::removal::require_accepting(connection, session).await?;
-    let importing: bool = sqlx::query_scalar(
+pub(crate) fn retain(connection: &rusqlite::Connection, session: &str) -> Result<(), StoreError> {
+    super::removal::require_accepting(connection, session)?;
+    let importing: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM session_imports WHERE session_id=? AND state!='published')",
-    )
-    .bind(session)
-    .fetch_one(&mut *connection)
-    .await?;
+        params![session],
+        |row| row.get(0),
+    )?;
     if importing {
         return Err(StoreError::InvalidTransition(
             "Session import is not published".into(),
         ));
     }
-    super::copy::retain(connection, session).await
+    super::copy::retain(connection, session)
 }
 
 impl EventLog {
     /// Native process acceptance has no canonical invocation. The Host pins its
     /// admission gate through this commit and actual launch.
     pub async fn retain_session(&self, session: &str) -> Result<(), StoreError> {
-        self.validate_root()?;
         super::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    retain(&mut tx, &session).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                retain(&tx, &session)?;
+                tx.commit().map_err(StoreError::CommitUnknown)
             })
             .await
     }

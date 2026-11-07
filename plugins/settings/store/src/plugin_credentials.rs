@@ -23,7 +23,7 @@ use maka_capabilities::credentials::Write;
 use maka_capabilities::credentials::WriteResult;
 use maka_capabilities::storage::Namespace;
 use maka_capabilities::storage::validate_key;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 
 impl ConfigurationStore {
     pub async fn plugin_credential(
@@ -33,7 +33,7 @@ impl ConfigurationStore {
     ) -> Result<Option<Record>> {
         validate_key(&key).map_err(invalid)?;
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move { read(tx, &namespace, &key).await })
+            read(tx, &namespace, &key)
         })
         .await
     }
@@ -45,26 +45,18 @@ impl ConfigurationStore {
         input: Write,
     ) -> Result<WriteResult> {
         input.validate().map_err(invalid)?;
-        self.transaction(TransactionMode::Immediate, move |tx| Box::pin(async move {
-            let actual = read(tx, &namespace, &input.key).await?.map(|record| record.revision);
+        self.transaction(TransactionMode::Immediate, move |tx| {
+            let actual = read(tx, &namespace, &input.key)?.map(|record| record.revision);
             if actual != input.expected_revision { return Ok(WriteResult::Conflict { actual }); }
             let revision = actual.unwrap_or(0) + 1;
-            sqlx::query("INSERT INTO plugin_credentials (package_id, scope_id, key, revision, secret) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(package_id, scope_id, key) DO UPDATE SET revision = excluded.revision, secret = excluded.secret")
-                .bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(&input.key)
-                .bind(revision as i64).bind(input.secret).execute(&mut *tx).await?;
+            tx.execute("INSERT INTO plugin_credentials (package_id, scope_id, key, revision, secret) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(package_id, scope_id, key) DO UPDATE SET revision = excluded.revision, secret = excluded.secret", rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), &input.key, revision as i64, input.secret])?;
             Ok(WriteResult::Written { revision })
-        })).await
+        }).await
     }
 }
-async fn read(
-    tx: &mut SqliteConnection,
-    namespace: &Namespace,
-    key: &str,
-) -> Result<Option<Record>> {
-    let row: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT revision, secret FROM plugin_credentials WHERE package_id = ? AND scope_id = ? AND key = ?")
-        .bind(namespace.package()).bind(String::from(namespace.scope().clone())).bind(key).fetch_optional(tx).await?;
+fn read(tx: &Connection, namespace: &Namespace, key: &str) -> Result<Option<Record>> {
+    let row: Option<(i64, Option<String>)> = tx.prepare_cached("SELECT revision, secret FROM plugin_credentials WHERE package_id = ? AND scope_id = ? AND key = ?")?.query_row(rusqlite::params![namespace.package(), String::from(namespace.scope().clone()), key], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
     row.map(|(revision, secret)| {
         Ok(Record {
             revision: crate::database::unsigned(revision)?,

@@ -80,6 +80,7 @@ const hooks = registerHooks({
 const { createPendingRecovery } = await import(new URL('pendingRecovery.ts', appRoot));
 const { createAttachmentDraft } = await import(new URL('attachmentDraft.ts', appRoot));
 const { createRootUiSettings } = await import(new URL('rootUiSettingsState.ts', appRoot));
+const { createSettingsOperations } = await import(new URL('settingsOperations.ts', appRoot));
 const { createTerminals } = await import(new URL('terminalState.ts', appRoot));
 const { signal } = await import('nsh');
 hooks.deregister();
@@ -406,6 +407,184 @@ test('interface recovery observes reserved and unresolved operations without rep
   assert.equal(owner.notice(), 'Interface selected.');
 });
 
+for (const kind of ['write', 'recover']) {
+  test(`settings ${kind} holds admission and idle observers through the final status refresh`, async (t) => {
+    setup(t);
+    const command = Promise.withResolvers();
+    const status = Promise.withResolvers();
+    const original = { id: 'setting', endpoint: 'settings', method: 'updateAssistantPreferences' };
+    const originals = kind === 'recover' ? [original] : [];
+    const value = { kind: 'committed', revision: 7 };
+    const reply = { receipt: { kind: 'recorded', outcome: { kind: 'returned', value } } };
+    const requests = [];
+    const observed = [];
+    let refreshing = false;
+    let owner;
+    const receive = (value) => observed.push(value);
+    const accepted = (request) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        if (kind === 'write') void owner.run(async () => observed.push('reentered'));
+        else void owner.recover(() => observed.push('reentered'));
+      }
+      refreshing = true;
+      return command.promise;
+    };
+    owner = createSettingsOperations({
+      pendingSettings: () => (refreshing ? status.promise : Promise.resolve(originals)),
+      settingsMutation: (endpoint, method, input) => accepted({ endpoint, method, input }),
+      recoverSetting: (id) => accepted({ id }),
+    });
+    await flush();
+    const running =
+      kind === 'write'
+        ? owner.run(async () => {
+            receive(
+              await owner.mutate('settings', 'updateAssistantPreferences', { enabled: true }),
+            );
+          })
+        : owner.recover((_, value) => receive(value));
+    let idle = false;
+    const waiting = owner.whenIdle().then(() => {
+      idle = true;
+    });
+    assert.equal(owner.busy(), true);
+    await flush();
+    assert.deepEqual(
+      requests,
+      kind === 'write'
+        ? [{ endpoint: 'settings', method: 'updateAssistantPreferences', input: { enabled: true } }]
+        : [{ id: 'setting' }],
+    );
+    command.resolve(kind === 'write' ? { reply } : reply);
+    await flush();
+    assert.deepEqual(observed, [value]);
+    assert.equal(owner.busy(), true);
+    assert.equal(idle, false);
+    status.reject(new Error('status unavailable'));
+    await running;
+    await waiting;
+    assert.equal(owner.error(), 'This action could not be completed.');
+    assert.equal(owner.pendingKnown(), false);
+    assert.equal(owner.busy(), false);
+    assert.equal(idle, true);
+  });
+}
+
+test('a disposed settings owner still drains its accepted mutation and becomes idle', async (t) => {
+  setup(t);
+  const command = Promise.withResolvers();
+  const requests = [];
+  const owner = createSettingsOperations({
+    pendingSettings: async () => [],
+    settingsMutation: (endpoint, method, input) => {
+      requests.push({ endpoint, method, input });
+      return command.promise;
+    },
+  });
+  await flush();
+  let result;
+  const running = owner.run(async () => {
+    result = await owner.mutate('settings', 'updateAssistantPreferences', { enabled: false });
+  });
+  await flush();
+  for (const dispose of [...globalThis.recoveryScope].reverse()) dispose();
+  let idle = false;
+  void owner.whenIdle().then(() => {
+    idle = true;
+  });
+  await flush();
+  assert.equal(idle, false);
+  assert.deepEqual(requests, [
+    {
+      endpoint: 'settings',
+      method: 'updateAssistantPreferences',
+      input: { enabled: false },
+    },
+  ]);
+  command.resolve({
+    reply: {
+      receipt: { kind: 'recorded', outcome: { kind: 'returned', value: { kind: 'committed' } } },
+    },
+  });
+  await running;
+  assert.deepEqual(result, { kind: 'committed' });
+  assert.equal(owner.busy(), false);
+  idle = false;
+  void owner.whenIdle().then(() => {
+    idle = true;
+  });
+  await flush();
+  assert.equal(idle, true);
+});
+
+test('interface selection waits for the original failure and final status refresh before becoming idle', async (t) => {
+  setup(t);
+  const command = Promise.withResolvers();
+  const status = Promise.withResolvers();
+  const source = { revision: 1 };
+  const choice = {
+    key: 'replacement',
+    id: 'root',
+    declaration: { kind: 'root' },
+    instance: { path: ['interface'], instance: {}, package: { id: 'interface' } },
+  };
+  const active = signal(false);
+  const requests = [];
+  let refreshing = false;
+  const owner = createRootUiSettings(
+    { contributions: () => [choice], root: () => null, source: () => source },
+    {
+      services: {
+        management: [
+          {
+            query: async () => ({ text: JSON.stringify({ input: { ui: null } }) }),
+            mutation: (method, input) => {
+              requests.push({ method, input });
+              void owner.choose(owner.action(choice));
+              refreshing = true;
+              return command.promise;
+            },
+          },
+        ],
+      },
+      operations: { pending: () => (refreshing ? status.promise : Promise.resolve([])) },
+    },
+    active,
+  );
+  owner.activate();
+  await flush();
+  active.set(true);
+  const running = owner.choose(owner.action(choice));
+  let idle = false;
+  const waiting = owner.whenIdle().then(() => {
+    idle = true;
+  });
+  assert.equal(owner.busy(), true);
+  await flush();
+  assert.deepEqual(requests, [
+    {
+      method: 'replaceSource',
+      input: {
+        expectedRevision: 1,
+        document: { input: { ui: { path: ['interface'], id: 'root' } } },
+      },
+    },
+  ]);
+  command.reject(new Error('replacement unavailable'));
+  await flush();
+  assert.equal(owner.error(), 'This action could not be completed.');
+  assert.equal(owner.busy(), true);
+  assert.equal(idle, false);
+  status.resolve([]);
+  await running;
+  await waiting;
+  assert.equal(owner.busy(), false);
+  assert.equal(owner.disabled(), false);
+  assert.equal(owner.pendingKnown(), true);
+  assert.equal(idle, true);
+});
+
 for (const terminal of ['uploaded', 'abandoned']) {
   test(`a successful ${terminal} observation clears an earlier recovery failure`, async (t) => {
     setup(t);
@@ -599,6 +778,67 @@ test('terminal controls become available after their initial status read fails w
   assert.equal(model.known(), true);
   assert.deepEqual(model.pending(), []);
   assert.equal(mutations, 0);
+});
+
+test('a selected terminal owner ignores late list and pending results from the previous session', async (t) => {
+  setup(t);
+  const selected = signal('first');
+  const lateStatus = Promise.withResolvers();
+  const lateWatch = Promise.withResolvers();
+  const nextPending = [{ id: 'next-operation' }];
+  const row = (sessionId, ref) => ({
+    sessionId,
+    result: { kind: 'shell_run', ref, startedAt: 1, status: 'running' },
+  });
+  let firstReads = 0;
+  let firstWatches = 0;
+  let lateCloses = 0;
+  globalThis.terminalBoundary = {
+    pending: (scope) =>
+      scope.sessionId === 'first' && ++firstReads > 1
+        ? lateStatus.promise
+        : Promise.resolve(scope.sessionId === 'next' ? nextPending : []),
+  };
+  const owner = createTerminals(
+    {
+      session: (sessionId) => ({ sessionId }),
+      subscribe: async (_, __, input) => {
+        if (input.sessionId === 'first' && ++firstWatches > 1) return lateWatch.promise;
+        const opened = stream({
+          kind: 'completed',
+          value: {
+            resources: [row(input.sessionId, `${input.sessionId}-terminal`)],
+          },
+        });
+        return { next: () => opened.next(), close: async () => opened.close() };
+      },
+    },
+    { sessionId: selected, active: () => true, open() {} },
+  );
+  await flush();
+  assert.equal(owner.entries()[0].value().result.ref, 'first-terminal');
+  assert.equal(owner.known(), true);
+  owner.refresh();
+  selected.set('next');
+  await flush();
+  assert.equal(owner.entries()[0].value().result.ref, 'next-terminal');
+  assert.deepEqual(owner.pending(), nextPending);
+  lateStatus.resolve([{ id: 'previous-operation' }]);
+  lateWatch.resolve({
+    next: async () => ({
+      kind: 'completed',
+      value: { resources: [row('first', 'late-terminal')] },
+    }),
+    close: async () => {
+      lateCloses++;
+    },
+  });
+  await flush();
+  assert.equal(owner.entries()[0].value().result.ref, 'next-terminal');
+  assert.deepEqual(owner.pending(), [{ id: 'next-operation' }]);
+  assert.equal(owner.known(), true);
+  assert.equal(owner.error(), '');
+  assert.equal(lateCloses, 1);
 });
 
 test('a late unresolved recovery cannot resurrect an upload already ended by observation', async (t) => {

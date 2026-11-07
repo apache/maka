@@ -72,7 +72,6 @@ async fn inventory_confirms_only_selected_descendants_across_history_and_host_pa
             session_id: "branch".into(),
             creator: Namespace::new("example.orchestrator", Scope::Profile).unwrap(),
             fingerprint: "branch".into(),
-            managed: false,
             authority_session_id: Some("root".into()),
         },
     )
@@ -83,7 +82,6 @@ async fn inventory_confirms_only_selected_descendants_across_history_and_host_pa
             session_id: "child".into(),
             creator: Namespace::new("example.orchestrator", Scope::Profile).unwrap(),
             fingerprint: "child".into(),
-            managed: true,
             authority_session_id: Some("branch".into()),
         },
         &json!({}),

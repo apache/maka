@@ -91,12 +91,12 @@ export function MermaidView(props: { source(): string }) {
     const source = props.source();
     const maxWidth = Math.floor(width());
     const palette = {
-      background: C.background,
+      background: C.panel,
       text: C.text,
       muted: C.muted,
       secondary: C.secondary,
-      surface: C.surface,
-      raised: C.raised,
+      surface: C.card,
+      raised: C.cardRaised,
       line: C.line,
       accent: C.accent,
       danger: C.danger,

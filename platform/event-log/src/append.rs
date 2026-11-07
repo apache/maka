@@ -23,7 +23,7 @@ use maka_agent_facts::event::EventSink;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::interaction::GrantCapability;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::OptionalExtension;
 
 use crate::{EventLog, StoreError, sequence_number};
 
@@ -63,7 +63,6 @@ impl EventLog {
                 .map_err(commit_error)?;
         }
         if let Some(statement) = write::WriteAppend::from_events(events) {
-            self.validate_root().map_err(commit_error)?;
             return self
                 .connection
                 .write(
@@ -180,7 +179,6 @@ impl EventLog {
         if let Some((last, _)) = &dispatch {
             self.check_bound_session(&last.event().invocation.session_id)?;
         }
-        self.validate_root()?;
         let mut events = events.to_vec();
         let capability = dispatch.map(|(last, admission)| {
             events.push(last.clone());
@@ -192,13 +190,23 @@ impl EventLog {
                 .map(|event| event.event().invocation.session_id.as_str()),
         );
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
+            .run_prepared(
+                move || {
+                    let prepared = events
+                        .iter()
+                        .map(PreparedAppend::new)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok((events, capability, commits, prepared))
+                },
+                |connection, (events, capability, commits, prepared)| {
+                    let transaction = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
                     let mut sequences = Vec::with_capacity(events.len());
                     let mut last_inserted = None;
                     let mut activation_changed = false;
-                    for (index, event) in events.iter().enumerate() {
+                    for (index, (event, material)) in events.iter().zip(prepared).enumerate() {
                         let admission = capability.as_ref().filter(|_| index + 1 == events.len());
                         if let Some(admission) = admission {
                             let CapabilityAdmission {
@@ -209,17 +217,15 @@ impl EventLog {
                             } = admission;
                             if matches!(lane, ComputerLane::Native) {
                                 crate::native_computer::require_native_turn_running(
-                                    &mut transaction,
+                                    &transaction,
                                     &event.event().invocation,
-                                )
-                                .await?;
+                                )?;
                             }
                             let full_access = crate::workspace_bindings::full_access(
-                                &mut transaction,
+                                &transaction,
                                 &event.event().invocation.session_id,
                                 basis,
-                            )
-                            .await?;
+                            )?;
                             for target in targets {
                                 let unrestricted = full_access
                                     && matches!(
@@ -233,11 +239,10 @@ impl EventLog {
                                     );
                                 if !unrestricted
                                     && crate::interactions::capability_grant(
-                                        &mut transaction,
+                                        &transaction,
                                         &event.event().invocation.session_id,
                                         target,
-                                    )
-                                    .await?
+                                    )?
                                     .is_none_or(|grant| grant.basis != Some(*basis))
                                 {
                                     return Err(StoreError::PermissionRevoked);
@@ -245,27 +250,26 @@ impl EventLog {
                             }
                             if let Some((target, display)) = app {
                                 crate::root_store::require_computer_app_running(
-                                    &mut transaction,
+                                    &transaction,
                                     &event.event().invocation,
                                     target,
                                     display,
-                                )
-                                .await?;
+                                )?;
                             }
                         }
-                        let result = Self::append_in_transaction(&mut transaction, event).await?;
+                        let result =
+                            Self::append_prepared_in_transaction(&transaction, event, material)?;
                         if let Some(CapabilityAdmission {
                             app: Some((target, display)),
                             ..
                         }) = admission
                         {
                             crate::root_store::record_computer_app_activity(
-                                &mut transaction,
+                                &transaction,
                                 event.event(),
                                 target,
                                 display,
-                            )
-                            .await?;
+                            )?;
                         }
                         activation_changed |= matches!(result, AppendResult::ActivationChanged(_));
                         let sequence = match result {
@@ -278,53 +282,56 @@ impl EventLog {
                         };
                         sequences.push(sequence);
                     }
-                    crate::context::validate_batch(&mut transaction, &events).await?;
+                    crate::context::validate_batch(&transaction, &events)?;
                     if let Some(sequence) = last_inserted {
-                        transaction
-                            .commit()
-                            .await
-                            .map_err(StoreError::CommitUnknown)?;
+                        transaction.commit().map_err(StoreError::CommitUnknown)?;
                         commits.publish(sequence);
                         if activation_changed {
                             commits.activations();
                         }
                     } else {
-                        transaction.rollback().await?;
+                        transaction.rollback()?;
                     }
                     drop(events);
                     Ok(sequences)
-                })
-            })
+                },
+            )
             .await
     }
 
-    pub(crate) async fn append_in_transaction(
-        transaction: &mut SqliteConnection,
+    pub(crate) fn append_in_transaction(
+        transaction: &rusqlite::Connection,
         write: &EventWrite,
     ) -> Result<AppendResult, StoreError> {
+        let prepared = PreparedAppend::new(write)?;
+        Self::append_prepared_in_transaction(transaction, write, prepared)
+    }
+
+    fn append_prepared_in_transaction(
+        transaction: &rusqlite::Connection,
+        write: &EventWrite,
+        prepared: PreparedAppend,
+    ) -> Result<AppendResult, StoreError> {
+        let PreparedAppend { canonical, tool } = prepared;
         let event = write.event();
-        crate::recovery::require_local(transaction, &event.invocation.invocation_id).await?;
-        let removal =
-            crate::sessions::removal::read(transaction, &event.invocation.session_id).await?;
+        crate::recovery::require_local(transaction, &event.invocation.invocation_id)?;
+        let removal = crate::sessions::removal::read(transaction, &event.invocation.session_id)?;
         if removal == Some(crate::sessions::SessionRetirement::Removed) {
             return Err(StoreError::SessionRetired);
         }
-        let json = serde_json::to_string(event)?;
-        let previous=sqlx::query(sqlx::AssertSqlSafe(format!(
+        let json = &canonical.json;
+        let previous=transaction.prepare_cached(&(format!(
             "SELECT e.sequence,e.event_header,{columns} FROM runtime_events e {joins} WHERE e.event_id=?",
             columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
-        ))).bind(&event.id).fetch_optional(&mut *transaction).await?;
-        if let Some(previous) = previous {
-            use sqlx::Row;
-            let sequence: i64 = previous.try_get(0)?;
-            if crate::canonical::json(&previous)?.as_ref() != json {
+        )))?.query_row(rusqlite::params![&event.id], |row| Ok((row.get::<_,i64>(0)?, crate::canonical::json(row).map(|v|v.into_owned())))).optional()?;
+        if let Some((sequence, previous)) = previous {
+            if previous? != *json {
                 return Err(StoreError::EventConflict);
             }
-            drop(previous);
-            crate::tool_payloads::verify_replay(transaction, write).await?;
-            crate::composition::verify_replay(transaction, write).await?;
-            crate::usage::valuation::verify_replay(transaction, write).await?;
-            crate::archive::verify_replay(transaction, event).await?;
+            crate::tool_payloads::verify_replay(transaction, write)?;
+            crate::composition::verify_replay(transaction, write)?;
+            crate::usage::valuation::verify_replay(transaction, write)?;
+            crate::archive::verify_replay(transaction, event)?;
             return Ok(AppendResult::Existing(sequence_number(sequence)?));
         }
         if removal.is_some()
@@ -338,76 +345,75 @@ impl EventLog {
         {
             return Err(StoreError::SessionRetired);
         }
-        history::validate(transaction, event).await?;
+        history::validate(transaction, event)?;
         if matches!(event.fact, Fact::InvocationOpened { .. }) {
-            crate::sessions::retain(transaction, &event.invocation.session_id).await?;
-            let archived: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ? AND archived = 1)",
-            )
-            .bind(&event.invocation.session_id)
-            .fetch_one(&mut *transaction)
-            .await?;
+            crate::sessions::retain(transaction, &event.invocation.session_id)?;
+            let archived: bool = transaction
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ? AND archived = 1)",
+                )?
+                .query_row(rusqlite::params![&event.invocation.session_id], |row| {
+                    row.get(0)
+                })?;
             if archived {
                 return Err(StoreError::InvalidTransition(
                     "cannot admit an archived session".into(),
                 ));
             }
-            if crate::sessions::has_active_invocation(transaction, &event.invocation.session_id)
-                .await?
-            {
+            if crate::sessions::has_active_invocation(transaction, &event.invocation.session_id)? {
                 return Err(StoreError::InvalidTransition(
                     "session already has an unsealed invocation".into(),
                 ));
             }
         }
-        crate::handoff::validate_admission(transaction, event).await?;
-        crate::message_identity::validate(transaction, event).await?;
-        crate::message_admissions::consume(transaction, event).await?;
+        crate::handoff::validate_admission(transaction, event)?;
+        crate::message_identity::validate(transaction, event)?;
+        crate::message_admissions::consume(transaction, event)?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
-            crate::interactions::lifecycle::require_closed(transaction, &event.invocation).await?;
-            crate::native_approvals::require_terminal(transaction, &event.invocation).await?;
+            crate::interactions::lifecycle::require_closed(transaction, &event.invocation)?;
+            crate::native_approvals::require_terminal(transaction, &event.invocation)?;
         }
         let checkpoint_changed: bool = if matches!(
             event.fact,
             Fact::ModelRequested { .. } | Fact::InvocationEnded { .. }
         ) {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE invocation_id=? AND active=1)")
-                .bind(&event.invocation.invocation_id).fetch_one(&mut *transaction).await?
+            transaction.prepare_cached("SELECT EXISTS(SELECT 1 FROM native_approval_checkpoints WHERE invocation_id=? AND active=1)")?.query_row(rusqlite::params![&event.invocation.invocation_id], |row| row.get(0))?
         } else {
             false
         };
-        crate::native_approvals::append_model_request(transaction, write).await?;
+        crate::native_approvals::append_model_request(transaction, write)?;
         let sequence =
-            ingress::insert(transaction, event, json, ingress::Position::Admitted).await?;
-        let activation_changed =
-            crate::native_approvals::append_settlement(transaction, event).await?;
+            ingress::insert_prepared(transaction, event, canonical, ingress::Position::Admitted)?;
+        let activation_changed = crate::native_approvals::append_settlement(transaction, event)?;
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
-            crate::native_approvals::retire_terminal(transaction, &event.invocation).await?;
+            crate::native_approvals::retire_terminal(transaction, &event.invocation)?;
         }
-        crate::message_sources::insert(transaction, event).await?;
-        crate::tool_payloads::insert(transaction, write).await?;
-        crate::artifacts::freeze_tool_media(transaction, event, sequence).await?;
-        crate::composition::insert(transaction, write).await?;
-        crate::usage::valuation::append(transaction, write).await?;
-        crate::root_store::usage_meter::append(transaction, event).await?;
+        crate::message_sources::insert(transaction, event)?;
+        crate::tool_payloads::insert_prepared(transaction, write, tool)?;
+        crate::artifacts::freeze_tool_media(transaction, event, sequence)?;
+        crate::composition::insert(transaction, write)?;
+        crate::usage::valuation::append(transaction, write)?;
+        crate::root_store::usage_meter::append(transaction, event)?;
         if matches!(&event.fact, Fact::InvocationEnded { outcome } if !matches!(outcome, maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }))
         {
             // App Stop owns the logical Turn, so physical handoffs retain its
             // source selection. A terminal boundary releases the event FK and
             // its dependent Stop state in this same canonical transaction.
-            sqlx::query("DELETE FROM computer_app_turn_activity WHERE session_id=? AND turn_id=?")
-                .bind(&event.invocation.session_id)
-                .bind(&event.invocation.turn_id)
-                .execute(&mut *transaction)
-                .await?;
+            transaction
+                .prepare_cached(
+                    "DELETE FROM computer_app_turn_activity WHERE session_id=? AND turn_id=?",
+                )?
+                .execute(rusqlite::params![
+                    &event.invocation.session_id,
+                    &event.invocation.turn_id
+                ])?;
         }
         if matches!(event.fact, Fact::InvocationEnded { .. }) {
             crate::sessions::read_state::mark_unread(
                 transaction,
                 &event.invocation.session_id,
                 &event.invocation.invocation_id,
-            )
-            .await?;
+            )?;
         }
         if matches!(
             event.fact,
@@ -417,8 +423,8 @@ impl EventLog {
                 | Fact::ModelInterrupted { .. }
                 | Fact::InvocationEnded { .. }
         ) {
-            crate::sessions::project_execution(transaction, sequence).await?;
-            crate::sessions::advance_revision(transaction, &event.invocation.session_id).await?;
+            crate::sessions::project_execution(transaction, sequence)?;
+            crate::sessions::advance_revision(transaction, &event.invocation.session_id)?;
         }
         Ok(if activation_changed || checkpoint_changed {
             AppendResult::ActivationChanged(sequence)
@@ -429,13 +435,29 @@ impl EventLog {
 }
 
 fn commit_error(error: StoreError) -> CommitError {
-    match error {
-        StoreError::CommitUnknown(error) => CommitError::OutcomeUnknown(error.to_string()),
+    match error.underlying() {
+        StoreError::CommitUnknown(_) => CommitError::OutcomeUnknown(error.to_string()),
         StoreError::OperationUnknown => CommitError::OutcomeUnknown(error.to_string()),
         StoreError::SessionRetired => CommitError::Retired,
         StoreError::PermissionRevoked => CommitError::PermissionRevoked,
         StoreError::NativeTurnInterrupted => CommitError::NativeTurnInterrupted,
-        other => CommitError::Rejected(other.to_string()),
+        _ => CommitError::Rejected(error.to_string()),
+    }
+}
+
+struct PreparedAppend {
+    canonical: crate::canonical::PreparedCanonical,
+    tool: crate::tool_payloads::PreparedToolWrite,
+}
+impl PreparedAppend {
+    fn new(write: &EventWrite) -> Result<Self, StoreError> {
+        Ok(Self {
+            canonical: crate::canonical::PreparedCanonical::new(
+                write.event(),
+                serde_json::to_string(write.event())?,
+            )?,
+            tool: crate::tool_payloads::prepare(write)?,
+        })
     }
 }
 

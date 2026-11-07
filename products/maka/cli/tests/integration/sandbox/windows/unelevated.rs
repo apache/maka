@@ -20,7 +20,10 @@
 use std::{
     io,
     mem::size_of,
-    os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
+    },
     path::Path,
     ptr,
 };
@@ -140,14 +143,18 @@ pub(super) fn verify(root: &Path, state: &Path, work: &Path) -> io::Result<()> {
         member, 0,
         "acceptance Host token must not be an administrator"
     );
-    let executable = env!("CARGO_BIN_EXE_maka");
+    let executable = crate::maka_executable();
     let mut command = wide(&format!(
         r#"maka sandbox run --root "{}" --policy "{}" --cwd "{}" --command "'accepted' | Set-Content unelevated""#,
         state.display(),
         root.join("policy.json").display(),
         work.display()
     ));
-    let executable = wide(executable);
+    let executable: Vec<_> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     let system = std::env::var("SystemRoot").map_err(io::Error::other)?;
     let mut environment = Vec::new();
     for (name, value) in [

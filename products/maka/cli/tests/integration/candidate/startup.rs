@@ -41,7 +41,7 @@ fn host_logs_reads_captured_stderr_without_an_installed_deployment() {
     capture.write_all(b"pre-Ready host failure\n\xff").unwrap();
     drop(capture);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let output = Command::new(crate::maka_executable())
         .args(["host", "logs", "--root-id", &fixture.root_id])
         .output()
         .unwrap();
@@ -66,7 +66,7 @@ fn host_logs_reads_captured_stderr_without_an_installed_deployment() {
 fn start(directory: &Path) -> CandidateFixture {
     let mut fixture = CandidateFixture::new(directory.join("root"));
     fixture.child = Some(
-        Command::new(env!("CARGO_BIN_EXE_maka"))
+        Command::new(crate::maka_executable())
             .args(["host", "candidate", "--root"])
             .arg(&fixture.root)
             .args([
@@ -168,7 +168,7 @@ fn detached_candidate_captures_pre_ready_failure() {
         let capture = Source::from_owner(&owner).unwrap().open_capture().unwrap();
         drop(owner);
         let mut child = maka_process::detached::spawn(
-            Path::new(env!("CARGO_BIN_EXE_maka")),
+            &crate::maka_executable(),
             &[
                 "host",
                 "candidate",
@@ -191,7 +191,7 @@ fn detached_candidate_captures_pre_ready_failure() {
         }
         let status = outcome.expect("candidate startup did not settle").unwrap();
         assert!(!status.success(), "the invalid Root identity was accepted");
-        let output = Command::new(env!("CARGO_BIN_EXE_maka"))
+        let output = Command::new(crate::maka_executable())
             .args(["host", "logs", "--root-id", &fixture.root_id])
             .output()
             .unwrap();
@@ -243,7 +243,7 @@ fn host_logs_follow_streams_uninstalled_root_and_exits_with_a_full_stdout_pipe()
     #[cfg(target_os = "linux")]
     assert!(unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETPIPE_SZ, 4096) } >= 4096);
     fixture.child = Some(
-        Command::new(env!("CARGO_BIN_EXE_maka"))
+        Command::new(crate::maka_executable())
             .args([
                 "--timeout-ms",
                 "1",

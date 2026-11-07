@@ -508,10 +508,15 @@ enum RetainedPresentation {
     Failed(String),
 }
 
+#[derive(Clone)]
+struct PhysicalClaimCustody {
+    claim: ExtensionPhysicalClaim,
+    epoch: Option<crate::desktop::NativeEpochId>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct ClaimState {
-    claim: Option<ExtensionPhysicalClaim>,
-    physical_epoch: Option<crate::desktop::NativeEpochId>,
+    physical_claim: Option<PhysicalClaimCustody>,
     creation: Option<ExtensionCreationReceipt>,
     creation_operation: Option<CreatedOperation>,
     group: Option<ExtensionManagedGroupReceipt>,
@@ -543,6 +548,10 @@ pub(super) struct ClaimState {
     retained_presentation: RetainedPresentation,
 }
 impl ClaimState {
+    fn physical_claim(&self) -> Option<&ExtensionPhysicalClaim> {
+        self.physical_claim.as_ref().map(|custody| &custody.claim)
+    }
+
     fn finish_preparation_error(
         &mut self,
         operation: Option<&ExtensionHostOperation>,
@@ -693,8 +702,8 @@ impl PopupSource {
             .ok_or_else(|| failed("extension popup opener custody is unavailable"))?;
         match self {
             Self::Physical(_) => state
-                .claim
-                .clone()
+                .physical_claim()
+                .cloned()
                 .map(PopupOpener::Physical)
                 .ok_or_else(|| failed("extension popup opener has no actual physical claim")),
             Self::Fixed(_) => state
@@ -1683,14 +1692,18 @@ impl Host {
             || lease.creator.generation != binding.generation
             || lease.creator.turn != binding.turn_id
             || !matches!(lease.disposition, Disposition::Live)
-            || state.physical_epoch != Some(preparation.epoch)
+            || state
+                .physical_claim
+                .as_ref()
+                .and_then(|custody| custody.epoch)
+                != Some(preparation.epoch)
             || state.revoked
             || state.cleanup_started
             || state.released
             || state.closed
             || state.unknown.is_some()
             || state.cdp_effect_unknown.is_some()
-            || state.claim.as_ref().is_none_or(|claim| {
+            || state.physical_claim().is_none_or(|claim| {
                 claim.is_cleanup_only()
                     || claim.claim_id() != preparation.claim.claim_id()
                     || claim.tab_id() != preparation.claim.tab_id()
@@ -1823,8 +1836,7 @@ impl Host {
                 request.target,
                 crate::BrowserPreparationTarget::ReservedTab { .. }
             ) && matches!(lease.retention, Retention::Handoff)
-                && state.claim.is_none()
-                && state.physical_epoch.is_none();
+                && state.physical_claim.is_none();
             let logical_fixed = prospective_fixed
                 || matches!(
                     &request.target,
@@ -1910,8 +1922,12 @@ impl Host {
                 }
             }
             if let crate::BrowserPreparationTarget::ClaimedTab { claim_id, .. } = &request.target
-                && (state.physical_epoch != Some(scope.epoch)
-                    || state.claim.as_ref().is_none_or(|claim| {
+                && (state
+                    .physical_claim
+                    .as_ref()
+                    .and_then(|custody| custody.epoch)
+                    != Some(scope.epoch)
+                    || state.physical_claim().is_none_or(|claim| {
                         claim.is_cleanup_only()
                             || claim.claim_id() != claim_id
                             || claim.tab_id().to_string() != *tab_id
@@ -1983,8 +1999,7 @@ impl Host {
                         !state.revoked
                             && !state.cleanup_started
                             && state
-                                .claim
-                                .as_ref()
+                                .physical_claim()
                                 .is_some_and(|claim| claim.claim_id() == request.claim_id())
                     })
             })
@@ -2103,7 +2118,7 @@ impl Host {
                     && lease
                         .extension
                         .as_ref()
-                        .and_then(|state| state.claim.as_ref())
+                        .and_then(|state| state.physical_claim())
                         .is_some_and(|claim| claim.claim_id() == proof.claim_id())
             })
             .ok_or_else(|| unknown("extension preparation lost its exact physical claim"))?;
@@ -2606,8 +2621,7 @@ impl Host {
             .extension
             .as_ref()
             .ok_or_else(|| unknown("handoff lost logical custody"))?;
-        if state.claim.is_some()
-            || state.physical_epoch.is_some()
+        if state.physical_claim.is_some()
             || state.physical_cleanup.is_some()
             || state.unknown.is_some()
             || state.cdp_effect_unknown.is_some()
@@ -3190,7 +3204,7 @@ impl Host {
             )));
         }
         let Some(cleanup) = state.physical_cleanup else {
-            if state.claim.is_none() {
+            if state.physical_claim.is_none() {
                 return Ok(());
             }
             return Err(ToolError::CleanupUnconfirmed(format!(
@@ -3202,7 +3216,8 @@ impl Host {
                     .unwrap_or_default(),
             )));
         };
-        if let Some(claim) = &state.claim {
+        if let Some(custody) = &state.physical_claim {
+            let claim = &custody.claim;
             let drain = state.cdp_drain.as_ref().ok_or_else(|| {
                 ToolError::CleanupUnconfirmed(
                     "extension claim lacks its exact fenced extension-invocation drain proof"
@@ -3253,8 +3268,7 @@ impl Host {
             .get_mut(identity)
             .and_then(|lease| lease.extension.as_mut())
             .ok_or_else(|| unknown("extension cleanup ACK lost custody"))?;
-        state.claim = None;
-        state.physical_epoch = None;
+        state.physical_claim = None;
         state.physical_cleanup = None;
         state.cdp_drain = None;
         if state.closed {
@@ -3392,7 +3406,7 @@ impl Host {
         let previous_origin = previous_logical.as_ref().map(|(_, _, origin)| *origin);
         if let Some((previous, _, _)) = previous_logical {
             let settled = self.tabs[&previous].extension.as_ref().is_none_or(|state| {
-                state.claim.is_none()
+                state.physical_claim.is_none()
                     && state.unknown.is_none()
                     && state.cdp_effect_unknown.is_none()
                     && state.fixed_preparation.settled()
@@ -3602,7 +3616,7 @@ impl Host {
                         && lease
                             .extension
                             .as_ref()
-                            .and_then(|state| state.claim.as_ref())
+                            .and_then(|state| state.physical_claim())
                             .is_some_and(|owned| owned.claim_id() == claim)
                 })
                 .map(|(identity, _)| identity.target.clone()),
@@ -3911,8 +3925,7 @@ impl Host {
                     .as_mut()
                     .ok_or_else(|| unknown("extension claim replaced CDP custody"))?;
                 if state
-                    .claim
-                    .as_ref()
+                    .physical_claim()
                     .is_none_or(|previous| previous.claim_id() != claim.claim_id())
                 {
                     state.focus_readiness = FocusReadiness::NotAttempted;
@@ -3924,8 +3937,10 @@ impl Host {
                         state.lease_children = None;
                     }
                 }
-                state.physical_epoch = call.as_ref().map(|call| call.epoch);
-                state.claim = Some(claim);
+                state.physical_claim = Some(PhysicalClaimCustody {
+                    claim,
+                    epoch: call.as_ref().map(|call| call.epoch),
+                });
                 state.released = false;
             }
             ExtensionRecoveredOperation::Cleanup(proof) => {
@@ -4298,9 +4313,8 @@ impl Host {
                         .extension
                         .as_mut()
                         .ok_or_else(|| unknown("unknown extension effect has no custody"))?;
-                    if custody.claim.is_some() {
-                        state.claim = custody.claim;
-                        state.physical_epoch = None;
+                    if let Some(claim) = custody.claim {
+                        state.physical_claim = Some(PhysicalClaimCustody { claim, epoch: None });
                     }
                     if custody.creation.is_some() {
                         state.creation = custody.creation;
@@ -4334,8 +4348,7 @@ impl Host {
                 }) {
                     if let Some(state) = &mut lease.extension
                         && state
-                            .claim
-                            .as_ref()
+                            .physical_claim()
                             .is_some_and(|owned| owned.claim_id() == claim)
                     {
                         let scoped_fixed = effect == "fixed_preparation"
@@ -4378,8 +4391,7 @@ impl Host {
                 }) {
                     if let Some(state) = &mut lease.extension
                         && state
-                            .claim
-                            .as_ref()
+                            .physical_claim()
                             .is_some_and(|owned| owned.claim_id() == claim)
                     {
                         state.presentation_error = Some(
@@ -4686,13 +4698,13 @@ impl Host {
         if state.unknown.is_some() || state.cdp_effect_unknown.is_some() {
             return Err(unknown("owner teardown retains unknown physical effects"));
         }
-        if state.claim.is_some()
+        if state.physical_claim.is_some()
             || !matches!(state.fixed_preparation, FixedPreparation::NotAttempted)
         {
             self.cleanup_extension_control(owner, identity, FixedCleanupPurpose::Owner)
                 .await?;
         }
-        if let Some(claim) = &state.claim {
+        if let Some(claim) = state.physical_claim() {
             if caps.header_scope == ExtensionHeaderPolicyScope::Claim
                 && (state.headers_active || state.preparation_effects.headers_may_exist)
             {
@@ -4733,7 +4745,7 @@ impl Host {
             .extension
             .as_ref()
             .ok_or_else(|| unknown("owner retirement lost custody"))?;
-        if state.claim.is_some()
+        if state.physical_claim.is_some()
             || !state.fixed_preparation.settled()
             || !state.preparation_effects.settled()
         {
@@ -4951,7 +4963,7 @@ impl Host {
                 if capabilities.header_scope == ExtensionHeaderPolicyScope::Claim
                     && (state.headers_active || state.preparation_effects.headers_may_exist)
                 {
-                    let claim = state.claim.as_ref().ok_or_else(|| {
+                    let claim = state.physical_claim().ok_or_else(|| {
                         ToolError::CleanupUnconfirmed(
                             "active extension headers lost their owned claim".into(),
                         )
@@ -4983,7 +4995,7 @@ impl Host {
                     self.cleanup_extension_control(owner, identity, purpose.clone())
                         .await?;
                 }
-                if state.claim.is_some() {
+                if state.physical_claim.is_some() {
                     if state.cdp_drain.is_none() {
                         return Err(unknown(
                             "extension claim must be drained before Turn cleanup",
@@ -5004,7 +5016,7 @@ impl Host {
                 }
                 match origin {
                     _ if mark.is_some() && !state.released => {
-                        let claim = state.claim.as_ref().ok_or_else(|| {
+                        let claim = state.physical_claim().ok_or_else(|| {
                             ToolError::CleanupUnconfirmed(
                                 "marked tab lacks its exact physical detach custody".into(),
                             )
@@ -5017,7 +5029,7 @@ impl Host {
                         detached.map_err(provider::extension_error)?;
                     }
                     Origin::UserClaimed if !state.released => {
-                        if let Some(claim) = &state.claim {
+                        if let Some(claim) = state.physical_claim() {
                             self.begin_extension_cleanup(identity)?;
                             let detached = scope
                                 .dispatch_retirement(scope.control.detach_tab(claim))
@@ -5630,8 +5642,7 @@ async fn register(
                     }) {
                         if let Some(state) = &mut lease.extension
                             && state
-                                .claim
-                                .as_ref()
+                                .physical_claim()
                                 .is_some_and(|owned| owned.claim_id() == claim)
                         {
                             state.revoked = true;
@@ -5789,8 +5800,8 @@ pub(super) async fn drain_extension_cleanup(
                     lease
                         .extension
                         .as_ref()?
-                        .claim
-                        .clone()
+                        .physical_claim()
+                        .cloned()
                         .map(|claim| (identity.clone(), claim, lease.creator.turn.clone()))
                 })
                 .collect();
@@ -5833,8 +5844,7 @@ pub(super) async fn drain_extension_cleanup(
                 .and_then(|lease| lease.extension.as_mut())
                 .filter(|state| {
                     state
-                        .claim
-                        .as_ref()
+                        .physical_claim()
                         .is_some_and(|current| current.claim_id() == claim.claim_id())
                 })
                 .ok_or_else(|| {
@@ -7541,7 +7551,7 @@ impl Tab {
             .tabs
             .get(&identity)
             .and_then(|lease| lease.extension.as_ref())
-            .and_then(|state| state.claim.clone());
+            .and_then(|state| state.physical_claim().cloned());
         if existing.is_none()
             && extension
                 .capabilities()
@@ -7673,7 +7683,7 @@ impl Tab {
                     .tabs
                     .get(&identity)
                     .and_then(|lease| lease.extension.as_ref())
-                    .and_then(|state| state.claim.clone())
+                    .and_then(|state| state.physical_claim().cloned())
                     .ok_or_else(|| {
                         unknown("metadata attachment has not been committed to Host custody")
                     })?
@@ -7688,7 +7698,7 @@ impl Tab {
             .map_err(failed)?,
         );
         self.extension_host_operation = Some(operation(invocation)?);
-        if let Some(socket) = &mut self.socket {
+        if let Some(socket) = self.connection.as_mut().map(TabConnection::socket_mut) {
             socket.extension_context = self.extension_wire.clone();
         }
         check_input(cancellation)
@@ -7842,9 +7852,7 @@ impl Tab {
                         .extension
                         .as_mut()
                         .ok_or_else(|| unknown("extension preparation lost physical custody"))?;
-                    if state
-                        .claim
-                        .as_ref()
+                    if state.physical_claim()
                         .is_none_or(|owned| owned.claim_id() != claim.claim_id())
                     {
                         return Err(unknown("extension preparation changed its physical claim"));
@@ -8420,7 +8428,7 @@ impl Tab {
         let needs_user_preparation =
             !already_prepared && !user_prepared && (!acquired || intent == ClaimIntent::Explicit);
         let changes_logical_active =
-            prior.metadata_attached || prior.claim.is_none() || needs_user_preparation;
+            prior.metadata_attached || prior.physical_claim.is_none() || needs_user_preparation;
         if needs_user_preparation
             && capabilities.session_preparation == ExtensionSessionPreparation::ProviderSession
         {
@@ -8485,7 +8493,7 @@ impl Tab {
             .tabs
             .get(&identity)
             .and_then(|lease| lease.extension.as_ref())
-            .and_then(|state| state.claim.clone());
+            .and_then(|state| state.physical_claim().cloned());
         if claim.is_none() {
             let raw_id = self.info.id.parse().map_err(failed)?;
             scope
@@ -8503,7 +8511,7 @@ impl Tab {
                 .tabs
                 .get(&identity)
                 .and_then(|lease| lease.extension.as_ref())
-                .and_then(|state| state.claim.clone());
+                .and_then(|state| state.physical_claim().cloned());
         }
         let claim = claim.ok_or_else(|| {
             unknown("extension attachment has not been committed to Host custody")
@@ -8536,7 +8544,7 @@ impl Tab {
         );
         self.extension_host_operation = Some(context.clone());
         self.capture_acquisition().await?;
-        if let Some(socket) = &mut self.socket {
+        if let Some(socket) = self.connection.as_mut().map(TabConnection::socket_mut) {
             socket.extension_context = self.extension_wire.clone();
         }
         {
@@ -8563,8 +8571,9 @@ impl Tab {
         self.refresh_info(BrowserCall::new(invocation, cancellation, language))
             .await?;
         self.connect_metadata().await?;
-        self.socket
+        self.connection
             .as_mut()
+            .map(TabConnection::socket_mut)
             .ok_or_else(|| failed("extension metadata channel is unavailable"))?
             .preparation = transport;
         check_input(cancellation)
@@ -8982,7 +8991,7 @@ impl Tab {
                 || lease
                     .extension
                     .as_ref()
-                    .and_then(|state| state.claim.as_ref())
+                    .and_then(|state| state.physical_claim())
                     .is_none_or(|current| {
                         current.claim_id() != claim.claim_id()
                             || current.target_id() != claim.target_id()

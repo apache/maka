@@ -42,9 +42,8 @@ pub mod projection;
 pub mod public_catalog;
 mod vault;
 
-pub use maka_event_log::connection::BoxFuture;
 use maka_event_log::{StoreError, connection::OwnedConnection, root::RootOwner};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::Connection;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -58,9 +57,7 @@ pub enum ConfigError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
-    #[error(transparent)]
-    Migration(#[from] sqlx::migrate::MigrateError),
+    Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Store(StoreError),
     #[error(transparent)]
@@ -74,8 +71,7 @@ impl From<StoreError> for ConfigError {
         match error {
             StoreError::OperationUnknown | StoreError::CommitUnknown(_) => Self::CommitUnknown,
             StoreError::UnsupportedDatabase => Self::UnsupportedDatabase,
-            StoreError::Sqlx(error) => Self::Sqlx(error),
-            StoreError::Migration(error) => Self::Migration(error),
+            StoreError::Sqlite(error) => Self::Sqlite(error),
             StoreError::Io(error) => Self::Io(error),
             error => Self::Store(error),
         }
@@ -101,32 +97,30 @@ impl ConfigurationStore {
     pub(crate) async fn transaction<T: Send + 'static>(
         &self,
         mode: TransactionMode,
-        operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T>>
-        + Send
-        + 'static,
+        operation: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection
-                        .begin_with(match mode {
-                            TransactionMode::Deferred => "BEGIN",
-                            TransactionMode::Immediate => "BEGIN IMMEDIATE",
-                        })
-                        .await?;
-                    match operation(&mut tx).await {
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        match mode {
+                            TransactionMode::Deferred => rusqlite::TransactionBehavior::Deferred,
+                            TransactionMode::Immediate => rusqlite::TransactionBehavior::Immediate,
+                        },
+                    )?;
+                    match operation(&tx) {
                         Ok(value) => Ok(tx
                             .commit()
-                            .await
                             .map(|()| value)
                             .map_err(|_| ConfigError::CommitUnknown)),
                         Err(error) => {
                             // Finish rollback before the next accepted job can run.
-                            tx.rollback().await?;
+                            tx.rollback()?;
                             Ok(Err(error))
                         }
                     }
-                })
+                }
             })
             .await?
     }

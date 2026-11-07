@@ -22,13 +22,14 @@ import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
-import { TextView, type TextViewDocument } from 'nsh/base';
+import { TextView } from 'nsh/base';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import { messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
+import { SkillMessage } from './SkillMessage';
 import {
   C,
   bodyTextStyle,
@@ -46,9 +47,9 @@ import type { ImagePreview } from './ImageThumbnail';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
-  if (origin?.kind === 'goal')
-    return tr('Pursuing Goal: {objective}', { objective: origin.objective });
-  return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
+  return origin?.kind === 'goal'
+    ? tr('Pursuing Goal: {objective}', { objective: origin.objective })
+    : null;
 }
 
 function senderLabel(sessionId: string, senders?: MessageSenders): string {
@@ -174,6 +175,7 @@ export function MessageRow({
               <Disclosure
                 label={tr('Agent message')}
                 tooltip={senderLabel(sender()!, senders)}
+                icon="split"
                 open={expanded()}
                 onPress={inputAction(setExpanded, {
                   sessionId,
@@ -196,7 +198,7 @@ export function MessageRow({
               >
                 <Text
                   style={[
-                    { ...disclosureTitleStyle, color: C.muted },
+                    { ...disclosureTitleStyle, color: C.secondary },
                     { numberOfLines: 1, textOverflow: 'ellipsis' },
                   ]}
                 >
@@ -232,31 +234,20 @@ export function MessageRow({
           );
         const text = computed(() => row().text);
         const thinking = () => row().field === 'thinking' || row().role === 'thinking';
-        const previewLine = computed(() =>
-          thinking() ? (/\S[^\r\n]*/.exec(text())?.[0] ?? '') : '',
-        );
-        const previewDocument = computed<TextViewDocument>(() => {
-          const document = TextView.parse(previewLine(), { streaming: true });
-          const first = document.blocks[0];
-          if (first?.type === 'paragraph') return { blocks: [first] };
-          if (first?.type === 'heading')
-            return {
-              blocks: [
-                { type: 'paragraph', content: [{ type: 'strong', content: first.content }] },
-              ],
-            };
-          return {
-            blocks: [
-              {
-                type: 'paragraph',
-                content: [{ type: 'text', text: TextView.plainText(document) }],
-              },
-            ],
-          };
-        });
+        const firstLine = computed(() => (thinking() ? /\S[^\r\n]*/.exec(text()) : null));
         const preview = computed(() =>
-          TextView.plainText(previewDocument()).replace(/\s+/g, ' ').trim(),
+          TextView.plainText(TextView.parse(firstLine()?.[0] ?? '', { streaming: true }))
+            .replace(/\s+/g, ' ')
+            .trim(),
         );
+        // Thinking that is only a bold title has nothing more to show; any other
+        // single line may be longer than its one-line preview.
+        const detailed = () => {
+          const line = firstLine();
+          if (!line) return false;
+          if (/\S/.test(text().slice(line.index + line[0].length))) return true;
+          return !/^\*\*[^*]+\*\*$/.test(line[0].trim());
+        };
         const isTool = () =>
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';
         const compact = () => thinking() || isTool();
@@ -371,14 +362,16 @@ export function MessageRow({
                         <Disclosure
                           label={summary()}
                           tooltip={summary()}
-                          open={expanded()}
+                          icon="thinking"
+                          foldable={detailed()}
+                          open={expanded() && detailed()}
                           onPress={inputAction(setExpanded, {
                             sessionId,
                             key: rowKey(row()),
                             value: !expanded(),
                           })}
                           trailing={
-                            <If when={expanded()}>
+                            <If when={expanded() && detailed()}>
                               <IconButton
                                 label={
                                   sourceMode()
@@ -396,28 +389,19 @@ export function MessageRow({
                             </If>
                           }
                         >
-                          <Icon name="thinking" color={C.muted} />
-                          <View
-                            accessibilityElementsHidden
-                            style={{ flex: 1, minWidth: 0, pointerEvents: 'none' }}
+                          <If when={platform.isTerminal}>
+                            <Icon name="thinking" color={C.muted} />
+                          </If>
+                          <Text
+                            style={[
+                              { ...disclosureTitleStyle, color: C.secondary },
+                              { numberOfLines: 1, textOverflow: 'ellipsis' },
+                            ]}
                           >
-                            <TextView
-                              document={previewDocument()}
-                              style={{ width: '100%', minWidth: 0 }}
-                              contentStyle={{ rowGap: 0 }}
-                              styles={{
-                                paragraph: {
-                                  ...disclosureTitleStyle,
-                                  color: C.muted,
-                                  numberOfLines: 1,
-                                  textOverflow: 'ellipsis',
-                                },
-                                link: { color: C.muted, textDecorationLine: 'none' },
-                              }}
-                            />
-                          </View>
+                            {preview()}
+                          </Text>
                         </Disclosure>
-                        <If when={expanded()}>
+                        <If when={expanded() && detailed()}>
                           <View
                             style={{
                               paddingLeft: disclosureContentInset(24),
@@ -479,13 +463,11 @@ export function MessageRow({
                   paddingHorizontal: 16,
                   paddingVertical: 16,
                   borderRadius: 20,
-                  backgroundColor: C.surface,
+                  backgroundColor: C.card,
                   gap: 8,
                 }}
               >
-                <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
-                  <SourceText row={row} sourceId={sourceId()} />
-                </Text>
+                <SkillMessage row={row} sourceId={sourceId()} />
                 <If when={(row().attachments?.length ?? 0) > 0}>
                   <HistoryAttachments
                     userScroll={userScroll}

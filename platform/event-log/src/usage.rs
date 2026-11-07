@@ -20,6 +20,8 @@
 //! Accounting reads use physical source facts, never copied conversation history.
 //! Missing counters remain unknown; this layer makes no pricing assumptions.
 
+use rusqlite::params;
+
 use crate::{EventLog, StoreError};
 pub use maka_agent_facts::accounting::Activity;
 pub use maka_agent_facts::accounting::AuxiliarySource;
@@ -28,7 +30,9 @@ pub use maka_agent_facts::accounting::Origin;
 pub use maka_agent_facts::accounting::Outcome;
 pub use maka_agent_facts::accounting::Selection;
 pub use maka_agent_facts::accounting::ToolAttempt;
-use sqlx::{Row, sqlite::SqliteRow};
+
+const PREDICATE: &str = " WHERE completed_at >= ?1 AND completed_at <= ?2
+    AND completed_sequence <= ?3";
 
 mod auxiliary;
 pub(crate) mod reads;
@@ -49,12 +53,12 @@ pub struct Query {
 
 impl Query {
     /// Capture inside the same read transaction as every section of the result.
-    async fn fence(&self, connection: &mut sqlx::SqliteConnection) -> Result<u64, StoreError> {
-        let current = crate::sequence_number(
-            sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM event_log")
-                .fetch_one(connection)
-                .await?,
-        )?;
+    fn fence(&self, connection: &rusqlite::Connection) -> Result<u64, StoreError> {
+        let current = crate::sequence_number(connection.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM event_log",
+            params![],
+            |row| row.get(0),
+        )?)?;
         let through = self.through.unwrap_or(current);
         if through > current {
             return Err(invalid("Usage fence is in the future"));
@@ -62,16 +66,15 @@ impl Query {
         Ok(through)
     }
 
-    fn restrict(&self, sql: &mut sqlx::QueryBuilder<sqlx::Sqlite>, through: u64) {
-        sql.push(" WHERE completed_at >= ")
-            .push_bind(self.from)
-            .push(" AND completed_at <= ")
-            .push_bind(self.to)
-            .push(" AND completed_sequence <= ")
-            .push_bind(through as i64);
-        if let Some(session) = &self.session_id {
-            sql.push(" AND session_id = ").push_bind(session.clone());
-        }
+    fn predicate(&self) -> String {
+        format!(
+            "{PREDICATE}{}",
+            if self.session_id.is_some() {
+                " AND session_id = ?4"
+            } else {
+                " AND ?4 IS NULL"
+            }
+        )
     }
 
     pub(crate) fn validate(&self) -> Result<(), StoreError> {
@@ -134,26 +137,28 @@ impl EventLog {
     }
 }
 
-fn read(row: &SqliteRow) -> Result<ModelAttempt, StoreError> {
-    let outcome: String = row.try_get("outcome")?;
+fn read(row: &rusqlite::Row<'_>) -> Result<ModelAttempt, StoreError> {
+    let outcome: String = row.get("outcome")?;
     Ok(ModelAttempt {
-        request_id: row.try_get("event_id")?,
-        origin: serde_json::from_str(row.try_get("origin")?)?,
-        session_id: row.try_get("session_id")?,
+        request_id: row.get("event_id")?,
+        origin: serde_json::from_str(&row.get::<_, String>("origin")?)?,
+        session_id: row.get("session_id")?,
         binding: row
-            .try_get::<Option<&str>, _>("binding")?
+            .get::<_, Option<String>>("binding")?
+            .as_deref()
             .map(serde_json::from_str)
             .transpose()?,
-        model_id: row.try_get("model_id")?,
-        started_at: row.try_get("started_at")?,
-        completed_at: row.try_get("completed_at")?,
+        model_id: row.get("model_id")?,
+        started_at: row.get("started_at")?,
+        completed_at: row.get("completed_at")?,
         outcome: serde_json::from_value(serde_json::Value::String(outcome))?,
-        usage: serde_json::from_str(row.try_get("usage")?)?,
+        usage: serde_json::from_str(&row.get::<_, String>("usage")?)?,
         quote: row
-            .try_get::<Option<&str>, _>("quote_json")?
+            .get::<_, Option<String>>("quote_json")?
+            .as_deref()
             .map(serde_json::from_str)
             .transpose()?,
-        cost_usd: row.try_get("usd")?,
+        cost_usd: row.get("usd")?,
     })
 }
 
@@ -161,23 +166,24 @@ fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
 }
 
-fn read_tool(row: &SqliteRow) -> Result<ToolAttempt, StoreError> {
+fn read_tool(row: &rusqlite::Row<'_>) -> Result<ToolAttempt, StoreError> {
     Ok(ToolAttempt {
-        request_id: row.try_get("event_id")?,
-        invocation: serde_json::from_str(row.try_get("invocation")?)?,
-        call: serde_json::from_str(row.try_get("call")?)?,
-        name: row.try_get("name")?,
+        request_id: row.get("event_id")?,
+        invocation: serde_json::from_str(&row.get::<_, String>("invocation")?)?,
+        call: serde_json::from_str(&row.get::<_, String>("call")?)?,
+        name: row.get("name")?,
         binding: row
-            .try_get::<Option<&str>, _>("binding")?
+            .get::<_, Option<String>>("binding")?
+            .as_deref()
             .map(serde_json::from_str)
             .transpose()?,
-        completed_at: row.try_get("completed_at")?,
-        result: tool_result::decode(row.try_get("result")?)?,
+        completed_at: row.get("completed_at")?,
+        result: tool_result::decode(&row.get::<_, String>("result")?)?,
     })
 }
 
-fn read_activity(row: &SqliteRow) -> Result<Activity, StoreError> {
-    match row.try_get::<&str, _>("kind")? {
+fn read_activity(row: &rusqlite::Row<'_>) -> Result<Activity, StoreError> {
+    match row.get::<_, String>("kind")?.as_str() {
         "model" => Ok(Activity::Model(read(row)?)),
         "tool" => Ok(Activity::Tool(read_tool(row)?)),
         _ => Err(invalid("invalid accounting activity kind")),

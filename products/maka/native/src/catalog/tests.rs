@@ -589,6 +589,54 @@ async fn shutdown_joins_both_bodies_and_preserves_unconfirmed_cleanup() {
     }
 }
 
+#[tokio::test]
+async fn cancelled_shutdown_observer_keeps_both_bodies_and_their_cleanup_result() {
+    for unconfirmed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = root(&directory);
+        let transport = Arc::new(Closing {
+            entered: Arc::new(Semaphore::new(0)),
+            closing: Arc::new(Semaphore::new(0)),
+            acknowledgement: Arc::new(Semaphore::new(0)),
+            acknowledged: Arc::new(Semaphore::new(0)),
+            unconfirmed,
+        });
+        let mut runtime = RuntimeCatalog::with_transport(
+            ConfigurationStore::for_root(root.clone()).await.unwrap(),
+            transport.clone(),
+        )
+        .await
+        .unwrap();
+        runtime.start(std::future::pending());
+        transport.entered.acquire_many(2).await.unwrap().forget();
+        {
+            let shutdown = runtime.shutdown();
+            tokio::pin!(shutdown);
+            tokio::select! {
+                result = &mut shutdown => panic!("shutdown completed before body acknowledgements: {result:?}"),
+                closing = transport.closing.acquire_many(2) => closing.unwrap().forget(),
+            }
+        }
+
+        let mut shutdown = Box::pin(runtime.shutdown());
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        transport.acknowledgement.add_permits(1);
+        transport.acknowledged.acquire().await.unwrap().forget();
+        assert!(
+            futures_util::poll!(&mut shutdown).is_pending(),
+            "the replacement observer must still join the second body"
+        );
+        transport.acknowledgement.add_permits(1);
+        let expected = if unconfirmed {
+            Err("ModelsDev: public catalog HTTP cleanup unconfirmed; OpenRouter: public catalog HTTP cleanup unconfirmed".to_owned())
+        } else {
+            Ok(())
+        };
+        assert_eq!(shutdown.await, expected);
+        assert_eq!(runtime.shutdown().await, expected);
+    }
+}
+
 struct RawResponse(Arc<RawBody>);
 struct RawBody {
     bytes: Mutex<Option<Vec<u8>>>,

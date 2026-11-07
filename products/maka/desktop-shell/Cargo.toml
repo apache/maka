@@ -44,6 +44,8 @@ gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-fe
 nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows" }
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
+raw-window-handle = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3.3"

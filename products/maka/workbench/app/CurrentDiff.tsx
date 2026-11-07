@@ -237,7 +237,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
         onScroll={(event) => {
           if (mounted) model.position = { x: event.offset.x, y: event.offset.y };
         }}
-        style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
+        style={{ flex: 1, minHeight: 0, backgroundColor: C.card }}
         empty={
           <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'none' }]}>
             {tr('The current patch has no displayable rows.')}

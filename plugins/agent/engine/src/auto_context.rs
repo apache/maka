@@ -147,9 +147,7 @@ pub(super) async fn start(
     let cancellation = cancellation.child_token();
     let worker_cancel = cancellation.clone();
     let inner = inner.clone();
-    let cleanup = crate::cleanup::current();
-    let worker =
-        tokio::spawn(async move { cleanup.scope(job.execute(&inner, &worker_cancel)).await });
+    let worker = tokio::spawn(async move { job.execute(&inner, &worker_cancel).await });
     Ok(Some(Pending {
         cancellation: CancelGuard(cancellation),
         state: CandidateState::Running(worker),
@@ -175,9 +173,14 @@ pub(super) struct Pending {
 }
 
 async fn join_worker(
+    cleanup: &crate::cleanup::Evidence,
     worker: tokio::task::JoinHandle<Result<compact::Candidate, RunError>>,
 ) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
-    match worker.await.map_err(|_| crate::cleanup::unconfirmed())? {
+    let result = worker.await.map_err(|_| cleanup.unconfirmed())?;
+    if let Err(error) = &result {
+        cleanup.observe(error);
+    }
+    match result {
         Ok((_, checkpoint)) => Ok(checkpoint),
         Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
         Err(error) => Err(error),
@@ -216,7 +219,7 @@ impl Pending {
                 if waiting.is_err() {
                     guard.0.cancel();
                 }
-                let checkpoint = join_worker(worker).await?;
+                let checkpoint = join_worker(&inner.cleanup, worker).await?;
                 waiting?;
                 checkpoint
             }
@@ -232,7 +235,10 @@ impl Pending {
     }
 }
 
-pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError> {
+pub(super) async fn settle(
+    inner: &RunContext,
+    pending: &mut Option<Pending>,
+) -> Result<(), RunError> {
     if !matches!(
         pending,
         Some(Pending {
@@ -249,7 +255,7 @@ pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError
     else {
         unreachable!();
     };
-    if let Some(checkpoint) = join_worker(worker).await? {
+    if let Some(checkpoint) = join_worker(&inner.cleanup, worker).await? {
         *pending = Some(Pending {
             cancellation,
             state: CandidateState::Ready(Box::new(checkpoint)),
@@ -308,6 +314,7 @@ pub(super) async fn record(
 }
 
 pub(super) async fn drain(
+    inner: &RunContext,
     pending: &mut Option<Pending>,
 ) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
     if let Some(Pending {
@@ -317,9 +324,12 @@ pub(super) async fn drain(
     {
         cancellation.0.cancel();
         match state {
-            CandidateState::Running(worker) => return join_worker(worker).await,
+            CandidateState::Running(worker) => return join_worker(&inner.cleanup, worker).await,
             CandidateState::Ready(checkpoint) => return Ok(Some(*checkpoint)),
         }
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests;

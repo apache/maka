@@ -196,7 +196,7 @@ async fn every_recovery_list_skips_resolved_history_in_the_actual_journal_path()
     let (host, key) = owner();
     let contexts: Vec<_> = LISTS
         .into_iter()
-        .map(|list| serde_json::to_string(&operation(list, 9, &host, &key)).unwrap())
+        .map(|list| crate::journal::encode_operation(&operation(list, 9, &host, &key)).unwrap())
         .collect();
     let mut measurements = Vec::new();
     let mut previous = 0;

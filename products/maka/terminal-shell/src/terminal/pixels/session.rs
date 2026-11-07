@@ -619,7 +619,7 @@ fn run(
             }
             if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
                 let bytes = nsh_platform_tui::ServiceOutput::Clipboard(text)
-                    .terminal_sequence(std::env::var_os("TMUX").is_some())
+                    .terminal_sequence(presentation.tmux)
                     .into_bytes();
                 presentation
                     .state

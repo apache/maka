@@ -527,7 +527,7 @@ async fn javascript_forwarded_mutation_preserves_original_evidence_and_parent_cl
     }).await.unwrap();
 }
 
-// Locate persisted test evidence without exposing a raw partition API in production.
+// Inspect persisted evidence after the runtime owner has closed.
 fn journal_database(root: &std::path::Path, table: &str, operation: Uuid) -> std::path::PathBuf {
     let databases = match table {
         "application_intents" => vec![root.join(maka_event_log::root::ROOT_DATABASE)],
@@ -564,7 +564,10 @@ fn persisted_operation(
         rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
     let (outcome, cleanup): (String, String) = connection.query_row(
-        "SELECT outcome_json, cleanup_json FROM application_operations WHERE deployment=? AND namespace=? AND operation=? AND source_revision=?",
+        "SELECT CASE WHEN json_extract(o.outcome_json,'$.kind')='returned'
+         THEN json_object('kind','returned','value',json(CAST(c.payload AS TEXT))) ELSE o.outcome_json END,
+         o.cleanup_json FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id
+         WHERE deployment=? AND namespace=? AND operation=? AND source_revision=?",
         rusqlite::params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace).unwrap(), reference.operation.to_string(), i64::try_from(reference.source.revision).unwrap()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
@@ -576,12 +579,7 @@ fn persisted_operation(
 }
 
 fn journal_databases(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    (0..8)
-        .map(|index| {
-            root.join("runtime-partitions")
-                .join(format!("{index:02}.sqlite"))
-        })
-        .collect()
+    vec![root.join(maka_event_log::root::ROOT_DATABASE)]
 }
 
 const SETTLEMENT_SECRET: &str = "SECRET_OPERATION_SETTLEMENT_SQL_PAYLOAD";
@@ -721,7 +719,7 @@ async fn uncertain_durable_settlement_does_not_replay_effect_or_invent_cleanup_f
             );
         assert!(event.contains("ERROR"));
         assert!(event.contains("state_domain=") && event.contains(&reference.source.state_domain));
-        assert!(event.contains("cause=\"store_sqlx\""));
+        assert!(event.contains("cause=\"store_sqlite\""));
         assert!(event.contains("sql_code=1811"));
         for identity in [
             format!("operation_id={}", reference.operation),
@@ -985,33 +983,30 @@ impl Handler for CallerCheckedMutation {
         let release = self.release.clone();
         let fail_cleanup = self.fail_cleanup;
         Box::pin(async move {
-            use sqlx::Connection;
             let reference = context.operation().unwrap();
-            let mut connection = sqlx::SqliteConnection::connect_with(
-                &sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(journal_database(
-                        &database,
-                        "application_intents",
-                        reference.operation,
-                    ))
-                    .read_only(true),
-            )
+            let operation = reference.operation;
+            let saved: String = tokio::task::spawn_blocking(move || {
+                let connection = rusqlite::Connection::open_with_flags(
+                    journal_database(&database, "application_intents", operation),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .map_err(|error| error.to_string())?;
+                connection
+                    .query_row(
+                        "SELECT reference_json FROM application_intents WHERE operation=?",
+                        [operation.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
             .await
-            .map_err(|e| e.to_string())?;
-            let saved: String = sqlx::query_scalar(
-                "SELECT reference_json FROM application_intents WHERE operation=?",
-            )
-            .bind(reference.operation.to_string())
-            .fetch_one(&mut connection)
-            .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())??;
             let saved: maka_plugin_core::operation::RecoveryRef =
                 serde_json::from_str(&saved).unwrap();
             assert_eq!(
                 &saved, reference,
                 "the separate caller Root committed the original reference before effects"
             );
-            connection.close().await.map_err(|e| e.to_string())?;
             started.add_permits(1);
             release.acquire().await.unwrap().forget();
             if fail_cleanup {

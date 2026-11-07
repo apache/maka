@@ -19,6 +19,7 @@
 
 //! Project MCP consent belongs to the configuration authority, never plugin data.
 use crate::{ConfigError, ConfigurationStore, Result, TransactionMode};
+use rusqlite::OptionalExtension;
 impl ConfigurationStore {
     pub async fn project_mcp_trusted(
         &self,
@@ -27,17 +28,16 @@ impl ConfigurationStore {
         revision: String,
     ) -> Result<bool> {
         self.transaction(TransactionMode::Deferred, move |connection| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar::<_, String>(
-                    "SELECT revision FROM project_mcp_trust WHERE owner = ? AND workspace = ?",
-                )
-                .bind(owner)
-                .bind(workspace)
-                .fetch_optional(connection)
-                .await?
-                .as_ref()
+            {
+                Ok(connection
+                    .prepare_cached(
+                        "SELECT revision FROM project_mcp_trust WHERE owner = ? AND workspace = ?",
+                    )?
+                    .query_row(rusqlite::params![owner, workspace], |row| row.get(0))
+                    .optional()?
+                    .as_ref()
                     == Some(&revision))
-            })
+            }
         })
         .await
     }
@@ -58,10 +58,9 @@ impl ConfigurationStore {
                 "invalid project MCP consent identity".into(),
             ));
         }
-        self.transaction(TransactionMode::Immediate, move |connection| Box::pin(async move {
-            sqlx::query("INSERT INTO project_mcp_trust(owner, workspace, revision) VALUES (?, ?, ?) ON CONFLICT(owner, workspace) DO UPDATE SET revision = excluded.revision")
-                .bind(owner).bind(workspace).bind(revision).execute(connection).await?;
+        self.transaction(TransactionMode::Immediate, move |connection| {
+            connection.execute("INSERT INTO project_mcp_trust(owner, workspace, revision) VALUES (?, ?, ?) ON CONFLICT(owner, workspace) DO UPDATE SET revision = excluded.revision", rusqlite::params![owner, workspace, revision])?;
             Ok(())
-        })).await
+        }).await
     }
 }

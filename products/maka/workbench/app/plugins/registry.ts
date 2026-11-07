@@ -81,6 +81,13 @@ export type PluginEntry = {
 type InstanceIdentity = { instance: UiInstance['instance']; packageId: string };
 type RestoredInstance = InstanceIdentity & { state: unknown };
 type RestoredUi = { instances: RestoredInstance[] };
+type ReconcilePhase =
+  | { kind: 'idle' }
+  | { kind: 'adopting' }
+  | { kind: 'pause_requested' }
+  | { kind: 'preparing_reload'; instances: RestoredInstance[] }
+  | { kind: 'reload_accepted' }
+  | { kind: 'preparing_close'; id: string };
 const targetKey = (target: UiTarget) => JSON.stringify([target.path, target.id]);
 const instanceKey = (identity: InstanceIdentity) =>
   JSON.stringify([identity.instance, identity.packageId]);
@@ -89,7 +96,16 @@ export function createPlugins() {
   const entries = signal<PluginEntry[]>([]);
   const catalog = signal<Catalog | null>(null);
   const ready = signal(false);
-  const reloading = signal(false);
+  const phase = signal<ReconcilePhase>({ kind: 'idle' });
+  const reloading = computed(() => {
+    const kind = phase().kind;
+    return (
+      kind === 'pause_requested' ||
+      kind === 'preparing_reload' ||
+      kind === 'reload_accepted' ||
+      kind === 'preparing_close'
+    );
+  });
   const updateError = signal<unknown | null>(null);
   const importedPackages = new Set<string>();
   const restored = nativeHost.restored as RestoredUi | null;
@@ -101,9 +117,6 @@ export function createPlugins() {
   let watchGeneration = 0;
   let subscription: UiSubscription | undefined;
   let desired: Catalog | null = null;
-  let processing = false;
-  let acceptedReload = false;
-  let closeAttempt: string | undefined;
   let panelHandler: ((contribution: UiContributionRef, input?: unknown) => void) | undefined;
   const contributions = computed<Contribution[]>(() =>
     entries().flatMap((entry) =>
@@ -232,8 +245,7 @@ export function createPlugins() {
     instance: entry.instance.instance,
     packageId: entry.instance.package.id,
   });
-  const snapshot = async (): Promise<RestoredUi> => {
-    const instances: RestoredInstance[] = [];
+  const snapshot = async (instances: RestoredInstance[] = []): Promise<RestoredUi> => {
     for (const entry of entries()) {
       const state = entry.state();
       if (state.kind !== 'active') continue;
@@ -246,23 +258,25 @@ export function createPlugins() {
   cleanup(
     host.on('desktop.prepareClose', (request: unknown) => {
       const id = (request as { id: string }).id;
-      if (processing || acceptedReload) {
+      if (phase().kind !== 'idle') {
         host.post('desktop.closeReady', {
           id,
           error: 'UI reload is in progress. Try closing again when it finishes.',
         });
         return;
       }
-      closeAttempt = id;
-      reloading.set(true);
+      const attempt: Extract<ReconcilePhase, { kind: 'preparing_close' }> = {
+        kind: 'preparing_close',
+        id,
+      };
+      phase.set(attempt);
       void snapshot().then(
         (state) => {
-          if (alive && closeAttempt === id) host.post('desktop.closeReady', { id, state });
+          if (alive && phase() === attempt) host.post('desktop.closeReady', { id, state });
         },
         (reason) => {
-          if (!alive || closeAttempt !== id) return;
-          closeAttempt = undefined;
-          reloading.set(false);
+          if (!alive || phase() !== attempt) return;
+          phase.set({ kind: 'idle' });
           updateError.set(reason);
           host.post('desktop.closeReady', { id, error: String(reason) });
           void reconcile();
@@ -273,34 +287,38 @@ export function createPlugins() {
   cleanup(
     host.on('desktop.closeFailed', (failure: unknown) => {
       const { id, error } = failure as { id: string; error: string };
-      if (!alive || closeAttempt !== id) return;
-      closeAttempt = undefined;
-      reloading.set(false);
+      const attempt = phase();
+      if (!alive || attempt.kind !== 'preparing_close' || attempt.id !== id) return;
+      phase.set({ kind: 'idle' });
       updateError.set(new UiError(error));
       void reconcile();
     }),
   );
   const reconcile = async () => {
-    if (processing || acceptedReload || closeAttempt !== undefined || !alive || !desired) return;
-    processing = true;
-    let paused = false;
+    if (phase().kind !== 'idle' || !alive || !desired) return;
+    const target = desired;
+    phase.set({ kind: 'adopting' });
     try {
-      validate(desired);
-      if (needsReload(desired)) {
-        reloading.set(true);
-        paused = true;
+      validate(target);
+      if (needsReload(target)) {
+        phase.set({ kind: 'pause_requested' });
         await nativeHost.beginUiReload();
+        const held: Extract<ReconcilePhase, { kind: 'preparing_reload' }> = {
+          kind: 'preparing_reload',
+          instances: [],
+        };
+        phase.set(held);
         if (!alive) return;
-        const { instances } = await snapshot();
+        await snapshot(held.instances);
         if (!alive) return;
         validate(desired!);
         if (needsReload(desired!)) {
-          nativeHost.reloadUi({ instances });
-          acceptedReload = true;
+          nativeHost.reloadUi({ instances: held.instances });
+          phase.set({ kind: 'reload_accepted' });
           return;
         }
         nativeHost.cancelUiReload();
-        paused = false;
+        phase.set({ kind: 'adopting' });
       }
       const next = desired!;
       desired = null;
@@ -308,16 +326,17 @@ export function createPlugins() {
     } catch (reason) {
       if (alive) updateError.set(reason);
     } finally {
-      processing = false;
-      if (!acceptedReload && alive) {
-        if (paused) {
+      if (phase().kind !== 'reload_accepted') {
+        if (phase().kind === 'preparing_reload') {
           try {
             nativeHost.cancelUiReload();
           } catch (reason) {
-            updateError.set(reason);
+            if (alive) updateError.set(reason);
+            else console.error(reason);
           }
         }
-        reloading.set(false);
+        phase.set({ kind: 'idle' });
+        if (desired && desired !== target) void reconcile();
       }
     }
   };
@@ -570,8 +589,8 @@ export function createPlugins() {
     settings,
     renderer: (presentation) => (presentation == null ? undefined : renderers().get(presentation)),
     view,
-    renderView(target, contract, input) {
-      return renderEmbeddedView(manager, target, contract.id, input);
+    renderView(target, contract, input, options) {
+      return renderEmbeddedView(manager, target, contract.id, input, options);
     },
     render(reference: UiContributionRef, props: UiContributionProps) {
       return renderContribution(manager, reference, props);

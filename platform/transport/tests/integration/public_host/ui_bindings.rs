@@ -272,7 +272,7 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         bound.close().await.unwrap();
         parent.close().await.unwrap();
         rebound.close().await.unwrap();
-        assert!(Client::retire(&address,host.epoch()).await.unwrap());
+        retire_when_idle(&address,host.epoch()).await;
         serving.await.unwrap().unwrap();
     }).await.expect("owned UI binding lifecycle did not finish");
 }

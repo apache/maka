@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::root::{RootNamespaces, RootOwner};
-use crate::root_store::{RootStore, partition_for};
+use crate::root_store::RootStore;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -37,10 +37,7 @@ async fn fixture() -> (tempfile::TempDir, RootStore, SessionStore, SessionStore)
     );
     let root = RootStore::open(owner).await.unwrap();
     let first = "scope-a";
-    let second = (0..100)
-        .map(|i| format!("scope-b-{i}"))
-        .find(|id| partition_for(b"session", id) == partition_for(b"session", first))
-        .unwrap();
+    let second = "scope-b".to_owned();
     let a = root
         .create_session(first, first, &json!({}), 1)
         .await
@@ -128,15 +125,11 @@ async fn foreign_interaction_reads_are_absent_and_mutations_are_rejected() {
     let encoded = serde_json::to_string(&wrong_identity).unwrap();
     raw.connection
         .run(move |db| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE interaction_requests SET record_json=? WHERE request_id='request'",
-                )
-                .bind(encoded)
-                .execute(db)
-                .await?;
-                Ok(())
-            })
+            db.execute(
+                "UPDATE interaction_requests SET record_json=? WHERE request_id='request'",
+                rusqlite::params![encoded],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -147,14 +140,11 @@ async fn foreign_interaction_reads_are_absent_and_mutations_are_rejected() {
     // Corruption is still observable by the original owner and unbound reader.
     raw.connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE interaction_requests SET record_json='{}' WHERE request_id='request'",
-                )
-                .execute(db)
-                .await?;
-                Ok(())
-            })
+            db.execute(
+                "UPDATE interaction_requests SET record_json='{}' WHERE request_id='request'",
+                rusqlite::params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -188,23 +178,11 @@ async fn copied_artifact_provenance_keeps_destination_visibility() {
     let source = b.id().to_owned();
     raw.connection
         .run(move |db| {
-            Box::pin(async move {
-                sqlx::query(
-                    "INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,1,0,0,'{}','{}','committed')",
-                )
-                .bind(&target)
-                .bind(&source)
-                .execute(&mut *db)
-                .await?;
-                sqlx::query("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,'original','copy',?,?)")
-                    .bind(&target)
-                    .bind(&source)
-                    .bind(crate::artifacts::identity::history_lookup_digest(&target,&source,"original").as_slice())
-                    .bind(crate::artifacts::identity::artifact_lookup_digest(&target,"copy").as_slice())
-                    .execute(db)
-                    .await?;
+            {
+                db.execute("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,1,0,0,'{}','{}','committed')", rusqlite::params![&target, &source])?;
+                db.execute("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,'original','copy',?,?)", rusqlite::params![&target, &source, crate::artifacts::identity::history_lookup_digest(&target,&source,"original").as_slice(), crate::artifacts::identity::artifact_lookup_digest(&target,"copy").as_slice()])?;
                 Ok(())
-            })
+            }
         })
         .await
         .unwrap();

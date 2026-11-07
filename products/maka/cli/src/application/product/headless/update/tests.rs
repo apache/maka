@@ -326,7 +326,7 @@ async fn startup_preserves_unrelated_components_with_product_process_names() {
     let mut input = f.input.clone();
     for (previous, renamed) in [
         ("direct", "workspace-processes"),
-        ("group", "coordinator-workspace-processes"),
+        ("group", "protocol-processes"),
     ] {
         let node = input.instances.remove(previous).unwrap();
         input.instances.insert(renamed.into(), node);
@@ -338,7 +338,7 @@ async fn startup_preserves_unrelated_components_with_product_process_names() {
         .bindings
         .get_mut("service")
         .unwrap()[0] = maka_plugin_core::composition::Target::Instance {
-        path: vec!["coordinator-workspace-processes".into(), "child".into()],
+        path: vec!["protocol-processes".into(), "child".into()],
         export: "service".into(),
     };
     let committed = f

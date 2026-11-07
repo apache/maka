@@ -29,6 +29,7 @@ import type {
   ComposerSession,
   ComposerSendAction as SendAction,
   ComposerCommand,
+  ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
@@ -43,13 +44,23 @@ import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
 import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { createComposerPaste } from './composerPaste';
+import {
+  inputEditor,
+  type ComposerEditor,
+} from '../../../../products/maka/workbench/app/ComposerEditor';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
-type Editor = { sessionId: string | null; node: InputRef };
+type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>>;
+type Owner = ComposerSession | Pending;
+const isSession = (owner: Owner): owner is ComposerSession => 'sessionId' in owner;
+const editable = (owner: Owner) => (isSession(owner) ? owner.editable() : !owner.sending());
+const sessionId = (owner: Owner) => (isSession(owner) ? owner.sessionId : null);
+const ownerId = (owner: Owner) => (isSession(owner) ? owner.sessionId : owner.id);
+type Editor = { sessionId: string | null; node: ComposerEditor };
 type Read = {
   serial: number;
-  owner: ComposerSession;
-  editor: InputRef;
+  owner: Owner;
+  editor: ComposerEditor;
   text: string;
   selection: Selection;
   token: CompletionToken | null;
@@ -58,14 +69,14 @@ type Read = {
   query: string;
   inputQuery: string;
   directory: WorkspacePath | null;
-  backend: string;
+  context: string;
   commands: ComposerCommand[];
 };
 type Row = {
   id: string;
   title: string;
   detail?: string;
-  icon: 'paperclip' | 'file' | 'folder' | 'code' | 'command';
+  icon: 'paperclip' | 'file' | 'folder' | 'book' | 'code' | 'command';
   disabled?: boolean;
   action: { read: number; id: string };
 } & (
@@ -77,16 +88,18 @@ type Row = {
 );
 type Options = {
   session(): ComposerSession | null;
+  pending(): Pending | null;
   commands(): ComposerCommand[];
   active(): boolean;
 };
 type FileRead = { close(): Promise<void>; closing: Promise<void> | null };
 
 const sameSelection = (a: Selection, b: Selection) => a.start === b.start && a.end === b.end;
-const backendKey = (owner: ComposerSession) => {
+const contextKey = (owner: Owner) => {
   const backend = owner.backend();
   const details = owner.modelDetails();
   return JSON.stringify([
+    isSession(owner) ? null : owner.confirmation(),
     backend,
     details.kind === 'ready' ? details.choice.selection : details.kind,
   ]);
@@ -94,13 +107,14 @@ const backendKey = (owner: ComposerSession) => {
 
 /** One resident editor owns its menu, selection and latest outstanding lookup. */
 export function createComposerCompletion(options: Options) {
+  const owner = () => options.session() ?? options.pending();
   const editor = signal<Editor | null>(null);
   const caret = signal<Bounds | null>(null);
   const selection = signal<Selection>({ start: 0, end: 0 });
-  const composing = signal(false);
+  const composing = () => !!editor()?.node.composing();
   const explicit = signal<Source | null>(null);
   const query = signal('');
-  const queryInput = signal<InputRef | null>(null);
+  const queryInput = signal<ComposerEditor | null>(null);
   const querySelection = signal<Selection>({ start: 0, end: 0 });
   const queryComposing = signal(false);
   const opened = signal<Read | null>(null);
@@ -120,9 +134,10 @@ export function createComposerCompletion(options: Options) {
   let directoryHint: { prefix: string; path: WorkspacePath } | null = null;
   let textVersion = 0;
   let pendingCommand: {
-    owner: ComposerSession;
+    owner: Owner;
     text: string;
     version: number;
+    confirmation: string | null;
     id: string;
   } | null = null;
 
@@ -147,13 +162,13 @@ export function createComposerCompletion(options: Options) {
   const owns = (read: Read) =>
     alive &&
     options.active() &&
-    options.session() === read.owner &&
-    read.owner.editable() &&
-    editor()?.sessionId === read.owner.sessionId &&
+    owner() === read.owner &&
+    editable(read.owner) &&
+    editor()?.sessionId === sessionId(read.owner) &&
     editor()?.node === read.editor &&
     read.owner.draft() === read.text &&
     sameSelection(selection(), read.selection) &&
-    backendKey(read.owner) === read.backend &&
+    contextKey(read.owner) === read.context &&
     !composing();
   const sameDismissed = (context: Pick<Read, 'owner' | 'editor' | 'text' | 'selection'>) =>
     dismissed !== null &&
@@ -228,7 +243,9 @@ export function createComposerCompletion(options: Options) {
           },
           detail: keymap.label('mod+u'),
           icon: 'paperclip',
-          disabled: read.owner.attachments.restoring(),
+          disabled: isSession(read.owner)
+            ? read.owner.attachments.restoring()
+            : read.owner.completion.files === null,
         }),
         row(read, {
           id: 'add:files',
@@ -239,6 +256,7 @@ export function createComposerCompletion(options: Options) {
           },
           detail: '@',
           icon: 'file',
+          disabled: read.owner.completion.files === null,
         }),
         row(read, {
           id: 'add:skills',
@@ -248,7 +266,7 @@ export function createComposerCompletion(options: Options) {
             return tr('Use a skill');
           },
           detail: '/',
-          icon: 'code',
+          icon: 'book',
         }),
         ...options
           .commands()
@@ -285,8 +303,11 @@ export function createComposerCompletion(options: Options) {
     if (first) list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
   };
   const lookup = async (read: Read): Promise<void> => {
+    const owner = read.owner;
     if (read.source === 'files') {
-      const stream = await read.owner.completion.files(read.query, read.directory);
+      const files = owner.completion.files;
+      if (!files) return;
+      const stream = await files(read.query, read.directory);
       const active: FileRead = { close: () => stream.close(), closing: null };
       fileRead = active;
       const decoder = new TextDecoder('utf-8', {
@@ -318,7 +339,7 @@ export function createComposerCompletion(options: Options) {
                 title = path.replace(/\p{Cc}/gu, '�');
               } catch {
                 // Opaque bytes stay authoritative; display labels are never decoded back into paths.
-                title = read.owner.completion.pathLabel(entry.path);
+                title = owner.completion.pathLabel(entry.path);
               }
               const common = {
                 id: `file:${entry.path.bytesBase64}`,
@@ -353,11 +374,11 @@ export function createComposerCompletion(options: Options) {
       }
       return;
     }
-    const backend = read.owner.backend();
-    const details = read.owner.modelDetails();
+    const backend = owner.backend();
+    const details = owner.modelDetails();
     if (!backend || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection))
       return;
-    const result = await read.owner.completion.skills({
+    const result = await owner.completion.skills({
       backend,
       query: read.query,
     });
@@ -370,7 +391,7 @@ export function createComposerCompletion(options: Options) {
           insert: skill.invocation,
           title: skill.name,
           detail: skill.description,
-          icon: 'code',
+          icon: 'book',
         }),
       ),
     );
@@ -397,7 +418,7 @@ export function createComposerCompletion(options: Options) {
     }
   };
   effect(() => {
-    const owner = options.session();
+    const currentOwner = owner();
     const binding = editor();
     if (!options.active()) {
       if (current) dismissed = current;
@@ -406,22 +427,22 @@ export function createComposerCompletion(options: Options) {
       return;
     }
     if (
-      !owner ||
-      !owner.editable() ||
+      !currentOwner ||
+      !editable(currentOwner) ||
       !binding ||
-      binding.sessionId !== owner.sessionId ||
+      binding.sessionId !== sessionId(currentOwner) ||
       composing()
     ) {
       hide();
       return;
     }
-    const text = owner.draft();
+    const text = currentOwner.draft();
     const range = selection();
     if (!validSelection(text, range)) {
       hide();
       return;
     }
-    const context = { owner, editor: binding.node, text, selection: range };
+    const context = { owner: currentOwner, editor: binding.node, text, selection: range };
     const requested = explicit();
     if (dismissed && !sameDismissed(context)) dismissed = null;
     if (sameDismissed(context)) {
@@ -449,7 +470,7 @@ export function createComposerCompletion(options: Options) {
       source === 'files' ? fileQuery(inputQuery) : { query: inputQuery, directory: null };
     const read: Read = {
       serial: serial + 1,
-      owner,
+      owner: currentOwner,
       editor: binding.node,
       text,
       selection: { ...range },
@@ -458,7 +479,7 @@ export function createComposerCompletion(options: Options) {
       explicit: requested !== null,
       ...location,
       inputQuery,
-      backend: backendKey(owner),
+      context: contextKey(currentOwner),
       commands,
     };
     stopFile();
@@ -470,28 +491,36 @@ export function createComposerCompletion(options: Options) {
     rows.set(localRows(read));
     list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
     const remote = source === 'files' || source === 'skills' || source === 'slash';
-    const model = owner.modelDetails();
+    const model = currentOwner.modelDetails();
     const available =
-      source === 'files' ||
-      (model.kind === 'ready' && sameRoute(owner.backend(), model.choice.selection));
+      source === 'files'
+        ? currentOwner.completion.files !== null
+        : model.kind === 'ready' && sameRoute(currentOwner.backend(), model.choice.selection);
     loading.set(remote && available);
     wanted = remote && available ? read : null;
     if (wanted) void pump();
   });
   const command = (text: string) => matchComposerCommand(options.commands(), text);
   const runCommand = (
-    owner: ComposerSession,
+    target: Owner,
     text: string,
     command: ComposerCommand,
     argument: string | undefined,
     consume: boolean,
   ) => {
-    const ticket = { owner, text, version: textVersion, id: command.id };
+    const ticket = {
+      owner: target,
+      text,
+      version: textVersion,
+      confirmation: isSession(target) ? null : target.confirmation(),
+      id: command.id,
+    };
     if (
       pendingCommand &&
-      pendingCommand.owner === owner &&
+      pendingCommand.owner === target &&
       pendingCommand.text === text &&
       pendingCommand.version === textVersion &&
+      pendingCommand.confirmation === ticket.confirmation &&
       pendingCommand.id === command.id
     )
       return;
@@ -502,12 +531,13 @@ export function createComposerCompletion(options: Options) {
         consume &&
         accepted !== false &&
         alive &&
-        options.session() === owner &&
+        owner() === target &&
         textVersion === ticket.version &&
-        owner.draft() === text
+        (isSession(target) || target.confirmation() === ticket.confirmation) &&
+        target.draft() === text
       ) {
         textVersion += 1;
-        owner.changeDraft('');
+        target.changeDraft('');
       }
     };
     try {
@@ -523,19 +553,19 @@ export function createComposerCompletion(options: Options) {
       throw reason;
     }
   };
-  const submitCommand = (owner: ComposerSession, text: string) => {
+  const submitCommand = (target: Owner, text: string) => {
     const action = command(text);
     if (
       !action ||
       !options.active() ||
-      options.session() !== owner ||
-      owner.draft() !== text ||
-      !owner.editable() ||
+      owner() !== target ||
+      target.draft() !== text ||
+      !editable(target) ||
       composing()
     )
       return false;
     close();
-    runCommand(owner, text, action.found, action.argument || undefined, true);
+    runCommand(target, text, action.found, action.argument || undefined, true);
     return true;
   };
   const accept = (action: { read: number; id: string }) => {
@@ -573,7 +603,9 @@ export function createComposerCompletion(options: Options) {
     read.editor.focus();
     if (item.kind === 'attachment') {
       close();
-      read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
+      if (isSession(read.owner))
+        read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
+      else read.owner.openPicker(true);
       return;
     }
     if (item.kind === 'command') {
@@ -635,47 +667,35 @@ export function createComposerCompletion(options: Options) {
     if (!target) return;
     const valid = () => current === read && owns(read);
     const unbind = [
-      keymap.bind(
-        'escape',
-        () => {
-          if (valid()) dismiss();
-        },
-        { when: 'always', within: target },
-      ),
+      target.bindKey('escape', () => {
+        if (valid()) dismiss();
+      }),
     ];
     if (loading() || rows().some((item) => !item.disabled)) {
       unbind.push(
-        keymap.bind(
+        target.bindKey(
           'down',
           () => {
             if (valid()) move(1);
           },
           {
-            when: 'always',
             repeat: true,
-            within: target,
           },
         ),
-        keymap.bind(
+        target.bindKey(
           'up',
           () => {
             if (valid()) move(-1);
           },
           {
-            when: 'always',
             repeat: true,
-            within: target,
           },
         ),
-        keymap.bind(
-          'enter',
-          () => {
-            if (!valid()) return;
-            const item = rows()[index()];
-            if (item) accept(item.action);
-          },
-          { when: 'always', within: target },
-        ),
+        target.bindKey('enter', () => {
+          if (!valid()) return;
+          const item = rows()[index()];
+          if (item) accept(item.action);
+        }),
       );
     }
     return () => unbind.forEach((remove) => remove());
@@ -724,40 +744,36 @@ export function createComposerCompletion(options: Options) {
       });
       close();
     },
-    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node)),
+    anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node.anchor)),
     addButton(node: ViewRef) {
       addAnchor = node;
     },
-    attach(sessionId: string | null, node: InputRef) {
+    attach(sessionId: string | null, node: ComposerEditor) {
       directoryHint = null;
       editor.set({ sessionId, node });
       selection.set({ start: 0, end: 0 });
       caret.set(null);
-      composing.set(false);
       queryComposing.set(false);
       explicit.set(null);
     },
-    change(owner: ComposerSession, text: string) {
-      if (options.session() !== owner) return;
+    change(target: Owner, text: string) {
+      if (owner() !== target) return;
       textVersion += 1;
-      owner.changeDraft(text);
+      target.changeDraft(text);
     },
-    caret(owner: ComposerSession, event: CaretEvent) {
-      if (options.session() === owner) caret.set(event.pageBounds);
+    caret(target: Owner, event: CaretEvent) {
+      if (owner() === target) caret.set(event.pageBounds);
     },
-    selection(owner: ComposerSession, event: Selection) {
-      if (options.session() === owner) selection.set({ ...event });
+    selection(target: Owner, event: Selection) {
+      if (owner() === target) selection.set({ ...event });
     },
-    composition(owner: ComposerSession | null, event: { composing: boolean }) {
-      if (options.session() === owner) composing.set(event.composing);
-    },
-    toggleAdd(target: { sessionId: string | null }) {
-      const owner = options.session();
+    toggleAdd(target: { owner: string | null }) {
+      const currentOwner = owner();
       if (
-        !owner ||
+        !currentOwner ||
         !options.active() ||
-        owner.sessionId !== target.sessionId ||
-        !owner.editable() ||
+        ownerId(currentOwner) !== target.owner ||
+        !editable(currentOwner) ||
         composing()
       )
         return;
@@ -770,7 +786,22 @@ export function createComposerCompletion(options: Options) {
       query.set('');
       explicit.set('add');
     },
-    isCommand: () => !!options.session()?.editable() && !!command(options.session()!.draft()),
+    isCommand: () => {
+      const target = owner();
+      return !!target && editable(target) && !!command(target.draft());
+    },
+    submitPending(target: Pending, text: string, expected?: string) {
+      if (
+        owner() !== target ||
+        !options.active() ||
+        target.sending() ||
+        composing() ||
+        target.draft() !== text ||
+        (expected !== undefined && target.confirmation() !== expected)
+      )
+        return;
+      if (!submitCommand(target, text)) target.submit(text, expected);
+    },
     submit(owner: ComposerSession, event: { text: string }) {
       if (options.session() !== owner || !options.active() || composing()) return;
       if (submitCommand(owner, event.text)) return;
@@ -788,7 +819,7 @@ export function createComposerCompletion(options: Options) {
       list = node;
     },
     queryInput(node: InputRef) {
-      queryInput.set(node);
+      queryInput.set(inputEditor(node, queryComposing));
       querySelection.set({ start: 0, end: 0 });
       node.focus();
     },
@@ -822,8 +853,7 @@ export function createComposerCompletion(options: Options) {
         ? tr('No matching files.')
         : opened()?.source === 'commands'
           ? tr('No matching commands.')
-          : options.session()?.backend() === null ||
-              options.session()?.modelDetails().kind !== 'ready'
+          : owner()?.backend() === null || owner()?.modelDetails().kind !== 'ready'
             ? tr('Choose a model to browse skills.')
             : tr('No matching skills.'),
   };

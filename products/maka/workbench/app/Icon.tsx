@@ -7,6 +7,7 @@ import { platform } from 'nsh';
 import { lucide, type LucideElement } from './lucide';
 
 const icons = {
+  book: { lucide: 'book', glyph: '📖' },
   back: { lucide: 'chevron-left', glyph: '‹' },
   sidebar: { lucide: 'panel-left', glyph: '◫' },
   split: { lucide: 'columns-2', glyph: '◫' },
@@ -19,6 +20,7 @@ const icons = {
   play: { lucide: 'play', glyph: '▶' },
   close: { lucide: 'x', glyph: '×' },
   down: { lucide: 'chevron-down', glyph: '⌄' },
+  up: { lucide: 'chevron-up', glyph: '⌃' },
   right: { lucide: 'chevron-right', glyph: '›' },
   search: { lucide: 'search', glyph: '⌕' },
   settings: { lucide: 'settings', glyph: '⚙' },
@@ -47,6 +49,8 @@ const icons = {
   shield: { lucide: 'shield', glyph: '◇' },
   lock: { lucide: 'lock', glyph: '▣' },
   activity: { lucide: 'clock', glyph: '◌' },
+  bot: { lucide: 'bot', glyph: '◌' },
+  inbox: { lucide: 'inbox', glyph: '?' },
   thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },

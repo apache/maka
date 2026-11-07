@@ -24,12 +24,14 @@
 //! without an available tray, detaches before exiting. Host following
 //! continues with or without a window.
 
+mod permissions;
+
 use crate::{
     host::{self, Connection, Root},
     placement::Placement,
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
-use maka_workbench::bindings::Bindings;
+use maka_workbench::bindings::{Bindings, SystemPermissionWindow};
 use nsh_engine::{EngineConfig, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView, CloseRequest,
@@ -85,7 +87,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     })?;
     #[cfg(target_os = "macos")]
     if std::env::var_os(GPUI).is_none_or(|value| value.is_empty()) {
-        return crate::appkit::run(first, runtime);
+        return crate::appkit::run(first, root, runtime);
     }
     run(first, root, runtime)
 }
@@ -103,6 +105,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         .as_ref()
         .expect("Host admission sets the client directory");
     let handle = runtime.handle().clone();
+    let permission_requests = permission_requests(&bindings);
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (
@@ -151,6 +154,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         // Keep the pristine configuration before constructing any UI. Each
         // window gets its own HostChannel, engine and registry instances.
         let desktop = Rc::new(RefCell::new(Desktop {
+            permissions: permissions::Windows::default(),
             config: config.clone(),
             window: None,
             quitting: false,
@@ -164,7 +168,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             eprintln!("maka-desktop-shell: cannot open a window: {error}");
             detach.then_quit(cx);
         }
-        let current = ConnectedHost::new((endpoint, epoch), config);
+        let current = ConnectedHost::new((endpoint, epoch), config, permission_requests);
         let commands = desktop.clone();
         cx.spawn(async move |cx| {
             while let Some(event) = tray_requests.recv().await {
@@ -211,17 +215,24 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             }
             saving.borrow_mut().quitting = true;
             Desktop::save(&saving, cx);
+            let permissions = saving.borrow().permissions.clone();
+            permissions.close_all(cx);
             quitting.then_quit(cx);
             false
         })
         .expect("the desktop owns quit admission");
         let closed = desktop.clone();
         cx.on_window_closed(move |cx, _| {
-            if cx.windows().is_empty() {
-                let mut state = closed.borrow_mut();
-                state.window = None;
-                state.active.send_replace(false);
-                state.shell.release();
+            let main = closed.borrow().window;
+            if main.is_some_and(|window| window.update(cx, |_, _, _| ()).is_err()) {
+                let permissions = {
+                    let mut state = closed.borrow_mut();
+                    state.window = None;
+                    state.active.send_replace(false);
+                    state.shell.release();
+                    state.permissions.clone()
+                };
+                permissions.close_all(cx);
             }
         })
         .detach();
@@ -378,6 +389,7 @@ fn open(
 }
 
 struct Desktop {
+    permissions: permissions::Windows,
     config: EngineConfig,
     window: Option<WindowHandle<AppView>>,
     quitting: bool,
@@ -419,10 +431,12 @@ impl Desktop {
             return;
         }
         state.placement.save(window, cx);
+        let permissions = state.permissions.clone();
         state.window = None;
         state.active.send_replace(false);
         state.shell.release();
         drop(state);
+        permissions.close_all(cx);
         window.remove_window();
     }
 
@@ -497,10 +511,15 @@ struct ConnectedHost {
     host: (PathBuf, uuid::Uuid),
     config: EngineConfig,
     reloading: tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>,
+    permissions: tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow>,
 }
 
 impl ConnectedHost {
-    fn new(host: (PathBuf, uuid::Uuid), config: EngineConfig) -> Self {
+    fn new(
+        host: (PathBuf, uuid::Uuid),
+        config: EngineConfig,
+        permissions: tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow>,
+    ) -> Self {
         let reloading = config
             .context
             .get::<maka_workbench::reload::UiReload>()
@@ -510,6 +529,7 @@ impl ConnectedHost {
             host,
             config,
             reloading,
+            permissions,
         }
     }
 }
@@ -527,7 +547,9 @@ fn follow(
     cx: &mut App,
 ) {
     let detach = detach.clone();
+    let permission_windows = desktop.borrow().permissions.clone();
     cx.spawn(async move |cx| {
+        let (close_window, mut closing_windows) = tokio::sync::mpsc::unbounded_channel();
         let mut pause = FIRST_PAUSE;
         loop {
             let reached = Instant::now();
@@ -536,6 +558,13 @@ fn follow(
             loop {
                 tokio::select! {
                     _ = &mut stopped => break,
+                    Some(id) = closing_windows.recv() => cx.update(|cx| permission_windows.command(id, cx)),
+                    Some(request) = current.permissions.recv() => cx.update(|cx| {
+                        let window = desktop.borrow().window;
+                        if let Some(window) = window {
+                            permission_windows.open(request, close_window.clone(), &current.config, window, cx);
+                        }
+                    }),
                     request = current.reloading.recv() => {
                         let Some(request) = request else { return };
                         cx.update(|cx| {
@@ -566,6 +595,14 @@ fn follow(
                     }
                 }
             }
+            cx.update(|cx| permission_windows.close_all(cx));
+            cx.update(|cx| {
+                let state = desktop.borrow();
+                state.shell.release();
+                if let Some(window) = state.window {
+                    let _ = window.update(cx, |view, _, _| view.stop());
+                }
+            });
             // The client closes first, as when the desktop is reopened: what
             // it leaves in its journal is settled before the next client
             // opens the journal.
@@ -608,6 +645,7 @@ fn follow(
                 epoch,
                 ..
             } = connection;
+            let permissions = permission_requests(&bindings);
             if let Err(bindings) = detach.put(bindings, (endpoint.clone(), epoch)) {
                 // Quitting began during the attempt: this client detaches
                 // too, before the app quits.
@@ -615,7 +653,7 @@ fn follow(
                 return;
             }
             drop(moving);
-            current = ConnectedHost::new((endpoint, epoch), config);
+            current = ConnectedHost::new((endpoint, epoch), config, permissions);
             cx.update(|cx| {
                 let mut state = desktop.borrow_mut();
                 state.config = current.config.clone();
@@ -758,4 +796,12 @@ impl Drop for Moving {
     fn drop(&mut self) {
         self.0.send_replace(false);
     }
+}
+
+fn permission_requests(
+    bindings: &Bindings,
+) -> tokio::sync::mpsc::UnboundedReceiver<SystemPermissionWindow> {
+    let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+    bindings.set_system_permission_windows(send);
+    receive
 }

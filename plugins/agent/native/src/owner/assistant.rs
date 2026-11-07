@@ -87,23 +87,11 @@ impl Owner {
         snapshot: &RuntimePolicySnapshot,
         language: Language,
     ) -> Result<Option<SystemPrompt>, String> {
-        let role = self.behavior.map(|behavior| {
-            let mut source = self.revision.clone();
-            source.kind = SourceKind::PromptSection;
-            SystemPrompt {
-                text: match behavior {
-                    BuiltinBehavior::WorkHub => crate::workhub::prompt(language).into(),
-                },
-                policy_revision: snapshot.revision,
-                sources: vec![source],
-            }
-        });
         if self.settings.assistant.is_none() {
-            return Ok(role);
+            return Ok(None);
         }
         let preferences = maka_agent_ports::preferences::Snapshot {
             revision: snapshot.revision,
-            privacy: snapshot.policy.privacy.clone(),
             personalization: snapshot.policy.personalization.clone(),
             workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };
@@ -156,11 +144,6 @@ impl Owner {
         let mut source = self.revision.clone();
         source.kind = SourceKind::PromptSection;
         prompt.sources.push(source);
-        if let Some(behavior) = &role {
-            prompt.text.push_str("\n\n");
-            prompt.text.push_str(&behavior.text);
-            prompt.sources.extend(behavior.sources.clone());
-        }
         if !instructions.is_empty() {
             prompt.text.push_str("\n\n");
             prompt.text.push_str(&instructions);

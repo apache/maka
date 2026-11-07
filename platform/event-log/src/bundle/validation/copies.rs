@@ -23,23 +23,21 @@ use crate::{
     bundle::format::{Copy, Record},
 };
 use maka_agent_facts::session::{CopyPurpose, CopyState, ForkPosition, Lineage};
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, VecDeque};
 
 pub(super) struct Copies(VecDeque<Copy>);
 
 impl Copies {
-    pub async fn read(
-        staged: &mut SqliteConnection,
+    pub fn read(
+        staged: &Connection,
         fence: u64,
         positions: Option<&crate::bundle::relocation::Positions>,
     ) -> Result<Self, StoreError> {
         let mut copies = Vec::new();
         let mut after = 0i64;
         loop {
-            let row: Option<(i64,String)> = sqlx::query_as(
-                "SELECT number,record_json FROM frames WHERE kind='copy' AND number>? ORDER BY number LIMIT 1"
-            ).bind(after).fetch_optional(&mut *staged).await?;
+            let row: Option<(i64,String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE kind='copy' AND number>? ORDER BY number LIMIT 1")?.query_row(params![after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
             let Some((number, json)) = row else {
                 break;
             };
@@ -83,10 +81,10 @@ impl Copies {
         Ok(Self(copies.into()))
     }
 
-    pub async fn install(
+    pub fn install(
         &mut self,
-        staged: &mut SqliteConnection,
-        db: &mut SqliteConnection,
+        staged: &Connection,
+        db: &Connection,
         through: u64,
         positions: Option<&crate::bundle::relocation::Positions>,
     ) -> Result<(), StoreError> {
@@ -103,23 +101,11 @@ impl Copies {
                 request.source_session_id.clone(),
                 copy.through,
             ));
-            sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,?,?,?,?,?,?)")
-                .bind(&request.target_session_id)
-                .bind(&request.source_session_id)
-                .bind(request.expected_source_revision as i64)
-                .bind(copy.through as i64)
-                .bind(copy.observed_through as i64)
-                .bind(serde_json::to_string(request)?)
-                .bind(serde_json::to_string(&copy.lineage)?)
-                .bind(copy.state.as_str())
-                .execute(&mut *db)
-                .await?;
+            db.execute("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,?,?,?,?,?,?)", params![&request.target_session_id, &request.source_session_id, request.expected_source_revision as i64, copy.through as i64, copy.observed_through as i64, serde_json::to_string(request)?, serde_json::to_string(&copy.lineage)?, copy.state.as_str()])?;
             let mut after = 0i64;
             loop {
-                let row: Option<(i64,String)> = sqlx::query_as(
-                    "SELECT number,record_json FROM frames WHERE kind IN ('member','revision_source')
-                     AND json_extract(record_json,'$.session')=? AND number>? ORDER BY number LIMIT 1"
-                ).bind(&request.target_session_id).bind(after).fetch_optional(&mut *staged).await?;
+                let row: Option<(i64,String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE kind IN ('member','revision_source')
+                     AND json_extract(record_json,'$.session')=? AND number>? ORDER BY number LIMIT 1")?.query_row(params![&request.target_session_id, after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
                 let Some((number, json)) = row else {
                     break;
                 };
@@ -138,26 +124,18 @@ impl Copies {
                         {
                             return Err(invalid("copy member exceeds its original fence"));
                         }
-                        crate::connection::worker_query(db, move |worker| {
-                            Box::pin(async move {
-                                let sequence = sequence as i64;
-                                let archive_sequence = archive_sequence.map(|n| n as i64);
-                                sqlx::query("INSERT INTO session_history_members VALUES(?,?,?)")
-                                    .bind(&session)
-                                    .bind(sequence)
-                                    .bind(archive_sequence)
-                                    .execute(&mut *worker)
-                                    .await?;
-                                crate::context::semantic::copy_member(
-                                    worker,
-                                    &session,
-                                    sequence,
-                                    archive_sequence,
-                                )
-                                .await
-                            })
-                        })
-                        .await?;
+                        let sequence = sequence as i64;
+                        let archive_sequence = archive_sequence.map(|n| n as i64);
+                        db.execute(
+                            "INSERT INTO session_history_members VALUES(?,?,?)",
+                            params![&session, sequence, archive_sequence],
+                        )?;
+                        crate::context::semantic::copy_member(
+                            db,
+                            &session,
+                            sequence,
+                            archive_sequence,
+                        )?;
                     }
                     Record::RevisionSource { session, sequence } => {
                         let sequence = positions.map_or(Ok(sequence), |p| p.event(sequence))?;
@@ -167,28 +145,25 @@ impl Copies {
                         if sequence > copy.observed_through {
                             return Err(invalid("revision source exceeds its original fence"));
                         }
-                        let selected: bool = sqlx::query_scalar(
-                            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence=?
+                        let selected: bool = db
+                            .prepare_cached(
+                                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence=?
                              AND json_extract(event_header,'$.invocation.turn_id')=?
                              AND ((kind='invocation_opened'
                                AND json_extract(event_header,'$.fact.input.kind')='message'
                                AND json_array_length(event_header,'$.fact.input.source_messages')>0)
                                OR kind='message_steered'))",
-                        )
-                        .bind(sequence as i64)
-                        .bind(turn_id)
-                        .fetch_one(&mut *db)
-                        .await?;
+                            )?
+                            .query_row(params![sequence as i64, turn_id], |row| row.get(0))?;
                         if !selected {
                             return Err(invalid(
                                 "revision source is not a selected canonical Message input",
                             ));
                         }
-                        sqlx::query("INSERT INTO session_revision_sources VALUES(?,?)")
-                            .bind(session)
-                            .bind(sequence as i64)
-                            .execute(&mut *db)
-                            .await?;
+                        db.execute(
+                            "INSERT INTO session_revision_sources VALUES(?,?)",
+                            params![session, sequence as i64],
+                        )?;
                     }
                     _ => unreachable!(),
                 }
@@ -198,28 +173,23 @@ impl Copies {
         // Equal-fence copies need not be ordered by ancestry in a bundle.
         // Validate the full incoming membership once, then pin shared roots.
         for (target, source, through) in installed {
-            let differs: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT sequence FROM session_history_events
+            let differs: bool = db
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT sequence FROM session_history_events
                    WHERE owner_session_id=?1 AND sequence<=?2
                    EXCEPT SELECT sequence FROM session_history_members WHERE session_id=?3)
                  OR EXISTS(SELECT sequence FROM session_history_members WHERE session_id=?3
                    EXCEPT SELECT sequence FROM session_history_events
                    WHERE owner_session_id=?1 AND sequence<=?2)",
-            )
-            .bind(source)
-            .bind(through as i64)
-            .bind(&target)
-            .fetch_one(&mut *db)
-            .await?;
+                )?
+                .query_row(params![source, through as i64, &target], |row| row.get(0))?;
             if differs {
                 return Err(invalid(
                     "copy membership differs from its complete source prefix",
                 ));
             }
-            sqlx::query("SELECT context_source_pin_copy(?)")
-                .bind(target)
-                .execute(&mut *db)
-                .await?;
+            db.prepare_cached("SELECT context_source_pin_copy(?)")?
+                .query_row(params![target], |_| Ok(()))?;
         }
         Ok(())
     }

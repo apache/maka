@@ -17,23 +17,20 @@
  * under the License.
  */
 
-import { inputAction, Scroll, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { inputAction } from 'nsh';
 import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
-import { ChoiceIndicator } from './ChoiceIndicator';
-import { LoadingState } from './Loading';
+import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
 import {
-  C,
-  bodyTextStyle,
-  captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  controlDisabledStyle,
-  fieldBoxStyle,
-} from './ui';
+  SettingsBody,
+  SettingsButton,
+  SettingsLede,
+  SettingsProblem,
+  SettingsRow,
+  SettingsSection,
+  SettingsSwitch,
+} from './SettingsPage';
 
 function installationText(value: AgentExternalRuntime['installation']) {
   switch (value.kind) {
@@ -87,13 +84,13 @@ function modelsText(value: AgentExternalRuntime['models']) {
   }
 }
 
-function shortStatus(value: AgentExternalRuntime) {
+/** What an enabled agent needs before it can be used, or null when it is ready. */
+function attention(value: AgentExternalRuntime) {
   if (value.installation.kind === 'not_found') return tr('Not installed');
   if (value.installation.kind === 'unsupported') return tr('Not supported on this device');
   if (value.installation.kind === 'error') return tr('Could not check installation');
   if (value.authentication.kind === 'unauthenticated') return tr('Sign in required');
-  if (value.models.kind === 'ready')
-    return tr('{count} models available', { count: value.models.count });
+  if (value.models.kind === 'ready') return null;
   if (value.authentication.kind === 'error' || value.authentication.kind === 'unknown')
     return tr('Could not verify sign-in');
   if (value.models.kind === 'unauthenticated') return tr('Sign in required');
@@ -102,193 +99,156 @@ function shortStatus(value: AgentExternalRuntime) {
 
 export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner }) {
   const owner = props.owner;
-  const buttonStyle = { ...controlStyle, alignSelf: 'flex-start' as const };
-  const textStyle = { ...bodyTextStyle, color: C.text };
-  const mutedStyle = { ...captionTextStyle, color: C.muted };
   const unavailable = () => {
     const state = owner.catalog()?.state;
     return owner.failure() ?? (state?.kind === 'unavailable' ? state.message : null);
   };
-  const statusLabel = (id: string) => {
+  const description = (id: string) => {
     const status = owner.status(id);
-    if (status) return shortStatus(status);
-    if (owner.loading()) return tr('Checking external agents…');
+    if (status?.models.kind === 'ready')
+      return tr('{count} models available', { count: status.models.count });
+    if (status) return undefined;
     if (owner.catalog()?.state.kind === 'workspace_required')
       return tr('Choose a workspace to check status');
-    return tr('Status unavailable');
+    return undefined;
   };
   return (
-    <Scroll accessibilityLabel={tr('External agent runtimes')} style={{ flex: 1, minHeight: 0 }}>
-      <View style={{ gap: 10, padding: 8 }}>
-        <Button
-          disabled={owner.disabled()}
-          accessibilityLabel={tr('Refresh external agents')}
-          onPress={inputAction(owner.reload, owner.action())}
-          style={buttonStyle}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Text style={textStyle}>{tr('Refresh')}</Text>
-        </Button>
+    <If when={!owner.confirmation()} else={<Confirmation owner={owner} />}>
+      <SettingsBody accessibilityLabel={tr('External agent runtimes')}>
         <If when={owner.loading() && !owner.basis()}>
-          <LoadingState label={tr('Checking external agents…')} />
+          <LoadingIndicator label={tr('Checking external agents…')} />
         </If>
         <If when={unavailable()}>
-          <Button
-            accessibilityLabel={tr('Show external agent error details')}
-            onPress={inputAction(owner.toggleDetails, { ...owner.action(), runtime: 'error' })}
-            style={buttonStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-          >
-            <Text style={mutedStyle}>
-              {tr('Status unavailable')} · {tr('Details')}
-            </Text>
-          </Button>
-          <If when={owner.details() === 'error'}>
-            <Text style={mutedStyle}>{unavailable()}</Text>
-          </If>
+          <SettingsProblem
+            message={unavailable()!}
+            retry={inputAction(owner.reload, owner.action())}
+          />
         </If>
-        <If when={owner.confirmation()}>
-          <View style={{ ...fieldBoxStyle(), padding: 12, gap: 10 }}>
-            <Text style={textStyle}>
-              {tr('Enable {name}', { name: owner.confirmation()!.name })}
-            </Text>
-            <Text style={textStyle}>
-              {tr(
-                'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.',
-              )}
-            </Text>
-            <Text style={mutedStyle}>{tr('Other Maka permissions stay unchanged.')}</Text>
-            <Button
-              disabled={owner.disabled()}
-              selected={owner.confirmation()!.acknowledged}
-              accessibilityLabel={tr('I understand and accept the external agent permissions')}
-              onPress={inputAction(owner.acknowledge, {
-                ...owner.action(),
-                value: !owner.confirmation()!.acknowledged,
-              })}
-              style={{ ...buttonStyle, flexDirection: 'row', gap: 8, alignItems: 'center' }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <ChoiceIndicator
-                kind="checkbox"
-                checked={owner.confirmation()!.acknowledged}
-                disabled={owner.disabled()}
-              />
-              <Text style={textStyle}>{tr('I understand and accept these permissions')}</Text>
-            </Button>
-            <Button
-              disabled={owner.disabled() || !owner.confirmation()!.acknowledged}
-              accessibilityLabel={tr('Confirm permissions and enable')}
-              onPress={inputAction(owner.enable, owner.action())}
-              style={buttonStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text style={textStyle}>{tr('Confirm permissions and enable')}</Text>
-            </Button>
-            <Button
-              disabled={owner.disabled()}
-              accessibilityLabel={tr('Cancel enabling external agents')}
-              onPress={inputAction(owner.cancel, owner.action())}
-              style={buttonStyle}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text style={textStyle}>{tr('Cancel')}</Text>
-            </Button>
-          </View>
-        </If>
-        <If when={!owner.confirmation()}>
-          <Each of={owner.runtimes()} key={(runtime) => runtime.id}>
-            {(runtime) => (
-              <View style={{ gap: 6, paddingVertical: 8 }}>
-                <Button
-                  disabled={owner.disabled()}
-                  selected={runtime().enabled}
-                  accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
-                    name: runtime().name,
-                  })}
-                  onPress={
-                    runtime().enabled
-                      ? inputAction(owner.disable, { ...owner.action(), runtime: runtime().id })
-                      : inputAction(owner.requestEnable, {
-                          ...owner.action(),
-                          runtime: runtime().id,
-                        })
-                  }
-                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <Text style={{ ...textStyle, flex: 1 }}>{runtime().name}</Text>
-                  <ChoiceIndicator
-                    kind="switch"
+        <If when={owner.runtimes().length > 0}>
+          <SettingsSection>
+            <Each of={owner.runtimes()} key={(runtime) => runtime.id}>
+              {(runtime) => (
+                <>
+                  <SettingsSwitch
+                    label={runtime().name}
+                    description={runtime().enabled ? description(runtime().id) : undefined}
+                    status={
+                      runtime().enabled && owner.status(runtime().id)
+                        ? (attention(owner.status(runtime().id)!) ?? undefined)
+                        : undefined
+                    }
+                    accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
+                      name: runtime().name,
+                    })}
                     checked={runtime().enabled}
                     disabled={owner.disabled()}
+                    onPress={
+                      runtime().enabled
+                        ? inputAction(owner.disable, { ...owner.action(), runtime: runtime().id })
+                        : inputAction(owner.requestEnable, {
+                            ...owner.action(),
+                            runtime: runtime().id,
+                          })
+                    }
                   />
-                </Button>
-                <If when={runtime().enabled}>
-                  <View style={{ paddingHorizontal: controlStyle.paddingHorizontal, gap: 6 }}>
-                    <Text style={mutedStyle}>{statusLabel(runtime().id)}</Text>
-                    <Button
+                  <If when={runtime().enabled && owner.status(runtime().id)}>
+                    <SettingsRow
+                      label={owner.details() === runtime().id ? tr('Hide details') : tr('Details')}
                       accessibilityLabel={tr(
                         owner.details() === runtime().id
                           ? 'Hide {name} details'
                           : 'Show {name} details',
                         { name: runtime().name },
                       )}
+                      tone="muted"
                       onPress={inputAction(owner.toggleDetails, {
                         ...owner.action(),
                         runtime: runtime().id,
                       })}
-                      style={buttonStyle}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                    >
-                      <Text style={mutedStyle}>
-                        {owner.details() === runtime().id ? tr('Hide details') : tr('Details')}
-                      </Text>
-                    </Button>
+                    />
                     <If when={owner.details() === runtime().id}>
-                      <If when={owner.status(runtime().id)}>
-                        <Text style={mutedStyle}>
-                          {installationText(owner.status(runtime().id)!.installation)}
-                        </Text>
-                        <If when={owner.status(runtime().id)!.installation.kind === 'available'}>
-                          <Text style={mutedStyle}>
-                            {authenticationText(owner.status(runtime().id)!.authentication)}
-                          </Text>
-                          <Text style={mutedStyle}>
-                            {modelsText(owner.status(runtime().id)!.models)}
-                          </Text>
-                          <Text style={mutedStyle}>
-                            {tr(
-                              'Sign in using the agent’s native login, then Refresh. Maka does not manage these credentials.',
-                            )}
-                          </Text>
-                        </If>
-                      </If>
+                      <Details status={owner.status(runtime().id)!} />
                     </If>
-                    <If when={owner.status(runtime().id)?.installation.kind === 'not_found'}>
-                      <Text style={mutedStyle}>
-                        {tr('Install and sign in using the native CLI, then Refresh.')}
-                      </Text>
-                    </If>
-                  </View>
-                </If>
-              </View>
-            )}
-          </Each>
+                  </If>
+                </>
+              )}
+            </Each>
+          </SettingsSection>
         </If>
-      </View>
-    </Scroll>
+      </SettingsBody>
+    </If>
+  );
+}
+
+function Details(props: { status: AgentExternalRuntime }) {
+  const available = () => props.status.installation.kind === 'available';
+  return (
+    <>
+      <SettingsRow
+        label={tr('Installation')}
+        description={installationText(props.status.installation)}
+      />
+      <If when={available()}>
+        <SettingsRow
+          label={tr('Sign-in')}
+          description={authenticationText(props.status.authentication)}
+        />
+        <SettingsRow label={tr('Models')} description={modelsText(props.status.models)} />
+      </If>
+      <SettingsRow
+        label=""
+        tone="muted"
+        description={
+          available()
+            ? tr('Sign in using the agent’s native login. Maka does not manage these credentials.')
+            : tr('Install and sign in using the native CLI.')
+        }
+      />
+    </>
+  );
+}
+
+function Confirmation(props: { owner: ExternalAgentSettingsOwner }) {
+  const owner = props.owner;
+  const confirmation = () => owner.confirmation()!;
+  return (
+    <SettingsBody
+      accessibilityLabel={tr('External agent runtimes')}
+      footer={
+        <>
+          <SettingsButton
+            label={tr('Cancel')}
+            accessibilityLabel={tr('Cancel enabling external agents')}
+            tone="quiet"
+            disabled={owner.disabled()}
+            onPress={inputAction(owner.cancel, owner.action())}
+          />
+          <SettingsButton
+            label={tr('Confirm permissions and enable')}
+            tone="primary"
+            disabled={owner.disabled() || !confirmation().acknowledged}
+            onPress={inputAction(owner.enable, owner.action())}
+          />
+        </>
+      }
+    >
+      <SettingsLede>
+        {tr(
+          'This agent runs in its native full-access mode. It can read and write files, run commands and access the network outside the Maka sandbox.',
+        )}
+      </SettingsLede>
+      <SettingsSection note={tr('Other Maka permissions stay unchanged.')}>
+        <SettingsSwitch
+          label={tr('I understand and accept these permissions')}
+          accessibilityLabel={tr('I understand and accept the external agent permissions')}
+          checked={confirmation().acknowledged}
+          disabled={owner.disabled()}
+          onPress={inputAction(owner.acknowledge, {
+            ...owner.action(),
+            value: !confirmation().acknowledged,
+          })}
+        />
+      </SettingsSection>
+    </SettingsBody>
   );
 }

@@ -80,99 +80,6 @@ export const tui_anonymous_credential: Message = [
   '未保存凭据；此服务支持匿名连接。',
   '未儲存憑據；此服務支援匿名連線。',
 ];
-export const tui_settings_subagents: Message = ['Subagents', 'Subagent', 'Subagent'];
-export const tui_subagents_help: Message = [
-  'Save reusable worker configurations for WorkHub. Each task keeps its original model and tool selection; later edits affect new tasks only.',
-  '为 WorkHub 保存可复用的 Agent 配置。任务会保留派发时的模型和工具选择，后续修改只影响新任务。',
-  '為 WorkHub 儲存可重用的 Agent 設定。任務會保留派發時的模型和工具選擇，後續修改只影響新任務。',
-];
-export const tui_subagents_new: Message = ['New subagent', '新建 Subagent', '新增 Subagent'];
-export const tui_subagents_loading: Message = [
-  'Loading subagents…',
-  '正在加载 Subagent…',
-  '正在載入 Subagent…',
-];
-export const tui_subagents_selected: Message = ['Selected tools', '已选择工具', '已選擇工具'];
-export const tui_subagents_isolated: Message = [
-  'Isolated Git workspace',
-  '隔离 Git 工作区',
-  '隔離 Git 工作區',
-];
-export const tui_subagents_isolated_help: Message = [
-  'Starts from a clean repository commit. Changes stay in a separate worktree and can be returned as an immutable patch.',
-  '从干净仓库的提交开始。修改保留在独立 worktree 中，可交付为不可变补丁。',
-  '從乾淨儲存庫的提交開始。修改保留在獨立 worktree 中，可交付為不可變修補檔。',
-];
-export const tui_subagents_name: Message = ['Name', '名称', '名稱'];
-export const tui_subagents_description: Message = ['Description', '说明', '說明'];
-export const tui_subagents_id: Message = ['ID', '标识', '識別碼'];
-export const tui_subagents_enabled: Message = [
-  'Available to WorkHub',
-  '允许 WorkHub 使用',
-  '允許 WorkHub 使用',
-];
-export const tui_subagents_model: Message = ['Model', '模型', '模型'];
-export const tui_subagents_choose_model: Message = ['Choose a model', '选择模型', '選擇模型'];
-export const tui_subagents_tools_help: Message = [
-  'Choose the tools this subagent may use. Unchecked tools remain unavailable even if the model requests them. Workspace permissions still apply. Restricted sessions use native models.',
-  '选择 Subagent 可用的工具。即使模型主动调用，未选工具也不会执行；工作区权限仍然生效。受限会话使用原生模型。',
-  '選擇 Subagent 可用的工具。即使模型主動呼叫，未選工具也不會執行；工作區權限仍然生效。受限工作階段使用原生模型。',
-];
-export const tui_subagents_read: Message = ['Local read tools', '本地读取工具', '本機讀取工具'];
-export const tui_subagents_web: Message = ['Web research tools', '网页研究工具', '網頁研究工具'];
-export const tui_subagents_all: Message = [
-  'All installed tools',
-  '所有已安装工具',
-  '所有已安裝工具',
-];
-export const tui_subagents_none: Message = ['No tools', '不使用工具', '不使用工具'];
-export const tui_subagents_missing_tool: Message = [
-  'Unavailable tool',
-  '工具不可用',
-  '工具無法使用',
-];
-export const tui_subagents_save: Message = ['Save subagent', '保存 Subagent', '儲存 Subagent'];
-export const tui_subagents_remove: Message = ['Remove subagent', '移除 Subagent', '移除 Subagent'];
-export const tui_subagents_remove_question: Message = [
-  'Remove this saved configuration? Existing tasks and sessions are retained.',
-  '移除此配置？已有任务和会话会保留。',
-  '移除此設定？已有任務和工作階段會保留。',
-];
-export const tui_subagents_reload: Message = [
-  'Reload and discard edits',
-  '重新加载并放弃编辑',
-  '重新載入並放棄編輯',
-];
-export const tui_subagents_saved: Message = [
-  'Subagent configurations saved.',
-  'Subagent 配置已保存。',
-  'Subagent 設定已儲存。',
-];
-export const tui_subagents_conflict: Message = [
-  'Configurations changed elsewhere. Reload before saving again.',
-  '配置已被其他操作修改，请重新加载后再保存。',
-  '設定已被其他操作修改，請重新載入後再儲存。',
-];
-export const tui_subagents_invalid: Message = [
-  'Check the name, model and tool selection.',
-  '请检查名称、模型及工具选择。',
-  '請檢查名稱、模型及工具選擇。',
-];
-export const tui_subagents_unknown: Message = [
-  'The save outcome is unknown. Check the original operation before continuing.',
-  '保存结果未知，请先检查原操作回执。',
-  '儲存結果未知，請先檢查原操作回執。',
-];
-export const tui_subagents_unavailable: Message = [
-  'Subagent settings are unavailable.',
-  'Subagent 设置暂不可用。',
-  'Subagent 設定暫時無法使用。',
-];
-export const tui_subagents_connections: Message = [
-  'Add or repair model connections in Settings → Models.',
-  '请在“设置 → 模型”中添加或修复模型连接。',
-  '請在「設定 → 模型」中新增或修復模型連線。',
-];
 export const tui_settings_decisions_api: Message = ['Decisions API', '决策 API', '決策 API'];
 export const tui_decisions_api_help: Message = [
   'Evaluate structured questions with a configured Decisions API service. Enabling it permits requests to the saved endpoint within this installation’s network permissions.',
@@ -251,9 +158,9 @@ export const tui_decisions_api_test_help: Message = [
 ];
 export const tui_decisions_api_tested: Message = ['Test completed', '测试完成', '測試完成'];
 export const tui_decisions_api_test_failed: Message = [
-  'Test failed. Check the endpoint, credentials, network permissions and privacy mode.',
-  '测试失败，请检查端点、凭据、网络权限及隐私模式。',
-  '測試失敗，請檢查端點、憑證、網路權限及隱私模式。',
+  'Test failed. Check the endpoint, credentials and network permissions.',
+  '测试失败，请检查端点、凭据和网络权限。',
+  '測試失敗，請檢查端點、憑證和網路權限。',
 ];
 export const tui_decisions_api_reload: Message = [
   'Reload saved settings',
@@ -293,9 +200,9 @@ export const tui_web_check_key: Message = [
 ];
 export const tui_web_checked: Message = ['Key check complete', '密钥验证完成', '金鑰驗證完成'];
 export const tui_web_check_unavailable: Message = [
-  'Key check is unavailable: check the key, network access and privacy mode.',
-  '无法验证，请检查密钥、网络权限和隐私模式。',
-  '無法驗證，請檢查金鑰、網路權限和隱私模式。',
+  'Key check is unavailable: check the key and network access.',
+  '无法验证，请检查密钥和网络权限。',
+  '無法驗證，請檢查金鑰和網路權限。',
 ];
 export const tui_web_check_valid: Message = [
   'Key accepted by Tavily',
@@ -1516,7 +1423,6 @@ export const tui_assistant_shell_titles: Message = [
   'Shell 命令標題',
 ];
 
-export const tui_assistant_privacy: Message = ['Privacy mode', '隐私模式', '隱私模式'];
 export const tui_assistant_instructions: Message = [
   'Read workspace instructions',
   '读取工作区指令',

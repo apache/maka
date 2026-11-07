@@ -29,8 +29,8 @@ use maka_agent_facts::archive::encode_projection;
 use maka_agent_facts::archive::projection_digest;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, SqliteConnection};
 
 pub(super) fn validate(
     target: &target::Target,
@@ -72,8 +72,8 @@ pub(super) fn validate(
     Ok(body)
 }
 
-pub(crate) async fn validate_append(
-    connection: &mut SqliteConnection,
+pub(crate) fn validate_append(
+    connection: &Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     let Fact::ToolResultArchived { placeholder } = &event.fact else {
@@ -83,19 +83,15 @@ pub(crate) async fn validate_append(
         connection,
         &event.invocation.session_id,
         &placeholder.identity.runtime_event_id,
-    )
-    .await?
+    )?
     .ok_or(ArchiveError::SourceMismatch)?;
     validate(&target, placeholder)?;
-    if selected(connection, &event.invocation.session_id, &target.event_id)
-        .await?
-        .is_some()
-    {
+    if selected(connection, &event.invocation.session_id, &target.event_id)?.is_some() {
         return Err(StoreError::EventConflict);
     }
-    let selection = Selection::for_invocation(connection, &event.invocation).await?;
-    validate_selection(connection, &selection, &target.event_id).await?;
-    let baseline = read::latest_selected(connection, &selection, i64::MAX as u64).await?;
+    let selection = Selection::for_invocation(connection, &event.invocation)?;
+    validate_selection(connection, &selection, &target.event_id)?;
+    let baseline = read::latest_selected(connection, &selection, i64::MAX as u64)?;
     if baseline
         .as_ref()
         .is_some_and(|b| target.sequence <= b.checkpoint.covered_through)
@@ -107,8 +103,8 @@ pub(crate) async fn validate_append(
     Ok(())
 }
 
-pub(crate) async fn verify_replay(
-    connection: &mut SqliteConnection,
+pub(crate) fn verify_replay(
+    connection: &Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     if let Fact::ToolResultArchived { placeholder } = &event.fact {
@@ -117,8 +113,7 @@ pub(crate) async fn verify_replay(
             &event.invocation.session_id,
             &placeholder.identity.runtime_event_id,
             i64::MAX as u64,
-        )
-        .await?
+        )?
         .ok_or(ArchiveError::Corrupt)?;
         if accepted != *placeholder {
             return Err(StoreError::EventConflict);
@@ -127,57 +122,52 @@ pub(crate) async fn verify_replay(
     Ok(())
 }
 
-pub(crate) async fn find(
-    connection: &mut SqliteConnection,
+pub(crate) fn find(
+    connection: &Connection,
     session: &str,
     target_id: &str,
     before: u64,
 ) -> Result<Option<(u64, ArchivedPlaceholder)>, StoreError> {
-    let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT sequence,placeholder_json FROM context_archive_records
+    let row: Option<(i64, String)> = connection
+        .query_row(
+            "SELECT sequence,placeholder_json FROM context_archive_records
         WHERE session_id=? AND target_event_id=? AND sequence<?",
-    )
-    .bind(session)
-    .bind(target_id)
-    .bind(before as i64)
-    .fetch_optional(connection)
-    .await?;
+            rusqlite::params![session, target_id, before as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
     row.map(|(sequence, json)| Ok((sequence_number(sequence)?, serde_json::from_str(&json)?)))
         .transpose()
 }
 
-async fn validate_selection(
-    connection: &mut SqliteConnection,
+fn validate_selection(
+    connection: &Connection,
     selection: &Selection,
     event_id: &str,
 ) -> Result<(), StoreError> {
     let filter = Selection::predicate("t", "?2");
-    let visible: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events t WHERE t.event_id=?1 AND {filter})"
-    )))
-    .bind(event_id)
-    .bind(&selection.lineage)
-    .fetch_one(connection)
-    .await?;
+    let visible: bool = connection.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM runtime_events t WHERE t.event_id=?1 AND {filter})"),
+        rusqlite::params![event_id, &selection.lineage],
+        |row| row.get(0),
+    )?;
     if !visible {
         return Err(ArchiveError::SourceMismatch.into());
     }
     Ok(())
 }
 
-pub(crate) async fn archived(
-    connection: &mut SqliteConnection,
+pub(crate) fn archived(
+    connection: &Connection,
     session: &str,
     target_id: &str,
     before: u64,
 ) -> Result<Option<ArchivedToolResult>, StoreError> {
-    let Some((_, placeholder)) = find(connection, session, target_id, before).await? else {
+    let Some((_, placeholder)) = find(connection, session, target_id, before)? else {
         return Ok(None);
     };
-    let (sequence,invocation,operation_id,is_error):(i64,String,String,bool)=sqlx::query_as(
-        "SELECT target_sequence,target_invocation_json,operation_id,is_error FROM context_archive_records
-         WHERE session_id=? AND target_event_id=? AND sequence<?")
-        .bind(session).bind(target_id).bind(before as i64).fetch_one(connection).await?;
+    let (sequence,invocation,operation_id,is_error):(i64,String,String,bool)=connection.query_row("SELECT target_sequence,target_invocation_json,operation_id,is_error FROM context_archive_records
+         WHERE session_id=? AND target_event_id=? AND sequence<?", rusqlite::params![session, target_id, before as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,)))?;
     Ok(Some(ArchivedToolResult {
         sequence: sequence_number(sequence)?,
         event_id: target_id.into(),
@@ -192,25 +182,21 @@ pub(crate) async fn archived(
 
 /// Select the owner's archive or its immutable inherited archive, then verify
 /// against the actual writer. A copied archive may come from an intermediate copy.
-async fn selected(
-    connection: &mut SqliteConnection,
+fn selected(
+    connection: &Connection,
     session: &str,
     event_id: &str,
 ) -> Result<Option<ArchivedPlaceholder>, StoreError> {
     let filter = Selection::archive_predicate("t", "a", "9223372036854775807", "NULL");
     let rows: Vec<(Option<String>, Option<i64>, Option<i64>)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        connection.prepare_cached(&format!(
         "SELECT json_extract(a.event_header,'$.invocation.session_id'), a.sequence, t.archive_sequence
          FROM session_history_events t LEFT JOIN runtime_events a
            ON a.kind='tool_result_archived'
            AND CAST(json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') AS TEXT)=t.event_id
            AND {filter}
          WHERE t.owner_session_id=?1 AND t.event_id=?2 LIMIT 2"
-    )))
-        .bind(session)
-        .bind(event_id)
-        .fetch_all(&mut *connection)
-        .await?;
+    ))?.query_map(rusqlite::params![session, event_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?,)))?.collect::<Result<Vec<_>, _>>()?;
     if rows.len() > 1 {
         return Err(ArchiveError::Corrupt.into());
     }
@@ -227,8 +213,7 @@ async fn selected(
         &writer,
         event_id,
         sequence_number(sequence)? + 1,
-    )
-    .await?
+    )?
     .ok_or(ArchiveError::Corrupt)?;
     if accepted_sequence != sequence_number(sequence)? {
         return Err(ArchiveError::Corrupt.into());
@@ -243,60 +228,55 @@ impl EventLog {
         session: &str,
         event_id: &str,
     ) -> Result<Option<super::ToolResultResource>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let Some(mut target) = target::read(&mut tx, &session, &event_id).await? else {
-                        return Ok(None);
-                    };
-                    target
-                        .projection
-                        .validate(&target.invocation.session_id)
-                        .map_err(|_| ArchiveError::Corrupt)?;
-                    if let Some(placeholder) = selected(&mut tx, &session, &event_id).await? {
-                        validate(&target, &placeholder)?;
-                    }
-                    // Verify original evidence before rendering typed media locators.
-                    // Raw archive reads below retain the original digest and bytes.
-                    if target.invocation.session_id != session
-                        && let maka_agent_facts::tool_output::DurableToolProjection::Content {
-                            parts,
-                        } = &mut target.projection
-                    {
-                        for part in parts {
-                            if let Some(reference) = part.reference_mut() {
-                                let maka_agent_facts::attachment::StorageRef::SessionFile {
-                                    session_id,
-                                    relative_path,
-                                } = &*reference
-                                else {
-                                    return Err(ArchiveError::Corrupt.into());
-                                };
-                                *reference = crate::artifacts::history::resolve(
-                                    &mut tx,
-                                    &session,
-                                    session_id,
-                                    relative_path,
-                                )
-                                .await?
-                                .ok_or(ArchiveError::Corrupt)?;
-                            }
+            .read(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+                let Some(mut target) = target::read(&tx, &session, &event_id)? else {
+                    return Ok(None);
+                };
+                target
+                    .projection
+                    .validate(&target.invocation.session_id)
+                    .map_err(|_| ArchiveError::Corrupt)?;
+                if let Some(placeholder) = selected(&tx, &session, &event_id)? {
+                    validate(&target, &placeholder)?;
+                }
+                // Verify original evidence before rendering typed media locators.
+                // Raw archive reads below retain the original digest and bytes.
+                if target.invocation.session_id != session
+                    && let maka_agent_facts::tool_output::DurableToolProjection::Content { parts } =
+                        &mut target.projection
+                {
+                    for part in parts {
+                        if let Some(reference) = part.reference_mut() {
+                            let maka_agent_facts::attachment::StorageRef::SessionFile {
+                                session_id,
+                                relative_path,
+                            } = &*reference
+                            else {
+                                return Err(ArchiveError::Corrupt.into());
+                            };
+                            *reference = crate::artifacts::history::resolve(
+                                &tx,
+                                &session,
+                                session_id,
+                                relative_path,
+                            )?
+                            .ok_or(ArchiveError::Corrupt)?;
                         }
                     }
-                    let bytes = maka_agent_facts::archive::encode_projection(&target.projection)
-                        .map_err(|_| ArchiveError::Corrupt)?;
-                    let serialized_result =
-                        String::from_utf8(bytes).map_err(|_| ArchiveError::Corrupt)?;
-                    tx.commit().await?;
-                    Ok(Some(super::ToolResultResource {
-                        tool_name: target.name,
-                        serialized_result,
-                    }))
-                })
+                }
+                let bytes = maka_agent_facts::archive::encode_projection(&target.projection)
+                    .map_err(|_| ArchiveError::Corrupt)?;
+                let serialized_result =
+                    String::from_utf8(bytes).map_err(|_| ArchiveError::Corrupt)?;
+                tx.commit()?;
+                Ok(Some(super::ToolResultResource {
+                    tool_name: target.name,
+                    serialized_result,
+                }))
             })
             .await
     }
@@ -327,23 +307,20 @@ impl EventLog {
         session: &str,
         event_id: &str,
     ) -> Result<Option<(ArchiveIdentity, Vec<u8>)>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let (session, event_id) = (session.to_owned(), event_id.to_owned());
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let Some(target) = target::read(&mut tx, &session, &event_id).await? else {
-                        return Ok(None);
-                    };
-                    let Some(placeholder) = selected(&mut tx, &session, &event_id).await? else {
-                        return Ok(None);
-                    };
-                    let body = validate(&target, &placeholder)?;
-                    tx.commit().await?;
-                    Ok(Some((placeholder.identity, body)))
-                })
+            .read(move |connection| {
+                let tx = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)?;
+                let Some(target) = target::read(&tx, &session, &event_id)? else {
+                    return Ok(None);
+                };
+                let Some(placeholder) = selected(&tx, &session, &event_id)? else {
+                    return Ok(None);
+                };
+                let body = validate(&target, &placeholder)?;
+                tx.commit()?;
+                Ok(Some((placeholder.identity, body)))
             })
             .await
     }

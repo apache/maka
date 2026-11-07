@@ -815,8 +815,22 @@ pub(crate) fn close_open_menu() -> Result<(), String> {
 
 /// Shows a context menu at `at` (root coordinates) or at the mouse.
 fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>) {
-    let root = surface.root.ns();
     let menu = menu(surface, "", items);
+    track_menu(surface, &menu, at);
+    // The app's `Menu.popup` promise settles.
+    surface.event(
+        ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![
+            ("id", PayloadValue::Number(0.0)),
+            ("closed", PayloadValue::Bool(true)),
+        ]),
+    );
+}
+
+/// Shows a native context menu and lets the test agent choose from it.
+pub(crate) fn track_menu(surface: &Rc<Surface>, menu: &NSMenu, at: Option<(f32, f32)>) {
+    let root = surface.root.ns();
     // The root view is flipped: y goes down, as the app's. Without a
     // place, where the root's pointer events put the mouse: the hardware
     // cursor's place only when they put it nowhere, as synthesized input
@@ -831,7 +845,7 @@ fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>)
         }
     };
     #[cfg(feature = "dev")]
-    OPEN_MENU.with(|open| *open.borrow_mut() = Some(menu.clone()));
+    OPEN_MENU.with(|open| *open.borrow_mut() = Some(Retained::from(menu)));
     // Returns once the menu closed (the chosen item's action sent).
     menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(root));
     #[cfg(feature = "dev")]
@@ -839,15 +853,6 @@ fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>)
     // A menu opened during a press (`onPressDown`, a long press) took its
     // release: the press ends here, or the view would stay pressed.
     crate::input::cancel_pointer(surface);
-    // The app's `Menu.popup` promise settles.
-    surface.event(
-        ROOT_ID,
-        EventKind::Menu,
-        EventPayload::Map(vec![
-            ("id", PayloadValue::Number(0.0)),
-            ("closed", PayloadValue::Bool(true)),
-        ]),
-    );
 }
 
 /// The root view moved to a window, or the window changed: a hidden title

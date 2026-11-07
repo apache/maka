@@ -85,7 +85,7 @@ fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
         );
         return;
     }
-    let mut host = Registry::ui_set("maka/host");
+    let mut host = maka_workbench::bindings::ui_registry();
     host.native_values(&["host"]);
     let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -152,7 +152,7 @@ fn check_marks(source: &str) {
                         cx,
                     );
                     view.on_error(move |message| *failed.borrow_mut() = Some(message.to_owned()));
-                    let mut host = Registry::ui_set("maka/host");
+                    let mut host = maka_workbench::bindings::ui_registry();
                     host.value("host", move || {
                         Instance::new(RailHost {
                             active_scale: host_scale.clone(),

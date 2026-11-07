@@ -17,13 +17,15 @@
  * under the License.
  */
 
-//! ACP v2 façade over the ordinary Host client; no execution or storage authority.
+//! ACP v1/v2 façade over the ordinary Host client; no execution or storage authority.
 mod client;
 mod configuration;
 mod content;
 mod foreground;
 mod history;
 mod interaction;
+mod mcp;
+mod presentation;
 mod projection;
 mod server;
 mod session;

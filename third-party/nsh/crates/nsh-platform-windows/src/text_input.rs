@@ -425,6 +425,16 @@ impl InputState {
         Some((ox + x, oy + y, h))
     }
 
+    /// Input-method windows stay inside the visible input even when a glyph
+    /// overflows a rich editor's narrow native sink.
+    fn ime_caret_rect(&self) -> Option<(f32, f32, f32)> {
+        let (x, y, h) = self.caret_rect()?;
+        let (width, height) = self.size.get();
+        let top = y.clamp(0.0, height);
+        let bottom = (y + h).clamp(top, height);
+        Some((x.clamp(0.0, width), top, bottom - top))
+    }
+
     /// The shown position at layout point `(x, y)`.
     fn hit_layout(&self, layout: &IDWriteTextLayout, x: f32, y: f32) -> u32 {
         let mut trailing = windows_core::BOOL(0);
@@ -1033,7 +1043,7 @@ fn place_ime(surface: &Surface) {
     let Some(input) = input_of(&view) else {
         return;
     };
-    let Some((x, y, h)) = input.caret_rect() else {
+    let Some((x, y, h)) = input.ime_caret_rect() else {
         return;
     };
     let content = content_rect(&view, &input);
@@ -2376,6 +2386,33 @@ mod tests {
         assert_eq!(input.count.get(), 2);
         blur_all(&surface);
         surface.stop();
+    }
+
+    #[test]
+    fn narrow_multiline_inputs_keep_the_ime_anchor_inside_the_visible_field() {
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        config(
+            &surface,
+            &view,
+            &InputConfig {
+                multiline: true,
+                ..Default::default()
+            },
+        );
+        let input = input_of(&view).unwrap();
+        input.set_size((1.0, 16.0));
+        for source in ["你", "你好", "你好hao"] {
+            input.model.borrow_mut().set_text(source);
+            input.model.borrow_mut().select(source.len(), source.len());
+            input.relayout();
+            input.reveal();
+            let (x, y, height) = input.ime_caret_rect().unwrap();
+            assert_eq!(x, 1.0);
+            assert!(y >= 0.0 && height > 0.0 && y + height <= 16.0);
+        }
     }
 
     #[test]

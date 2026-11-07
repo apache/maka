@@ -19,19 +19,19 @@
 
 //! Same-transaction typed metadata over the actual immutable payload encoding.
 pub(super) mod codec;
-mod scan;
+pub(super) mod scan;
 use super::{captured, invalid};
 use crate::StoreError;
 use maka_agent_facts::history::{RowPosition, semantic::directory::RowDirectory};
+use rusqlite::Connection;
 use rusqlite::params;
-use sqlx::sqlite::SqliteWorkerConnection;
 
 pub(super) fn row(json: &str) -> Result<RowDirectory, StoreError> {
     scan::row(&mut json.as_bytes())
 }
 
 pub(super) fn prepare_fragment(
-    worker: &mut SqliteWorkerConnection<'_>,
+    raw: &Connection,
     key: RowPosition,
     source: super::source::SemanticPayloadSource,
 ) -> Result<
@@ -41,21 +41,17 @@ pub(super) fn prepare_fragment(
     ),
     StoreError,
 > {
-    captured::with_raw(worker, |raw| {
-        let root = match source {
-            super::source::SemanticPayloadSource::Pieces => scan::PayloadRoot::Payload,
-            super::source::SemanticPayloadSource::CanonicalToolProjection(_) => {
-                scan::PayloadRoot::ToolProjection
-            }
-            super::source::SemanticPayloadSource::CanonicalModelPart(_) => {
-                scan::PayloadRoot::ModelPart
-            }
-        };
-        captured::with_fragment_reader(raw, key, source, |reader| {
-            scan::payload(reader, root, |kind, ordinal, child| {
-                raw.execute("INSERT INTO context_semantic_directory_children(source_sequence,source_index,list_kind,ordinal,directory_bytes) VALUES(?,?,?,?,?)",params![key.source_sequence as i64,key.item_index as i64,kind.as_str(),i64::try_from(ordinal).map_err(|_|invalid("directory ordinal exceeds SQLite range"))?,codec::encode(&child)?])?;
-                Ok(())
-            })
+    let root = match source {
+        super::source::SemanticPayloadSource::Pieces => scan::PayloadRoot::Payload,
+        super::source::SemanticPayloadSource::CanonicalToolProjection(_) => {
+            scan::PayloadRoot::ToolProjection
+        }
+        super::source::SemanticPayloadSource::CanonicalModelPart(_) => scan::PayloadRoot::ModelPart,
+    };
+    captured::with_fragment_reader(raw, key, source, |reader| {
+        scan::payload(reader, root, |kind, ordinal, child| {
+            raw.execute("INSERT INTO context_semantic_directory_children(source_sequence,source_index,list_kind,ordinal,directory_bytes) VALUES(?,?,?,?,?)",params![key.source_sequence as i64,key.item_index as i64,kind.as_str(),i64::try_from(ordinal).map_err(|_|invalid("directory ordinal exceeds SQLite range"))?,codec::encode(&child)?])?;
+            Ok(())
         })
     })
 }

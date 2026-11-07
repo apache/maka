@@ -20,7 +20,10 @@
 //! Product routes may follow defaults; publication authority remains explicitly granted.
 use super::super::{Input, Package, baseline};
 use super::{HostError, LoadedDeployment, PreparedApplication, RootStore, Selection};
-use maka_host_runtime::application::{host::Client, transport::HostEndpoint};
+use maka_host_runtime::application::{
+    host::Client,
+    transport::{HostEndpoint, NativeGrant},
+};
 use maka_plugin_core::{
     contract::{Contract, Interface, Transport},
     plan::Plan,
@@ -32,19 +35,22 @@ pub(super) fn rebase(
     previous: &LoadedDeployment,
     target: &PreparedApplication,
 ) -> Result<Vec<String>, HostError> {
-    let Some(previous) = baseline_endpoints(&previous.source().input, previous.packages())? else {
+    let Some(previous) = baseline_publication(&previous.source().input, previous.packages())?
+    else {
         return Ok(Vec::new());
     };
-    let Some(target) = baseline_endpoints(target.input(), target.packages())? else {
+    let Some(target) = baseline_publication(target.input(), target.packages())? else {
         return Ok(Vec::new());
     };
-    Ok(rebase_endpoints(selection, &previous, &target))
+    let mut changes = rebase_endpoints(selection, &previous.endpoints, &target.endpoints);
+    changes.extend(rebase_native(selection, &previous.native, &target.native));
+    Ok(changes)
 }
 
-fn baseline_endpoints(
+fn baseline_publication(
     input: &Input,
     packages: &[Package],
-) -> Result<Option<BTreeMap<String, HostEndpoint>>, HostError> {
+) -> Result<Option<baseline::Metadata>, HostError> {
     let Some(base) = input
         .base
         .as_ref()
@@ -56,7 +62,66 @@ fn baseline_endpoints(
         .iter()
         .find(|package| package.application_ref() == base.package)
         .ok_or("product publication baseline bytes missing")?;
-    Ok(Some(baseline::metadata(package)?.endpoints))
+    Ok(Some(baseline::metadata(package)?))
+}
+
+fn same_native_route(left: &NativeGrant, right: &NativeGrant) -> bool {
+    left.origin == right.origin
+        && left.consumer == right.consumer
+        && left.provider == right.provider
+        && left.export == right.export
+}
+
+fn rebase_native(
+    selection: &mut Selection,
+    previous: &[NativeGrant],
+    target: &[NativeGrant],
+) -> Vec<String> {
+    let Selection::PublicHost { native, .. } = selection;
+    let mut changes = Vec::new();
+    // A new default is not a grant. Only untouched baseline grants follow their route.
+    for before in previous {
+        let export = before.export.replace('~', "~0").replace('/', "~1");
+        match target.iter().find(|after| same_native_route(before, after)) {
+            Some(after) if after != before => {
+                let mut updated = false;
+                let mut index = 0;
+                while index < native.len() {
+                    if &native[index] == before {
+                        if native
+                            .iter()
+                            .enumerate()
+                            .any(|(existing, grant)| existing != index && grant == after)
+                        {
+                            native.remove(index);
+                        } else {
+                            native[index] = after.clone();
+                            index += 1;
+                        }
+                        updated = true;
+                    } else {
+                        index += 1;
+                    }
+                }
+                if updated {
+                    changes.push(format!(
+                        "/publication/native/{export}: follow current product grant"
+                    ));
+                }
+            }
+            Some(_) => {}
+            None => {
+                let len = native.len();
+                native.retain(|grant| grant != before);
+                if native.len() != len {
+                    changes.push(format!(
+                        "/publication/native/{export}: remove obsolete product grant"
+                    ));
+                }
+            }
+        }
+    }
+    changes
 }
 
 fn rebase_endpoints(

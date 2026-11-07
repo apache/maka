@@ -1242,7 +1242,7 @@ class RustHost:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate(b'{"privacy":{"incognitoActive":true}}')
+        out, err = await proc.communicate(b"{}")
         (self.output / "init.stdout").write_bytes(out)
         (self.output / "init.stderr").write_bytes(err)
         if proc.returncode:

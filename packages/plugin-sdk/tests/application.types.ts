@@ -21,12 +21,6 @@ import type {
   ModelSelection,
   AgentSend,
   AgentResume,
-  WorkHubResolve,
-  WorkHubCoordinator,
-  WorkHubTask,
-  WorkHubControl,
-  WorkHubControlRead,
-  WorkHubConfiguration,
   AgentFileListRead,
   AgentFileWatch,
   AgentFilePage,
@@ -381,41 +375,16 @@ void [
   unfencedSessionPage,
 ];
 
-const resolveCoordinator: WorkHubResolve = { workspace: '~/projects/hub' };
-function coordinatorSession(value: WorkHubCoordinator): string | null {
-  return value.kind === 'ready' ? value.session.id : null;
-}
-void resolveCoordinator;
-void coordinatorSession;
-
 const messageWork: AgentWorkRead = {
   sessionId: 'worker-session',
   target: { kind: 'message', messageId: 'original-message' },
 };
-function taskExecution(task: WorkHubTask): string | null {
-  const status = task.status;
-  if (status.kind === 'started' && status.progress?.kind === 'delivered')
-    return status.progress.execution.invocationId;
-  if (status.kind === 'queued' && status.progress?.kind === 'delivered')
-    return status.progress.shared ? null : status.progress.execution.invocationId;
-  return null;
-}
-function coordinatorWorkers(configuration: WorkHubConfiguration): string[] {
-  return configuration.workers;
-}
 const answerPage: AgentWorkRead = {
   sessionId: 'worker-session',
   target: { kind: 'invocation', invocationId: 'original-invocation' },
   cursor: { invocationId: 'answer-invocation', offset: 768 },
 };
-const originalControl: WorkHubControlRead = { controlId: `wc_${'0'.repeat(64)}` };
-function controlStopped(control: WorkHubControl): boolean | null {
-  const status = control.status;
-  return status.kind === 'returned' && status.outcome.kind === 'stop'
-    ? status.outcome.result.requested
-    : null;
-}
-void [messageWork, answerPage, originalControl, controlStopped, taskExecution, coordinatorWorkers];
+void [messageWork, answerPage];
 
 // Workspace file browsing uses Session authority and exact relative path bytes.
 const workspaceRootFiles = {
@@ -536,10 +505,19 @@ function renderSessionView(runtime: UiRuntime<string>, target: UiTarget) {
   const rendered: string = runtime.renderView(target, sessionViewContract, {
     sessionId: 'session',
   });
+  const withoutLoading: string = runtime.renderView(
+    target,
+    sessionViewContract,
+    { sessionId: 'session' },
+    { loading: false },
+  );
   // @ts-expect-error The contract token supplies the input type to the renderer.
   runtime.renderView(target, sessionViewContract, { sessionId: 42 });
   // @ts-expect-error An embedded view cannot omit its contract's required input.
   runtime.renderView(target, sessionViewContract, {});
+  // @ts-expect-error Render options are typed booleans, not arbitrary strings.
+  runtime.renderView(target, sessionViewContract, { sessionId: 'session' }, { loading: 'no' });
+  void withoutLoading;
   return rendered;
 }
 void [sessionViewModule, renderSessionView];

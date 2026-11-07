@@ -16,7 +16,7 @@ use sqlx_core::Either;
 
 use crate::connection::establish::EstablishParams;
 use crate::connection::execute;
-use crate::connection::{ConnectionState, SqliteWorkerConnection};
+use crate::connection::ConnectionState;
 use crate::{SqliteArguments, SqliteQueryResult, SqliteRow, SqliteStatement};
 
 #[cfg(feature = "deserialize")]
@@ -51,9 +51,6 @@ impl WorkerSharedState {
 }
 
 enum Command {
-    Call {
-        operation: Box<dyn FnOnce(&mut ConnectionState) + Send + 'static>,
-    },
     Prepare {
         query: SqlStr,
         tx: oneshot::Sender<Result<SqliteStatement, Error>>,
@@ -149,10 +146,6 @@ impl ConnectionWorker {
                 for (cmd, span) in command_rx {
                     let _guard = span.enter();
                     match cmd {
-                        Command::Call { operation } => {
-                            operation(&mut conn);
-                            update_cached_statements_size(&conn, &shared.cached_statements_size);
-                        }
                         Command::Prepare { query, tx } => {
                             tx.send(prepare(&mut conn, query)).ok();
 
@@ -354,30 +347,6 @@ impl ConnectionWorker {
         establish_rx.await.map_err(|_| Error::WorkerCrashed)?
     }
 
-    pub(crate) async fn run_with_connection<F, R>(&mut self, operation: F) -> Result<R, Error>
-    where
-        F: FnOnce(&mut SqliteWorkerConnection<'_>) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let outcome: std::thread::Result<R> = self
-            .oneshot_cmd(move |reply| Command::Call {
-                operation: Box::new(move |conn| {
-                    let outcome =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            operation(&mut SqliteWorkerConnection { conn })
-                        }));
-                    // Accepted callbacks run even after their observer disappears.
-                    // Failed delivery drops the owned outcome on this worker.
-                    let _ = reply.send(outcome);
-                }),
-            })
-            .await?;
-        match outcome {
-            Ok(value) => Ok(value),
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-
     pub(crate) async fn prepare(&mut self, query: SqlStr) -> Result<SqliteStatement, Error> {
         self.oneshot_cmd(|tx| Command::Prepare { query, tx })
             .await?
@@ -535,7 +504,7 @@ impl ConnectionWorker {
     }
 }
 
-pub(super) fn prepare(conn: &mut ConnectionState, query: SqlStr) -> Result<SqliteStatement, Error> {
+fn prepare(conn: &mut ConnectionState, query: SqlStr) -> Result<SqliteStatement, Error> {
     // prepare statement object (or checkout from cache)
     let statement = conn.statements.get(query.as_str(), true)?;
 

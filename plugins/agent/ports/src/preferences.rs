@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Snapshot {
     pub revision: u64,
-    pub privacy: maka_agent_facts::configuration::policy::PrivacyPolicy,
     pub personalization: Personalization,
     pub workspace_instructions: bool,
 }
@@ -38,7 +37,7 @@ pub trait Preferences: Send + Sync {
 }
 
 /// User-facing preference edits are admitted by the captured Remote caller.
-/// This contract cannot change privacy, sandbox, credentials or execution policy.
+/// This contract cannot change sandbox, credentials or execution policy.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {

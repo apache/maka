@@ -353,6 +353,9 @@ impl Owner {
         runs.controls.insert(
             invocation.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),
@@ -397,6 +400,12 @@ impl Owner {
             .session(&source.session_id)
             .await
             .map_err(RunError::Internal)?;
+        if !self.runs.workspace_available(
+            &source.session_id,
+            std::path::Path::new(&session.configuration.workspace.path),
+        ) {
+            return Ok(());
+        }
         drop(runs);
         let store = self
             .store
@@ -446,6 +455,10 @@ impl Owner {
             return Err(RunError::Cancelled);
         }
         if runs.busy(&source.session_id)
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&current.configuration.workspace.path),
+            )
             || self
                 .has_parked_invocation(&source.session_id)
                 .await
@@ -524,6 +537,10 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::Archived));
         }
         if runs.busy(&input.session_id)
+            || !self.runs.workspace_available(
+                &input.session_id,
+                std::path::Path::new(&session.configuration.workspace.path),
+            )
             || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
@@ -634,16 +651,26 @@ impl Owner {
         source.accepted.tool_mode = configuration.tool_mode;
         source.accepted.code_language = configuration.code_language;
         source.accepted.editing_tools = configuration.editing_tools;
-        let graph = match self
-            .resume_graph(&input.session_id, &configuration.orchestration_mode)
-            .await
-        {
-            Ok(graph) => graph,
-            Err(_) => return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable)),
-        };
-        let selected_catalog = match purpose {
-            ResumePurpose::Observe => self.mcp_projects.base.clone(),
-            ResumePurpose::Admit => self.mcp_projects.capture(workspace).await?,
+        let allowed_tools = self.admitted_tools(&input.session_id, &session.configuration.tools);
+        let (selected_catalog, behavior) = match purpose {
+            ResumePurpose::Observe => (self.mcp_projects.base.clone(), None),
+            ResumePurpose::Admit => {
+                let selected_catalog = self.mcp_projects.capture(workspace).await?;
+                let snapshot = self
+                    .configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(|_| "agent_preferences_unavailable")?;
+                let behavior = self.bot_behavior(
+                    &input.session_id,
+                    self.capture_behavior(Some(workspace), &snapshot, configuration.language)
+                        .await?,
+                    &snapshot,
+                    configuration.language,
+                    allowed_tools.as_deref(),
+                );
+                (selected_catalog, behavior)
+            }
         };
         runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
@@ -669,25 +696,26 @@ impl Owner {
             return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
 
+        let selected_catalog = if matches!(purpose, ResumePurpose::Admit) {
+            self.mcp_projects
+                .with_client(&input.session_id, selected_catalog)?
+        } else {
+            selected_catalog
+        };
         let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
+            client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),
-            graph,
             collaboration_mode: configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: configuration.tool_discovery,
-            allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
+            allowed_tools,
             background: None,
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            // Ordinary Agents retain their existing queue compatibility. A
-            // coordinator continuation cannot silently adopt a newer behavior.
-            behavior: self
-                .behavior
-                .as_ref()
-                .and(configuration.system_prompt.clone()),
+            behavior,
             model: Some(source.accepted.clone()),
             executor: None,
             workspace: workspace.clone(),

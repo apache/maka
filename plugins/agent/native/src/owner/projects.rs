@@ -306,16 +306,15 @@ impl Owner {
         }
     }
 
-    /// The caller holds the same admission gate as create/send/queue/metadata.
-    pub(super) async fn select_project(
+    pub(super) async fn project_selection(
         &self,
-        selected: ProjectRef,
+        selected: &ProjectRef,
         path: &str,
-    ) -> Result<Option<Workspace>, String> {
+    ) -> Result<Option<(ProjectRecord, String)>, String> {
         let Some(record) = self.project_record(selected.id).await? else {
             return Ok(None);
         };
-        if reference(&record) != selected || record.archived_at.is_some() {
+        if reference(&record) != *selected || record.archived_at.is_some() {
             return Ok(None);
         }
         let Some((registration, path)) = self.project_directory(path).await? else {
@@ -329,9 +328,21 @@ impl Owner {
         {
             return Ok(None);
         }
+        Ok(Some((record, path)))
+    }
+
+    /// The caller holds the same admission gate as create/send/queue/metadata.
+    pub(super) async fn select_project(
+        &self,
+        selected: ProjectRef,
+        path: &str,
+    ) -> Result<Option<Workspace>, String> {
+        let Some((record, path)) = self.project_selection(&selected, path).await? else {
+            return Ok(None);
+        };
         let record = match self
             .store
-            .select_project_if(record, vec![registration.path], now())
+            .select_project_if(record, vec![path.clone()], now())
             .await
         {
             Ok((record, _)) => record,
@@ -431,6 +442,18 @@ impl Owner {
                     .find(|record| record.identity == registration.identity);
                 if other.as_ref().map(reference) != destination {
                     return Ok(ProjectResult::Changed);
+                }
+                if current
+                    .locations
+                    .iter()
+                    .chain(other.iter().flat_map(|p| &p.locations))
+                    .any(|location| {
+                        !self
+                            .runs
+                            .workspace_available("", std::path::Path::new(&location.path))
+                    })
+                {
+                    return Ok(ProjectResult::Busy);
                 }
                 let ids = std::iter::once(current.id.clone())
                     .chain(current.aliases.iter().cloned())

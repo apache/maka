@@ -358,7 +358,7 @@ pub(super) async fn capture(
     if result.is_err()
         && let Err(error) = arena.close().await
     {
-        return Err(crate::cleanup::preparation_failed(error));
+        return Err(RunError::PreparationCleanup(error));
     }
     result
 }

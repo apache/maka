@@ -1582,6 +1582,9 @@ fn down(
     }
     let native = matches!(item, Some(Item::Hosted(..) | Item::Input(_)));
     let selects = matches!(item, Some(Item::Text(_) | Item::Area(..)));
+    if selects {
+        crate::text_input::blur_all(surface);
+    }
     let input = &surface.input;
     if input.pointers.borrow().is_empty() {
         input.js_block.set(false);
@@ -2626,6 +2629,83 @@ mod tests {
     }
 
     use crate::geom::rect;
+
+    #[test]
+    fn selecting_output_releases_the_field_and_routes_selection_keys() {
+        use nsh_core::{AttributedText, InputConfig, TextEngine};
+
+        for area in [false, true] {
+            let surface = Surface::new(Default::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+            let field = view(
+                &surface.root,
+                2,
+                ViewKind::Input,
+                rect(0.0, 0.0, 200.0, 40.0),
+            );
+            crate::text_input::create(&surface, &field);
+            crate::text_input::config(&surface, &field, &InputConfig::default());
+            let container = view(
+                &surface.root,
+                3,
+                ViewKind::View,
+                rect(0.0, 80.0, 200.0, 40.0),
+            );
+            container.state_mut().props.selectable_view = area;
+            let output = view(&container, 4, ViewKind::Text, rect(0.0, 0.0, 200.0, 40.0));
+            let mut text = AttributedText::default();
+            text.push("Model output", Default::default());
+            text.selectable = Some(true);
+            let engine = crate::text::DWriteTextEngine::new(crate::text::ui_family());
+            let prepared = engine.prepare(&text);
+            let size = engine.measure(&prepared, Some(Points(200.0)));
+            let layout = engine.layout(&prepared, size);
+            crate::text::set(
+                &output,
+                &std::sync::Arc::new(text),
+                &layout,
+                rect(0.0, 0.0, 200.0, 40.0),
+            );
+            crate::text_input::focus_view(&surface, &field);
+            assert_eq!(
+                crate::text_input::focused_view(&surface),
+                Some(field.clone())
+            );
+
+            down(
+                &surface,
+                Key::Mouse,
+                10.0,
+                90.0,
+                0.0,
+                2,
+                Modifiers::default(),
+            );
+            up(&surface, Key::Mouse, Some((10.0, 90.0)), 1.0, false);
+            assert!(crate::text_input::focused_view(&surface).is_none());
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x41,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                }
+            ));
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x1B,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                }
+            ));
+        }
+    }
 
     #[test]
     fn tab_visits_buttons_and_explicit_stops_but_skips_disabled_and_opted_out_controls() {

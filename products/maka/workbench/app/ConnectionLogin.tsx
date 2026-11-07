@@ -17,186 +17,141 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
-import { inputAction, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
+import { inputAction, Text } from 'nsh';
 import type { ModelSettingsOwner } from './settings';
-import { Icon } from './Icon';
+import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
-import {
-  C,
-  bodyTextStyle,
-  captionTextStyle,
-  controlStyle,
-  controlHoverStyle,
-  controlFocusStyle,
-  controlDisabledStyle,
-} from './ui';
+import { providerLabel } from './settingsLabels';
+import { SettingsButton, SettingsRow, SettingsSection } from './SettingsPage';
+import { C } from './ui';
 
 export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: boolean }) {
   const owner = props.owner;
   const methods = () =>
     owner.editor()!.provider.descriptor.authentication.filter((m) => m.interactive);
   const authorization = owner.login.authorization;
+  const signedIn = () => !!owner.credential()?.configured;
   const needsSave = () => !owner.editor()!.baseline || owner.dirty();
   const label = (method: { label: string }) =>
     needsSave()
       ? tr('Save and sign in')
-      : owner.credential()?.configured
+      : signedIn()
         ? tr('Sign in again')
         : method.label === 'Sign in with ChatGPT'
           ? tr('Sign in with ChatGPT')
           : method.label;
   return (
-    <If when={methods().length > 0}>
-      <View style={{ gap: 12 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Icon
-            name={owner.credential()?.configured ? 'check' : 'lock'}
-            color={owner.credential()?.configured ? C.success : C.secondary}
-          />
-          <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
-            {owner.credential()?.configured ? tr('Signed in') : tr('Provider sign-in')}
-          </Text>
-        </View>
-        <If when={!owner.login.state()}>
-          <Each of={methods()} key={(method) => method.id}>
-            {(method) => (
-              <Button
-                accessibilityLabel={label(method())}
-                disabled={props.disabled}
-                onPress={inputAction(owner.signIn, { ...owner.action(), method: method().id })}
-                style={{
-                  ...controlStyle,
-                  alignSelf: 'flex-start',
-                  ...(!owner.credential()?.configured ? { backgroundColor: C.accent } : {}),
-                }}
-                hoverStyle={
-                  owner.credential()?.configured
-                    ? controlHoverStyle()
-                    : { backgroundColor: C.accentHover }
-                }
-                focusStyle={{
-                  ...controlFocusStyle(),
-                  ...(!owner.credential()?.configured ? { backgroundColor: C.accentHover } : {}),
-                }}
-                activeStyle={{
-                  backgroundColor: owner.credential()?.configured ? C.raised : C.accentHover,
-                }}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text
-                  style={{
-                    ...captionTextStyle,
-                    color: owner.credential()?.configured ? C.secondary : C.background,
-                    fontWeight: '500',
-                  }}
-                >
-                  {label(method())}
-                </Text>
-              </Button>
-            )}
-          </Each>
-        </If>
-        <If when={owner.login.state()?.kind === 'models'}>
-          <LoadingIndicator label={tr('Loading models…')} />
-        </If>
-        <If when={authorization()}>
-          <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-            {authorization()!.cancelling
+    <SettingsSection title={tr('Account')}>
+      <SettingsRow
+        label={signedIn() ? tr('Signed in') : tr('Not signed in')}
+        description={providerLabel(owner.editor()!.provider.descriptor.label)}
+        trailing={
+          <If when={!owner.login.state()}>
+            <Each of={methods()} key={(method) => method.id}>
+              {(method) => (
+                <SettingsButton
+                  label={label(method())}
+                  tone={signedIn() ? undefined : 'primary'}
+                  disabled={props.disabled}
+                  onPress={inputAction(owner.signIn, { ...owner.action(), method: method().id })}
+                />
+              )}
+            </Each>
+          </If>
+        }
+      />
+      <If when={owner.login.state()?.kind === 'models'}>
+        <SettingsRow label="" leading={<LoadingIndicator label={tr('Loading models…')} />} />
+      </If>
+      <If when={authorization()}>
+        <SettingsRow
+          label={
+            authorization()!.cancelling
               ? tr('Cancelling sign-in…')
               : !authorization()!.prompt
                 ? tr('Starting sign-in…')
                 : authorization()!.browser === 'failed'
                   ? tr('Copy the URL and open it in your browser.')
-                  : tr('Complete sign-in in your browser.')}
-          </Text>
-          <If when={authorization()!.prompt}>
-            <If when={authorization()!.prompt!.userCode}>
-              <View
-                style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}
-              >
+                  : tr('Complete sign-in in your browser.')
+          }
+          trailing={
+            <SettingsButton
+              label={tr('Cancel sign-in')}
+              accessibilityLabel={tr('Cancel provider sign-in')}
+              tone="quiet"
+              disabled={authorization()!.cancelling}
+              onPress={inputAction(owner.login.cancel, authorization()!.occurrence)}
+            />
+          }
+        />
+        <If when={authorization()!.prompt?.userCode}>
+          <SettingsRow
+            label={tr('Sign-in code')}
+            trailing={
+              <>
                 <Text
                   style={[
-                    { color: C.text, fontSize: 20, fontWeight: '600', fontFamily: 'monospace' },
+                    {
+                      color: C.text,
+                      fontSize: 18,
+                      lineHeight: 24,
+                      fontWeight: '600',
+                      fontFamily: 'monospace',
+                    },
                     { userSelect: 'text' },
                   ]}
                 >
                   {authorization()!.prompt!.userCode}
                 </Text>
-                <Button
+                <SettingsButton
+                  label={owner.login.copied() === 'userCode' ? tr('Copied') : tr('Copy code')}
                   accessibilityLabel={tr('Copy sign-in code')}
+                  tone="quiet"
                   onPress={inputAction(owner.login.copy, {
                     occurrence: authorization()!.occurrence,
                     field: 'userCode',
                     value: authorization()!.prompt!.userCode,
                   })}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  activeStyle={{ backgroundColor: C.raised }}
-                >
-                  <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                    {owner.login.copied() === 'userCode' ? tr('Copied') : tr('Copy code')}
-                  </Text>
-                </Button>
-              </View>
-            </If>
-            <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
-              {authorization()!.prompt!.url}
-            </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-              <Button
-                accessibilityLabel={tr('Open sign-in page')}
-                disabled={authorization()!.cancelling || authorization()!.browser === 'opening'}
-                onPress={inputAction(owner.login.open, {
-                  occurrence: authorization()!.occurrence,
-                  url: authorization()!.prompt!.url,
-                })}
-                style={{ ...controlStyle, backgroundColor: C.accent }}
-                hoverStyle={{ backgroundColor: C.accentHover }}
-                focusStyle={{ backgroundColor: C.accentHover }}
-                activeStyle={{ backgroundColor: C.accentHover }}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ ...captionTextStyle, color: C.background, fontWeight: '500' }}>
-                  {authorization()!.browser === 'opening'
-                    ? tr('Opening browser…')
-                    : tr('Open sign-in page')}
-                </Text>
-              </Button>
-              <Button
-                accessibilityLabel={tr('Copy sign-in URL')}
-                onPress={inputAction(owner.login.copy, {
-                  occurrence: authorization()!.occurrence,
-                  field: 'url',
-                  value: authorization()!.prompt!.url,
-                })}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                activeStyle={{ backgroundColor: C.raised }}
-              >
-                <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                  {owner.login.copied() === 'url' ? tr('Copied') : tr('Copy URL')}
-                </Text>
-              </Button>
-            </View>
-          </If>
-          <Button
-            accessibilityLabel={tr('Cancel provider sign-in')}
-            disabled={authorization()!.cancelling}
-            onPress={inputAction(owner.login.cancel, authorization()!.occurrence)}
-            style={{ ...controlStyle, alignSelf: 'flex-start' }}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            activeStyle={{ backgroundColor: C.raised }}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Cancel sign-in')}</Text>
-          </Button>
+                />
+              </>
+            }
+          />
         </If>
-      </View>
-    </If>
+        <If when={authorization()!.prompt}>
+          <SettingsRow
+            label={tr('Sign-in page')}
+            description={authorization()!.prompt!.url}
+            trailing={
+              <>
+                <SettingsButton
+                  label={owner.login.copied() === 'url' ? tr('Copied') : tr('Copy URL')}
+                  accessibilityLabel={tr('Copy sign-in URL')}
+                  tone="quiet"
+                  onPress={inputAction(owner.login.copy, {
+                    occurrence: authorization()!.occurrence,
+                    field: 'url',
+                    value: authorization()!.prompt!.url,
+                  })}
+                />
+                <SettingsButton
+                  label={
+                    authorization()!.browser === 'opening'
+                      ? tr('Opening browser…')
+                      : tr('Open sign-in page')
+                  }
+                  accessibilityLabel={tr('Open sign-in page')}
+                  tone="primary"
+                  disabled={authorization()!.cancelling || authorization()!.browser === 'opening'}
+                  onPress={inputAction(owner.login.open, {
+                    occurrence: authorization()!.occurrence,
+                    url: authorization()!.prompt!.url,
+                  })}
+                />
+              </>
+            }
+          />
+        </If>
+      </If>
+    </SettingsSection>
   );
 }

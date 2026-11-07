@@ -27,11 +27,7 @@ impl Owner {
         use maka_agent_api::external::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
         let target = ConfigurationTarget {
             source: self.data_source.clone(),
-            path: if matches!(self.behavior, Some(BuiltinBehavior::WorkHub)) {
-                vec!["agent".into(), "external".into()]
-            } else {
-                vec!["external".into()]
-            },
+            path: vec!["external".into()],
         };
         let state = if !self.executors.contains("external") {
             ExternalAgentsState::Disabled

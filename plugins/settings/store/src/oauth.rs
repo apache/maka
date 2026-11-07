@@ -49,36 +49,30 @@ impl ConfigurationStore {
         validation::credential_target(&target).map_err(ConfigError::Invalid)?;
         let store = Arc::clone(self);
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                let locator = CredentialLocator::Connection {
-                    connection_id: target.connection_id.clone(),
-                    kind: ConnectionCredentialKind::Provider,
-                };
-                if vault::connection_conflict(tx, &locator, Some(&target))
-                    .await?
-                    .is_some()
-                    || catalog::find(tx, &target.connection_id)
-                        .await?
-                        .is_none_or(|row| !row.enabled)
-                {
-                    return Ok(None);
-                }
-                let Some(basis) = vault::status_basis(&vault::status(tx, &locator).await?) else {
-                    return Ok(None);
-                };
-                let secret: String =
-                    sqlx::query_scalar("SELECT secret FROM credentials WHERE locator = ?")
-                        .bind(serde_json::to_string(&locator)?)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                Ok(Some(ProviderCredential {
-                    store,
-                    target,
-                    basis,
-                    credential: Arc::new(decode(&secret)?),
-                    network: NetworkSnapshot::read(tx).await?.configuration,
-                }))
-            })
+            let locator = CredentialLocator::Connection {
+                connection_id: target.connection_id.clone(),
+                kind: ConnectionCredentialKind::Provider,
+            };
+            if vault::connection_conflict(tx, &locator, Some(&target))?.is_some()
+                || catalog::find(tx, &target.connection_id)?.is_none_or(|row| !row.enabled)
+            {
+                return Ok(None);
+            }
+            let Some(basis) = vault::status_basis(&vault::status(tx, &locator)?) else {
+                return Ok(None);
+            };
+            let secret: String = tx
+                .prepare_cached("SELECT secret FROM credentials WHERE locator = ?")?
+                .query_row(rusqlite::params![serde_json::to_string(&locator)?], |row| {
+                    row.get(0)
+                })?;
+            Ok(Some(ProviderCredential {
+                store,
+                target,
+                basis,
+                credential: Arc::new(decode(&secret)?),
+                network: NetworkSnapshot::read(tx)?.configuration,
+            }))
         })
         .await
     }
@@ -90,22 +84,24 @@ impl ProviderCredential {
     pub async fn claim_refresh(&self) -> Result<bool> {
         let expected = self.basis.clone();
         let target = self.target.clone();
-        self.store.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
-                let Some(row) = catalog::find(tx, &target.connection_id).await? else {
+        self.store
+            .transaction(TransactionMode::Immediate, move |tx| {
+                let Some(row) = catalog::find(tx, &target.connection_id)? else {
                     return Ok(false);
                 };
-                if row.provider != target.provider || row.slug != target.slug
-                    || vault::status_basis(&vault::status(tx, &expected.locator).await?).as_ref()
+                if row.provider != target.provider
+                    || row.slug != target.slug
+                    || vault::status_basis(&vault::status(tx, &expected.locator)?).as_ref()
                         != Some(&expected)
                 {
                     return Ok(false);
                 }
-                Ok(sqlx::query("INSERT INTO credential_refresh_claims VALUES (?, ?) ON CONFLICT DO NOTHING")
-                    .bind(&expected.credential_id).bind(expected.revision as i64)
-                    .execute(&mut *tx).await?.rows_affected() == 1)
+                Ok(tx.execute(
+                    "INSERT INTO credential_refresh_claims VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    rusqlite::params![&expected.credential_id, expected.revision as i64],
+                )? == 1)
             })
-        }).await
+            .await
     }
 
     /// Reconcile this credential identity without treating metadata edits or a
@@ -115,32 +111,30 @@ impl ProviderCredential {
         let snapshot = self.clone();
         self.store
             .transaction(TransactionMode::Deferred, move |tx| {
-                Box::pin(async move {
-                    let Some(row) = catalog::find(tx, &snapshot.target.connection_id).await? else {
-                        return Ok(None);
-                    };
-                    let Some(basis) =
-                        vault::status_basis(&vault::status(tx, &snapshot.basis.locator).await?)
-                    else {
-                        return Ok(None);
-                    };
-                    if row.provider != snapshot.target.provider
-                        || row.slug != snapshot.target.slug
-                        || basis.credential_id != snapshot.basis.credential_id
-                    {
-                        return Ok(None);
-                    }
-                    let secret: String =
-                        sqlx::query_scalar("SELECT secret FROM credentials WHERE locator = ?")
-                            .bind(serde_json::to_string(&basis.locator)?)
-                            .fetch_one(&mut *tx)
-                            .await?;
-                    Ok(Some(Self {
-                        basis,
-                        credential: Arc::new(decode(&secret)?),
-                        ..snapshot
-                    }))
-                })
+                let Some(row) = catalog::find(tx, &snapshot.target.connection_id)? else {
+                    return Ok(None);
+                };
+                let Some(basis) = vault::status_basis(&vault::status(tx, &snapshot.basis.locator)?)
+                else {
+                    return Ok(None);
+                };
+                if row.provider != snapshot.target.provider
+                    || row.slug != snapshot.target.slug
+                    || basis.credential_id != snapshot.basis.credential_id
+                {
+                    return Ok(None);
+                }
+                let secret: String = tx
+                    .prepare_cached("SELECT secret FROM credentials WHERE locator = ?")?
+                    .query_row(
+                        rusqlite::params![serde_json::to_string(&basis.locator)?],
+                        |row| row.get(0),
+                    )?;
+                Ok(Some(Self {
+                    basis,
+                    credential: Arc::new(decode(&secret)?),
+                    ..snapshot
+                }))
             })
             .await
     }
@@ -183,13 +177,13 @@ impl ProviderCredential {
         let target = self.target.clone();
         self.store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    let Some(row) = catalog::find(tx, &target.connection_id).await? else {
+                {
+                    let Some(row) = catalog::find(tx, &target.connection_id)? else {
                         return Ok(None);
                     };
                     if row.provider != target.provider
                         || row.slug != target.slug
-                        || vault::status_basis(&vault::status(tx, &expected.locator).await?)
+                        || vault::status_basis(&vault::status(tx, &expected.locator)?)
                             .as_ref()
                             != Some(&expected)
                     {
@@ -197,15 +191,13 @@ impl ProviderCredential {
                     }
                     // Provider token rotation does not change the connection's user
                     // configuration or invalidate its verification, unlike re-login.
-                    vault::write_secret(tx, &expected.locator, &secret, now).await?;
-                    sqlx::query("DELETE FROM credential_refresh_claims WHERE credential_id = ? AND revision = ?")
-                        .bind(&expected.credential_id).bind(expected.revision as i64)
-                        .execute(&mut *tx).await?;
-                    vault::advance(tx).await?;
+                    vault::write_secret(tx, &expected.locator, &secret, now)?;
+                    tx.execute("DELETE FROM credential_refresh_claims WHERE credential_id = ? AND revision = ?", rusqlite::params![&expected.credential_id, expected.revision as i64])?;
+                    vault::advance(tx)?;
                     Ok(vault::status_basis(
-                        &vault::status(tx, &expected.locator).await?,
+                        &vault::status(tx, &expected.locator)?,
                     ))
-                })
+                }
             })
             .await
     }

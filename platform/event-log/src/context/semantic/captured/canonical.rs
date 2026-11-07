@@ -21,7 +21,7 @@
 use super::super::source::SemanticPayloadSource;
 use super::{Backing, RawConnection, RowPosition, StoreError, invalid, with_blob};
 use crate::canonical::SpanMetadata;
-use sqlx::{Row, sqlite::SqliteWorkerConnection};
+use rusqlite::Connection;
 use std::io::Read;
 
 fn query() -> String {
@@ -37,26 +37,14 @@ pub(super) struct CanonicalRead {
     material: Option<SpanMetadata>,
 }
 impl CanonicalRead {
-    pub(super) async fn load(
-        worker: &mut SqliteWorkerConnection<'_>,
+    pub(super) fn load(
+        connection: &Connection,
         backing: &Backing,
     ) -> Result<Option<Self>, StoreError> {
         let Backing::Canonical { key, offset, bytes } = *backing else {
             return Ok(None);
         };
-        let row = sqlx::query(sqlx::AssertSqlSafe(query()))
-            .bind(key.source_sequence as i64)
-            .bind(key.item_index as i64)
-            .fetch_one(&mut *worker)
-            .await?;
-        let source = SemanticPayloadSource::from_metadata(
-            key.source_sequence as i64,
-            key.item_index as i64,
-            row.try_get("storage_kind")?,
-            row.try_get("byte_offset")?,
-            row.try_get("byte_len")?,
-        )?;
-        Self::checked(key, offset, bytes, source, SpanMetadata::from_row(&row)?).map(Some)
+        Self::load_on_handle(connection, key, offset, bytes).map(Some)
     }
     pub(super) fn load_on_handle(
         raw: &RawConnection,
@@ -64,8 +52,7 @@ impl CanonicalRead {
         offset: u64,
         bytes: u64,
     ) -> Result<Self, StoreError> {
-        raw.query_row(
-            &query(),
+        raw.prepare_cached(&query())?.query_row(
             [key.source_sequence as i64, key.item_index as i64],
             |row| {
                 Ok((|| {
@@ -77,7 +64,7 @@ impl CanonicalRead {
                         row.get("byte_offset")?,
                         row.get("byte_len")?,
                     )?;
-                    Self::checked(key, offset, bytes, source, SpanMetadata::from_handle(row)?)
+                    Self::checked(key, offset, bytes, source, row)
                 })())
             },
         )?
@@ -87,12 +74,14 @@ impl CanonicalRead {
         offset: u64,
         bytes: u64,
         source: SemanticPayloadSource,
-        material: SpanMetadata,
+        row: &rusqlite::Row<'_>,
     ) -> Result<Self, StoreError> {
         let (actual, length, material) = match source {
-            SemanticPayloadSource::CanonicalToolProjection(span) => {
-                (span.offset(), span.len(), Some(material))
-            }
+            SemanticPayloadSource::CanonicalToolProjection(span) => (
+                span.offset(),
+                span.len(),
+                Some(SpanMetadata::from_row(row)?),
+            ),
             SemanticPayloadSource::CanonicalModelPart(span) => (span.offset(), span.len(), None),
             SemanticPayloadSource::Pieces => {
                 return Err(invalid("captured canonical source changed"));

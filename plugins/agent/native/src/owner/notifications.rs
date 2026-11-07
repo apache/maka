@@ -17,13 +17,11 @@
  * under the License.
  */
 
-//! WorkHub follow-ups use the original Agent admission gate and durable queue.
+//! Background worker follow-ups use the original Agent admission gate and durable queue.
 use super::*;
 use maka_agent_facts::message::MessageOrigin;
 use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ReturnRoute {
     model: crate::model::AcceptedModel,
     pub(crate) workspace: Workspace,
@@ -67,16 +65,16 @@ impl Owner {
         let control = runs
             .controls
             .get(&source.session_id)
-            .ok_or("workhub_source_inactive")?;
+            .ok_or("agent_source_inactive")?;
         if control.invocation != *source {
-            return Err("workhub_source_changed".into());
+            return Err("agent_source_changed".into());
         }
         Ok(ReturnRoute {
             model: control
                 .basis
                 .model
                 .clone()
-                .ok_or("workhub_model_unavailable")?,
+                .ok_or("agent_model_unavailable")?,
             workspace: control.basis.workspace.clone(),
             binding: control.basis.binding,
         })
@@ -103,6 +101,10 @@ impl Owner {
             Err(error) => return Err(error),
         };
         if session.archived
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&session.configuration.workspace.path),
+            )
             || session.configuration.workspace != route.workspace
             || session.configuration.binding != route.binding
         {
@@ -133,6 +135,10 @@ impl Owner {
         }
         let current = self.session(&source.session_id).await?;
         if runs.busy(&source.session_id)
+            || !self.runs.workspace_available(
+                &source.session_id,
+                std::path::Path::new(&current.configuration.workspace.path),
+            )
             || self.has_parked_invocation(&source.session_id).await?
             || current.configuration != session.configuration
             || current.archived
@@ -140,8 +146,9 @@ impl Owner {
             return Ok(None);
         }
 
-        let mut basis = MessageBasis {
+        let basis = MessageBasis {
             mcp_revision: None,
+            client_mcp: None,
             mcp_catalog: None,
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
@@ -149,7 +156,6 @@ impl Owner {
                 &snapshot,
                 language,
             )),
-            graph: None,
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: self.settings.tool_discovery,
@@ -173,8 +179,6 @@ impl Owner {
                     .as_deref(),
             ),
         };
-        self.prepare_graph_behavior(&source.session_id, &mut basis, false)
-            .await?;
         let message: MessageInput = text.into();
         let delivered = RootSourceMessage {
             message: DeliveredMessage {
@@ -256,6 +260,7 @@ impl Owner {
             let accepted: MessageBasis = serde_json::from_value(original.execution.basis.clone())
                 .map_err(|error| error.to_string())?;
             expected.mcp_revision = accepted.mcp_revision;
+            expected.client_mcp = accepted.client_mcp;
             expected.internal_tools = accepted.internal_tools;
             expected.internal_bindings = accepted.internal_bindings;
             descriptor.execution.basis =
@@ -300,7 +305,9 @@ impl Owner {
             }
             // Deferred work captures runtime tools when accepted; retries keep that original basis.
             let catalog = self.mcp_projects.capture(&basis.workspace).await?;
+            let catalog = self.mcp_projects.with_client(session, catalog)?;
             basis.mcp_revision = catalog.revision.clone();
+            basis.client_mcp = catalog.client_mcp;
             basis.mcp_catalog = Some(catalog.clone());
             basis.internal_tools = catalog.definitions.clone();
             basis.internal_bindings = catalog.bindings.clone();

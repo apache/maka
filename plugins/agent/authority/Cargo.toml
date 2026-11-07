@@ -25,8 +25,6 @@ publish.workspace = true
 [dependencies]
 hex.workspace = true
 maka-agent-facts.workspace = true
-maka-plugin-core.workspace = true
-uuid.workspace = true
 maka-agent-api.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true

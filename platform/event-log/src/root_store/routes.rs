@@ -58,7 +58,7 @@ impl Creation {
     /// Pin every existing dependency and every destination attachment, including
     /// unpublished bundle history identities. Session guards are acquired before
     /// reading current attachments; binding guards use the shared global order.
-    fn pin_inputs(
+    pub(super) fn pin_inputs(
         &self,
         id: &str,
     ) -> Result<(Vec<String>, Vec<maka_agent_facts::workspace::BindingRef>), StoreError> {
@@ -135,25 +135,16 @@ impl RootStore {
         crate::sessions::validate_id(id)?;
         let id = id.to_owned();
         let query_id = id.clone();
-        let partition: Option<i64> = self
-            .control
-            .connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    Ok(sqlx::query_scalar(
-                        "SELECT partition FROM session_routes WHERE session_id=? AND ready=1 AND visible=1",
-                    )
-                    .bind(query_id)
-                    .fetch_optional(connection)
-                    .await?)
-                })
-            })
-            .await?;
-        Ok(self.handle(id, partition.ok_or(StoreError::SessionNotFound)? as usize))
+        let available: bool = self.log.connection.read(move |connection| {
+            Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM session_creations WHERE session_id=? AND ready=1 AND visible=1)", rusqlite::params![query_id], |row| row.get(0))?)
+        }).await?;
+        if !available {
+            return Err(StoreError::SessionNotFound);
+        }
+        Ok(self.handle(id))
     }
 
-    /// Root identity is reserved before the partition commit. Retrying or
-    /// reopening uses the original durable command and cannot move a Session.
+    /// Session configuration and publication commit atomically.
     pub async fn create_session<T: Serialize>(
         &self,
         id: &str,
@@ -171,62 +162,45 @@ impl RootStore {
         }
         let configuration = serde_json::to_value(configuration)?;
         creation::validate_configuration(&configuration)?;
-        let command = Creation::Session {
-            configuration,
-            created_at: now,
-        };
-        let (partition, command) = self.reserve_creation(id, fingerprint, command).await?;
-        self.finish_creation(id, fingerprint, partition, command)
-            .await?;
-        Ok(self.handle(id.to_owned(), partition))
+        let bindings = crate::workspace_bindings::attached(&configuration)?
+            .into_iter()
+            .collect::<Vec<_>>();
+        let log = pin_sessions(self.log.clone(), &self.gates, &[id.to_owned()], &bindings).await?;
+        if let Some(rejection) = creation::commit(&log, id, fingerprint, configuration, now).await?
+        {
+            return Err(StoreError::SessionCreationRejected(rejection));
+        }
+        Ok(self.handle(id.to_owned()))
     }
 
-    pub(super) async fn reserve_creation(
-        &self,
-        id: &str,
-        fingerprint: &str,
-        command: Creation,
-    ) -> Result<(usize, Creation), StoreError> {
-        self.reserve_family(
-            id,
-            fingerprint,
-            command,
-            partition_for(b"session", id),
-            vec![id.to_owned()],
-        )
-        .await
-    }
-
+    #[cfg(test)]
     pub(super) async fn reserve_family(
         &self,
         id: &str,
         fingerprint: &str,
         command: Creation,
-        partition: usize,
         members: Vec<String>,
-    ) -> Result<(usize, Creation), StoreError> {
+    ) -> Result<Creation, StoreError> {
         let reserved = self
-            .control
+            .log
             .connection
             .write(
                 creation::WriteReservation {
                     id: id.to_owned(),
                     fingerprint: fingerprint.to_owned(),
                     command,
-                    partition,
                     members,
                 },
-                self.control.commits.notice(),
+                self.log.commits.notice(),
             )
             .await?;
-        Ok((reserved.partition, reserved.command))
+        Ok(reserved.command)
     }
 
     pub(super) async fn finish_creation(
         &self,
         id: &str,
         fingerprint: &str,
-        partition: usize,
         command: Creation,
     ) -> Result<(), StoreError> {
         // A rejected command must publish before a retry can reevaluate mutable inputs.
@@ -234,20 +208,33 @@ impl RootStore {
             .gates
             .write([gates::Key::Creation(id.to_owned())])
             .await?;
+        let (sessions, bindings) = command.pin_inputs(id)?;
+        let log = pin_sessions(self.log.clone(), &self.gates, &sessions, &bindings).await?;
+        let log = log.scoped(Arc::new(_creation));
+        self.finish_pinned_creation(id, fingerprint, command, &log)
+            .await
+    }
+
+    pub(super) async fn finish_pinned_creation(
+        &self,
+        id: &str,
+        fingerprint: &str,
+        command: Creation,
+        log: &EventLog,
+    ) -> Result<(), StoreError> {
         self.require_open()?;
         let query_id = id.to_owned();
         let (ready, failure): (i64, Option<String>) = self
-            .control
+            .log
             .connection
             .read(move |db| {
-                Box::pin(async move {
-                    Ok(sqlx::query_as(
-                        "SELECT ready,failure FROM session_routes WHERE session_id=?",
-                    )
-                    .bind(query_id)
-                    .fetch_one(db)
-                    .await?)
-                })
+                {
+                    Ok(db.query_row(
+                        "SELECT ready,failure FROM session_creations WHERE session_id=?",
+                        rusqlite::params![query_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                }
             })
             .await?;
         if ready == 1 {
@@ -258,29 +245,20 @@ impl RootStore {
                 &failure,
             )?));
         }
-        let (sessions, bindings) = command.pin_inputs(id)?;
-        let partition = pin_partition(
-            self.partitions[partition].clone(),
-            &self.gates,
-            &sessions,
-            &bindings,
-        )
-        .await?;
         let outcome = match command {
             Creation::Session {
                 configuration,
                 created_at,
-            } => creation::commit(&partition, id, fingerprint, configuration, created_at).await?,
-            command => super::family::commit(self, &partition, command).await?,
+            } => creation::commit(log, id, fingerprint, configuration, created_at).await?,
+            command => super::family::commit(self, log, command).await?,
         };
-        self.control
-            .connection
+        log.connection
             .write(
                 creation::WritePublication {
                     id: id.to_owned(),
                     rejection: outcome.clone(),
                 },
-                self.control.commits.notice(),
+                self.log.commits.notice(),
             )
             .await?;
         match outcome {
@@ -289,40 +267,18 @@ impl RootStore {
         }
     }
 
-    pub(super) async fn partition_has_routes(&self, partition: usize) -> Result<bool, StoreError> {
-        self.control
-            .connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    Ok(sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_routes WHERE partition=?)",
-                    )
-                    .bind(partition as i64)
-                    .fetch_one(connection)
-                    .await?)
-                })
-            })
-            .await
-    }
-
     pub(super) async fn recover_creations(&self) -> Result<(), StoreError> {
         loop {
-            let page: Vec<(String, String, i64, String)> = self.control.connection.read(|connection| Box::pin(async move {
-                Ok(sqlx::query_as("SELECT session_id, fingerprint, partition, command FROM session_routes WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")
-                    .fetch_all(connection).await?)
-            })).await?;
+            let page: Vec<(String, String, String)> = self.log.connection.read(|connection| {
+                Ok(connection.prepare_cached("SELECT session_id, fingerprint, command FROM session_creations WHERE ready=0 AND session_id=creation_id ORDER BY session_id LIMIT 64")?.query_map(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?)
+            }).await?;
             if page.is_empty() {
                 self.cleanup_stages().await?;
                 return Ok(());
             }
-            for (id, fingerprint, partition, command) in page {
+            for (id, fingerprint, command) in page {
                 match self
-                    .finish_creation(
-                        &id,
-                        &fingerprint,
-                        partition as usize,
-                        serde_json::from_str(&command)?,
-                    )
+                    .finish_creation(&id, &fingerprint, serde_json::from_str(&command)?)
                     .await
                 {
                     Ok(()) | Err(StoreError::SessionCreationRejected(_)) => {}

@@ -97,8 +97,8 @@ function RailFade(props: { bottom: boolean }) {
       ]}
       draw={(cx) => {
         const fade = cx.createLinearGradient(0, 0, 0, 24);
-        fade.addColorStop(0, props.bottom ? `${C.background}00` : C.background);
-        fade.addColorStop(1, props.bottom ? C.background : `${C.background}00`);
+        fade.addColorStop(0, props.bottom ? `${C.panel}00` : C.panel);
+        fade.addColorStop(1, props.bottom ? C.panel : `${C.panel}00`);
         cx.fillStyle = fade;
         cx.fillRect(0, 0, railWidth(), 24);
       }}
@@ -170,7 +170,7 @@ function NavigationMark(props: {
         alignItems: 'center',
         justifyContent: 'center',
       }}
-      hoverStyle={{ backgroundColor: C.surface }}
+      hoverStyle={{ backgroundColor: C.card }}
       focusStyle={{ backgroundColor: C.raised }}
     >
       <TurnMark
@@ -271,10 +271,10 @@ export function TurnNavigation(props: {
               borderRadius: 8,
               alignItems: 'center',
               justifyContent: 'center',
-              backgroundColor: C.surface,
+              backgroundColor: C.card,
             }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
+            focusStyle={{ backgroundColor: C.cardRaised }}
           >
             <Icon name="close" color={C.secondary} />
           </Button>
@@ -311,9 +311,9 @@ export function ReturnToLatest(props: { visible: boolean; paused?: boolean; acti
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: C.raised,
+            backgroundColor: C.cardRaised,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
+          hoverStyle={{ backgroundColor: C.card }}
           focusStyle={{ backgroundColor: C.accent }}
         >
           <If when={!props.paused}>

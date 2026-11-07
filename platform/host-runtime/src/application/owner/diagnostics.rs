@@ -22,8 +22,7 @@
 use maka_event_log::StoreError;
 
 pub(super) fn cause(error: &StoreError) -> &'static str {
-    match error {
-        StoreError::Sqlx(_) => "store_sqlx",
+    match error.underlying() {
         StoreError::CommitUnknown(_) => "store_commit_unknown",
         StoreError::Sqlite(_) => "store_sqlite",
         StoreError::Io(_) => "store_io",
@@ -32,18 +31,16 @@ pub(super) fn cause(error: &StoreError) -> &'static str {
 }
 
 pub(super) fn sql_code(error: &StoreError) -> Option<i32> {
-    match error {
-        StoreError::Sqlx(error) | StoreError::CommitUnknown(error) => error
-            .as_database_error()
-            .and_then(|error| error.code())
-            .and_then(|code| code.parse().ok()),
-        StoreError::Sqlite(error) => error.sqlite_error().map(|error| error.extended_code),
+    match error.underlying() {
+        StoreError::Sqlite(error) | StoreError::CommitUnknown(error) => {
+            error.sqlite_error().map(|error| error.extended_code)
+        }
         _ => None,
     }
 }
 
 pub(super) fn os_code(error: &StoreError) -> Option<i32> {
-    match error {
+    match error.underlying() {
         StoreError::Io(error) => error.raw_os_error(),
         _ => None,
     }

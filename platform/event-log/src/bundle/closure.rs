@@ -23,13 +23,13 @@ use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 mod members;
 
 /// Event identities and exact copied memberships, not additional catalog Sessions.
-pub(super) struct Closure {
+pub(crate) struct Closure {
     pub events: BTreeSet<u64>,
     pub members: BTreeMap<(String, u64), Option<u64>>,
     pub copies: BTreeSet<String>,
@@ -40,8 +40,8 @@ pub(super) struct Closure {
 }
 
 impl Closure {
-    pub async fn capture(
-        db: &mut SqliteConnection,
+    pub fn capture(
+        db: &Connection,
         inventory: &Inventory,
         through: u64,
     ) -> Result<Self, StoreError> {
@@ -55,47 +55,41 @@ impl Closure {
             runs: HashMap::new(),
         };
         for session in &inventory.sessions {
-            selected
-                .scope(
-                    db,
-                    &LogScope::Session {
-                        id: session.id.clone(),
-                    },
-                    through,
-                )
-                .await?;
-            let revisions: Vec<i64> = sqlx::query_scalar(
-                "SELECT sequence FROM session_revision_sources WHERE session_id=? ORDER BY sequence"
-            ).bind(&session.id).fetch_all(&mut *db).await?;
+            selected.scope(
+                db,
+                &LogScope::Session {
+                    id: session.id.clone(),
+                },
+                through,
+            )?;
+            let revisions: Vec<i64> = db.prepare_cached("SELECT sequence FROM session_revision_sources WHERE session_id=? ORDER BY sequence")?.query_map(params![&session.id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
             for sequence in revisions {
                 let sequence = sequence_number(sequence)?;
                 selected.add(sequence)?;
                 selected.revisions.insert((session.id.clone(), sequence));
-                let source: String = sqlx::query_scalar(
-                    "SELECT source_session_id FROM session_history_copies WHERE session_id=?",
-                )
-                .bind(&session.id)
-                .fetch_one(&mut *db)
-                .await?;
-                selected.member(db, &source, sequence).await?;
+                let source: String = db
+                    .prepare_cached(
+                        "SELECT source_session_id FROM session_history_copies WHERE session_id=?",
+                    )?
+                    .query_row(params![&session.id], |row| row.get(0))?;
+                selected.member(db, &source, sequence)?;
             }
         }
         while let Some(sequence) = selected.queue.pop_front() {
-            let row=sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT e.event_header,(SELECT length(payload) FROM tool_result_payloads WHERE event_id=e.event_id) AS tool_payload_bytes,{columns}
-                 FROM runtime_events e {joins} WHERE e.sequence=?1",columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
-            ))).bind(sequence as i64).fetch_optional(&mut *db).await?;
-            let row = row.ok_or(StoreError::MaterialCollected)?;
-            use sqlx::Row;
-            let payload_bytes: Option<i64> = row.try_get("tool_payload_bytes")?;
-            let json = crate::canonical::json(&row)?;
-            let event: RuntimeEvent = serde_json::from_str(&json)?;
-            crate::tool_payloads::verify_binding(&event, payload_bytes)?;
-            if !matches!(event.fact, Fact::MessageImported { .. }) {
-                selected
-                    .run(db, &event.invocation.invocation_id, sequence)
-                    .await?;
+            let (kind,invocation,header):(String,String,String)=db.prepare_cached("SELECT kind,invocation_id,event_header FROM runtime_events WHERE sequence=? AND event_header IS NOT NULL")?.query_row(params![sequence as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?.ok_or(StoreError::MaterialCollected)?;
+            if kind != "message_imported" {
+                selected.run(db, &invocation, sequence)?;
             }
+            if !matches!(
+                kind.as_str(),
+                "model_requested"
+                    | "context_checkpoint_recorded"
+                    | "invocation_opened"
+                    | "tool_result_archived"
+            ) {
+                continue;
+            }
+            let event: RuntimeEvent = serde_json::from_str(&header)?;
             match &event.fact {
                 Fact::ModelRequested {
                     source_scope,
@@ -103,65 +97,51 @@ impl Closure {
                     source_capture,
                     ..
                 } => {
-                    selected.scope(db, source_scope, *source_high_water).await?;
-                    selected
-                        .archives(
-                            db,
-                            source_scope,
-                            *source_high_water,
-                            source_capture
-                                .publication_watermark
-                                .checked_add(1)
-                                .ok_or_else(|| {
-                                    StoreError::InvalidTransition(
-                                        "request publication watermark overflow".into(),
-                                    )
-                                })?,
-                        )
-                        .await?;
+                    selected.scope(db, source_scope, *source_high_water)?;
+                    selected.archives(
+                        db,
+                        source_scope,
+                        *source_high_water,
+                        source_capture
+                            .publication_watermark
+                            .checked_add(1)
+                            .ok_or_else(|| {
+                                StoreError::InvalidTransition(
+                                    "request publication watermark overflow".into(),
+                                )
+                            })?,
+                    )?;
                 }
                 Fact::ContextCheckpointRecorded { checkpoint } => {
-                    let selection = Selection::for_invocation(db, &event.invocation).await?;
-                    selected
-                        .scope(db, &selection.scope, checkpoint.covered_through)
-                        .await?;
+                    let selection = Selection::for_invocation(db, &event.invocation)?;
+                    selected.scope(db, &selection.scope, checkpoint.covered_through)?;
                     if matches!(checkpoint.mode, CheckpointMode::Standalone) {
-                        let terminal: i64 = sqlx::query_scalar(
-                            "SELECT sequence FROM runtime_events WHERE invocation_id=? AND kind='invocation_ended'"
-                        ).bind(&event.invocation.invocation_id).fetch_one(&mut *db).await?;
+                        let terminal: i64 = db.prepare_cached("SELECT sequence FROM runtime_events WHERE invocation_id=? AND kind='invocation_ended'")?.query_row(params![&event.invocation.invocation_id], |row| row.get(0))?;
                         selected.add(sequence_number(terminal)?)?;
                     }
                 }
                 Fact::InvocationOpened { input, .. } => {
                     if let Some(claim) = input.inherited_claim() {
                         let source = &claim.source.invocation;
-                        let end: i64 = sqlx::query_scalar(
-                            "SELECT sequence FROM runtime_events WHERE invocation_id=? AND kind='invocation_ended'"
-                        ).bind(&source.invocation_id).fetch_one(&mut *db).await?;
-                        selected
-                            .run(db, &source.invocation_id, sequence_number(end)?)
-                            .await?;
-                        selected
-                            .scope(
-                                db,
-                                &LogScope::Session {
-                                    id: source.session_id.clone(),
-                                },
-                                claim.base.high_water,
-                            )
-                            .await?;
+                        let end: i64 = db.prepare_cached("SELECT sequence FROM runtime_events WHERE invocation_id=? AND kind='invocation_ended'")?.query_row(params![&source.invocation_id], |row| row.get(0))?;
+                        selected.run(db, &source.invocation_id, sequence_number(end)?)?;
+                        selected.scope(
+                            db,
+                            &LogScope::Session {
+                                id: source.session_id.clone(),
+                            },
+                            claim.base.high_water,
+                        )?;
                     }
                 }
                 Fact::ToolResultArchived { placeholder } => {
-                    let target: i64 =
-                        sqlx::query_scalar("SELECT sequence FROM runtime_events WHERE event_id=?")
-                            .bind(&placeholder.identity.runtime_event_id)
-                            .fetch_one(&mut *db)
-                            .await?;
-                    let selection = Selection::for_invocation(db, &event.invocation).await?;
-                    selected
-                        .scope(db, &selection.scope, sequence_number(target)?)
-                        .await?;
+                    let target: i64 = db
+                        .prepare_cached("SELECT sequence FROM runtime_events WHERE event_id=?")?
+                        .query_row(params![&placeholder.identity.runtime_event_id], |row| {
+                            row.get(0)
+                        })?;
+                    let selection = Selection::for_invocation(db, &event.invocation)?;
+                    selected.scope(db, &selection.scope, sequence_number(target)?)?;
                 }
                 _ => {}
             }
@@ -176,19 +156,12 @@ impl Closure {
         Ok(())
     }
 
-    async fn run(
-        &mut self,
-        db: &mut SqliteConnection,
-        invocation: &str,
-        through: u64,
-    ) -> Result<(), StoreError> {
+    fn run(&mut self, db: &Connection, invocation: &str, through: u64) -> Result<(), StoreError> {
         let prior = self.runs.get(invocation).copied().unwrap_or(0);
         if through <= prior {
             return Ok(());
         }
-        let rows: Vec<i64> = sqlx::query_scalar(
-            "SELECT sequence FROM runtime_events WHERE invocation_id=? AND sequence>? AND sequence<=? ORDER BY sequence"
-        ).bind(invocation).bind(prior as i64).bind(through as i64).fetch_all(db).await?;
+        let rows: Vec<i64> = db.prepare_cached("SELECT sequence FROM runtime_events WHERE invocation_id=? AND sequence>? AND sequence<=? ORDER BY sequence")?.query_map(params![invocation, prior as i64, through as i64], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
         for row in rows {
             self.add(sequence_number(row)?)?;
         }
@@ -196,12 +169,7 @@ impl Closure {
         Ok(())
     }
 
-    async fn scope(
-        &mut self,
-        db: &mut SqliteConnection,
-        scope: &LogScope,
-        through: u64,
-    ) -> Result<(), StoreError> {
+    fn scope(&mut self, db: &Connection, scope: &LogScope, through: u64) -> Result<(), StoreError> {
         if through > i64::MAX as u64 {
             return Err(StoreError::PrefixTooLarge);
         }
@@ -215,69 +183,72 @@ impl Closure {
         if prior.is_some_and(|previous| through <= previous) {
             return Ok(());
         }
-        let selection = Selection::resolve(db, scope).await?;
+        let selection = Selection::resolve(db, scope)?;
         let session = selection.session.as_ref().expect("non-root selection");
-        let copy: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?)",
-        )
-        .bind(session)
-        .fetch_one(&mut *db)
-        .await?;
+        let copy: bool = db
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?)",
+            )?
+            .query_row(params![session], |row| row.get(0))?;
         if copy {
             self.copies.insert(session.clone());
         }
         let filter = Selection::predicate("e", "?3");
-        let collected: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        let collected: bool = db.prepare_cached(&format!(
             "SELECT EXISTS(SELECT 1 FROM context_source_prefixes p
                CROSS JOIN event_log e ON e.sequence=p.sequence
                WHERE p.kind='session' AND p.owner=?1 AND p.sequence<=?2
                AND e.invocation_id IS NOT NULL AND e.event_header IS NULL AND {filter}
              UNION ALL SELECT 1 FROM session_history_members h JOIN event_log e ON e.sequence=h.sequence
              WHERE h.session_id=?1 AND e.sequence<=?2 AND e.event_header IS NULL AND {filter})"
-        ))).bind(session).bind(through as i64).bind(&selection.lineage).fetch_one(&mut *db).await?;
+        ))?.query_row(params![session, through as i64, &selection.lineage], |row| row.get(0))?;
         if collected {
             return Err(StoreError::MaterialCollected);
         }
         let filter = Selection::predicate("e", "?4");
-        let rows: Vec<(i64, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT e.sequence,e.inherited FROM session_history_events e
+        let rows: Vec<(i64, bool)> = db
+            .prepare_cached(&format!(
+                "SELECT e.sequence,e.inherited FROM session_history_events e
              WHERE e.owner_session_id=?1 AND e.sequence>?2 AND e.sequence<=?3 AND {filter}
              ORDER BY e.sequence"
-        )))
-        .bind(session)
-        .bind(prior.unwrap_or(0) as i64)
-        .bind(through as i64)
-        .bind(&selection.lineage)
-        .fetch_all(&mut *db)
-        .await?;
+            ))?
+            .query_map(
+                params![
+                    session,
+                    prior.unwrap_or(0) as i64,
+                    through as i64,
+                    &selection.lineage
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
         for (sequence, inherited) in rows {
             let sequence = sequence_number(sequence)?;
             self.add(sequence)?;
             if inherited {
-                self.member(db, session, sequence).await?;
+                self.member(db, session, sequence)?;
             }
         }
         self.scopes.insert(key, through);
         Ok(())
     }
 
-    async fn archives(
+    fn archives(
         &mut self,
-        db: &mut SqliteConnection,
+        db: &Connection,
         scope: &LogScope,
         through: u64,
         before: u64,
     ) -> Result<(), StoreError> {
-        let selection = Selection::resolve(db, scope).await?;
+        let selection = Selection::resolve(db, scope)?;
         let filter = Selection::archive_predicate("t", "a", "?3", "?4");
         let target = Selection::predicate("t", "?4");
-        let rows: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        let rows: Vec<i64> = db.prepare_cached(&format!(
             "SELECT a.sequence FROM session_history_events t JOIN runtime_events a
              ON a.kind='tool_result_archived' AND json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id')=t.event_id
              WHERE t.owner_session_id=?1 AND t.sequence<=?2 AND {filter} AND {target}
              ORDER BY a.sequence"
-        ))).bind(&selection.session).bind(through as i64).bind(before as i64).bind(&selection.lineage)
-            .fetch_all(db).await?;
+        ))?.query_map(params![&selection.session, through as i64, before as i64, &selection.lineage], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
         for row in rows {
             self.add(sequence_number(row)?)?;
         }

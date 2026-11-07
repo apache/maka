@@ -346,7 +346,6 @@ impl Owner {
                     session_id: self.operation_id(&operation),
                     creator: namespace(),
                     fingerprint: operation.fingerprint,
-                    managed: false,
                     authority_session_id: None,
                 };
                 let policy = self

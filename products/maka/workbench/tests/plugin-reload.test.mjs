@@ -1,0 +1,390 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+import { setImmediate } from 'node:timers/promises';
+import test from 'node:test';
+
+const appRoot = new URL('../app/', import.meta.url);
+let sequence = 0;
+
+function updates() {
+  const queued = [];
+  let waiting;
+  return {
+    next() {
+      return queued.length
+        ? Promise.resolve(queued.shift())
+        : new Promise((resolve) => {
+            waiting = resolve;
+          });
+    },
+    push(value) {
+      if (waiting) {
+        const resolve = waiting;
+        waiting = undefined;
+        resolve(value);
+      } else queued.push(value);
+    },
+    async close() {
+      this.push(null);
+    },
+  };
+}
+
+function catalog(revision, root = 'root') {
+  return {
+    source: { stateDomain: 'domain', deployment: 'main', revision },
+    ui: { instance: ['plugin'], id: root },
+    instances: [
+      {
+        instance: ['plugin'],
+        path: ['plugin'],
+        package: { id: 'demo.ui', revision: `sha256-${'a'.repeat(64)}` },
+        configuration: {},
+        module: 'main.tsx',
+        definitionBasis: 'definition',
+        bindingBasis: `binding-${revision}`,
+        imports: {},
+        contributions: {
+          root: { kind: 'root' },
+          other: { kind: 'root' },
+        },
+      },
+    ],
+  };
+}
+
+async function setup(
+  t,
+  { begin = async () => {}, prepare = async () => ({ draft: '原文😀' }) } = {},
+) {
+  const id = ++sequence;
+  const stream = updates();
+  const initial = catalog(1);
+  const catalogs = new Map([[1, initial]]);
+  const cleanups = [];
+  const fixture = {
+    begins: 0,
+    cancels: 0,
+    prepares: 0,
+    reloads: [],
+    events: new Map(),
+    posts: [],
+    module: {
+      activate: () => ({
+        exports: {
+          root: { kind: 'root', render() {} },
+          other: { kind: 'root', render() {} },
+        },
+        async prepareReload() {
+          fixture.prepares++;
+          return prepare();
+        },
+      }),
+    },
+    host: {
+      restored: null,
+      async refresh() {},
+      async readUi({ source }) {
+        return catalogs.get(source?.revision ?? 1);
+      },
+      async subscribe() {
+        return stream;
+      },
+      async bindUi() {
+        return { imports: {}, application: () => ({}), close: async () => {} };
+      },
+      beginUiReload() {
+        fixture.begins++;
+        return begin();
+      },
+      cancelUiReload() {
+        fixture.cancels++;
+      },
+      reloadUi(state) {
+        fixture.reloads.push(state);
+      },
+    },
+    cleanups,
+    publish(value) {
+      catalogs.set(value.source.revision, value);
+      stream.push(value.source);
+    },
+    dispose() {
+      for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    },
+  };
+  globalThis.__pluginReloadFixture = fixture;
+  const native = {
+    nsh: `const fixture = globalThis.__pluginReloadFixture;
+      // fixture ${id}
+      export const signal = initial => {
+        let value = initial;
+        const read = () => value;
+        read.set = next => { value = next; };
+        return read;
+      };
+      export const host = {
+        on(event, handler) { fixture.events.set(event, handler); return () => fixture.events.delete(event); },
+        post(event, data) { fixture.posts.push({ event, data }); },
+      };
+      export const computed = read => read;
+      export const batch = run => run();
+      export const cleanup = fn => fixture.cleanups.push(fn);
+      export const importModule = async () => fixture.module;`,
+    'maka/host': `// fixture ${id}
+      export const host = globalThis.__pluginReloadFixture.host;`,
+    host: 'export const uiHost = {};',
+    locale: `export const currentLocale = () => 'en';
+      currentLocale.set = () => {};
+      export const tr = (key, values) => values
+        ? key.replace(/\\{(\\w+)\\}/g, (_, name) => values[name]) : key;`,
+    RuntimeView: `export const renderContribution = () => { throw Error('unexpected render'); };
+      export const renderEmbeddedView = () => { throw Error('unexpected render'); };`,
+  };
+  const hooks = registerHooks({
+    resolve(specifier, context, next) {
+      let key = specifier;
+      if (context.parentURL?.startsWith(appRoot.href)) {
+        if (specifier === '../host') key = 'host';
+        if (specifier === '../locale' || specifier === './locale') key = 'locale';
+        if (specifier === './RuntimeView') key = 'RuntimeView';
+      }
+      if (key in native) {
+        return {
+          url: `data:text/javascript,${encodeURIComponent(native[key])}`,
+          shortCircuit: true,
+        };
+      }
+      if (
+        context.parentURL?.startsWith(appRoot.href) &&
+        specifier.startsWith('.') &&
+        !/\.\w+$/.test(specifier)
+      ) {
+        return next(`${specifier}.ts`, context);
+      }
+      return next(specifier, context);
+    },
+  });
+  t.after(() => {
+    fixture.dispose();
+    hooks.deregister();
+    delete globalThis.__pluginReloadFixture;
+  });
+  const { createPlugins } = await import(new URL(`plugins/registry.ts?fixture=${id}`, appRoot));
+  const manager = createPlugins();
+  await setImmediate();
+  assert.equal(manager.runtime.ready(), true);
+  const entry = manager.entries()[0];
+  const loading = manager.load(entry);
+  await setImmediate();
+  assert.equal(entry.state().kind, 'loaded');
+  manager.activate(entry, fixture.module);
+  await loading;
+  assert.equal(entry.state().kind, 'active');
+  return { fixture, manager };
+}
+
+test('a rejected native pause leaves no JS gate to cancel and a later update can retry', async (t) => {
+  const failure = new Error('native backend cannot reload');
+  let calls = 0;
+  const { fixture, manager } = await setup(t, {
+    begin: async () => {
+      if (++calls === 1) throw failure;
+    },
+  });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(fixture.prepares, 0);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(manager.runtime.updateError(), failure);
+  assert.equal(manager.runtime.source().revision, 1);
+  fixture.publish(catalog(3, 'other'));
+  await setImmediate();
+  assert.equal(fixture.begins, 2);
+  assert.equal(fixture.cancels, 0);
+  assert.deepEqual(fixture.reloads, [
+    {
+      instances: [
+        {
+          instance: ['plugin'],
+          packageId: 'demo.ui',
+          state: { draft: '原文😀' },
+        },
+      ],
+    },
+  ]);
+  assert.equal(manager.runtime.reloading(), true);
+});
+
+test('catalog changes while pause is requested use the latest source without overlapping pause', async (t) => {
+  const pause = Promise.withResolvers();
+  const { fixture, manager } = await setup(t, { begin: () => pause.promise });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 0);
+  assert.equal(manager.runtime.reloading(), true);
+  fixture.publish(catalog(3));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.cancels, 0);
+  pause.resolve();
+  await setImmediate();
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 1);
+  assert.deepEqual(fixture.reloads, []);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(manager.runtime.source().revision, 3);
+  assert.equal(manager.entries()[0].state().kind, 'active');
+});
+
+test('preparation failure returns its held pause and preserves the original error', async (t) => {
+  const failure = new Error('original preparation failed');
+  const { fixture, manager } = await setup(t, {
+    prepare: async () => {
+      throw failure;
+    },
+  });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 1);
+  assert.deepEqual(fixture.reloads, []);
+  assert.equal(manager.runtime.updateError(), failure);
+  assert.equal(manager.runtime.reloading(), false);
+});
+
+test('new catalogs survive a pending pause or preparation rejection', async (t) => {
+  const pause = Promise.withResolvers();
+  const preparation = Promise.withResolvers();
+  let begins = 0;
+  const { fixture, manager } = await setup(t, {
+    begin: () => (++begins === 1 ? pause.promise : Promise.resolve()),
+    prepare: () => preparation.promise,
+  });
+  const original = manager.entries()[0];
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  fixture.publish(catalog(3));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 0);
+  assert.equal(manager.runtime.source().revision, 1);
+  pause.reject(new Error('the original native pause was refused'));
+  await setImmediate();
+  assert.equal(manager.runtime.source().revision, 3);
+  assert.equal(manager.runtime.updateError(), null);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.cancels, 0);
+
+  fixture.publish(catalog(4, 'other'));
+  await setImmediate();
+  fixture.publish(catalog(5));
+  await setImmediate();
+  assert.equal(fixture.begins, 2);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(manager.runtime.source().revision, 3);
+  preparation.reject(new Error('the original reload preparation failed'));
+  await setImmediate();
+  assert.equal(manager.runtime.source().revision, 5);
+  assert.equal(manager.runtime.updateError(), null);
+  assert.equal(manager.runtime.reloading(), false);
+  assert.equal(manager.entries()[0], original);
+  assert.equal(original.state().kind, 'active');
+  assert.equal(fixture.begins, 2);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 1);
+  assert.deepEqual(fixture.reloads, []);
+});
+
+test('an accepted reload keeps its original snapshot and cannot resume or reconcile again', async (t) => {
+  const { fixture, manager } = await setup(t);
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  assert.deepEqual(fixture.reloads, [
+    {
+      instances: [
+        {
+          instance: ['plugin'],
+          packageId: 'demo.ui',
+          state: { draft: '原文😀' },
+        },
+      ],
+    },
+  ]);
+  assert.equal(manager.runtime.reloading(), true);
+  fixture.publish(catalog(3));
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(fixture.reloads.length, 1);
+  assert.equal(manager.runtime.source().revision, 1);
+  fixture.dispose();
+  await setImmediate();
+  assert.equal(fixture.cancels, 0);
+});
+
+test('disposal before pause acknowledgement still returns a subsequently held gate', async (t) => {
+  const pause = Promise.withResolvers();
+  const { fixture, manager } = await setup(t, { begin: () => pause.promise });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  assert.equal(manager.runtime.reloading(), true);
+  fixture.dispose();
+  assert.equal(fixture.cancels, 0);
+  pause.resolve();
+  await setImmediate();
+  assert.equal(fixture.begins, 1);
+  assert.equal(fixture.prepares, 0);
+  assert.equal(fixture.cancels, 1);
+  assert.deepEqual(fixture.reloads, []);
+  assert.equal(manager.runtime.reloading(), false);
+});
+
+test('closing during a pending reload cannot replace or release its native pause', async (t) => {
+  const pause = Promise.withResolvers();
+  const { fixture, manager } = await setup(t, { begin: () => pause.promise });
+  fixture.publish(catalog(2, 'other'));
+  await setImmediate();
+  fixture.events.get('desktop.prepareClose')({ id: 'close-while-reloading' });
+  assert.equal(fixture.posts.length, 1);
+  assert.equal(fixture.posts[0].event, 'desktop.closeReady');
+  assert.equal(fixture.posts[0].data.id, 'close-while-reloading');
+  assert.match(fixture.posts[0].data.error, /reload is in progress/);
+  fixture.events.get('desktop.closeFailed')({
+    id: 'close-while-reloading',
+    error: 'rejected close',
+  });
+  assert.equal(manager.runtime.reloading(), true);
+  assert.equal(fixture.cancels, 0);
+  pause.resolve();
+  await setImmediate();
+  assert.equal(fixture.reloads.length, 1);
+  assert.equal(fixture.cancels, 0);
+  assert.equal(manager.runtime.reloading(), true);
+});

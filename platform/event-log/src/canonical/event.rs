@@ -74,21 +74,41 @@ pub(super) fn decode(header: &str, offset: usize, body: &[u8]) -> Result<Runtime
         artifacts,
         is_error,
     } = outcome;
-    let placeholder = model_projection.get();
+    let slot = super::recipe::projection("tool_settled", header)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "canonical projection missing",
+        )
+    })?;
     if kind != "tool_settled"
         || outcome_kind != "succeeded"
-        || placeholder != "null"
-        || (placeholder.as_ptr() as usize).checked_sub(header.as_ptr() as usize) != Some(offset)
+        || slot.json != "null"
+        || slot.offset != offset
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "canonical slot does not identify a successful tool projection",
+            "canonical slot differs from frozen projection",
         )
         .into());
     }
-    let body = std::str::from_utf8(body)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let model_projection: DurableToolProjection = serde_json::from_str(body)?;
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum ProjectedHeader {
+        Json,
+        Text,
+    }
+    let model_projection = if model_projection.get() == "null" {
+        serde_json::from_slice(body)?
+    } else {
+        match serde_json::from_str::<ProjectedHeader>(model_projection.get())? {
+            ProjectedHeader::Json => DurableToolProjection::Json {
+                value: serde_json::from_slice(body)?,
+            },
+            ProjectedHeader::Text => DurableToolProjection::Text {
+                text: serde_json::from_slice(body)?,
+            },
+        }
+    };
     Ok(RuntimeEvent {
         id,
         recorded_at,
@@ -199,8 +219,7 @@ mod tests {
                 "\"operation_id\": \"a\", \"operation_id\": \"b\"",
             ),
         ] {
-            let position = changed.find("\"model_projection\": null").unwrap()
-                + "\"model_projection\": ".len();
+            let position = projection.offset;
             assert!(decode(&changed, position, projection.json.as_bytes()).is_err());
         }
     }

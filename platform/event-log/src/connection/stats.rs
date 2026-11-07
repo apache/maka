@@ -18,12 +18,11 @@
  */
 
 //! Observations of original actors, attached databases and live prepared statements.
-use super::{OwnedConnection, ReadEnvelope, ReadJob, SqliteConnection, StoreError, worker_query};
-use futures_util::FutureExt;
+use super::{OwnedConnection, ReadJob, StoreError};
+use rusqlite::Connection;
 use serde::Serialize;
-use sqlx::Connection;
-use std::panic::AssertUnwindSafe;
-use tokio::sync::{mpsc, oneshot};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use tokio::sync::oneshot;
 
 /// One live prepared statement, without bound values. SQLite's raw signed
 /// 32-bit counters can wrap; observations never reset or widen them.
@@ -56,131 +55,110 @@ pub struct SqliteResourceStats {
 pub struct ConnectionResourceStats {
     pub writer: SqliteResourceStats,
     /// Physical reader slots in order; uninitialized connections remain absent.
-    pub readers: [Option<SqliteResourceStats>; 2],
+    pub readers: Vec<Option<SqliteResourceStats>>,
 }
 
-async fn observe(connection: &mut SqliteConnection) -> Result<SqliteResourceStats, StoreError> {
-    let cached_statements = connection.cached_statements_size();
-    worker_query(connection, move |worker| {
-        Box::pin(async move {
-            let handle = worker.as_raw_handle();
-            let status = |operation| -> Result<i32, StoreError> {
-                let (mut current, mut high_water) = (0, 0);
-                // SAFETY: the original SQLite worker exclusively owns this open handle.
-                // SQLite writes only these local integers; reset=0 leaves counters intact.
-                let code = unsafe {
-                    rusqlite::ffi::sqlite3_db_status(
-                        handle.as_ptr(),
-                        operation,
-                        &mut current,
-                        &mut high_water,
-                        0,
-                    )
-                };
-                if code != rusqlite::ffi::SQLITE_OK {
-                    return Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(code),
-                        None,
-                    )
-                    .into());
-                }
-                Ok(current)
-            };
-            let mut statements = Vec::new();
-            let mut statement = std::ptr::null_mut();
-            // SAFETY: this worker exclusively owns the open connection and its
-            // statements. SQL bytes are copied before advancing; no SQLite-backed
-            // pointer escapes. Every statement status uses reset=0.
-            unsafe {
-                loop {
-                    statement = rusqlite::ffi::sqlite3_next_stmt(handle.as_ptr(), statement);
-                    if statement.is_null() {
-                        break;
-                    }
-                    let sql = rusqlite::ffi::sqlite3_sql(statement);
-                    statements.push(SqliteStatementStats {
-                        statement_id: statement as usize,
-                        sql: (!sql.is_null())
-                            .then(|| std::ffi::CStr::from_ptr(sql).to_string_lossy().into_owned()),
-                        runs: rusqlite::ffi::sqlite3_stmt_status(
-                            statement,
-                            rusqlite::ffi::SQLITE_STMTSTATUS_RUN,
-                            0,
-                        ),
-                        vm_steps: rusqlite::ffi::sqlite3_stmt_status(
-                            statement,
-                            rusqlite::ffi::SQLITE_STMTSTATUS_VM_STEP,
-                            0,
-                        ),
-                        reprepares: rusqlite::ffi::sqlite3_stmt_status(
-                            statement,
-                            rusqlite::ffi::SQLITE_STMTSTATUS_REPREPARE,
-                            0,
-                        ),
-                    });
-                }
+fn observe(connection: &Connection) -> Result<SqliteResourceStats, StoreError> {
+    // SAFETY: the synchronous job has exclusive custody of the original open
+    // connection. This pointer is only used for non-mutating observations here.
+    let handle = unsafe { connection.handle() };
+    let status = |operation| -> Result<i32, StoreError> {
+        let (mut current, mut high_water) = (0, 0);
+        // SAFETY: the original SQLite worker exclusively owns this open handle.
+        // SQLite writes only these local integers; reset=0 leaves counters intact.
+        let code = unsafe {
+            rusqlite::ffi::sqlite3_db_status(handle, operation, &mut current, &mut high_water, 0)
+        };
+        if code != rusqlite::ffi::SQLITE_OK {
+            return Err(
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None).into(),
+            );
+        }
+        Ok(current)
+    };
+    let mut statements = Vec::new();
+    let mut statement = std::ptr::null_mut();
+    // SAFETY: this worker exclusively owns the open connection and its
+    // statements. SQL bytes are copied before advancing; no SQLite-backed
+    // pointer escapes. Every statement status uses reset=0.
+    unsafe {
+        loop {
+            statement = rusqlite::ffi::sqlite3_next_stmt(handle, statement);
+            if statement.is_null() {
+                break;
             }
-            Ok(SqliteResourceStats {
-                connection_id: handle.as_ptr() as usize,
-                cached_statements,
-                cache_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED)?,
-                schema_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_SCHEMA_USED)?,
-                statement_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_STMT_USED)?,
-                lookaside_slots: status(rusqlite::ffi::SQLITE_DBSTATUS_LOOKASIDE_USED)?,
-                cache_hits: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_HIT)?,
-                cache_misses: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS)?,
-                cache_spills: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_SPILL)?,
-                statements,
-            })
-        })
+            let sql = rusqlite::ffi::sqlite3_sql(statement);
+            statements.push(SqliteStatementStats {
+                statement_id: statement as usize,
+                sql: (!sql.is_null())
+                    .then(|| std::ffi::CStr::from_ptr(sql).to_string_lossy().into_owned()),
+                runs: rusqlite::ffi::sqlite3_stmt_status(
+                    statement,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_RUN,
+                    0,
+                ),
+                vm_steps: rusqlite::ffi::sqlite3_stmt_status(
+                    statement,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_VM_STEP,
+                    0,
+                ),
+                reprepares: rusqlite::ffi::sqlite3_stmt_status(
+                    statement,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_REPREPARE,
+                    0,
+                ),
+            });
+        }
+    }
+    Ok(SqliteResourceStats {
+        connection_id: handle as usize,
+        cached_statements: statements.len(),
+        cache_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED)?,
+        schema_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_SCHEMA_USED)?,
+        statement_bytes: status(rusqlite::ffi::SQLITE_DBSTATUS_STMT_USED)?,
+        lookaside_slots: status(rusqlite::ffi::SQLITE_DBSTATUS_LOOKASIDE_USED)?,
+        cache_hits: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_HIT)?,
+        cache_misses: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS)?,
+        cache_spills: status(rusqlite::ffi::SQLITE_DBSTATUS_CACHE_SPILL)?,
+        statements,
     })
-    .await
 }
 
 impl OwnedConnection {
-    /// Observe writer and both reader slots without opening unused connections.
+    /// Observe each physical actor without opening unused reader connections.
     /// Byte counts include every database attached to each connection.
     pub async fn resource_stats(&self) -> Result<ConnectionResourceStats, StoreError> {
-        let reader = |jobs: mpsc::Sender<ReadEnvelope>,
-                      admission: std::sync::Arc<tokio::sync::Semaphore>| async move {
-            let permit = admission
-                .acquire_owned()
-                .await
-                .map_err(|_| StoreError::ConnectionClosed)?;
+        self.require_open()?;
+        if self.read_on_owner {
+            let writer = self.run(|connection| observe(connection)).await?;
+            let readers = (0..self.reads.len() + 1).map(|_| None).collect();
+            return Ok(ConnectionResourceStats { writer, readers });
+        }
+        let mut pending = Vec::with_capacity(self.reads.len() + 1);
+        for jobs in self.reads.iter().chain(std::iter::once(&self.observations)) {
             let (reply, result) = oneshot::channel();
-            jobs.send(ReadEnvelope {
-                custody: self.custody.clone(),
-                job: ReadJob::Observe(Box::new(move |_, connection| {
-                    Box::pin(async move {
-                        let _permit = permit;
-                        let stats = AssertUnwindSafe(async {
-                            match connection {
-                                Ok(Some(connection)) => observe(connection).await.map(Some),
-                                Ok(None) => Ok(None),
-                                Err(error) => Err(error),
-                            }
-                        })
-                        .catch_unwind()
-                        .await;
-                        let reusable = !matches!(
-                            &stats,
-                            Err(_) | Ok(Err(StoreError::Sqlx(sqlx::Error::WorkerCrashed)))
-                        );
-                        let _ = reply.send(stats.unwrap_or(Err(StoreError::OperationUnknown)));
-                        reusable
-                    })
-                })),
+            jobs.send(ReadJob {
+                _slot: None,
+                open: false,
+                _custody: self.custody.clone(),
+                run: Box::new(move |connection, valid| {
+                    let stats = catch_unwind(AssertUnwindSafe(|| {
+                        valid.and_then(|()| connection.as_ref().map(observe).transpose())
+                    }));
+                    let reusable = stats.is_ok();
+                    let _ = reply.send(stats.unwrap_or(Err(StoreError::OperationUnknown)));
+                    reusable
+                }),
             })
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
-            result.await.map_err(|_| StoreError::OperationUnknown)?
-        };
-        let (pure, observation, writer) = tokio::try_join!(
-            reader(self.read_jobs.clone(), self.readers.clone()),
-            reader(self.observation_jobs.clone(), self.observations.clone()),
-            self.run(|connection| Box::pin(observe(connection))),
-        )?;
-        let readers = [pure, observation];
+            pending.push(result);
+        }
+        let mut readers = Vec::with_capacity(pending.len());
+        for result in pending {
+            readers.push(result.await.map_err(|_| StoreError::OperationUnknown)??);
+        }
+        let writer = self.run(|connection| observe(connection)).await?;
         Ok(ConnectionResourceStats { writer, readers })
     }
 }

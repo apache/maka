@@ -86,13 +86,12 @@ export function createTerminals(
   const recovering = signal(false);
   const known = signal(false);
   const models = new Map<string, TerminalModel>();
-  let sessionId: string | null = null;
   let scope: ScopedHost | null = null;
   let alive = true;
   let watch: Watch<unknown> | null = null;
   let listGeneration = 0;
   const owns = (session: string) =>
-    alive && options.sessionId() === session && sessionId === session;
+    alive && options.sessionId() === session && scope?.sessionId === session;
   const refreshPending = async (session: string, owner: ScopedHost) => {
     const originals = await pendingTerminals(owner);
     if (owns(session) && scope === owner) {
@@ -133,7 +132,9 @@ export function createTerminals(
     const previous = new Map(entries().map((row) => [row.value().result.ref, row]));
     entries.set(
       resources
-        .filter((entry) => entry.sessionId === sessionId && entry.result.kind === 'shell_run')
+        .filter(
+          (entry) => entry.sessionId === scope?.sessionId && entry.result.kind === 'shell_run',
+        )
         .sort(
           (a, b) =>
             a.result.startedAt - b.result.startedAt || a.result.ref.localeCompare(b.result.ref),
@@ -221,7 +222,7 @@ export function createTerminals(
     })();
   };
   const open = (target: TerminalTarget) => {
-    if (!sessionId || !scope || !owns(target.sessionId)) return;
+    if (!scope || !owns(target.sessionId)) return;
     const entry = entries()
       .find((row) => row.value().result.ref === target.ref)
       ?.value();
@@ -240,12 +241,11 @@ export function createTerminals(
   effect(() => {
     const selected = options.sessionId();
     untracked(() => {
-      if (selected === sessionId) return;
+      if (selected === (scope?.sessionId ?? null)) return;
       stop(watch);
       watch = null;
       for (const model of [...models.values()]) model.dispose();
       models.clear();
-      sessionId = selected;
       scope = selected ? host.session(selected) : null;
       entries.set([]);
       error.set('');
@@ -264,7 +264,7 @@ export function createTerminals(
     const selected = options.sessionId();
     const visible = options.active();
     untracked(() => {
-      if (selected && selected === sessionId && visible) {
+      if (selected && selected === scope?.sessionId && visible) {
         if (!watch) follow(selected);
       } else {
         stop(watch);
@@ -273,19 +273,18 @@ export function createTerminals(
     });
   });
   const refresh = () => {
-    if (!sessionId || !scope || !owns(sessionId)) return;
-    const selected = sessionId;
     const owner = scope;
+    if (!owner || !owns(owner.sessionId)) return;
+    const selected = owner.sessionId;
     void refreshPending(selected, owner).catch((reason) => {
       if (owns(selected) && scope === owner) error.set(reason);
     });
     if (options.active()) follow(selected);
   };
   const start = async () => {
-    const selected = sessionId;
     const owner = scope;
-    if (!selected || !owner || !owns(selected) || starting() || !known() || pending().length)
-      return;
+    if (!owner || !owns(owner.sessionId) || starting() || !known() || pending().length) return;
+    const selected = owner.sessionId;
     starting.set(true);
     error.set('');
     try {
@@ -338,9 +337,9 @@ export function createTerminals(
     pending: () => !known() || pending().length > 0,
     blocked: () => starting() || recovering() || !options.active(),
     recover: async () => {
-      const selected = sessionId;
       const owner = scope;
-      if (!selected || !owner) return;
+      if (!owner) return;
+      const selected = owner.sessionId;
       await refreshPending(selected, owner);
       if (!owns(selected) || scope !== owner) return;
       for (const original of pending())

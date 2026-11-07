@@ -98,10 +98,6 @@ pub struct Configuration {
     /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
-    /// Retired with planning mode and ignored. Package updates keep a saved
-    /// installation's parameters, so this key must keep validating.
-    #[serde(default, skip_serializing)]
-    pub plans: bool,
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
@@ -326,7 +322,7 @@ pub struct Create {
     pub workspace: WorkspaceSelection,
 }
 
-#[derive(Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -355,6 +351,26 @@ pub enum WorkspaceSelection {
     Session {
         #[schemars(length(min = 1))]
         session_id: String,
+    },
+}
+
+/// Read-only completion context before or after a conversation is created.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentCompletionTarget")]
+pub enum CompletionTarget {
+    Session {
+        #[schemars(length(min = 1))]
+        session_id: String,
+    },
+    Draft {
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<WorkspaceSelection>")]
+        workspace: Option<WorkspaceSelection>,
     },
 }
 /// A directory on the Host: an absolute path, `~` standing for the home
@@ -513,12 +529,12 @@ pub enum GlobalInstructionsUpdated {
     Unavailable,
 }
 
-/// Read-only suggestions resolved against the session's actual skill context.
+/// Read-only suggestions resolved against the selected completion context.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSkillCandidatesRead")]
 pub struct SkillCandidatesRead {
-    pub session_id: String,
+    pub target: CompletionTarget,
     pub backend: BackendPreference,
     pub query: String,
 }
@@ -613,7 +629,6 @@ pub enum Rejection {
     WorkspaceUnavailable,
     SessionUnavailable,
     HistoryUnavailable,
-    ManagedSession,
     Closed,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -635,9 +650,11 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
-    /// Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.
+    /// Deliver additional context, corrections, progress updates or guidance to ongoing work.
+    /// Active model, Codex and Claude turns accept steering; agy interrupts and resumes where supported. Other executors queue.
     #[default]
     Steer,
+    /// Defer this message until the current turn ends.
     Queue,
 }
 
@@ -645,6 +662,8 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Defaults to steer. Omit or use steer for updates to ongoing work;
+    /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
     pub delivery: SendDelivery,
     /// An active send must not start new work after Stop fences its original Run.
@@ -1484,6 +1503,55 @@ pub enum HistoryPage {
     },
 }
 
+impl From<maka_agent_ports::session::history::Page> for HistoryPage {
+    fn from(value: maka_agent_ports::session::history::Page) -> Self {
+        let maka_agent_ports::session::history::Page::Ready {
+            through,
+            chunks,
+            before,
+            after,
+        } = value;
+        HistoryPage::Ready {
+            through,
+            before,
+            after,
+            chunks: chunks
+                .into_iter()
+                .map(|chunk| HistoryChunk {
+                    model_part: chunk.model_part,
+                    has_references: chunk.has_references,
+                    final_output: chunk.final_output,
+                    model: chunk.model,
+                    origin: chunk.origin,
+                    compaction: chunk.compaction,
+                    attachments: chunk
+                        .attachments
+                        .into_iter()
+                        .map(|attachment| HistoryAttachment {
+                            name: attachment.name,
+                            mime_type: attachment.mime_type,
+                            bytes: attachment.bytes,
+                            kind: attachment.kind,
+                        })
+                        .collect(),
+                    timing: chunk.timing,
+                    field: chunk.field,
+                    message_id: chunk.message_id,
+                    turn_id: chunk.turn_id,
+                    timestamp: chunk.timestamp,
+                    role: chunk.role,
+                    order: chunk.order,
+                    position: chunk.position,
+                    offset: chunk.offset,
+                    total_bytes: chunk.total_bytes,
+                    text: chunk.text,
+                    tool: chunk.tool,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistorySourceRead")]
@@ -1656,6 +1724,7 @@ pub fn contract() -> Contract {
         transport: Transport::Remote,
         interface: Interface::Service {
             methods: BTreeMap::from([
+                ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),
                 (
@@ -1841,12 +1910,12 @@ pub fn contract() -> Contract {
                     method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
                 ),
                 (
-                    "publishHistoryCheckpoint".into(),
-                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                    "publishCheckpoint".into(),
+                    method::<CheckpointPublish, CheckpointPublication>(MethodMode::Mutation),
                 ),
                 (
-                    "historyCheckpointReceipt".into(),
-                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                    "checkpointReceipt".into(),
+                    method::<CheckpointReceiptRead, CheckpointReceipt>(MethodMode::Query),
                 ),
                 (
                     "historyCheckpointHead".into(),
@@ -1856,6 +1925,13 @@ pub fn contract() -> Contract {
                     "readHistoryCheckpoint".into(),
                     method::<HistoryCheckpointRead, Option<HistoryCheckpointFrame>>(MethodMode::Subscription),
                 ),
+                ("loadHistoryCheckpoint".into(), method::<HistoryCheckpointRead, CheckpointLoad>(MethodMode::Mutation)),
+                ("restoreSessionCheckpoint".into(), method::<SessionCheckpointRestore, SessionCheckpointRestored>(MethodMode::Mutation)),
+                ("sessionCheckpointRestoreReceipt".into(), method::<SessionCheckpointRestoreReceiptRead, SessionCheckpointRestoreReceipt>(MethodMode::Query)),
+                ("historyCheckpointLoadReceipt".into(), method::<CheckpointLoadReceiptRead, CheckpointLoadReceipt>(MethodMode::Query)),
+                ("loadedHistoryCheckpointHistory".into(), method::<CheckpointHistoryRead, HistoryPage>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifacts".into(), method::<CheckpointArtifactsRead, CheckpointArtifacts>(MethodMode::Query)),
+                ("loadedHistoryCheckpointArtifact".into(), method::<CheckpointArtifactRead, Option<CheckpointArtifactChunk>>(MethodMode::Subscription)),
                 (
                     "fork".into(),
                     method::<Fork, ForkResult>(MethodMode::Mutation),
@@ -2002,6 +2078,14 @@ pub fn contract() -> Contract {
                     ),
                 ),
                 (
+                    "systemPermissionStatus".into(),
+                    method::<InteractionRead, SystemPermissionStatus>(MethodMode::Query),
+                ),
+                (
+                    "requestSystemPermission".into(),
+                    method::<RequestSystemPermission, SystemPermissionStatus>(MethodMode::Mutation),
+                ),
+                (
                     "respond".into(),
                     method::<InteractionRespond, InteractionResult>(MethodMode::Mutation),
                 ),
@@ -2045,21 +2129,6 @@ mod tests {
         ] {
             assert!(!send.is_valid(&legacy));
             assert!(serde_json::from_value::<Send>(legacy).is_err());
-        }
-    }
-
-    #[test]
-    fn a_saved_installation_with_the_retired_plans_setting_still_validates() {
-        for plans in [true, false] {
-            let saved = json!({
-                "plans": plans,
-                "permissions": {"access": "workspace_write", "requestPermissions": true},
-                "workspaceRoots": [],
-                "tools": [],
-            });
-            assert!(jsonschema::is_valid(&configuration_schema(), &saved));
-            let configuration: Configuration = serde_json::from_value(saved).unwrap();
-            assert!(serde_json::to_value(configuration).unwrap()["plans"].is_null());
         }
     }
 

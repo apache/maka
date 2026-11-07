@@ -54,3 +54,35 @@ pub struct SourceSelection {
     pub field: maka_agent_ports::session::history::SourceField,
     pub path: Option<Vec<maka_agent_ports::session::history::SourceSegment>>,
 }
+
+#[derive(Clone)]
+pub(crate) enum HistoryOwner {
+    Session(String),
+    Snapshot {
+        capture: String,
+        session: String,
+        key: String,
+    },
+}
+impl HistoryOwner {
+    pub(crate) fn snapshot(capture: String, session: String) -> Self {
+        let key = crate::snapshots::owner_key(&capture, &session);
+        Self::Snapshot {
+            capture,
+            session,
+            key,
+        }
+    }
+    pub(crate) fn key(&self) -> &str {
+        match self {
+            Self::Session(id) => id,
+            Self::Snapshot { key, .. } => key,
+        }
+    }
+    pub(crate) fn session(&self) -> &str {
+        match self {
+            Self::Session(id) => id,
+            Self::Snapshot { session, .. } => session,
+        }
+    }
+}

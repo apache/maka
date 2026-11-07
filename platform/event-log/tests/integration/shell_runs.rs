@@ -25,7 +25,6 @@ use maka_agent_facts::shell_run::ShellState;
 use maka_agent_facts::shell_run::ShellVisibility;
 use maka_event_log::{EventLog, StoreError};
 use serde_json::json;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 use crate::support::shell_binding as binding;
 use maka_agent_facts::workspace::PermissionBasis;
@@ -284,17 +283,14 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
     for id in ["a", "b"] {
         log.create_shell_run(starting(id, basis)).await.unwrap();
     }
-    let mut observer = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-        .await
-        .unwrap();
-    sqlx::raw_sql(
-        "CREATE TRIGGER reject_second_recovery BEFORE UPDATE ON shell_runs
+    let observer = rusqlite::Connection::open(&path).unwrap();
+    observer
+        .execute_batch(
+            "CREATE TRIGGER reject_second_recovery BEFORE UPDATE ON shell_runs
         WHEN EXISTS (SELECT 1 FROM shell_runs WHERE active = 0)
         BEGIN SELECT RAISE(ABORT, 'injected recovery fault'); END;",
-    )
-    .execute(&mut observer)
-    .await
-    .unwrap();
+        )
+        .unwrap();
     assert!(log.recover_shell_runs(50).await.is_err());
     for id in ["a", "b"] {
         assert_eq!(
@@ -303,14 +299,13 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
             "all recovery writes roll back together"
         );
     }
-    sqlx::raw_sql(
-        "DROP TRIGGER reject_second_recovery;
+    observer
+        .execute_batch(
+            "DROP TRIGGER reject_second_recovery;
         CREATE TRIGGER reject_outcome BEFORE UPDATE ON shell_runs
         BEGIN SELECT RAISE(ABORT, 'injected outcome fault'); END;",
-    )
-    .execute(&mut observer)
-    .await
-    .unwrap();
+        )
+        .unwrap();
     let mut changes = log.subscribe_shell_changes();
     assert!(
         log.patch_shell_run("session", "a", state(ShellState::Running))
@@ -328,13 +323,14 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
         ),
         "rolled-back writes publish no invalidations"
     );
-    sqlx::raw_sql("DROP TRIGGER reject_outcome")
-        .execute(&mut observer)
-        .await
+    observer
+        .execute_batch("DROP TRIGGER reject_outcome")
         .unwrap();
     // A real SQLite writer lock holds the accepted update after its caller
     // disappears. Publication belongs to the SQL owner, not the abandoned await.
-    let blocker = observer.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let blocker =
+        rusqlite::Transaction::new_unchecked(&observer, rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
     let mut update = Box::pin(log.patch_shell_run("session", "a", state(ShellState::Running)));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut update)
@@ -346,7 +342,7 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
     drop(update);
-    blocker.commit().await.unwrap();
+    blocker.commit().unwrap();
     let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
         .await
         .unwrap()
@@ -360,7 +356,7 @@ async fn recovery_commit_is_atomic_under_real_sqlite_faults() {
             .state,
         ShellState::Running
     );
-    observer.close().await.unwrap();
+    observer.close().unwrap();
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(log.recover_shell_runs(60).await.unwrap(), 2);

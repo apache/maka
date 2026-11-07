@@ -121,13 +121,11 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
     let count = store
         .connection
         .run(|conn| {
-            Box::pin(async move {
-                Ok(
-                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM application_packages")
-                        .fetch_one(conn)
-                        .await?,
-                )
-            })
+            Ok(conn.query_row(
+                "SELECT count(*) FROM application_packages",
+                params![],
+                |row| row.get::<_, i64>(0),
+            )?)
         })
         .await
         .unwrap();
@@ -142,12 +140,48 @@ async fn immutable_bytes_preserve_every_committed_source_revision() {
             .files(),
         old.files()
     );
+    assert_eq!(
+        store
+            .load_application_package_at(&original, &old.application_ref())
+            .await
+            .unwrap()
+            .unwrap()
+            .files(),
+        old.files()
+    );
+    let current = store
+        .load_application(a)
+        .await
+        .unwrap()
+        .unwrap()
+        .source
+        .reference;
+    assert!(
+        store
+            .load_application_package_at(&current, &old.application_ref())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let mut absent = original.clone();
     absent.revision = 3;
     assert!(store.load_application_at(&absent).await.unwrap().is_none());
+    assert!(
+        store
+            .load_application_package_at(&absent, &old.application_ref())
+            .await
+            .unwrap()
+            .is_none()
+    );
     let mut foreign = original;
     foreign.state_domain = "0".repeat(64);
     assert!(store.load_application_at(&foreign).await.is_err());
+    assert!(
+        store
+            .load_application_package_at(&foreign, &old.application_ref())
+            .await
+            .is_err()
+    );
     store.close().await.unwrap();
 }
 
@@ -156,27 +190,33 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     let (_dir, store) = store().await;
     let id = Uuid::new_v4();
     let package = package("export default {};");
-    store
+    let source = store
         .commit_application(id, 0, selected(&package), vec![], vec![package.clone()])
         .await
         .unwrap();
     store
         .connection
         .run(|conn| {
-            Box::pin(async move {
-                sqlx::query(
-                    "UPDATE application_package_files SET payload = X'00' WHERE path = 'host.mjs'",
-                )
-                .execute(conn)
-                .await?;
+
+                conn.execute_batch("DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;")?;
+                conn.execute("UPDATE contents SET payload = X'00' WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')", params![])?;
                 Ok(())
-            })
+
         })
         .await
         .unwrap();
     assert!(
         store
             .load_application(id)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert!(
+        store
+            .load_application_package_at(&source, &package.application_ref())
             .await
             .err()
             .unwrap()
@@ -192,14 +232,11 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
     let revision = store
         .connection
         .run(move |conn| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar::<_, i64>(
-                    "SELECT revision FROM application_deployments WHERE id = ?",
-                )
-                .bind(id.to_string())
-                .fetch_one(conn)
-                .await?)
-            })
+            Ok(conn.query_row(
+                "SELECT revision FROM application_deployments WHERE id = ?",
+                params![id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )?)
         })
         .await
         .unwrap();
@@ -211,36 +248,128 @@ async fn corrupted_exact_bytes_cannot_be_loaded_or_silently_overwritten() {
 async fn stored_package_paths_types_and_immutable_digests_are_checked() {
     for corruption in [
         "UPDATE application_package_files SET path = '../escape' WHERE path='host.mjs'",
-        "UPDATE application_package_files SET payload = zeroblob(8388609) WHERE path='host.mjs'",
-        "UPDATE application_package_files SET payload = 'x' || char(0) || printf('%.*c', 8388609, 'z') WHERE path='host.mjs'",
+        "UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
+        "UPDATE contents SET payload = 'x' || char(0) || printf('%.*c', 8388609, 'z') WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')",
     ] {
         let (_dir, store) = store().await;
         let id = Uuid::new_v4();
         let package = package("export default {};");
-        store
+        let reference = package.application_ref();
+        let source = store
             .commit_application(id, 0, selected(&package), vec![], vec![package])
             .await
             .unwrap();
         store
             .connection
             .run(move |conn| {
-                Box::pin(async move {
-                    sqlx::query(corruption).execute(conn).await?;
-                    Ok(())
-                })
+                conn.execute_batch(
+                    "DROP TRIGGER content_immutable; PRAGMA ignore_check_constraints=ON;",
+                )?;
+                conn.execute(corruption, params![])?;
+                Ok(())
             })
             .await
             .unwrap();
-        let error = store.load_application(id).await.err().unwrap().to_string();
-        if corruption.contains("char(0)") {
-            assert!(error.contains("payload must be a BLOB"), "{error}");
-        } else if corruption.contains("zeroblob") {
-            assert!(error.contains("digest mismatch"), "{error}");
-        } else {
-            assert!(error.contains("invalid package path"), "{error}");
+        for error in [
+            store.load_application(id).await.err().unwrap().to_string(),
+            store
+                .load_application_package_at(&source, &reference)
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
+        ] {
+            if corruption.contains("char(0)") {
+                assert!(error.contains("payload must be a BLOB"), "{error}");
+            } else if corruption.contains("zeroblob") {
+                assert!(error.contains("digest mismatch"), "{error}");
+            } else {
+                assert!(error.contains("invalid package path"), "{error}");
+            }
         }
         store.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn single_package_load_does_not_read_or_validate_sibling_packages() {
+    let (_dir, store) = store().await;
+    let id = Uuid::new_v4();
+    let intact = package("export const intact = true;");
+    let sibling = Package::new(BTreeMap::from([
+        (
+            maka_packages::MANIFEST_FILE.into(),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "id": "sibling",
+                "application": intact.manifest().application,
+            }))
+            .unwrap(),
+        ),
+        ("host.mjs".into(), b"export const sibling = true;".to_vec()),
+    ]))
+    .unwrap();
+    let sibling_ref = sibling.application_ref();
+    let input: Input = serde_json::from_value(serde_json::json!({
+        "instances": {
+            "intact": {
+                "key": Uuid::from_u128(10),
+                "package": { "source": "pinned", "package": intact.application_ref() },
+                "usePackage": "host"
+            },
+            "sibling": {
+                "key": Uuid::from_u128(11),
+                "package": { "source": "pinned", "package": sibling_ref },
+                "usePackage": "host"
+            }
+        }
+    }))
+    .unwrap();
+    let source = store
+        .commit_application(id, 0, input, vec![], vec![intact.clone(), sibling])
+        .await
+        .unwrap();
+    let corrupted_id = sibling_ref.id.clone();
+    let corrupted_revision = sibling_ref.revision.clone();
+    store
+        .connection
+        .run(move |conn| {
+
+                conn.execute("INSERT INTO contents(content_sha256,payload) VALUES('sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d',X'00')", params![])?;
+                conn.execute("UPDATE application_package_files SET content_id=last_insert_rowid() WHERE id = ? AND revision = ? AND path = 'host.mjs'", params![corrupted_id, corrupted_revision])?;
+                Ok(())
+
+        })
+        .await
+        .unwrap();
+    assert!(
+        store
+            .load_application_at(&source)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert!(
+        store
+            .load_application_package_at(&source, &sibling_ref)
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("digest mismatch")
+    );
+    assert_eq!(
+        store
+            .load_application_package_at(&source, &intact.application_ref())
+            .await
+            .unwrap()
+            .unwrap()
+            .files(),
+        intact.files()
+    );
+    store.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -313,10 +442,11 @@ async fn metadata_snapshot_never_materializes_package_payloads() {
     assert!(original.len() < 4096);
     // A payload that cannot be loaded still must not enter metadata reads. This
     // tests the physical DAO boundary, not a profiler estimate or source string.
-    store.connection.run(|connection| Box::pin(async move {
-        sqlx::query("UPDATE application_package_files SET payload = zeroblob(8388609) WHERE path='host.mjs'").execute(connection).await?;
+    store.connection.run(|connection| {
+        connection.execute("DROP TRIGGER content_immutable", params![])?;
+        connection.execute("UPDATE contents SET payload = zeroblob(8388609) WHERE id IN (SELECT content_id FROM application_package_files WHERE path='host.mjs')", params![])?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     assert_eq!(
         serde_json::to_vec(
             &store

@@ -27,7 +27,6 @@ use maka_event_log::{
     message_admissions::PendingMessageAdmission,
     message_interrupts::{InterruptCommand, InterruptReceipt},
 };
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 #[tokio::test]
 async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_reservations() {
@@ -107,18 +106,15 @@ async fn foreign_openings_and_pauses_remain_evidence_without_local_recovery_or_r
 
     // Seed the importer's durable origin boundary, not a fake terminal or a queue.
     // Reopen through normal startup to exercise real recovery discovery.
-    let mut db = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
-        .await
-        .unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
     for invocation in [&paused.invocation, &proof.invocation] {
-        sqlx::query("INSERT INTO imported_invocations VALUES (?, ?)")
-            .bind(&invocation.invocation_id)
-            .bind(digest('a'))
-            .execute(&mut db)
-            .await
-            .unwrap();
+        db.execute(
+            "INSERT INTO imported_invocations VALUES (?, ?)",
+            rusqlite::params![&invocation.invocation_id, digest('a')],
+        )
+        .unwrap();
     }
-    db.close().await.unwrap();
+    db.close().unwrap();
 
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(log.prefix(100, 65536).await.unwrap().digest, before.digest);

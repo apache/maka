@@ -30,20 +30,6 @@ use std::panic::AssertUnwindSafe;
 
 type Close = BoxFuture<'static, Result<()>>;
 type Jobs = FuturesUnordered<BoxFuture<'static, Done>>;
-fn next_change(
-    mut cursor: maka_event_log::applications::DeploymentChanges,
-) -> BoxFuture<
-    'static,
-    (
-        maka_event_log::applications::DeploymentChanges,
-        std::result::Result<DeploymentRef, maka_event_log::StoreError>,
-    ),
-> {
-    Box::pin(async move {
-        let source = cursor.next().await;
-        (cursor, source)
-    })
-}
 
 struct Failed {
     _execution: Execution<Service>,
@@ -63,12 +49,123 @@ struct Owned {
     exports: Arc<BTreeMap<String, Binding>>,
     imports: Arc<BTreeMap<String, Vec<Binding>>>,
     resource: Resource,
-    close: Option<Close>,
-    initializing: bool,
-    retiring: bool,
-    closing: bool,
-    native_owner: Option<Arc<dyn NativeOwner>>,
-    vm: Option<usize>,
+    lifecycle: ActivationLifecycle,
+}
+enum CodeOwner {
+    Native(Arc<dyn NativeOwner>),
+    JavaScript { vm: Option<usize> },
+}
+struct InitializedCode {
+    close: Close,
+    owner: CodeOwner,
+}
+// Code custody is independent of Runtime's publication and invocation admission.
+enum ActivationLifecycle {
+    Initializing { vm: Option<usize> },
+    Initialized(InitializedCode),
+    Retiring(InitializedCode),
+    Closing(CodeOwner),
+    // Initializer panics return no owner; failed closes retain their actual owner.
+    CleanupUnconfirmed(Option<CodeOwner>),
+}
+enum Initialization {
+    Native(Arc<dyn NativeOwner>),
+    JavaScript(Close),
+    CleanupUnconfirmed,
+}
+impl ActivationLifecycle {
+    fn initializing(&self) -> bool {
+        matches!(self, Self::Initializing { .. })
+    }
+    fn owner(&self) -> Option<&CodeOwner> {
+        match self {
+            Self::Initializing { .. } => None,
+            Self::Initialized(code) | Self::Retiring(code) => Some(&code.owner),
+            Self::Closing(owner) => Some(owner),
+            Self::CleanupUnconfirmed(owner) => owner.as_ref(),
+        }
+    }
+    fn native_owner(&self) -> Option<&Arc<dyn NativeOwner>> {
+        match self.owner()? {
+            CodeOwner::Native(owner) => Some(owner),
+            CodeOwner::JavaScript { .. } => None,
+        }
+    }
+    fn vm(&self) -> Option<usize> {
+        match self {
+            Self::Initializing { vm } => *vm,
+            _ => match self.owner()? {
+                CodeOwner::Native(_) => None,
+                CodeOwner::JavaScript { vm } => *vm,
+            },
+        }
+    }
+    fn assign_vm(&mut self, index: usize) {
+        let Self::Initializing { vm } = self else {
+            unreachable!("only initialization assigns a VM")
+        };
+        *vm = Some(index);
+    }
+    fn initialized(&mut self, initialization: Initialization) {
+        let Self::Initializing { vm } = self else {
+            unreachable!("initializer completes once")
+        };
+        *self = match initialization {
+            Initialization::Native(owner) => {
+                let closing = owner.clone();
+                Self::Initialized(InitializedCode {
+                    close: Box::pin(async move { closing.close().await }),
+                    owner: CodeOwner::Native(owner),
+                })
+            }
+            Initialization::JavaScript(close) => Self::Initialized(InitializedCode {
+                close,
+                owner: CodeOwner::JavaScript { vm: *vm },
+            }),
+            Initialization::CleanupUnconfirmed => Self::CleanupUnconfirmed(None),
+        };
+    }
+    fn retire(&mut self) -> bool {
+        let previous = std::mem::replace(self, Self::CleanupUnconfirmed(None));
+        match previous {
+            Self::Initialized(code) => {
+                *self = Self::Retiring(code);
+                true
+            }
+            other => {
+                *self = other;
+                false
+            }
+        }
+    }
+    fn begin_close(&mut self) -> Option<Close> {
+        let previous = std::mem::replace(self, Self::CleanupUnconfirmed(None));
+        match previous {
+            Self::Retiring(code) => {
+                *self = Self::Closing(code.owner);
+                Some(code.close)
+            }
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+    fn has_pending_close(&self) -> bool {
+        matches!(self, Self::Initialized(_) | Self::Retiring(_))
+    }
+    fn release_vm(&mut self) {
+        let Self::Closing(CodeOwner::JavaScript { vm }) = self else {
+            unreachable!("only a closing module releases its VM")
+        };
+        *vm = None;
+    }
+    fn cleanup_unconfirmed(&mut self) {
+        let Self::Closing(owner) = std::mem::replace(self, Self::CleanupUnconfirmed(None)) else {
+            unreachable!("only a closing activation reports cleanup failure")
+        };
+        *self = Self::CleanupUnconfirmed(Some(owner));
+    }
 }
 enum Done {
     Loaded {
@@ -82,8 +179,7 @@ enum Done {
     Initialized {
         activation: Activation,
         exports: Result<BTreeMap<String, Published<Service>>>,
-        close: Option<Close>,
-        native_owner: Option<Arc<dyn NativeOwner>>,
+        initialization: Initialization,
     },
     Called {
         parent: Option<Ticket>,
@@ -154,7 +250,6 @@ pub(super) struct Owner {
     cleanup_error: Option<String>,
     closing: bool,
     closing_vms: bool,
-    closed: bool,
     shutdown_complete: bool,
 }
 impl Owner {
@@ -213,7 +308,6 @@ impl Owner {
             cleanup_error: None,
             closing: false,
             closing_vms: false,
-            closed: false,
             shutdown_complete: false,
         }
     }
@@ -233,7 +327,7 @@ impl Owner {
             .map(|(source, store)| store.subscribe_application(source.reference().clone()))
             .transpose()
         {
-            Ok(changes) => changes.map(next_change),
+            Ok(changes) => changes,
             Err(error) => {
                 let source = self
                     .persisted
@@ -251,7 +345,7 @@ impl Owner {
         };
         loop {
             self.drive();
-            if self.closed {
+            if self.is_closed() {
                 let snapshot = self.snapshot();
                 let updates = self.updates.clone();
                 // The closing acknowledgement follows all of this owner's drops,
@@ -294,14 +388,12 @@ impl Owner {
                 },
                 change = async {
                     match &mut changes {
-                        Some(next) => next.await,
+                        Some(cursor) => cursor.next().await,
                         None => std::future::pending().await,
                     }
                 }, if !self.closing && self.loading_adoption.is_none() => {
-                    let (cursor, source) = change;
-                    match source {
+                    match change {
                         Ok(source) => {
-                            changes = Some(next_change(cursor));
                             self.observe_source(source);
                         }
                         Err(error) => {
@@ -455,7 +547,10 @@ impl Owner {
         if self.starting
             || self.loading_adoption.is_some()
             || !self.jobs.is_empty()
-            || self.owned.values().any(|owned| owned.initializing)
+            || self
+                .owned
+                .values()
+                .any(|owned| owned.lifecycle.initializing())
             || self.activations.values().any(|activation| {
                 !self
                     .runtime
@@ -479,7 +574,7 @@ impl Owner {
         // with this decision. Each native guard fences its independent producers.
         let mut guards = Vec::new();
         for (id, owned) in &self.owned {
-            if let Some(native) = &owned.native_owner {
+            if let Some(native) = owned.lifecycle.native_owner() {
                 match std::panic::catch_unwind(AssertUnwindSafe(|| native.prepare_retirement())) {
                     Ok(Some(guard)) => guards.push(guard),
                     Ok(None) => {
@@ -518,15 +613,13 @@ impl Owner {
             deployment_id = source.map(|source| tracing::field::display(source.deployment)), source_revision = source.map(|source| source.revision))
     }
     fn fail_initialization(&mut self, id: InstanceId, error: String) {
-        {
-            let span = self
-                .activations
-                .get(&id)
-                .map(|activation| self.activation_diagnostic_span(activation));
-            let _entered = span.as_ref().map(tracing::Span::enter);
-            tracing::warn!(target: "maka_host_runtime::application", stage = "initialize", cause = "initializer_failed",
-                instance_id = ?id, "Host runtime failure");
-        }
+        let activation = self.activations.get(&id);
+        let source = self.origins.get(&id).map(|source| source.reference());
+        tracing::warn!(target: "maka_host_runtime::application", stage = "initialize", cause = "initializer_failed",
+            instance_id = ?id, activation_id = activation.map(|activation| tracing::field::display(activation.epoch())),
+            state_domain = source.map(|source| source.state_domain.as_str()),
+            deployment_id = source.map(|source| tracing::field::display(source.deployment)), source_revision = source.map(|source| source.revision),
+            "Host runtime failure");
         let path = self
             .runtime
             .desired()
@@ -632,14 +725,20 @@ impl Owner {
                     .as_ref()
                     .map(|(source, _)| source.reference().clone());
             } else if self.pending.is_empty()
-                && !self.owned.values().any(|owned| owned.initializing)
+                && !self
+                    .owned
+                    .values()
+                    .any(|owned| owned.lifecycle.initializing())
                 && !self.initialization_failures.is_empty()
             {
                 // All attempts have ended; failed resource cleanup remains
                 // separately owned. This source has never fully converged.
                 self.starting = false;
             } else if !self.pending.is_empty()
-                && !self.owned.values().any(|owned| owned.initializing)
+                && !self
+                    .owned
+                    .values()
+                    .any(|owned| owned.lifecycle.initializing())
                 && !self.activations.values().any(|a| {
                     self.runtime
                         .status(a)
@@ -671,16 +770,12 @@ impl Owner {
                 .status(activation)
                 .is_ok_and(|s| s.phase == Phase::Retiring)
                 && let Some(owned) = self.owned.get_mut(id)
-                && !owned.initializing
-                && !owned.retiring
+                && owned.lifecycle.retire()
+                && let Some(native) = owned.lifecycle.native_owner()
+                && std::panic::catch_unwind(AssertUnwindSafe(|| native.retiring())).is_err()
             {
-                owned.retiring = true;
-                if let Some(native) = &owned.native_owner
-                    && std::panic::catch_unwind(AssertUnwindSafe(|| native.retiring())).is_err()
-                {
-                    self.cleanup_error
-                        .get_or_insert("native retirement notification panicked".into());
-                }
+                self.cleanup_error
+                    .get_or_insert("native retirement notification panicked".into());
             }
             if self
                 .runtime
@@ -691,11 +786,8 @@ impl Owner {
                     .pending_calls(activation)
                     .is_ok_and(|calls| calls == 0)
                 && let Some(owned) = self.owned.get_mut(id)
-                && !owned.initializing
-                && !owned.closing
-                && let Some(close) = owned.close.take()
+                && let Some(close) = owned.lifecycle.begin_close()
             {
-                owned.closing = true;
                 let activation = activation.clone();
                 self.jobs.push(Box::pin(async move {
                     let result = AssertUnwindSafe(close)
@@ -739,10 +831,9 @@ impl Owner {
         if self.closing
             && self.jobs.is_empty()
             && !self.closing_vms
-            && self
-                .owned
-                .values()
-                .all(|owned| !owned.initializing && owned.close.is_none())
+            && self.owned.values().all(|owned| {
+                !owned.lifecycle.initializing() && !owned.lifecycle.has_pending_close()
+            })
             && self.activations.values().all(|activation| {
                 self.runtime
                     .pending_calls(activation)
@@ -799,12 +890,7 @@ impl Owner {
                 exports: Arc::default(),
                 imports: Arc::new(imports),
                 resource,
-                close: None,
-                initializing: true,
-                retiring: false,
-                closing: false,
-                native_owner: None,
-                vm: None,
+                lifecycle: ActivationLifecycle::Initializing { vm: None },
             },
         );
         let exports = entry
@@ -873,19 +959,16 @@ impl Owner {
                                     })
                                     .collect()
                             });
-                            let owner = native.owner.clone();
                             Done::Initialized {
                                 activation,
                                 exports,
-                                close: Some(Box::pin(async move { owner.close().await })),
-                                native_owner: Some(native.owner),
+                                initialization: Initialization::Native(native.owner),
                             }
                         }
                         Err(_) => Done::Initialized {
                             activation,
                             exports: Err("native initializer panicked".into()),
-                            close: None,
-                            native_owner: None,
+                            initialization: Initialization::CleanupUnconfirmed,
                         },
                     }
                 }));
@@ -910,7 +993,8 @@ impl Owner {
                     self.owned
                         .get_mut(&instance.identity)
                         .expect("initialization resource")
-                        .vm = Some(vm_index);
+                        .lifecycle
+                        .assign_vm(vm_index);
                     let vm = &self.vms[&vm_index];
                     let source = std::str::from_utf8(
                         self.sources[&instance.package]
@@ -955,8 +1039,7 @@ impl Owner {
                             Done::Initialized {
                                 activation,
                                 exports,
-                                close: Some(close),
-                                native_owner: None,
+                                initialization: Initialization::JavaScript(close),
                             }
                         }));
                     }
@@ -967,8 +1050,9 @@ impl Owner {
                             Done::Initialized {
                                 activation,
                                 exports: Err(error),
-                                close: Some(Box::pin(async { Ok(()) })),
-                                native_owner: None,
+                                initialization: Initialization::JavaScript(Box::pin(async {
+                                    Ok(())
+                                })),
                             }
                         }));
                     }
@@ -997,7 +1081,7 @@ impl Owner {
         let affected = self
             .owned
             .iter()
-            .filter(|(_, owned)| owned.vm == Some(vm))
+            .filter(|(_, owned)| owned.lifecycle.vm() == Some(vm))
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in affected {
@@ -1016,7 +1100,10 @@ impl Owner {
         }
     }
     fn check_vm(&mut self, provider: &Activation) -> Result<()> {
-        if let Some(index) = self.owned.get(provider.instance()).and_then(|o| o.vm)
+        if let Some(index) = self
+            .owned
+            .get(provider.instance())
+            .and_then(|owned| owned.lifecycle.vm())
             && self.vms.get(&index).is_some_and(|vm| vm.is_terminated())
         {
             self.retire_vm(index, "Host JavaScript execution domain terminated".into());
@@ -1072,8 +1159,8 @@ impl Owner {
             None
         } else {
             owned
-                .native_owner
-                .as_ref()
+                .lifecycle
+                .native_owner()
                 .map(|owner| {
                     std::panic::catch_unwind(AssertUnwindSafe(|| owner.execution_basis()))
                         .map(|basis| match basis {
@@ -1796,14 +1883,15 @@ impl Owner {
             Done::Initialized {
                 activation,
                 exports,
-                close,
-                native_owner,
+                initialization,
             } => {
                 let was_retiring = self
                     .runtime
                     .status(&activation)
                     .is_ok_and(|s| s.phase == Phase::Retiring);
-                if close.is_none() {
+                let cleanup_unconfirmed =
+                    matches!(initialization, Initialization::CleanupUnconfirmed);
+                if cleanup_unconfirmed {
                     self.activation_diagnostic_span(&activation).in_scope(|| {
                         tracing::error!(target: "maka_host_runtime::application", stage = "initialization_cleanup", cause = "cleanup_unconfirmed", "Host runtime failure");
                     });
@@ -1812,21 +1900,19 @@ impl Owner {
                     .owned
                     .get_mut(activation.instance())
                     .expect("initializer has a resource fence");
-                owned.initializing = false;
-                if close.is_none() {
+                owned.lifecycle.initialized(initialization);
+                if cleanup_unconfirmed {
                     let reason = "native initialization cleanup is unconfirmed".to_string();
                     self.runtime
                         .complete_resource(&owned.resource, Err(reason.clone()))
                         .expect("owned resource");
                     self.cleanup_error.get_or_insert(reason);
                 }
-                owned.close = close;
-                owned.native_owner = native_owner;
                 let result = exports.and_then(|batch| {
                     self.runtime
                         .publish(&activation, batch)
                         .map_err(|e| e.error.to_string())?;
-                    if let Some(owner) = &owned.native_owner {
+                    if let Some(owner) = owned.lifecycle.native_owner() {
                         std::panic::catch_unwind(AssertUnwindSafe(|| owner.activated()))
                             .map_err(|_| "native activation hook panicked".to_string())?;
                     }
@@ -1925,14 +2011,20 @@ impl Owner {
                 // The last module owns actual domain shutdown under its original
                 // resource fence. An empty isolate is not settled code ownership.
                 if result.is_ok()
-                    && let Some(index) = self.owned[activation.instance()].vm
-                    && self.owned.values().filter(|o| o.vm == Some(index)).count() == 1
+                    && let Some(index) = self.owned[activation.instance()].lifecycle.vm()
+                    && self
+                        .owned
+                        .values()
+                        .filter(|owned| owned.lifecycle.vm() == Some(index))
+                        .count()
+                        == 1
                     && let Some(vm) = self.vms.remove(&index)
                 {
                     self.owned
                         .get_mut(activation.instance())
                         .expect("owned module")
-                        .vm = None;
+                        .lifecycle
+                        .release_vm();
                     if self.shared == Some(index) {
                         self.shared = None;
                     }
@@ -1942,13 +2034,19 @@ impl Owner {
                     }));
                     return;
                 }
-                let owned = &self.owned[activation.instance()];
                 let success = result.is_ok();
                 if let Err(error) = &result {
                     self.activation_diagnostic_span(&activation).in_scope(|| {
                         tracing::error!(target: "maka_host_runtime::application", stage = "activation_cleanup", cause = "cleanup_unconfirmed", "Host runtime failure");
                     });
                     self.cleanup_error.get_or_insert(error.clone());
+                }
+                let owned = self
+                    .owned
+                    .get_mut(activation.instance())
+                    .expect("closing activation has an owner");
+                if !success {
+                    owned.lifecycle.cleanup_unconfirmed();
                 }
                 self.runtime
                     .complete_resource(&owned.resource, result)
@@ -1959,9 +2057,11 @@ impl Owner {
             }
             Done::VmsClosed => {
                 self.shutdown_complete = true;
-                self.closed = self.cleanup_error.is_none();
             }
         }
+    }
+    fn is_closed(&self) -> bool {
+        self.shutdown_complete && self.cleanup_error.is_none()
     }
     fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -1975,7 +2075,7 @@ impl Owner {
             startup_error: self.startup_error.clone(),
             initialization_failures: self.initialization_failures.clone(),
             closing: self.closing,
-            closed: self.closed,
+            closed: self.is_closed(),
             shutdown_complete: self.shutdown_complete,
             cleanup_error: self.cleanup_error.clone(),
             instances: self

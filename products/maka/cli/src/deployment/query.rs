@@ -21,8 +21,8 @@ use super::{Admission, Deployment, RootId, directory, service, store, updates};
 use crate::host_client::{HostClient, LiveHost};
 use clap::Args;
 use maka_host_runtime::HostError;
+use rusqlite::OptionalExtension;
 use serde::Serialize;
-use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use std::path::{Path, PathBuf};
 
 #[derive(Args)]
@@ -161,25 +161,18 @@ pub(super) async fn pending(
     directory: &Path,
     current: &Deployment,
 ) -> Result<Option<updates::Pending>, HostError> {
-    let mut connection = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .filename(directory.join("deployment.sqlite"))
-            .read_only(true),
-    )
-    .await?;
-    let result = async {
-        let value: Option<String> = sqlx::query_scalar(
+    let directory = directory.to_path_buf();
+    let current = current.clone();
+    store::read_database(directory.join("deployment.sqlite"), move |connection| {
+        let value: Option<String> = connection.query_row(
             "SELECT CASE WHEN length(CAST(target AS BLOB)) <= 65536 THEN target ELSE '' END FROM deployment_update WHERE singleton = 1",
-        ).fetch_optional(&mut connection).await?;
+            [], |row| row.get(0),
+        ).optional()?;
         let target = value.map(|value| serde_json::from_str::<updates::Pending>(&value)).transpose()?;
         if let Some(target) = &target {
-            target.deployment.validate_record(directory)?;
-            updates::validate_target(current, target)?;
+            target.deployment.validate_record(&directory)?;
+            updates::validate_target(&current, target)?;
         }
-        Ok::<_, HostError>(target)
-    }.await;
-    let closed = connection.close().await;
-    let target = result?;
-    closed?;
-    Ok(target)
+        Ok(target)
+    }).await
 }

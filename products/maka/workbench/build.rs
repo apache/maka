@@ -18,25 +18,33 @@
  */
 
 fn main() {
-    println!("cargo:rerun-if-changed=app/Bootstrap.tsx");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
     let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
-    let module = maka_ui_build::compile_cached(
-        std::path::Path::new("app/Bootstrap.tsx"),
-        &output.join("bootstrap"),
-        &compiler,
-    )
-    .expect("bundle shared UI bootstrap");
-    assert!(
-        module.assets.is_empty(),
-        "UI bootstrap assets belong in ordinary UI packages"
-    );
-    for input in &module.inputs {
-        println!("cargo:rerun-if-changed={}", input.display());
+    for (entry, name) in [
+        ("app/Bootstrap.tsx", "bootstrap"),
+        (
+            "app/ComputerPermissionSetupEntry.tsx",
+            "computer-permission-setup",
+        ),
+    ] {
+        println!("cargo:rerun-if-changed={entry}");
+        let module = maka_ui_build::compile_cached(
+            std::path::Path::new(entry),
+            &output.join(name),
+            &compiler,
+        )
+        .expect("bundle shared UI surface");
+        assert!(
+            module.assets.is_empty(),
+            "UI surface assets belong in ordinary UI packages"
+        );
+        for input in &module.inputs {
+            println!("cargo:rerun-if-changed={}", input.display());
+        }
+        maka_ui_build::write_if_changed(
+            &output.join(format!("{name}.js")),
+            &std::fs::read(module.module).expect("read shared UI surface"),
+        )
+        .expect("write shared UI surface");
     }
-    maka_ui_build::write_if_changed(
-        &output.join("bootstrap.js"),
-        &std::fs::read(module.module).expect("read shared UI bootstrap"),
-    )
-    .expect("write shared UI bootstrap");
 }

@@ -44,30 +44,22 @@ pub struct ConnectionSummaries {
 impl ConfigurationStore {
     pub async fn connection_summaries(&self) -> Result<ConnectionSummaries> {
         self.transaction(TransactionMode::Deferred, |tx| {
-            Box::pin(async move {
-                let (revision, default): (i64, Option<String>) = sqlx::query_as(
-                    "SELECT revision, default_target FROM connection_catalog WHERE singleton = 1",
-                )
-                .fetch_one(&mut *tx)
-                .await?;
-                let rows: Vec<String> = sqlx::query_scalar(
-                    "SELECT json_object(
+            {
+                let (revision, default): (i64, Option<String>) = tx.prepare_cached("SELECT revision, default_target FROM connection_catalog WHERE singleton = 1")?.query_row(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?,)))?;
+                let rows: Vec<String> = tx.prepare_cached("SELECT json_object(
                         'basis', json_object('connectionId', connection_id, 'revision', json_extract(document, '$.revision')),
                         'slug', json_extract(document, '$.slug'),
                         'name', json_extract(document, '$.name'),
                         'provider', json_extract(document, '$.provider'),
                         'enabled', json(CASE json_extract(document, '$.enabled') WHEN 1 THEN 'true' ELSE 'false' END),
                         'enabledModelCount', json_array_length(document, '$.enabledModelIds'))
-                     FROM connections ORDER BY rowid",
-                )
-                .fetch_all(&mut *tx)
-                .await?;
+                     FROM connections ORDER BY rowid")?.query_map(rusqlite::params![], |row| row.get(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
                 Ok(ConnectionSummaries {
                     revision: crate::database::unsigned(revision)?,
                     default_target: default.map(|value| serde_json::from_str(&value)).transpose()?,
                     connections: rows.iter().map(|value| serde_json::from_str(value)).collect::<std::result::Result<_, _>>()?,
                 })
-            })
+            }
         })
         .await
     }

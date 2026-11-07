@@ -639,7 +639,7 @@ impl Service {
             Self::Skills(Skills {
                 preparation: Some(_),
                 ..
-            }) => &["prepare", "search"],
+            }) => &["prepare", "search", "candidates"],
             Self::Web => &["capture"],
             Self::Computer(_) => &["state"],
             #[cfg(target_os = "macos")]

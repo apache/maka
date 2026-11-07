@@ -579,8 +579,9 @@ impl Tab {
         target: Option<MouseTarget>,
     ) -> Result<(), ToolError> {
         let connection = &self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .expect("verified CUA socket")
             .connection;
         let mut watches = Vec::new();

@@ -75,10 +75,10 @@ impl ConfigurationStore {
         input.validate().map_err(ConfigError::Invalid)?;
         let store = Arc::clone(self);
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
+            {
                 use LoginPreparation as P;
                 use LoginRejection as R;
-                if let Some(saved) = receipt::read(tx, &input.attempt_id).await? {
+                if let Some(saved) = receipt::read(tx, &input.attempt_id)? {
                     return Ok(if saved.matches(&input) {
                         match saved.phase {
                             Phase::Exchanging => P::OutcomeUnknown(Box::new(saved)),
@@ -88,7 +88,7 @@ impl ConfigurationStore {
                         P::Rejected(R::AttemptConflict)
                     });
                 }
-                let catalog = catalog::read(tx).await?;
+                let catalog = catalog::read(tx)?;
                 let (before, mut after) = match &input.target {
                     Target::Create {
                         provider,
@@ -131,9 +131,7 @@ impl ConfigurationStore {
                         else {
                             return Ok(P::Rejected(R::ConnectionNotFound));
                         };
-                        if vault::connection_conflict(tx, &locator(&row), Some(expected))
-                            .await?
-                            .is_some()
+                        if vault::connection_conflict(tx, &locator(&row), Some(expected))?.is_some()
                         {
                             return Ok(P::Rejected(R::ConnectionChanged));
                         }
@@ -161,11 +159,11 @@ impl ConfigurationStore {
                     slug: after.slug.clone(),
                     provider: after.provider.clone(),
                 };
-                let credential = vault::status_basis(&vault::status(tx, &locator(&after)).await?);
+                let credential = vault::status_basis(&vault::status(tx, &locator(&after))?);
                 if credential != input.expected_credential {
                     return Ok(P::Rejected(R::CredentialChanged));
                 }
-                let network = NetworkSnapshot::read(tx).await?.configuration;
+                let network = NetworkSnapshot::read(tx)?.configuration;
                 Ok(P::Ready(Box::new(PreparedLogin {
                     store,
                     input,
@@ -176,7 +174,7 @@ impl ConfigurationStore {
                     network,
                     catalog_revision: catalog.revision,
                 })))
-            })
+            }
         })
         .await
     }
@@ -184,7 +182,7 @@ impl ConfigurationStore {
     pub async fn oauth_login_receipt(&self, attempt_id: String) -> Result<Option<LoginReceipt>> {
         receipt::validate_attempt(&attempt_id)?;
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move { receipt::read(tx, &attempt_id).await })
+            receipt::read(tx, &attempt_id)
         })
         .await
     }

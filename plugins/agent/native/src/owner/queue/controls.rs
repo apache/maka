@@ -25,7 +25,6 @@ impl MessageBasis {
         self.mcp_revision == other.mcp_revision
             && self.language == other.language
             && self.compaction_prompt == other.compaction_prompt
-            && self.graph == other.graph
             && self.collaboration_mode == other.collaboration_mode
             && self.tool_discovery == other.tool_discovery
             && self.background_kind == other.background_kind

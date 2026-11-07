@@ -22,7 +22,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::input::InvocationInput;
-use sqlx::SqliteConnection;
+use rusqlite::Connection;
 
 pub(super) struct Origin {
     pub event_id: String,
@@ -30,8 +30,8 @@ pub(super) struct Origin {
     pub input: InvocationInput,
 }
 
-pub(super) async fn read(
-    tx: &mut SqliteConnection,
+pub(super) fn read(
+    tx: &Connection,
     current: &Invocation,
     input: &InvocationInput,
 ) -> Result<Option<Origin>, StoreError> {
@@ -41,19 +41,24 @@ pub(super) async fn read(
     input.validate_inheritance(current).map_err(invalid)?;
     // The canonical seal already authenticated this root across every handoff.
     // Resolve provenance once, without replaying model/tool bodies or guessing latest.
-    let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT event_header FROM event_log INDEXED BY turn_opening_lookup
+    let rows: Vec<String> = tx
+        .prepare_cached(
+            "SELECT event_header FROM event_log INDEXED BY turn_opening_lookup
          WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
          AND kind='invocation_opened'
          AND json_extract(event_header,'$.invocation.session_id')=?1
          AND json_extract(event_header,'$.invocation.turn_id')=?2
          AND json_extract(event_header,'$.invocation.run_id')=?3 LIMIT 2",
-    )
-    .bind(&current.session_id)
-    .bind(&current.turn_id)
-    .bind(&pause.intent.root_run_id)
-    .fetch_all(tx)
-    .await?;
+        )?
+        .query_map(
+            rusqlite::params![
+                &current.session_id,
+                &current.turn_id,
+                &pause.intent.root_run_id
+            ],
+            |row| row.get(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
     let [root] = rows.as_slice() else {
         return Err(invalid("handoff has no unique logical root"));
     };

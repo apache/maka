@@ -26,6 +26,8 @@ use std::{
 use uuid::Uuid;
 
 mod body;
+mod load;
+mod workspace;
 
 fn namespaces(path: &Path) -> root::RootNamespaces {
     root::RootNamespaces {
@@ -60,6 +62,7 @@ async fn fixture(path: &Path) -> (RootStore, HistoryCheckpoints, PublicationRequ
         fingerprint: "a".repeat(64),
         expected_revision: None,
         confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+        workspace: None,
     };
     (store, handle, request)
 }
@@ -213,14 +216,13 @@ async fn corrupt_object_cannot_be_checked_out_or_published() {
     journal::prepare(&log, request.clone(), manifest.clone())
         .await
         .unwrap();
-    let value = objects.manifest(&manifest).unwrap();
     let path = directory
         .path()
         .join("root/history-checkpoints/objects")
-        .join(&value.bundle().digest);
+        .join(&manifest.digest);
     std::fs::write(&path, b"broken").unwrap();
     assert!(
-        verify(&objects, &request, &manifest)
+        verify(&log, &objects, &request, &manifest)
             .await
             .unwrap_err()
             .to_string()
@@ -432,16 +434,13 @@ async fn real_history_and_artifact_are_verified_but_busy_source_is_not_published
 
 #[tokio::test]
 async fn source_retirement_does_not_erase_checkpoint_or_original_receipt() {
-    use crate::sessions::{RemovalAuthority, RemoveFamilyResult};
+    use crate::sessions::RemoveFamilyResult;
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
     let value = handle.publish(input.clone()).await.unwrap();
     let head = published(&value);
     assert!(matches!(
-        store
-            .remove_session_family("source", 1, RemovalAuthority::Unmanaged)
-            .await
-            .unwrap(),
+        store.remove_session_family("source", 1).await.unwrap(),
         RemoveFamilyResult::Accepted(_)
     ));
     store.finish_session_retirement("source").await.unwrap();
@@ -516,13 +515,12 @@ async fn cleanup_receipt_failure_still_returns_acknowledged_publication() {
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
     let log = handle.session.scoped().await.unwrap();
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TRIGGER reject_checkpoint_cleanup BEFORE UPDATE ON history_checkpoint_publications
+    log.connection.run(|db| {
+        db.execute_batch("CREATE TRIGGER reject_checkpoint_cleanup BEFORE UPDATE ON history_checkpoint_publications
             WHEN json_extract(NEW.publication_json,'$.cleanup_pending')=0
-            BEGIN SELECT RAISE(ABORT,'injected cleanup receipt failure'); END;")
-            .execute(db).await?;
+            BEGIN SELECT RAISE(ABORT,'injected cleanup receipt failure'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let value = handle.publish(input.clone()).await.unwrap();
     let head = published(&value);
     assert!(value.cleanup_pending);
@@ -536,12 +534,11 @@ async fn cleanup_receipt_failure_still_returns_acknowledged_publication() {
     assert_eq!(handle.read_head().await.unwrap(), Some(head.clone()));
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("DROP TRIGGER reject_checkpoint_cleanup")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            db.execute(
+                "DROP TRIGGER reject_checkpoint_cleanup",
+                rusqlite::params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -558,13 +555,12 @@ async fn rejected_prepare_does_not_leave_a_capture_running_until_restart() {
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
     let log = handle.session.scoped().await.unwrap();
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TRIGGER reject_checkpoint_prepare BEFORE UPDATE ON history_checkpoint_publications
+    log.connection.run(|db| {
+        db.execute_batch("CREATE TRIGGER reject_checkpoint_prepare BEFORE UPDATE ON history_checkpoint_publications
             WHEN json_extract(NEW.publication_json,'$.state.kind')='prepared'
-            BEGIN SELECT RAISE(ABORT,'injected prepare failure'); END;")
-            .execute(db).await?;
+            BEGIN SELECT RAISE(ABORT,'injected prepare failure'); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let error = handle.publish(input.clone()).await.unwrap_err();
     assert!(error.to_string().contains("injected prepare failure"));
     assert!(handle.read_head().await.unwrap().is_none());
@@ -573,12 +569,11 @@ async fn rejected_prepare_does_not_leave_a_capture_running_until_restart() {
     assert!(!receipt.cleanup_pending);
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                sqlx::query("DROP TRIGGER reject_checkpoint_prepare")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            db.execute(
+                "DROP TRIGGER reject_checkpoint_prepare",
+                rusqlite::params![],
+            )?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -610,7 +605,7 @@ async fn nonregular_checkpoint_object_is_rejected_without_blocking_close() {
     let path = directory
         .path()
         .join("root/history-checkpoints/objects")
-        .join(&checkout.manifest.bundle().digest);
+        .join(&head.manifest.digest);
     drop(checkout);
     std::fs::remove_file(&path).unwrap();
     let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
@@ -710,6 +705,7 @@ async fn killed_writer_recovers_without_a_new_capture() {
             fingerprint: "a".repeat(64),
             expected_revision: None,
             confirmed_subtree_digest: store.preview_bundle("source").await.unwrap().subtree_digest,
+            workspace: None,
         };
         let receipt = handle.receipt(input.clone()).await.unwrap().unwrap();
         if matches!(phase, "claimed" | "payload") {

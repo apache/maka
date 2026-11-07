@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-This directory selects the Host and UI plugin packages shipped with Maka and binds them into one Agent/WorkHub source. Plugin declarations and implementations live under [plugins](../../../plugins/README.md) and [the default workbench package](../workbench/package.ts).
+This directory selects the Host and UI plugin packages shipped with Maka and binds them into one Agent source. Plugin declarations and implementations live under [plugins](../../../plugins/README.md) and [the default workbench package](../workbench/package.ts).
 
 - [package-inputs.json](package-inputs.json) selects authored packages.
 - [src/composition.ts](src/composition.ts) builds instances, bindings and installation identities.
@@ -116,7 +116,7 @@ maka application compose --configuration installation.json --output product-sour
 
 The output directory must be new. The command writes `host.json`, `endpoints.json`, `native-grants.json`, resolved `installation.json` identities and `.maka-plugin` packages. It does not start or install them.
 
-`installation.json` selects `locale` and service configuration. It uses the generated `AgentConfiguration`; an optional `coordinator` adds the WorkHub service to the same Host. Optional services and ACP executors are selected explicitly. See [the configuration](src/composition.ts) and [SDK types](../../../packages/plugin-sdk/src/generated/runtime.ts) for accepted fields.
+`installation.json` selects `locale` and service configuration. It uses the generated `AgentConfiguration`. Optional services and ACP executors are selected explicitly. See [the configuration](src/composition.ts) and [SDK types](../../../packages/plugin-sdk/src/generated/runtime.ts) for accepted fields.
 
 Preserve the emitted `keys` and `hostDeployment` when reauthoring an installation. They identify existing owners and data. Package revisions identify bytes and can change independently.
 

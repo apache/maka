@@ -119,6 +119,40 @@ async fn concurrent_dispatch_has_one_claim_and_duplicate_preserves_original_clea
     store.close().await.unwrap();
 }
 #[tokio::test]
+async fn quarantined_dispatch_cannot_confirm_cleanup_after_failed_settlement() {
+    let (_dir, store) = store().await;
+    let original = request(&store).await;
+    let reference = original.reference().unwrap();
+    let Dispatch::New(claim) = store.dispatch_operation(original).await.unwrap() else {
+        panic!("first dispatch owns execution")
+    };
+    let scope = claim.auxiliary_scope();
+    let work = scope.acquire(&store, &reference).unwrap();
+    work.quarantine();
+    work.finish();
+    let outcome = OperationOutcome::Returned {
+        value: serde_json::json!({"changed":true}),
+    };
+    let cleanup = OperationCleanup::Failed {
+        diagnostic: "original provider cleanup is unknown".into(),
+    };
+    let settled = store
+        .finish_operation(&claim, outcome.clone(), cleanup.clone())
+        .await
+        .unwrap();
+    assert_eq!(settled.cleanup, cleanup);
+    assert!(matches!(
+        store
+            .finish_operation(&claim, outcome, OperationCleanup::Confirmed)
+            .await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "original operation work has not drained"
+    ));
+    assert!(scope.acquire(&store, &reference).is_err());
+    drop((work, scope, claim));
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn dispatch_requires_original_source_and_settlement_requires_original_claim() {
     let (_dir, store) = store().await;
     let original = request(&store).await;

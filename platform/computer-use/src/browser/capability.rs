@@ -622,8 +622,9 @@ impl BundleSource<'_> {
     async fn check_source(&self, tab: &Tab) -> Result<(), ToolError> {
         check_input(self.call.cancellation)?;
         let cdp = tab
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?;
         self.proof.check_cdp_current(cdp, &tab.document()).await?;
         let current =
@@ -1199,8 +1200,7 @@ mod tests {
             panic!("fixture tab handle");
         };
         let mut tab = browsers.targets.remove(&handle).unwrap();
-        tab.socket = Some(socket);
-        tab.socket_prepared = true;
+        tab.connection = Some(TabConnection::Prepared(socket));
         (tab, server)
     }
     #[derive(Clone, Copy, Default)]

@@ -17,10 +17,9 @@
  * under the License.
  */
 
-import { effect, platform } from 'nsh';
+import { effect, keymap, platform } from 'nsh';
 import { Window } from 'nsh/desktop';
-import type { InputRef } from 'nsh';
-import { keymap } from 'nsh';
+import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import type {
   ComposerSession,
   ComposerViewInput,
@@ -39,7 +38,7 @@ const report = (owner: PasteOwner, reason: unknown) => {
 
 type Target<Owner> = {
   owner: Owner;
-  node: InputRef;
+  node: ComposerEditor;
   text: string;
   selection: Selection;
 };
@@ -47,7 +46,7 @@ type Target<Owner> = {
 export function createComposerPaste<Owner extends PasteOwner>(options: {
   owner(): Owner | null;
   active(): boolean;
-  editor(owner: Owner): InputRef | null;
+  editor(owner: Owner): ComposerEditor | null;
   selection(): Selection;
   composing(): boolean;
   dismiss(): void;
@@ -111,15 +110,14 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
     const owner = options.owner();
     const node = owner && options.editor(owner);
     if (!node || !owner || !options.active() || !editable(owner) || options.composing()) return;
-    const unbind = ['mod+v', 'alt+v', 'ctrl+alt+v'].map((key) =>
-      keymap.bind(
-        key,
-        () => {
-          const target = capture(owner);
-          if (target) clipboard(target);
-        },
-        { when: 'always', within: node },
-      ),
+    // Pixel terminals render natively but retain Control-key shortcuts.
+    const controlKeys = keymap.label('mod+v') === keymap.label('ctrl+v');
+    const keys = controlKeys ? ['mod+v', 'alt+v', 'ctrl+alt+v'] : ['mod+v'];
+    const unbind = keys.map((key) =>
+      node.bindKey(key, () => {
+        const target = capture(owner);
+        if (target) clipboard(target);
+      }),
     );
     return () => unbind.forEach((remove) => remove());
   });

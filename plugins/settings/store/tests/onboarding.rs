@@ -32,7 +32,6 @@ use maka_config::{
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_plugin_core::scope::Scope;
 use serde_json::json;
-use sqlx::Connection;
 use std::sync::Arc;
 
 fn create() -> Target {
@@ -84,13 +83,8 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
     let ticket = prepare(&store, create()).await;
     assert!(store.catalog().await.unwrap().connections.is_empty());
     assert!(ticket.provider_credential().unwrap().is_none());
-    let mut sql = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(path.join("configuration-rust.sqlite")),
-    )
-    .await
-    .unwrap();
-    sqlx::query("CREATE TRIGGER fail_onboard BEFORE UPDATE ON connection_catalog BEGIN SELECT RAISE(ABORT, 'injected'); END")
-        .execute(&mut sql).await.unwrap();
+    let sql = rusqlite::Connection::open(path.join("configuration-rust.sqlite")).unwrap();
+    sql.execute("CREATE TRIGGER fail_onboard BEFORE UPDATE ON connection_catalog BEGIN SELECT RAISE(ABORT, 'injected'); END", rusqlite::params![]).unwrap();
     assert!(
         ticket
             .complete(vec![ModelInfo::new("one")], vec![], 1)
@@ -98,14 +92,13 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
             .is_err()
     );
     assert!(store.catalog().await.unwrap().connections.is_empty());
-    let revision: i64 = sqlx::query_scalar("SELECT revision FROM connection_catalog")
-        .fetch_one(&mut sql)
-        .await
+    let revision: i64 = sql
+        .prepare_cached("SELECT revision FROM connection_catalog")
+        .unwrap()
+        .query_row(rusqlite::params![], |row| row.get(0))
         .unwrap();
     assert_eq!(revision, 0);
-    sqlx::query("DROP TRIGGER fail_onboard")
-        .execute(&mut sql)
-        .await
+    sql.execute("DROP TRIGGER fail_onboard", rusqlite::params![])
         .unwrap();
     let first = prepare(&store, create()).await;
     let losing = prepare(&store, create()).await;
@@ -223,7 +216,7 @@ async fn onboarding_publishes_atomically_and_rejects_stale_configuration_or_auth
         "accepted"
     );
     drop(ticket);
-    sql.close().await.unwrap();
+    sql.close().unwrap();
     store.shutdown().await.unwrap();
     drop(store);
     let store =

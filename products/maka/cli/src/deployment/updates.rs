@@ -23,7 +23,7 @@ use maka_event_log::{
     root::{FileLease, RootOwner},
 };
 use maka_host_runtime::HostError;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, params};
 use std::{path::Path, sync::Arc};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,22 +55,20 @@ pub(super) async fn prepare(
 ) -> Result<(), HostError> {
     validate_target(&expected, &target)?;
     let connection = store::open_update_writer(directory, lease).await?;
-    let result = connection.run(move |connection| Box::pin(async move {
-        let mut transaction = connection.begin().await?;
+    let result = connection.run(move |connection| {
+        let transaction = connection.transaction()?;
         // Never strand the old executor on a newer schema without a durable
         // pointer to the executable which can recover it. SQLite migrations
         // use nested savepoints inside this same transaction.
-        store::migrate(&mut transaction).await?;
-        let (active, pending) = load(&mut transaction).await?;
+        store::migrate(&transaction)?;
+        let (active, pending) = load(&transaction)?;
         if active != expected || pending.as_ref().is_some_and(|pending| pending != &target) {
             return Err(conflict());
         }
-        sqlx::query("INSERT INTO deployment_update(singleton, target) VALUES (1, ?) ON CONFLICT(singleton) DO NOTHING")
-            .bind(serde_json::to_string(&target)?)
-            .execute(&mut *transaction).await?;
-        transaction.commit().await?;
+        transaction.execute("INSERT INTO deployment_update(singleton, target) VALUES (1, ?) ON CONFLICT(singleton) DO NOTHING", params![serde_json::to_string(&target)?])?;
+        transaction.commit().map_err(StoreError::CommitUnknown)?;
         Ok(())
-    })).await;
+    }).await;
     let closed = connection.close().await;
     result?;
     closed?;
@@ -93,22 +91,18 @@ pub(super) async fn commit(
     let connection = store::open_writer(directory, lease, Some(owner)).await?;
     let result = connection
         .run(move |connection| {
-            Box::pin(async move {
-                let mut transaction = connection.begin().await?;
-                let (active, pending) = load(&mut transaction).await?;
-                if active != expected || pending.as_ref() != Some(&target) {
-                    return Err(conflict());
-                }
-                sqlx::query("UPDATE deployment SET configuration = ? WHERE singleton = 1")
-                    .bind(serde_json::to_string(&target.deployment)?)
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query("DELETE FROM deployment_update WHERE singleton = 1")
-                    .execute(&mut *transaction)
-                    .await?;
-                transaction.commit().await?;
-                Ok(())
-            })
+            let transaction = connection.transaction()?;
+            let (active, pending) = load(&transaction)?;
+            if active != expected || pending.as_ref() != Some(&target) {
+                return Err(conflict());
+            }
+            transaction.execute(
+                "UPDATE deployment SET configuration = ? WHERE singleton = 1",
+                params![serde_json::to_string(&target.deployment)?],
+            )?;
+            transaction.execute("DELETE FROM deployment_update WHERE singleton = 1", [])?;
+            transaction.commit().map_err(StoreError::CommitUnknown)?;
+            Ok(())
         })
         .await;
     let closed = connection.close().await;
@@ -141,14 +135,12 @@ pub(super) fn validate_target(current: &Deployment, pending: &Pending) -> Result
     Ok(())
 }
 
-pub(super) async fn load(
-    connection: &mut SqliteConnection,
-) -> Result<(Deployment, Option<Pending>), StoreError> {
-    let (active, pending): (String, Option<String>) = sqlx::query_as(
+pub(super) fn load(connection: &Connection) -> Result<(Deployment, Option<Pending>), StoreError> {
+    let (active, pending): (String, Option<String>) = connection.query_row(
         "SELECT CASE WHEN length(CAST(configuration AS BLOB)) <= 65536 THEN configuration END, \
          (SELECT CASE WHEN length(CAST(target AS BLOB)) <= 65536 THEN target ELSE '' END FROM deployment_update WHERE singleton = 1) \
          FROM deployment WHERE singleton = 1"
-    ).fetch_one(connection).await?;
+    , [], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let active = serde_json::from_str(&active)?;
     let pending = pending
         .map(|value| serde_json::from_str(&value))
@@ -205,11 +197,10 @@ mod tests {
         let writer = store::open_writer(&directory, lease.clone(), None)
             .await
             .unwrap();
-        writer.run(|connection| Box::pin(async move {
-            sqlx::raw_sql("CREATE TRIGGER reject_prepare BEFORE INSERT ON deployment_update BEGIN SELECT RAISE(ABORT, 'prepare failed'); END;")
-                .execute(connection).await?;
+        writer.run(|connection| {
+            connection.execute_batch("CREATE TRIGGER reject_prepare BEFORE INSERT ON deployment_update BEGIN SELECT RAISE(ABORT, 'prepare failed'); END;")?;
             Ok(())
-        })).await.unwrap();
+        }).await.unwrap();
         writer.close().await.unwrap();
         assert!(
             prepare(&directory, lease.clone(), current.clone(), target.clone())
@@ -221,12 +212,8 @@ mod tests {
             .unwrap();
         writer
             .run(|connection| {
-                Box::pin(async move {
-                    sqlx::query("DROP TRIGGER reject_prepare")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
+                connection.execute_batch("DROP TRIGGER reject_prepare")?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -283,11 +270,10 @@ mod tests {
         let writer = store::open_writer(&directory, lease.clone(), None)
             .await
             .unwrap();
-        writer.run(|connection| Box::pin(async move {
-            sqlx::raw_sql("CREATE TRIGGER reject_cut BEFORE DELETE ON deployment_update BEGIN SELECT RAISE(ABORT, 'cut failed'); END;")
-                .execute(connection).await?;
+        writer.run(|connection| {
+            connection.execute_batch("CREATE TRIGGER reject_cut BEFORE DELETE ON deployment_update BEGIN SELECT RAISE(ABORT, 'cut failed'); END;")?;
             Ok(())
-        })).await.unwrap();
+        }).await.unwrap();
         writer.close().await.unwrap();
         let owner = RootOwner::open(&root_path, &namespaces).unwrap();
         assert!(
@@ -312,12 +298,8 @@ mod tests {
             .unwrap();
         writer
             .run(|connection| {
-                Box::pin(async move {
-                    sqlx::query("DROP TRIGGER reject_cut")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
+                connection.execute_batch("DROP TRIGGER reject_cut")?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -398,14 +380,10 @@ mod tests {
             .unwrap();
         writer
             .run(|connection| {
-                Box::pin(async move {
-                    sqlx::raw_sql(
-                        "PRAGMA journal_mode=DELETE; UPDATE _sqlx_migrations SET checksum = X'00';",
-                    )
-                    .execute(connection)
-                    .await?;
-                    Ok(())
-                })
+                connection.execute_batch(
+                    "PRAGMA journal_mode=DELETE; UPDATE _sqlx_migrations SET checksum = X'00';",
+                )?;
+                Ok(())
             })
             .await
             .unwrap();

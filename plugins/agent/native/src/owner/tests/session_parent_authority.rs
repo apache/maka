@@ -226,23 +226,23 @@ async fn settled_self_response(f: &Fixture, record: &InteractionRecord) -> Value
             }
             _ => None,
         });
-        if let Some(operation) = operation {
-            if let Some(outcome) = facts.iter().find_map(|fact| match fact {
+        if let Some(operation) = operation
+            && let Some(outcome) = facts.iter().find_map(|fact| match fact {
                 Fact::ToolSettled {
                     operation_id,
                     outcome,
                 } if operation_id == operation => Some(outcome),
                 _ => None,
-            }) {
-                let ToolOutcome::Succeeded {
-                    model_projection: DurableToolProjection::Json { value },
-                    ..
-                } = outcome
-                else {
-                    panic!("self response must return a typed decision: {outcome:?}");
-                };
-                return value.clone();
-            }
+            })
+        {
+            let ToolOutcome::Succeeded {
+                model_projection: DurableToolProjection::Json { value },
+                ..
+            } = outcome
+            else {
+                panic!("self response must return a typed decision: {outcome:?}");
+            };
+            return value.clone();
         }
         commits.changed().await.unwrap();
     }
@@ -274,6 +274,16 @@ async fn model_child_inherits_caller_policy_not_workspace_session_or_installatio
         let other = f.create("Workspace reference, not parent").await;
         set_policy(&f, &caller, "danger_full_access", false).await;
         set_policy(&f, &other, "read_only", true).await;
+        let policy = f.config.runtime_policy().await.unwrap();
+        f.config
+            .set_chat_defaults(
+                policy.revision,
+                maka_agent_facts::configuration::policy::ChatDefaults {
+                    sandbox_mode: SandboxMode::ReadOnly,
+                },
+            )
+            .await
+            .unwrap();
         let mut socket = start(&f, &listener, &caller).await;
         let child = create_child(&listener, &mut socket, &other, "Inherited child").await;
         let child = observe(&f, child["id"].as_str().unwrap()).await;
@@ -335,7 +345,7 @@ async fn model_child_inherits_caller_policy_not_workspace_session_or_installatio
         assert_eq!(
             root["permissions"],
             json!({
-                "access":"workspace_write","requestPermissions":true,
+                "access":"read_only","requestPermissions":true,
             })
         );
         response(&mut socket).await;
@@ -366,7 +376,7 @@ async fn model_parent_can_answer_only_direct_children_and_cannot_edit_permission
         let mut sibling_socket = start(&f, &listener, &sibling).await;
         let mut unrelated_socket = start(&f, &listener, &unrelated).await;
         let permissions = grant::Permissions {
-            filesystem: vec![Rule::exact(&f.workspace.join("result"), Access::Write)],
+            filesystem: vec![Rule::exact(f.workspace.join("result"), Access::Write)],
             network: Network::Denied,
         };
         let answer = InteractionAnswer::Permissions {

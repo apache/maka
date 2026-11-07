@@ -306,7 +306,11 @@ impl Browsers {
                     .await?;
                 // Subscribe before synchronizing the existing frame cache. Replayed
                 // attach/detach notifications are handled by the same frame engine.
-                let cdp = tab.socket.as_ref().expect("verified wait socket");
+                let cdp = tab
+                    .connection
+                    .as_ref()
+                    .map(TabConnection::socket)
+                    .expect("verified wait socket");
                 let events = cdp.connection.subscribe();
                 let frame_events = cdp.connection.subscribe();
                 tab.attach_frames().await?;
@@ -350,8 +354,9 @@ impl Tab {
         frame_events: Events,
     ) -> Result<Self, ToolError> {
         let socket = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .clone();
         Ok(Self {
@@ -359,8 +364,7 @@ impl Tab {
             generation: self.generation.clone(),
             info: self.info.clone(),
             frames: self.frames.observation_branch(frame_events),
-            socket: Some(socket),
-            socket_prepared: true,
+            connection: Some(TabConnection::Prepared(socket)),
             page_assets: Default::default(),
             origin_proof: None,
             navigation_admission: None,
@@ -444,7 +448,10 @@ impl Tab {
                         cancellation,
                     }
                     .url(
-                        self.socket.as_ref().expect("verified wait socket"),
+                        self.connection
+                            .as_ref()
+                            .map(TabConnection::socket)
+                            .expect("verified wait socket"),
                         &pattern,
                         &matcher,
                         main.as_deref(),
@@ -474,8 +481,9 @@ impl Tab {
 
     fn wait_events(&self) -> Result<Events, ToolError> {
         Ok(self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .connection
             .subscribe())
@@ -596,7 +604,13 @@ impl Tab {
             timeout,
             cancellation,
         }
-        .load(self.socket.as_ref().expect("verified wait socket"), &state)
+        .load(
+            self.connection
+                .as_ref()
+                .map(TabConnection::socket)
+                .expect("verified wait socket"),
+            &state,
+        )
         .await
     }
 

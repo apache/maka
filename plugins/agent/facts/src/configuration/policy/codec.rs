@@ -86,7 +86,6 @@ fn normalize_operation(operation: &mut RuntimePolicyMutation) -> Result<(), Stri
         | RuntimePolicyMutation::PatchAgentSettings { .. }
         | RuntimePolicyMutation::SetMemory { .. }
         | RuntimePolicyMutation::SetWorkspaceInstructions { .. }
-        | RuntimePolicyMutation::SetPrivacy { .. }
         | RuntimePolicyMutation::SetChatDefaults { .. } => Ok(()),
     }
 }

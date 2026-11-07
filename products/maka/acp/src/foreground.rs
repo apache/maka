@@ -25,7 +25,10 @@ use crate::{
     session::{Active, Session},
     transport::Peer,
 };
-use agent_client_protocol::schema::v2 as acp;
+use crate::{
+    interaction::Capabilities,
+    presentation::{Completion, State},
+};
 use maka_agent_api::contract::*;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_capabilities::call::Attachments;
@@ -38,7 +41,7 @@ use std::{
 use tokio::task::JoinSet;
 mod admission;
 pub(crate) struct Prompt {
-    pub content: Vec<acp::ContentBlock>,
+    pub content: Vec<crate::content::Input>,
 }
 pub(crate) struct Foreground {
     client: Client,
@@ -46,45 +49,50 @@ pub(crate) struct Foreground {
     session: Arc<Session>,
     active: Active,
     target: WorkTarget,
-    execution: Option<Execution>,
-    shared: bool,
-    cancelled: bool,
+    work: WorkObservation,
     projection: Projection,
-    capabilities: acp::ClientCapabilities,
+    capabilities: Capabilities,
     after: u64,
     history_through: u64,
     parts: HashMap<(String, String), (String, ContentKind)>,
     message_starts: HashMap<String, u64>,
     user: Vec<HistoryChunk>,
 }
+
+enum WorkObservation {
+    Pending,
+    Delivered { execution: Execution, shared: bool },
+    Cancelled,
+}
+
+impl WorkObservation {
+    fn execution(&self) -> Option<&Execution> {
+        match self {
+            Self::Delivered { execution, .. } => Some(execution),
+            Self::Pending | Self::Cancelled => None,
+        }
+    }
+
+    fn settled(&self) -> bool {
+        match self {
+            Self::Pending => false,
+            Self::Delivered { execution, .. } => terminal(&execution.state),
+            Self::Cancelled => true,
+        }
+    }
+}
+
 impl Foreground {
-    pub async fn run(mut self) {
+    /// Retain session admission until the caller publishes protocol completion.
+    pub async fn run(&mut self) -> Result<Completion, Error> {
         let result = self.observe().await;
-        let reason = match result {
-            Ok(reason) => reason,
-            Err(error) => {
-                eprintln!("ACP session {}: {error}", self.session.id);
-                if let Err(cleanup) = self.stop().await {
-                    eprintln!("ACP original work cleanup unresolved: {cleanup}");
-                    self.peer.stop.cancel();
-                    return;
-                }
-                acp::StopReason::Other(acp::OtherStopReason::new(
-                    "_maka_failed",
-                    Default::default(),
-                ))
-            }
-        };
-        drop(self.active);
-        let _ = self
-            .peer
-            .update(
-                &self.session.id,
-                acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(
-                    acp::IdleStateUpdate::new().stop_reason(reason),
-                )),
-            )
-            .await;
+        if let Err(error) = &result
+            && let Err(cleanup) = self.stop().await
+        {
+            self.peer.stop.cancel();
+            return Err(format!("{}; original work cleanup: {cleanup}", error).into());
+        }
+        result
     }
     async fn refresh(&mut self) -> Result<(), Error> {
         let work: Work = self
@@ -95,24 +103,19 @@ impl Foreground {
                 json!({"sessionId":self.session.id,"target":self.target,"cursor":null}),
             )
             .await?;
-        match work {
+        self.work = match work {
             Work::Delivered {
                 shared, execution, ..
-            } => {
-                self.shared = shared;
-                self.execution = Some(execution);
-            }
-            Work::Pending => {}
-            Work::Cancelled => {
-                self.cancelled = true;
-            }
+            } => WorkObservation::Delivered { execution, shared },
+            Work::Pending => WorkObservation::Pending,
+            Work::Cancelled => WorkObservation::Cancelled,
             Work::Missing | Work::Changed => {
                 return Err("Original accepted Agent work is unavailable or changed".into());
             }
-        }
+        };
         Ok(())
     }
-    async fn observe(&mut self) -> Result<acp::StopReason, Error> {
+    async fn observe(&mut self) -> Result<Completion, Error> {
         let mut subscription = self
             .client
             .subscribe(
@@ -128,13 +131,12 @@ impl Foreground {
     async fn observe_stream(
         &mut self,
         subscription: &mut Subscription,
-    ) -> Result<acp::StopReason, Error> {
+    ) -> Result<Completion, Error> {
         for chunk in std::mem::take(&mut self.user) {
             let updates = self.projection.chunk(&chunk)?;
             self.publish(updates).await?;
         }
-        self.state(acp::StateUpdate::Running(acp::RunningStateUpdate::new()))
-            .await?;
+        self.state(State::Running).await?;
         self.refresh().await?;
         let mut callbacks = JoinSet::<Result<(), Error>>::new();
         let mut seen = HashSet::new();
@@ -144,12 +146,7 @@ impl Foreground {
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            if self.cancelled
-                || self
-                    .execution
-                    .as_ref()
-                    .is_some_and(|execution| terminal(&execution.state))
-            {
+            if self.work.settled() {
                 callbacks.abort_all();
                 while callbacks.join_next().await.is_some() {}
                 return self.finish().await;
@@ -168,8 +165,8 @@ impl Foreground {
                     .await?;
                 if record.outcome.is_some()
                     || self
-                        .execution
-                        .as_ref()
+                        .work
+                        .execution()
                         .is_none_or(|execution| record.turn_id != execution.turn_id)
                 {
                     continue;
@@ -189,10 +186,7 @@ impl Foreground {
                     match result { InteractionResult::Recorded { record } if record.outcome.is_some() => Ok(()), _ => Err("Host rejected interaction response".into()) }
                 });
                 live.insert(request_id, handle);
-                self.state(acp::StateUpdate::RequiresAction(
-                    acp::RequiresActionStateUpdate::new(),
-                ))
-                .await?;
+                self.state(State::RequiresAction).await?;
             }
             // Pull writes once; retain this future across callbacks and heartbeats.
             let next = subscription.next::<DeliveryPage>();
@@ -214,11 +208,11 @@ impl Foreground {
                             Err(error) if error.is_cancelled() => {}
                             Err(error) => return Err(error.into()),
                         }
-                        if callbacks.is_empty() { self.state(acp::StateUpdate::Running(acp::RunningStateUpdate::new())).await?; }
+                        if callbacks.is_empty() { self.state(State::Running).await?; }
                     },
                     _ = heartbeat.tick() => {
                         self.refresh().await?;
-                        if self.cancelled || self.execution.as_ref().is_some_and(|execution| terminal(&execution.state)) { break None; }
+                        if self.work.settled() { break None; }
                     },
                 }
             };
@@ -247,14 +241,14 @@ impl Foreground {
     }
     async fn frame(&mut self, page: DeliveryPage) -> Result<(), Error> {
         if let DeliveryPage::Preview { page } = &page {
-            if self.execution.is_none() {
+            if self.work.execution().is_none() {
                 self.refresh().await?;
             }
             let current = match page {
                 PreviewPage::Empty { .. } => true,
                 PreviewPage::Cut { invocation_id, .. } => self
-                    .execution
-                    .as_ref()
+                    .work
+                    .execution()
                     .is_some_and(|execution| &execution.invocation_id == invocation_id),
             };
             if current {
@@ -268,7 +262,7 @@ impl Foreground {
         } = page
         {
             // Resolve queued work before deciding which execution's events belong here.
-            if self.execution.is_none() {
+            if self.work.execution().is_none() {
                 self.refresh().await?;
             }
             let mut catchup = false;
@@ -277,8 +271,8 @@ impl Foreground {
             let mut ended_steps = HashSet::new();
             for event in events {
                 if self
-                    .execution
-                    .as_ref()
+                    .work
+                    .execution()
                     .is_none_or(|execution| execution.invocation_id != event.invocation_id)
                 {
                     continue;
@@ -378,8 +372,8 @@ impl Foreground {
         }
         for chunk in chunks {
             if self
-                .execution
-                .as_ref()
+                .work
+                .execution()
                 .is_some_and(|execution| chunk.turn_id == execution.turn_id)
             {
                 let updates = self.projection.chunk(&chunk)?;
@@ -399,7 +393,7 @@ impl Foreground {
         self.history_through = self.history_through.max(snapshot.through);
         Ok(())
     }
-    async fn finish(&mut self) -> Result<acp::StopReason, Error> {
+    async fn finish(&mut self) -> Result<Completion, Error> {
         let observation: Observation = self
             .client
             .query("agent", "observe", json!({"sessionId":self.session.id}))
@@ -411,29 +405,20 @@ impl Foreground {
         let refresh_tools = self.projection.unsettled_tool_positions().collect();
         self.catchup(observation.through, catchup_from, refresh_tools, None)
             .await?;
-        if self.cancelled {
-            return Ok(acp::StopReason::Cancelled);
+        if matches!(self.work, WorkObservation::Cancelled) {
+            return Ok(Completion::Cancelled);
         }
-        let execution = self
-            .execution
-            .as_ref()
-            .ok_or("Agent work has not settled")?;
+        let execution = self.work.execution().ok_or("Agent work has not settled")?;
         let updates = self.projection.finish(
             &execution.turn_id,
             matches!(execution.state, ExecutionState::Completed),
         )?;
         self.publish(updates).await?;
         Ok(match execution.state {
-            ExecutionState::Completed => acp::StopReason::EndTurn,
-            ExecutionState::Cancelled => acp::StopReason::Cancelled,
-            ExecutionState::Failed => acp::StopReason::Other(acp::OtherStopReason::new(
-                "_maka_failed",
-                Default::default(),
-            )),
-            ExecutionState::Paused => acp::StopReason::Other(acp::OtherStopReason::new(
-                "_maka_paused",
-                Default::default(),
-            )),
+            ExecutionState::Completed => Completion::Completed,
+            ExecutionState::Cancelled => Completion::Cancelled,
+            ExecutionState::Failed => Completion::Failed,
+            ExecutionState::Paused => Completion::Paused,
             _ => return Err("Agent work is not physically settled".into()),
         })
     }
@@ -442,9 +427,9 @@ impl Foreground {
             let mut requested = false;
             loop {
                 self.refresh().await?;
-                if self.cancelled || self.execution.as_ref().is_some_and(|execution| terminal(&execution.state)) { return Ok::<_, Error>(()); }
-                if let Some(execution) = &self.execution {
-                    if self.shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
+                if self.work.settled() { return Ok::<_, Error>(()); }
+                if let WorkObservation::Delivered { execution, shared } = &self.work {
+                    if *shared { return Err("Accepted input shares another caller's execution; cannot stop that execution".into()); }
                     if !requested {
                         let _: Stopped = self.client.mutate("agent", "stop", json!({"sessionId":self.session.id,"invocationId":execution.invocation_id}), Attachments::new()).await?;
                         requested = true;
@@ -459,12 +444,10 @@ impl Foreground {
             }
         }).await.map_err(|_| "Agent cancellation has not physically settled")?
     }
-    async fn state(&self, state: acp::StateUpdate) -> Result<(), Error> {
-        self.peer
-            .update(&self.session.id, acp::SessionUpdate::StateUpdate(state))
-            .await
+    async fn state(&self, state: State) -> Result<(), Error> {
+        self.peer.state(&self.session.id, state).await
     }
-    async fn publish(&self, updates: Vec<acp::SessionUpdate>) -> Result<(), Error> {
+    async fn publish(&self, updates: Vec<crate::presentation::Update>) -> Result<(), Error> {
         for update in updates {
             self.peer.update(&self.session.id, update).await?;
         }

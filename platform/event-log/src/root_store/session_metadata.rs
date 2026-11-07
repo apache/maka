@@ -112,30 +112,17 @@ impl SessionStore {
                     .map(|reference| gates::Key::Binding(reference.id)),
             )
             .await?;
-        let root_app_control = self.control.upgrade().ok_or(StoreError::ConnectionClosed)?;
-        let control_dependency = if permission_time.is_some() {
-            self.control_dependency()?
-        } else {
-            None
-        };
         // The policy closure runs once. Root relocation between the snapshot and
         // pin acquisition changes effective revision and is rejected by this CAS.
         // Release Session admission last so a following owner cannot race the
         // completed attachment change's Work pin teardown.
         owner
-            .scoped(Arc::new((work, binding, access, control_dependency)))
+            .scoped(Arc::new((work, binding, access)))
             .bind_session(self.id.clone())
-            .mutate_session_metadata(
-                id,
-                expected,
-                false,
-                permission_time,
-                Some(root_app_control),
-                move |current| {
-                    *current = candidate;
-                    Ok(())
-                },
-            )
+            .mutate_session_metadata(id, expected, false, permission_time, None, move |current| {
+                *current = candidate;
+                Ok(())
+            })
             .await
     }
 }

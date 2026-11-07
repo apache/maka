@@ -21,14 +21,19 @@
 
 use std::{
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::PathBuf,
     process::Command,
     time::{Duration, Instant},
 };
 
 #[test]
 fn a_shell_opened_without_the_launcher_runs_maka_desktop_beside_it() {
-    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
+    let source = std::env::var_os("CARGO_BIN_EXE_maka-desktop-shell")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_maka-desktop-shell")));
+    let directory = source
+        .parent()
+        .unwrap()
         .join(format!("desktop-open-directly-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     let shell = directory.join(if cfg!(target_os = "macos") {
@@ -37,7 +42,7 @@ fn a_shell_opened_without_the_launcher_runs_maka_desktop_beside_it() {
         "maka-desktop-shell"
     });
     std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
-    std::fs::hard_link(env!("CARGO_BIN_EXE_maka-desktop-shell"), &shell).unwrap();
+    std::fs::hard_link(&source, &shell).unwrap();
     let launcher = directory.join("maka");
     let arguments = directory.join("arguments");
     std::fs::write(

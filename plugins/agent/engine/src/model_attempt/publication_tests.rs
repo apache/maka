@@ -554,6 +554,10 @@ async fn prefix_confirmation_unknown_keeps_original_identity_and_cut() {
     );
     assert_eq!(dispatches(&fixture.sink), 1);
     assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 0);
+    assert!(
+        !fixture.inner.cleanup.confirmed(),
+        "an unconfirmed original prefix retains the execution owner"
+    );
 }
 
 #[tokio::test]
@@ -633,4 +637,400 @@ async fn all_pending_prepares_flush_the_prefix_before_any_t1() {
     .expect("pending prepares must not block prefix publication");
     result.unwrap();
     assert_eq!(fixture.gates.effects.load(Ordering::SeqCst), 2);
+}
+
+struct SteeringOpenFailure {
+    steering: CancellationToken,
+    cleanup_unconfirmed: bool,
+    opens: Arc<AtomicUsize>,
+}
+
+impl maka_agent_ports::model::ProviderAdapter for SteeringOpenFailure {
+    fn open(
+        &self,
+        _: maka_agent_ports::model::Lifetime,
+        _: CancellationToken,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<Arc<dyn maka_agent_ports::model::Session>, ModelError>,
+    > {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        let steering = self.steering.clone();
+        let cleanup_unconfirmed = self.cleanup_unconfirmed;
+        Box::pin(async move {
+            steering.cancel();
+            Err(if cleanup_unconfirmed {
+                ModelError::CleanupUnconfirmed
+            } else {
+                ModelError::Cancelled
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn steering_during_provider_open_cannot_hide_unconfirmed_cleanup() {
+    for cleanup_unconfirmed in [false, true] {
+        let mut fixture = Fixture::new(Fault::None, false, false).await;
+        fixture
+            .receive(vec![ModelEvent::Finished {
+                compaction: None,
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
+                provider_options: None,
+            }])
+            .await
+            .unwrap();
+        let steering = CancellationToken::new();
+        fixture.tools.set_steering(steering.clone());
+        let request = fixture
+            .tools
+            .capture(".", CancellationToken::new())
+            .await
+            .unwrap();
+        let opens = Arc::new(AtomicUsize::new(0));
+        let binding = maka_agent_ports::model::Binding::new(
+            Arc::new(SteeringOpenFailure {
+                steering,
+                cleanup_unconfirmed,
+                opens: opens.clone(),
+            }),
+            maka_agent_facts::composition::SourceRevision {
+                kind: maka_agent_facts::composition::SourceKind::ModelAdapter,
+                name: "steering-fixture".into(),
+                package_id: "steering-fixture".into(),
+                entry_id: "steering-fixture".into(),
+                activation: "steering-fixture".into(),
+                revision: "1".into(),
+            },
+        );
+        let surface = Arc::new(
+            crate::request_composition::Surface::summary(
+                binding.clone(),
+                maka_agent_facts::composition::RequestComposition {
+                    system_prompt: None,
+                    dynamic_context: Vec::new(),
+                    tool_catalog_digest: request.catalog_digest().into(),
+                    tools: request.definitions(),
+                    provider_options: Some(json!({})),
+                    max_output_tokens: Some(4096),
+                    sources: vec![binding.source().clone()],
+                },
+                4096,
+            )
+            .unwrap(),
+        );
+        let input = crate::frozen_request::tests::settings(fixture.finalizer.binding().invocation);
+        let cancellation = CancellationToken::new();
+        let (execution, effects) = fixture
+            .inner
+            .log
+            .execution_scope(None)
+            .await
+            .unwrap()
+            .accept_invocation(input.invocation.clone(), cancellation.clone())
+            .unwrap();
+        fixture.inner = RunContext::new(
+            fixture.inner.shared.clone(),
+            execution.store(),
+            &input.invocation,
+        )
+        .unwrap();
+        let context = Arc::new(
+            fixture
+                .inner
+                .log
+                .read_model_view("session", Some(&input.invocation.invocation_id))
+                .await
+                .unwrap(),
+        );
+        let prompt = prompt(
+            &fixture.inner,
+            &input,
+            &context,
+            &cancellation,
+            None,
+            &input.invocation.invocation_id,
+            false,
+            surface.system(),
+            ModelPurpose::Main,
+        )
+        .await
+        .unwrap();
+        let result = execute_once(
+            &fixture.inner,
+            &input,
+            &RequestSource::from(context.as_ref()),
+            prompt,
+            request.definitions(),
+            Attempt::Main(Main {
+                lane: maka_model::Conversation::default(),
+                continuation_base: None,
+                surface,
+                tools: &request,
+                prior_unknown: false,
+            }),
+            &cancellation,
+            &mut false,
+            &mut None,
+            &mut None,
+            None,
+        )
+        .await;
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        if cleanup_unconfirmed {
+            assert!(
+                result
+                    .err()
+                    .expect("cleanup must fail the attempt")
+                    .is_cleanup_unconfirmed()
+            );
+        } else {
+            assert!(matches!(result, Ok(AttemptOutput::Steered)));
+        }
+        let stored = prefix(&fixture.inner.log).await;
+        let status = stored
+            .events
+            .iter()
+            .find_map(|event| match &event.event.fact {
+                Fact::ModelInterrupted { status, .. } => Some(status),
+                _ => None,
+            })
+            .expect("provider opening has its original interrupted receipt");
+        assert_eq!(
+            status,
+            if cleanup_unconfirmed {
+                &ModelInterruption::Failed
+            } else {
+                &ModelInterruption::Steered
+            }
+        );
+        assert_eq!(dispatches(&fixture.sink), 0);
+        effects.settle().await.unwrap();
+        if cleanup_unconfirmed {
+            assert!(!fixture.inner.cleanup.confirmed());
+            execution.retain_unconfirmed();
+        } else {
+            assert!(fixture.inner.cleanup.confirmed());
+            execution.finish();
+        }
+    }
+}
+
+struct SiblingFailures {
+    entered: Semaphore,
+    first: Semaphore,
+    later: Semaphore,
+}
+
+struct FailingSiblings(Arc<SiblingFailures>);
+impl ToolPreparer for FailingSiblings {
+    fn names(&self) -> Vec<String> {
+        vec!["echo".into()]
+    }
+
+    fn prepare(
+        &self,
+        _: String,
+        input: Value,
+        _: ToolCallContext,
+        _: CancellationToken,
+    ) -> PreparationFuture {
+        let gates = self.0.clone();
+        Box::pin(async move {
+            Ok(PreparedEffect::new(move |_| {
+                Box::pin(async move {
+                    gates.entered.add_permits(1);
+                    if input["n"] == 0 {
+                        gates.first.acquire().await.unwrap().forget();
+                        Err(maka_agent_facts::tools::ToolError::Persistence(
+                            "ordinary sibling failure".into(),
+                        ))
+                    } else {
+                        gates.later.acquire().await.unwrap().forget();
+                        Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
+                            "unconfirmed sibling cleanup".into(),
+                        ))
+                    }
+                })
+            }))
+        })
+    }
+}
+
+#[tokio::test]
+async fn later_sibling_cleanup_failure_survives_an_earlier_persistence_failure() {
+    let mut fixture = Fixture::new(Fault::None, false, false).await;
+    let gates = Arc::new(SiblingFailures {
+        entered: Semaphore::new(0),
+        first: Semaphore::new(0),
+        later: Semaphore::new(0),
+    });
+    let catalog = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            name: "echo".into(),
+            description: "sibling failures".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: None,
+            provider: None,
+            freeform: None,
+        },
+        nesting: ToolNesting::Nestable,
+        semantics: ToolSemantics::Parallel,
+        handler: ToolHandler::Prepared(Arc::new(FailingSiblings(gates.clone()))),
+    }])
+    .unwrap();
+    fixture.tools = RunTools::new(
+        Language::En,
+        fixture.sink.clone(),
+        fixture.finalizer.binding().invocation,
+        catalog,
+        ToolMode::Direct,
+        CodeExecutor::new(Default::default()).unwrap(),
+        maka_tools::availability::LoadedTools::temporary().unwrap(),
+    );
+    let request = fixture
+        .tools
+        .capture(".", CancellationToken::new())
+        .await
+        .unwrap();
+    let observe = async {
+        gates.entered.acquire_many(2).await.unwrap().forget();
+        gates.first.add_permits(1);
+        while fixture.tools.check().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        gates.later.add_permits(1);
+    };
+    let mut progressed = false;
+    let cancellation = CancellationToken::new();
+    let mut retry = None;
+    let (result, ()) = tokio::join!(
+        biased;
+        super::receive(
+            &fixture.inner,
+            fixture.writer.take().unwrap(),
+            &fixture.finalizer,
+            stream::ready(events(false)).await,
+            Some(request.into_step("step")),
+            &mut progressed,
+            &cancellation,
+            &mut retry,
+            None,
+        ),
+        observe,
+    );
+    let error = result
+        .err()
+        .expect("both failed original siblings must drain");
+    assert!(error.is_cleanup_unconfirmed(), "{error}");
+    assert!(error.to_string().contains("ordinary sibling failure"));
+    assert!(error.to_string().contains("unconfirmed sibling cleanup"));
+    assert_eq!(dispatches(&fixture.sink), 2);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TerminalAfterCleanup {
+    Completed,
+    Cancelled,
+    Retired,
+    ToolFailure,
+}
+
+#[tokio::test]
+async fn terminal_commit_preserves_cleanup_failure_across_cancellation_and_retirement() {
+    for terminal in [
+        TerminalAfterCleanup::Completed,
+        TerminalAfterCleanup::Cancelled,
+        TerminalAfterCleanup::Retired,
+        TerminalAfterCleanup::ToolFailure,
+    ] {
+        let mut fixture = Fixture::new(Fault::None, false, false).await;
+        fixture
+            .receive(vec![ModelEvent::Finished {
+                compaction: None,
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
+                provider_options: None,
+            }])
+            .await
+            .unwrap();
+        let invocation = fixture.finalizer.binding().invocation;
+        let execution = fixture.inner.log.execution_scope(None).await.unwrap();
+        let context = fixture.inner.clone();
+        let running = fixture
+            .inner
+            .clone()
+            .start_owned(
+                execution,
+                invocation.clone(),
+                Arc::default(),
+                None,
+                CancellationToken::new(),
+                move |cancellation, admitted, effects| async move {
+                    admitted.send(()).unwrap();
+                    let error = catch_tool(context.cleanup.clone(), async {
+                        Err::<(), _>(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
+                            "original native worker remains active".into(),
+                        ))
+                    })
+                    .await
+                    .err()
+                    .unwrap();
+                    let result = match terminal {
+                        TerminalAfterCleanup::Completed => Ok((
+                            crate::steps::StepExit::Terminal(
+                                maka_agent_facts::event::InvocationOutcome::Completed,
+                            ),
+                            None,
+                        )),
+                        TerminalAfterCleanup::Cancelled => {
+                            cancellation.cancel();
+                            Err(RunError::Cancelled)
+                        }
+                        TerminalAfterCleanup::Retired => {
+                            Err(RunError::Commit(CommitError::Retired))
+                        }
+                        TerminalAfterCleanup::ToolFailure => Err(error.into()),
+                    };
+                    crate::runner::finish(
+                        &context,
+                        invocation,
+                        result,
+                        &cancellation,
+                        None,
+                        &effects,
+                    )
+                    .await
+                },
+            )
+            .await
+            .unwrap();
+        let completion = running.completion().await;
+        assert!(
+            completion
+                .result
+                .expect_err("cleanup must fail the run")
+                .is_cleanup_unconfirmed(),
+            "{terminal:?}"
+        );
+        assert!(completion.cleanup.is_err(), "{terminal:?}");
+        let stored = prefix(&fixture.inner.log).await;
+        let outcomes = stored
+            .events
+            .iter()
+            .filter_map(|event| match &event.event.fact {
+                Fact::InvocationEnded { outcome } => Some(outcome),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            matches!(outcomes.as_slice(), [maka_agent_facts::event::InvocationOutcome::Failed { class, .. }] if class == "cleanup_unconfirmed"),
+            "{terminal:?}: {outcomes:?}"
+        );
+        assert!(
+            fixture._root.shutdown().await.is_err(),
+            "original run retains its Root: {terminal:?}"
+        );
+    }
 }

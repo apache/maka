@@ -28,13 +28,12 @@ pub use record::{AccessChange, AccessCreateMode, AccessCredential, CredentialSta
 impl ConfigurationStore {
     pub async fn active_access_credentials(&self) -> Result<Vec<AccessCredential>> {
         self.transaction(TransactionMode::Deferred, |tx| {
-            Box::pin(async move {
-                Ok(load(tx)
-                    .await?
+            {
+                Ok(load(tx)?
                     .into_iter()
                     .filter(|c| matches!(c.state, CredentialState::Active { .. }))
                     .collect())
-            })
+            }
         })
         .await
     }
@@ -44,8 +43,8 @@ impl ConfigurationStore {
         now_ms: u64,
     ) -> Result<Option<AccessCredential>> {
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                Ok(load(tx).await?.into_iter().find(|c| {
+            {
+                Ok(load(tx)?.into_iter().find(|c| {
                     c.credential_hash == hash
                         && match c.state {
                             CredentialState::Active { .. } => true,
@@ -53,7 +52,7 @@ impl ConfigurationStore {
                             CredentialState::Revoked { .. } => false,
                         }
                 }))
-            })
+            }
         })
         .await
     }
@@ -70,16 +69,15 @@ impl ConfigurationStore {
     }
     pub async fn next_access_credential_expiry(&self) -> Result<Option<u64>> {
         self.transaction(TransactionMode::Deferred, |tx| {
-            Box::pin(async move {
-                Ok(load(tx)
-                    .await?
+            {
+                Ok(load(tx)?
                     .iter()
                     .filter_map(|c| match c.state {
                         CredentialState::Pending { expires_at, .. } => Some(expires_at),
                         _ => None,
                     })
                     .min())
-            })
+            }
         })
         .await
     }

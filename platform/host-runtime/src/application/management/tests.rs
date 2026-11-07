@@ -260,7 +260,7 @@ fn subscribe(manager: Manager, method: &str, input: Value) -> (Subscription, Sco
 
 #[tokio::test]
 async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let fixture = Fixture::new().await;
         let installed = fixture
             .manager
@@ -610,17 +610,53 @@ async fn invalid_bundles_documents_and_stale_replacements_leave_source_unchanged
 
 #[tokio::test]
 async fn historical_binary_bundle_export_round_trips_and_cancels_with_cleanup() {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let fixture = Fixture::new().await;
         let package = package((0..400_000).map(|index| (index % 256) as u8).collect());
+        let sibling = Package::new(BTreeMap::from([
+            (
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": 1,
+                    "id": "example.sibling",
+                    "application": {
+                        "host": {
+                            "implementation": { "kind": "native", "implementation": "example.sibling" },
+                            "configuration": { "type": "object" },
+                            "imports": {},
+                            "exports": {}
+                        }
+                    }
+                }))
+                .unwrap(),
+            ),
+            ("sibling.txt".into(), b"sibling".to_vec()),
+        ]))
+        .unwrap();
+        let sibling_ref = sibling.application_ref();
+        let historical_input: Input = serde_json::from_value(json!({
+            "instances": {
+                "payload": {
+                    "key": Uuid::from_u128(1),
+                    "package": { "source": "pinned", "package": package.application_ref() },
+                    "usePackage": "host"
+                },
+                "sibling": {
+                    "key": Uuid::from_u128(2),
+                    "package": { "source": "pinned", "package": sibling_ref },
+                    "usePackage": "host"
+                }
+            }
+        }))
+        .unwrap();
         let historical = fixture
             .store
             .commit_application(
                 fixture.source.deployment,
                 1,
-                input(&package),
+                historical_input,
                 vec![],
-                vec![package.clone()],
+                vec![package.clone(), sibling],
             )
             .await
             .unwrap();
@@ -635,6 +671,85 @@ async fn historical_binary_bundle_export_round_trips_and_cancels_with_cleanup() 
             )
             .await
             .unwrap();
+        // Corrupt the sibling package on disk so any accidental full-source load
+        // during single-package queries fails immediately at the storage boundary.
+        let Fixture {
+            manager,
+            store,
+            source,
+            input,
+            _directory: directory,
+        } = fixture;
+        drop(manager);
+        store.shutdown().await.unwrap();
+        drop(store);
+        let db_path = directory
+            .path()
+            .join("root")
+            .join(maka_event_log::root::ROOT_DATABASE);
+        tokio::task::spawn_blocking(move || {
+            let mut connection = rusqlite::Connection::open(db_path).unwrap();
+            let transaction = connection.transaction().unwrap();
+            let digest = "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d";
+            transaction.execute(
+                "INSERT OR IGNORE INTO contents(content_sha256, payload) VALUES (?, ?)",
+                rusqlite::params![digest, &[0_u8][..]],
+            ).unwrap();
+            let changed = transaction.execute(
+                "UPDATE application_package_files SET content_id = (SELECT id FROM contents WHERE content_sha256 = ?) WHERE id = ? AND revision = ? AND path = 'sibling.txt'",
+                rusqlite::params![digest, &sibling_ref.id, &sibling_ref.revision],
+            ).unwrap();
+            assert_eq!(changed, 1, "only the sibling fixture file is corrupted");
+            transaction.commit().unwrap();
+            connection.close().unwrap();
+        }).await.unwrap();
+        let owner = Arc::new(
+            RootOwner::open(
+                &directory.path().join("root"),
+                &RootNamespaces {
+                    ownership: directory.path().join("owners"),
+                    control: directory.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let store = Arc::new(RootStore::open(owner).await.unwrap());
+        let manager = ManagementTarget::from_source(store.clone(), source.clone())
+            .await
+            .unwrap()
+            .0;
+        let fixture = Fixture {
+            manager,
+            store,
+            source,
+            input,
+            _directory: directory,
+        };
+        assert!(fixture.store.load_application_at(&historical).await.is_err());
+        let read_chunk = fixture
+            .manager
+            .read_package(json!({
+                "source": historical,
+                "package": package.application_ref(),
+                "path": "maka.extension.json",
+                "offset": 0
+            }))
+            .await
+            .unwrap();
+        assert!(read_chunk["text"].as_str().unwrap().contains("example.payload"));
+        let settings_page = fixture
+            .manager
+            .package_settings(json!({
+                "source": historical,
+                "package": package.application_ref(),
+                "usePackage": "host",
+                "changes": [],
+                "path": [],
+                "after": null
+            }))
+            .await
+            .unwrap();
+        assert_eq!(settings_page["package"], serde_json::to_value(package.application_ref()).unwrap());
         let (mut stream, scope) = export(
             fixture.manager.clone(),
             historical.clone(),

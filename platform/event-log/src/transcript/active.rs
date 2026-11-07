@@ -21,22 +21,20 @@ use super::evidence;
 use crate::{EventLog, StoreError};
 use maka_agent_facts::event::Invocation;
 use maka_presentation::{Content, InvocationView, Message, ProjectionError};
-use sqlx::Connection;
 
 /// The same failed-fragment verdict drives durable rows and live completion frames.
-pub(crate) async fn interrupted_messages(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn interrupted_messages(
+    connection: &rusqlite::Connection,
     invocation: &str,
     step: Option<&str>,
     through: u64,
 ) -> Result<Vec<String>, StoreError> {
     let through_sql = i64::try_from(through).map_err(|_| ProjectionError::OutOfRange)?;
-    let selected =
-        super::evidence::selected(connection, invocation, step, through_sql, true).await?;
+    let selected = super::evidence::selected(connection, invocation, step, through_sql, true)?;
     let mut view = InvocationView::new();
     let mut ids = Vec::new();
     for sequence in selected {
-        let fact = evidence::fact(connection, sequence).await?;
+        let fact = evidence::fact(connection, sequence)?;
         let rows = view.push(&fact)?;
         if fact.sequence == through {
             ids.extend(rows.into_iter().filter_map(|row| {
@@ -62,63 +60,57 @@ impl EventLog {
         through: u64,
     ) -> Result<Vec<Message>, StoreError> {
         super::read::sql_number(through)?;
-        self.validate_root()?;
         let invocation = invocation.clone();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let fence = evidence::fence(&mut tx, through).await?;
-                    let id = &invocation.invocation_id;
-                    let compact: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM runtime_events
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let fence = evidence::fence(&tx, through)?;
+                let id = &invocation.invocation_id;
+                let compact: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events
                          WHERE invocation_id = ?1 AND sequence <= ?2
                          AND kind = 'invocation_opened'
                          AND json_extract(event_header, '$.fact.input.kind') = 'context_compact')",
-                    )
-                    .bind(id)
-                    .bind(fence)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    if compact {
-                        return Ok(Vec::new());
-                    }
-                    let ended: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1
+                    rusqlite::params![id, fence],
+                    |row| row.get(0),
+                )?;
+                if compact {
+                    return Ok(Vec::new());
+                }
+                let ended: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1
              AND sequence <= ?2 AND kind = 'invocation_ended')",
-                    )
-                    .bind(id)
-                    .bind(fence)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    if ended {
-                        return Ok(Vec::new());
-                    }
-                    let external: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1
+                    rusqlite::params![id, fence],
+                    |row| row.get(0),
+                )?;
+                if ended {
+                    return Ok(Vec::new());
+                }
+                let external: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?1
                          AND kind='executor_started' AND sequence<=?2)",
-                    )
-                    .bind(id)
-                    .bind(fence)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    if !external {
-                        return Ok(Vec::new());
+                    rusqlite::params![id, fence],
+                    |row| row.get(0),
+                )?;
+                if !external {
+                    return Ok(Vec::new());
+                }
+                let mut view = InvocationView::new();
+                let selected = evidence::selected(&tx, id, None, fence, false)?;
+                for sequence in selected {
+                    let fact = evidence::fact(&tx, sequence)?;
+                    if fact.event.invocation != invocation {
+                        return Err(ProjectionError::Invalid(
+                            "active transcript invocation mismatch",
+                        )
+                        .into());
                     }
-                    let mut view = InvocationView::new();
-                    let selected = evidence::selected(&mut tx, id, None, fence, false).await?;
-                    for sequence in selected {
-                        let fact = evidence::fact(&mut tx, sequence).await?;
-                        if fact.event.invocation != invocation {
-                            return Err(ProjectionError::Invalid(
-                                "active transcript invocation mismatch",
-                            )
-                            .into());
-                        }
-                        view.push(&fact)?;
-                    }
-                    Ok(view.overlay())
-                })
+                    view.push(&fact)?;
+                }
+                Ok(view.overlay())
             })
             .await
     }

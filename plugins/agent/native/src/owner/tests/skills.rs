@@ -159,11 +159,20 @@ async fn standard_skills_follow_each_actual_session_for_preparation_and_model_re
         for (index,instructions) in [(0,"project A instructions"),(1,"project B instructions")] {
             let path=std::path::Path::new(roots["roots"][index]["path"].as_str().unwrap());
             write(&path.join(".agents/skills"),"review",instructions);
+            let draft = f.query("skillCandidates", json!({
+                "target":{"kind":"draft","workspace":{"kind":"directory","path":roots["roots"][index]["path"]}},
+                "backend":model_backend(&f.selection().await),"query":""
+            })).await.unwrap();
+            assert_eq!(draft["skills"].as_array().unwrap().len(), 1, "{draft}");
+            assert_eq!(draft["skills"][0]["invocation"], "/skill:review");
+            assert!(draft["skills"][0]["reference"].as_str().unwrap().starts_with("project:"));
+            assert!(!path.join(maka_fs_tools::workspace::MARKER_FILE).exists());
             let created=f.mutation(2,"create",json!({"title":"Project skill","labels":[],"workspace":{"kind":"directory","path":roots["roots"][index]["path"]}}),Uuid::new_v4()).await.unwrap();
             let session=created["session"]["id"].as_str().unwrap();
-            let candidates=f.query("skillCandidates",json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
+            let candidates=f.query("skillCandidates",json!({"target":{"kind":"session","sessionId":session},"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
             assert_eq!(candidates["skills"].as_array().unwrap().len(),1,"{candidates}");
             assert_eq!(candidates["skills"][0]["invocation"],"/skill:review");
+            assert_eq!(draft["skills"][0]["reference"], candidates["skills"][0]["reference"]);
             assert!(candidates["skills"][0]["reference"].as_str().unwrap().starts_with("project:"));
             let sent=f.mutation(2,"send",json!({"sessionId":session,"message":"/skill:review","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
             assert_eq!(sent["kind"],"started","{sent}");
@@ -214,24 +223,189 @@ async fn skill_candidates_work_with_preparation_only_library() {
     }
     let setup = service_tools::Setup::skill_preparation(home.path().to_owned(), false);
     let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(setup)).await;
+    let draft = f
+        .query(
+            "skillCandidates",
+            json!({
+                "target":{"kind":"draft","workspace":null},
+                "backend":model_backend(&f.selection().await),"query":""
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(draft["skills"].as_array().unwrap().len(), 13, "{draft}");
+    assert_eq!(draft["skills"][0]["invocation"], "/skill:review");
+    assert!(
+        !f.workspace
+            .join(maka_fs_tools::workspace::MARKER_FILE)
+            .exists()
+    );
+    assert!(
+        f.store
+            .list_sessions::<StoredSessionConfiguration>(None, None, 100)
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
+    assert_eq!(
+        f.query("projects", json!({"kind":"list","cursor":null}))
+            .await
+            .unwrap()["projects"],
+        json!([])
+    );
     let session = f.create("Candidates").await;
     let page = f
         .query(
             "skillCandidates",
-            json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""}),
+            json!({"target":{"kind":"session","sessionId":session},"backend":model_backend(&f.selection().await),"query":""}),
         )
         .await
         .unwrap();
     assert_eq!(page["skills"].as_array().unwrap().len(), 13, "{page}");
+    assert_eq!(draft["skills"], page["skills"]);
     assert_eq!(page["skills"][0]["name"], "Review changes");
     assert_eq!(page["skills"][0]["invocation"], "/skill:review");
     assert_eq!(page["skills"][12]["invocation"], "/skill:z-extra-11");
-    let external = f.query("skillCandidates", json!({
-        "sessionId":session,
+    let external = f.query("skillCandidates", json!({"target":{"kind":"session","sessionId":session},
         "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex"}}},
         "query":""
     })).await.unwrap();
     assert_eq!(external, json!({"revision":null,"skills":[]}));
+    f.app.shutdown().await.unwrap();
+    f.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn skill_candidates_reuse_captured_global_mcp_for_drafts_and_untrusted_projects() {
+    let home = tempfile::tempdir().unwrap();
+    let skill = home.path().join(".maka/skills/global-required");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "---\nname: global-required\ndescription: Global service guidance\nrequired-tools: mcp__fixture__echo\n---\nGlobal instructions").unwrap();
+    let project_skill = home.path().join(".maka/skills/project-required");
+    std::fs::create_dir_all(&project_skill).unwrap();
+    std::fs::write(project_skill.join("SKILL.md"), "---\nname: project-required\ndescription: Project service guidance\nrequired-tools: mcp__project__echo\n---\nProject instructions").unwrap();
+    let global_record = home.path().join("global-record");
+    super::mcp::write_config(
+        &home.path().join(".agents/mcp.json"),
+        &super::mcp::portable(&global_record),
+    );
+    let setup =
+        service_tools::Setup::skill_preparation(home.path().into(), true).with_standard_sources();
+    let f = Fixture::configured(
+        "http://127.0.0.1:9/v1",
+        None,
+        None,
+        Some(setup),
+        |settings| {
+            settings.assistant = Some(crate::contract::AssistantConfiguration {
+                home: Some(home.path().to_str().unwrap().into()),
+            });
+        },
+    )
+    .await;
+    let backend = model_backend(&f.selection().await);
+    let draft = json!({"target":{"kind":"draft","workspace":null},"backend":backend,"query":""});
+    let unopened = f.query("skillCandidates", draft.clone()).await.unwrap();
+    assert_eq!(unopened["skills"], json!([]));
+    assert!(
+        !global_record.exists(),
+        "opening completion must not start configured MCP services"
+    );
+    let names = f.query("tools", json!({})).await.unwrap();
+    assert!(
+        names["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "mcp__fixture__echo")
+    );
+    let page = f.query("skillCandidates", draft).await.unwrap();
+    assert_eq!(page["skills"].as_array().unwrap().len(), 1, "{page}");
+    assert_eq!(page["skills"][0]["invocation"], "/skill:global-required");
+    let session = f.create("Untrusted project").await;
+    let project_record = f.workspace.join("project-record");
+    let mut project_configuration = super::mcp::portable(&project_record);
+    let project_server = project_configuration["mcpServers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fixture")
+        .unwrap();
+    project_configuration["mcpServers"] = json!({"project":project_server});
+    super::mcp::write_config(&f.workspace.join(".maka/mcp.json"), &project_configuration);
+    let before = std::fs::read(&global_record).unwrap();
+    for target in [
+        json!({"kind":"session","sessionId":session}),
+        json!({"kind":"draft","workspace":{"kind":"directory","path":f.workspace}}),
+    ] {
+        let page = f
+            .query(
+                "skillCandidates",
+                json!({"target":target,"backend":backend,"query":""}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page["skills"].as_array().unwrap().len(), 1, "{page}");
+        assert_eq!(page["skills"][0]["invocation"], "/skill:global-required");
+    }
+    assert!(
+        !project_record.exists(),
+        "completion must not start untrusted project MCP services"
+    );
+    assert_eq!(
+        std::fs::read(&global_record).unwrap(),
+        before,
+        "completion must reuse the captured global connection"
+    );
+    let proposal = f
+        .query("projectMcp", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.mutation(
+            2,
+            "trustProjectMcp",
+            json!({"sessionId":session,"revision":proposal["revision"]}),
+            Uuid::new_v4()
+        )
+        .await
+        .unwrap()["kind"],
+        "trusted"
+    );
+    let workspace = f
+        .owner
+        .session(&session)
+        .await
+        .unwrap()
+        .configuration
+        .workspace;
+    f.owner.mcp_projects.capture(&workspace).await.unwrap();
+    let before = std::fs::read(&project_record).unwrap();
+    let donor = f
+        .query(
+            "skillCandidates",
+            json!({
+                "target":{"kind":"draft","workspace":{"kind":"session","sessionId":session}},
+                "backend":backend,"query":""
+            }),
+        )
+        .await
+        .unwrap();
+    let invocations = donor["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| skill["invocation"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        invocations,
+        ["/skill:global-required", "/skill:project-required"]
+    );
+    assert_eq!(
+        std::fs::read(&project_record).unwrap(),
+        before,
+        "a donor draft must observe the captured project connection"
+    );
     f.app.shutdown().await.unwrap();
     f.config.shutdown().await.unwrap();
 }

@@ -29,10 +29,7 @@ use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::Outcome;
 use maka_agent_ports::executor::OutputSink;
 use maka_event_log::root_store::SessionStore;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -47,13 +44,16 @@ struct State {
     closed: bool,
     messages: HashMap<String, Message>,
     last_body: Option<String>,
-    calls: HashSet<String>,
-    pending: HashSet<String>,
+    calls: HashMap<String, ToolPhase>,
     failure: Option<CommitError>,
 }
 enum Message {
     Open { has_body: bool },
     Closed,
+}
+enum ToolPhase {
+    Pending,
+    Settled,
 }
 impl Recorder {
     pub fn new(
@@ -134,12 +134,14 @@ impl OutputSink for Recorder {
                         "assistant output has no open message".into(),
                     ));
                 }
-                Output::ToolStart { tool_call_id, .. } if state.calls.contains(tool_call_id) => {
+                Output::ToolStart { tool_call_id, .. }
+                    if state.calls.contains_key(tool_call_id) =>
+                {
                     return Err(Error::Invalid("duplicate tool activity ID".into()));
                 }
                 Output::ToolProgress { tool_call_id, .. }
                 | Output::ToolResult { tool_call_id, .. }
-                    if !state.pending.contains(tool_call_id) =>
+                    if !matches!(state.calls.get(tool_call_id), Some(ToolPhase::Pending)) =>
                 {
                     return Err(Error::Invalid(
                         "external tool activity has no pending start".into(),
@@ -190,11 +192,13 @@ impl OutputSink for Recorder {
                     }
                 }
                 Output::ToolStart { tool_call_id, .. } => {
-                    state.calls.insert(tool_call_id.clone());
-                    state.pending.insert(tool_call_id);
+                    state.calls.insert(tool_call_id, ToolPhase::Pending);
                 }
                 Output::ToolResult { tool_call_id, .. } => {
-                    state.pending.remove(&tool_call_id);
+                    *state
+                        .calls
+                        .get_mut(&tool_call_id)
+                        .expect("validated pending tool call") = ToolPhase::Settled;
                 }
                 _ => {}
             }

@@ -22,6 +22,20 @@ export const lucide = {
     { tag: 'path', d: 'm5 12 7-7 7 7' },
     { tag: 'path', d: 'M12 19V5' },
   ],
+  book: [
+    {
+      tag: 'path',
+      d: 'M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20',
+    },
+  ],
+  bot: [
+    { tag: 'path', d: 'M12 8V4H8' },
+    { tag: 'rect', x: 4.0, y: 8.0, width: 16.0, height: 12.0, rx: 2.0 },
+    { tag: 'path', d: 'M2 14h2' },
+    { tag: 'path', d: 'M20 14h2' },
+    { tag: 'path', d: 'M15 13v2' },
+    { tag: 'path', d: 'M9 13v2' },
+  ],
   brain: [
     { tag: 'path', d: 'M12 18V5' },
     { tag: 'path', d: 'M15 13a4.17 4.17 0 01-3-4 4.17 4.17 0 01-3 4' },
@@ -36,6 +50,7 @@ export const lucide = {
   'chevron-down': [{ tag: 'path', d: 'm6 9 6 6 6-6' }],
   'chevron-left': [{ tag: 'path', d: 'm15 18-6-6 6-6' }],
   'chevron-right': [{ tag: 'path', d: 'm9 18 6-6-6-6' }],
+  'chevron-up': [{ tag: 'path', d: 'm18 15-6-6-6 6' }],
   circle: [{ tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 }],
   'circle-arrow-up': [
     { tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 },
@@ -113,6 +128,13 @@ export const lucide = {
     { tag: 'rect', x: 3.0, y: 3.0, width: 18.0, height: 18.0, rx: 2.0 },
     { tag: 'circle', cx: 9.0, cy: 9.0, r: 2.0 },
     { tag: 'path', d: 'm21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21' },
+  ],
+  inbox: [
+    { tag: 'polyline', points: '22 12 16 12 14 15 10 15 8 12 2 12' },
+    {
+      tag: 'path',
+      d: 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+    },
   ],
   'list-end': [
     { tag: 'path', d: 'M16 5H3' },

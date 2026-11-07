@@ -23,7 +23,6 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::execution::BehaviorId;
 use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::input::MessageInput;
 use maka_agent_facts::message;
@@ -31,8 +30,6 @@ use maka_agent_facts::message::MessageDisposition;
 use maka_agent_facts::message::Placement;
 use maka_agent_facts::message::RootSourceMessage;
 use maka_agent_facts::message::SubmittedTurnIntent;
-use maka_agent_facts::message::TurnOrchestration;
-use maka_agent_facts::message::TurnOrchestrationSource;
 use maka_event_log::{EventLog, message_resolution::MessageExecution};
 use serde_json::json;
 
@@ -101,10 +98,6 @@ async fn root_sources_are_atomic_exclusive_delivery_proofs_and_rebuild_exact_vis
     first.submitted_intent = Some(SubmittedTurnIntent {
         input_selections: [("reviewer".into(), vec!["project:review".into()])].into(),
         input_selection_sources: Default::default(),
-        turn_orchestration: Some(TurnOrchestration {
-            mode: BehaviorId::try_from("graph".to_owned()).unwrap(),
-            source: TurnOrchestrationSource::SlashCommand,
-        }),
     });
     let event = opening("a", "first", vec![first.clone()]);
     let mut duplicate_receipt = event.clone();

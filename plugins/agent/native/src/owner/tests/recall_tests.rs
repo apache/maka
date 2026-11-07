@@ -42,7 +42,6 @@ async fn imported(f: &Fixture, title: &str, prefix: &str, answer: &str) -> Strin
         session_id: session.clone(),
         creator: Namespace::new("recall.fixture", StorageScope::Profile).unwrap(),
         fingerprint: session.clone(),
-        managed: false,
         authority_session_id: None,
     };
 
@@ -115,16 +114,16 @@ async fn recall_native_queries_keep_unicode_dates_titles_namespace_and_exact_his
         assert!(f.recall(json!({"terms":[],"since":2000,"until":1000})).await.is_err());
         let long = format!("needle cafe\u{301} {}\n😀终点", "字".repeat(6000));
         let mut long_session = String::new();
-        for index in 0..12 {
-            let answer = if index == 11 { long.as_str() } else { "needle short answer" };
+        for index in 0..17 {
+            let answer = if index == 16 { long.as_str() } else { "needle short answer" };
             let id = imported(&f, &format!("needle title {index}"), &f.owner.prefix, answer).await;
-            if index == 11 { long_session = id; }
+            if index == 16 { long_session = id; }
         }
         let found = f.recall(json!({"terms":["needle"]})).await.unwrap();
         assert_eq!(found["complete"], true, "{found}");
-        assert_eq!(found["titles"].as_array().unwrap().len(), 24, "both seed and imported titles remain searchable");
+        assert_eq!(found["titles"].as_array().unwrap().len(), 34, "both seed and imported titles remain searchable across catalog pages");
         let passages = found["passages"].as_array().unwrap();
-        assert_eq!(passages.len(), 12, "title matches must not consume an implicit passage budget");
+        assert_eq!(passages.len(), 17, "title matches must not consume an implicit passage budget");
         let hit = passages.iter().find(|hit| hit["session"]["id"] == long_session).unwrap();
         let preview = hit["excerpt"].as_str().unwrap();
         assert!(preview.contains("needle"));
@@ -236,121 +235,6 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
 }
 
 #[tokio::test]
-async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f = Fixture::configured(
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None,
-            None,
-            None,
-            |settings| settings.recall = true,
-        )
-        .await;
-        let source = imported(
-            &f,
-            "Private source",
-            &f.owner.prefix,
-            "The original café answer",
-        )
-        .await;
-        let target = f.create("Privacy transition").await;
-        let query = json!({"terms":["café"],"session_id":source});
-        assert_eq!(
-            f.recall(query.clone()).await.unwrap()["passages"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        f.send(&target).await.unwrap();
-        let (mut offered, _) = listener.accept().await.unwrap();
-        let sent = request(&mut offered).await;
-        for name in ["Recall", "RecallMore", "RecallMaterial"] {
-            assert!(
-                sent["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == name)
-            );
-        }
-        let before = f.config.runtime_policy().await.unwrap();
-        assert!(matches!(
-            f.config
-                .set_privacy(
-                    before.revision,
-                    maka_agent_facts::configuration::policy::PrivacyPolicy {
-                        incognito_active: true
-                    }
-                )
-                .await
-                .unwrap(),
-            maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
-        ));
-        assert!(
-            f.recall(query.clone())
-                .await
-                .unwrap_err()
-                .contains("privacy mode")
-        );
-        // The provider saw the tool before the toggle. Its late call must fail
-        // execution authorization and its next request must omit all Recall tools.
-        tool(&mut offered, "Recall", query.clone()).await;
-        let (mut next, _) = listener.accept().await.unwrap();
-        let sent = request(&mut next).await;
-        assert!(!sent["tools"].as_array().into_iter().flatten().any(|tool| {
-            tool["function"]["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with("Recall"))
-        }));
-        assert!(!sent.to_string().contains("original café answer"));
-        response(&mut next).await;
-        f.drained().await;
-        let facts = service_tools::facts(&f, &target).await;
-        assert!(!facts.iter().any(|fact| matches!(
-            fact,
-            Fact::ToolSettled {
-                outcome: ToolOutcome::Succeeded { .. },
-                ..
-            }
-        )));
-        let before = f.config.runtime_policy().await.unwrap();
-        f.config
-            .set_privacy(
-                before.revision,
-                maka_agent_facts::configuration::policy::PrivacyPolicy {
-                    incognito_active: false,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            f.recall(query).await.unwrap()["passages"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        f.send(&target).await.unwrap();
-        let (mut restored, _) = listener.accept().await.unwrap();
-        assert!(
-            request(&mut restored).await["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == "Recall")
-        );
-        response(&mut restored).await;
-        f.drained().await;
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
 async fn recall_model_tool_ranks_multi_term_tool_calls_and_unlocks_mid_turn_compacted_prefix() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -378,7 +262,6 @@ async fn recall_model_tool_ranks_multi_term_tool_calls_and_unlocks_mid_turn_comp
                     session_id: source.clone(),
                     creator: Namespace::new("recall.fixture", StorageScope::Profile).unwrap(),
                     fingerprint: source.clone(),
-                    managed: false,
                     authority_session_id: None,
                 },
                 &Source {

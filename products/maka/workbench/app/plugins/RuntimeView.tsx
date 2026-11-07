@@ -30,6 +30,7 @@ import type { Contribution, Plugins } from './registry';
 import type {
   UiContributionRef,
   UiContributionProps,
+  UiViewRenderOptions,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
 import type { UiTarget } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
 
@@ -80,6 +81,7 @@ type ViewProps = {
   plugins: Plugins;
   contribution: Contribution;
   input: UiContributionProps;
+  options?: UiViewRenderOptions;
 };
 
 function PluginError(props: { reason: unknown; retry(): void }) {
@@ -122,9 +124,10 @@ function RuntimeView(props: ViewProps) {
       </If>
       <If
         when={
-          entry.state().kind === 'idle' ||
-          entry.state().kind === 'loading' ||
-          entry.state().kind === 'loaded'
+          (props.options?.loading ?? true) &&
+          (entry.state().kind === 'idle' ||
+            entry.state().kind === 'loading' ||
+            entry.state().kind === 'loaded')
         }
       >
         <LoadingState />
@@ -212,12 +215,14 @@ export function renderEmbeddedView(
   target: UiTarget,
   contract: string,
   input: unknown,
+  options?: UiViewRenderOptions,
 ) {
   return (
     <ContributionView
       plugins={plugins}
       contribution={() => plugins.resolveView(target, { id: contract })}
       input={{ sessionId: null, input }}
+      options={options}
     />
   );
 }
@@ -226,6 +231,7 @@ function ContributionView(props: {
   plugins: Plugins;
   contribution(): Contribution | undefined;
   input: UiContributionProps;
+  options?: UiViewRenderOptions;
 }) {
   return (
     <ErrorBoundary fallback={(reason, reset) => <PluginError reason={reason} retry={reset} />}>
@@ -237,7 +243,12 @@ function ContributionView(props: {
         key={(contribution) => contribution.key}
       >
         {(contribution) => (
-          <RuntimeView plugins={props.plugins} contribution={contribution()} input={props.input} />
+          <RuntimeView
+            plugins={props.plugins}
+            contribution={contribution()}
+            input={props.input}
+            options={props.options}
+          />
         )}
       </Each>
     </ErrorBoundary>

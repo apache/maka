@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Application definitions and caller journals live in the control database.
+//! Application definitions and caller journals share the runtime database.
 use super::*;
 use crate::applications::{
     DeploymentChanges, LoadedDeployment, PreparedApplication, SourceSnapshot,
@@ -29,6 +29,7 @@ use maka_plugin_core::{
     composition::{Input, InstanceId},
     deployment::{DeploymentRef, RemoteObservation, management::ManagedDeployment},
     operation::RecoveryRef,
+    package::PackageRef,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -43,7 +44,7 @@ impl RootStore {
         bytes: Vec<Package>,
     ) -> Result<DeploymentRef, StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .commit_application(deployment, expected_revision, input, observations, bytes)
             .await
     }
@@ -54,7 +55,7 @@ impl RootStore {
         prepared: PreparedApplication,
     ) -> Result<LoadedDeployment, StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .commit_prepared_application(deployment, expected_revision, prepared)
             .await
     }
@@ -63,28 +64,36 @@ impl RootStore {
         deployment: Uuid,
     ) -> Result<Option<LoadedDeployment>, StoreError> {
         self.require_open()?;
-        self.control.load_application(deployment).await
+        self.log.load_application(deployment).await
     }
     pub async fn load_application_at(
         &self,
         reference: &DeploymentRef,
     ) -> Result<Option<LoadedDeployment>, StoreError> {
         self.require_open()?;
-        self.control.load_application_at(reference).await
+        self.log.load_application_at(reference).await
+    }
+    pub async fn load_application_package_at(
+        &self,
+        source: &DeploymentRef,
+        package: &PackageRef,
+    ) -> Result<Option<Package>, StoreError> {
+        self.require_open()?;
+        self.log.load_application_package_at(source, package).await
     }
     pub async fn read_application_metadata(
         &self,
         deployment: Uuid,
     ) -> Result<Option<ManagedDeployment>, StoreError> {
         self.require_open()?;
-        self.control.read_application_metadata(deployment).await
+        self.log.read_application_metadata(deployment).await
     }
     pub async fn read_application_metadata_at(
         &self,
         reference: &DeploymentRef,
     ) -> Result<Option<ManagedDeployment>, StoreError> {
         self.require_open()?;
-        self.control.read_application_metadata_at(reference).await
+        self.log.read_application_metadata_at(reference).await
     }
     pub async fn compare_and_set_application_launch_configuration(
         &self,
@@ -93,13 +102,13 @@ impl RootStore {
         configuration: Value,
     ) -> Result<bool, StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .compare_and_set_application_launch_configuration(source, expected, configuration)
             .await
     }
     pub async fn application_launch(&self) -> Result<Option<Launch>, StoreError> {
         self.require_open()?;
-        self.control.application_launch().await
+        self.log.application_launch().await
     }
     pub async fn select_committed_application_launch(
         &self,
@@ -107,13 +116,13 @@ impl RootStore {
         configuration: Value,
     ) -> Result<(), StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .select_committed_application_launch(source, configuration)
             .await
     }
     pub async fn begin_application_launch(&self, launch: Launch) -> Result<(), StoreError> {
         self.require_open()?;
-        self.control.begin_application_launch(launch).await
+        self.log.begin_application_launch(launch).await
     }
     pub async fn begin_application_restore(
         &self,
@@ -121,7 +130,7 @@ impl RootStore {
         pending: Vec<u8>,
     ) -> Result<(), StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .begin_application_restore(deployment, pending)
             .await
     }
@@ -131,7 +140,7 @@ impl RootStore {
         configuration: Value,
     ) -> Result<(), StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .complete_application_launch(deployment, configuration)
             .await
     }
@@ -140,7 +149,7 @@ impl RootStore {
         observed: DeploymentRef,
     ) -> Result<DeploymentChanges, StoreError> {
         self.require_open()?;
-        self.control
+        self.log
             .subscribe_application(observed)
             .map(|changes| changes.with_shutdown(self.gates.cancellation()))
     }
@@ -149,16 +158,16 @@ impl RootStore {
         deployment: uuid::Uuid,
     ) -> Result<Option<DeploymentRef>, StoreError> {
         self.require_open()?;
-        self.control.application_head(deployment).await
+        self.log.application_head(deployment).await
     }
 
     pub fn check_application(&self, loaded: &LoadedDeployment) -> Result<(), StoreError> {
         self.require_open()?;
-        loaded.check_store(&self.control)
+        loaded.check_store(&self.log)
     }
     fn caller_journal(&self) -> Result<&EventLog, StoreError> {
         self.require_open()?;
-        Ok(&self.control)
+        Ok(&self.log)
     }
     pub async fn application_intent(
         &self,

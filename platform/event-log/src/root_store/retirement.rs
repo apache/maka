@@ -17,13 +17,11 @@
  * under the License.
  */
 
-//! Retirement gates the same Session admission used by cross-partition workers.
+//! Retirement shares Session admission with accepted workers.
 use super::*;
 use crate::sessions::{
-    AbandonRevision, RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionMutation,
-    SessionRetirement,
+    AbandonRevision, RemovalPlan, RemoveFamilyResult, SessionMutation, SessionRetirement,
 };
-use std::collections::BTreeSet;
 
 #[cfg(test)]
 mod tests;
@@ -83,11 +81,7 @@ impl RootStore {
         after: Option<&str>,
     ) -> Result<Vec<String>, StoreError> {
         self.require_open()?;
-        let mut ids = BTreeSet::new();
-        for partition in &self.partitions {
-            ids.extend(partition.pending_session_retirements(after).await?);
-        }
-        Ok(ids.into_iter().take(32).collect())
+        self.log.pending_session_retirements(after).await
     }
     pub async fn session_retirement(
         &self,
@@ -166,11 +160,9 @@ impl RootStore {
         &self,
         id: &str,
         expected: u64,
-        authority: RemovalAuthority,
     ) -> Result<RemoveFamilyResult, StoreError> {
         let selected = self.session(id).await?;
         let owner = selected.owner()?;
-        let authority = Arc::new(authority);
         loop {
             if let Some(receipt) = owner.session_removal_receipt(id).await? {
                 return Ok(RemoveFamilyResult::Accepted(receipt));
@@ -204,7 +196,7 @@ impl RootStore {
             // locked ancestor. Compare the exact plan again in the write tx.
             if let Some(result) = owner
                 .scoped(Arc::new((access, bindings)))
-                .remove_session_family_guarded(id, expected, authority.clone(), Some(plan))
+                .remove_session_family_guarded(id, expected, Some(plan))
                 .await?
             {
                 return Ok(result);

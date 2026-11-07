@@ -37,9 +37,7 @@ export function PluginPanel(props: { docked: boolean; controller: WorkbenchPlugi
         const current = panel();
         const declaration = current.contribution.declaration;
         return (
-          <View
-            style={{ flex: 1, minHeight: 0, backgroundColor: C.background, gap: 8, padding: 8 }}
-          >
+          <View style={{ flex: 1, minHeight: 0, backgroundColor: C.panel, gap: 8, padding: 8 }}>
             <View
               desktop={props.docked ? windowDrag : undefined}
               style={{

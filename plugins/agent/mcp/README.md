@@ -21,6 +21,9 @@
 
 Maka uses the official Rust MCP SDK (`rmcp`) for stdio and Streamable HTTP tool servers. The native Agent discovers configured tools, then exposes them to direct calls, tool discovery and both Code Mode languages through the same tool catalog, approval flow and durable journal.
 
+
+ACP clients may also supply stdio and Streamable HTTP servers for one Session. These connections use a Host-owned `sessionMcp` subscription, preserve the normal workspace and approval policy, and are replaced when the client loads or resumes that Session. Their environment variables and headers do not become saved MCP configuration.
+
 ## Portable configuration files
 
 Manage servers in **Settings → MCP servers**. Choose global settings or select a project, then add a local command or Streamable HTTP endpoint. Arguments have separate inputs; advanced options include the working directory, environment variables and HTTP headers. Existing file entries can be edited or deleted regardless of who created them. Saving preserves unrelated servers and unknown JSON fields, and rejects an edit if the file changed meanwhile.
@@ -106,7 +109,7 @@ Stdio uses a command and argument array, without a shell. `cwd` must be absolute
 
 Server names contain ASCII letters, digits, underscores or hyphens. Public names are `mcp__<server>__<tool>`; server hyphens and other characters in remote tool names become underscores. Collisions and unknown tools in explicit selections fail activation. For example, Code Mode calls `tools.mcp__local_docs__search({...})` in JavaScript or `await tools.mcp__local_docs__search({...})` in Python.
 
-Omitting `tools` exposes all discovered tools from that server; an empty list exposes none. `readOnlyTools` explicitly trusts the named remote tools in read-only sessions and plans. Server `readOnlyHint` annotations cannot grant this permission. `preapproved` defaults to false, so calls require confirmation. Explicit preapproval skips confirmation but retains the session's live tool and workspace permission checks, including a recheck after approval. Planning still requires explicit read-only trust.
+Omitting `tools` exposes all discovered tools from that server; an empty list exposes none. `readOnlyTools` explicitly trusts the named remote tools in read-only sessions. Server `readOnlyHint` annotations cannot grant this permission. `preapproved` defaults to false, so calls require confirmation. Explicit preapproval skips confirmation but retains the session's live tool and workspace permission checks, including a recheck after approval.
 
 Installing an MCP server is a trust decision. Stdio servers run as the Host user, outside the session filesystem sandbox, and may access the machine independently of tool calls. HTTP servers control their own filesystem, network and effects. Maka permissions govern which MCP calls are admitted; they do not sandbox the server. Installation servers start at Agent activation; file-configured servers start when their catalog is requested, with project trust required first. Both occur before any per-call approval. Do not install untrusted servers or forward unrelated credentials.
 

@@ -21,7 +21,7 @@ use super::validate_id;
 use crate::{EventLog, StoreError};
 use maka_capabilities::storage::Namespace;
 use maka_plugin_core::scope::Scope;
-use sqlx::{Row, SqliteConnection};
+use rusqlite::{OptionalExtension, params};
 
 /// Host-bound creation identity, not a caller-provided authorization credential.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,7 +30,6 @@ pub struct PluginSession {
     pub creator: Namespace,
     /// Stable identity of the original creation request.
     pub fingerprint: String,
-    pub managed: bool,
     /// Session whose current authority the Host used to create this root.
     /// This is a lifecycle dependency, not a business parent or a new grant.
     pub authority_session_id: Option<String>,
@@ -49,31 +48,37 @@ impl PluginSession {
     }
 }
 
-pub(super) async fn check(
-    connection: &mut SqliteConnection,
+pub(super) fn check(
+    connection: &rusqlite::Connection,
     session: &str,
     requested: Option<&PluginSession>,
 ) -> Result<(), StoreError> {
-    let row = sqlx::query(
-        "SELECT package_id, scope_id, fingerprint, managed, authority_session_id
+    let row = connection
+        .query_row(
+            "SELECT package_id, scope_id, fingerprint, authority_session_id
          FROM plugin_sessions WHERE session_id=?",
-    )
-    .bind(session)
-    .fetch_optional(connection)
-    .await?;
+            params![session],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
     let stored = row
         .map(|row| {
             Ok::<_, StoreError>(PluginSession {
                 session_id: session.to_owned(),
                 creator: Namespace::new(
-                    row.try_get::<String, _>("package_id")?,
-                    Scope::try_from(row.try_get::<String, _>("scope_id")?)
-                        .map_err(|error| super::invalid(&error.to_string()))?,
+                    row.0,
+                    Scope::try_from(row.1).map_err(|error| super::invalid(&error.to_string()))?,
                 )
                 .map_err(|error| super::invalid(&error.to_string()))?,
-                fingerprint: row.try_get("fingerprint")?,
-                managed: row.try_get("managed")?,
-                authority_session_id: row.try_get("authority_session_id")?,
+                fingerprint: row.2,
+                authority_session_id: row.3,
             })
         })
         .transpose()?;
@@ -83,77 +88,62 @@ pub(super) async fn check(
     Ok(())
 }
 
-pub(super) async fn insert(
-    connection: &mut SqliteConnection,
+pub(super) fn insert(
+    connection: &rusqlite::Connection,
     origin: &PluginSession,
 ) -> Result<(), StoreError> {
-    retain_authority(connection, origin.authority_session_id.as_deref()).await?;
-    sqlx::query("INSERT INTO plugin_sessions VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&origin.session_id)
-        .bind(origin.creator.package())
-        .bind(String::from(origin.creator.scope().clone()))
-        .bind(&origin.fingerprint)
-        .bind(origin.managed)
-        .bind(&origin.authority_session_id)
-        .execute(connection)
-        .await?;
+    retain_authority(connection, origin.authority_session_id.as_deref())?;
+    connection.execute(
+        "INSERT INTO plugin_sessions VALUES (?, ?, ?, ?, ?)",
+        params![
+            &origin.session_id,
+            origin.creator.package(),
+            String::from(origin.creator.scope().clone()),
+            &origin.fingerprint,
+            &origin.authority_session_id
+        ],
+    )?;
     Ok(())
 }
 
-pub(super) async fn retain_authority(
-    connection: &mut SqliteConnection,
+pub(super) fn retain_authority(
+    connection: &rusqlite::Connection,
     source: Option<&str>,
 ) -> Result<(), StoreError> {
     if let Some(source) = source {
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)")
-                .bind(source)
-                .fetch_one(&mut *connection)
-                .await?;
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?)",
+            params![source],
+            |row| row.get(0),
+        )?;
         if !exists {
             return Err(StoreError::SessionNotFound);
         }
-        super::retain(connection, source).await?;
+        super::retain(connection, source)?;
     }
     Ok(())
 }
 
 impl EventLog {
-    pub async fn session_manager(&self, session_id: &str) -> Result<Option<Namespace>, StoreError> {
-        self.session_plugin(session_id, true).await
-    }
-
     pub async fn session_creator(&self, session_id: &str) -> Result<Option<Namespace>, StoreError> {
-        self.session_plugin(session_id, false).await
-    }
-
-    async fn session_plugin(
-        &self,
-        session_id: &str,
-        managed_only: bool,
-    ) -> Result<Option<Namespace>, StoreError> {
-        self.validate_root()?;
         validate_id(session_id)?;
         let session_id = session_id.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "SELECT package_id, scope_id FROM plugin_sessions
-                         WHERE session_id = ? AND (NOT ? OR managed = 1)",
+            .read(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT package_id, scope_id FROM plugin_sessions WHERE session_id = ?",
+                        params![session_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
-                    .bind(session_id)
-                    .bind(managed_only)
-                    .fetch_optional(connection)
-                    .await?
+                    .optional()?
                     .map(|row| {
-                        let scope = Scope::try_from(row.get::<String, _>("scope_id"))
+                        let scope = Scope::try_from(row.1)
                             .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
-                        Namespace::new(row.get::<String, _>("package_id"), scope)
+                        Namespace::new(row.0, scope)
                             .map_err(|error| StoreError::InvalidTransition(error.to_string()))
                     })
                     .transpose()
-                })
             })
             .await
     }

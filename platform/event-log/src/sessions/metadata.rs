@@ -20,9 +20,10 @@
 use super::{
     MAX_SAFE_INTEGER, SessionRecord, advance_catalog, invalid, read, validate_id, validate_time,
 };
+use rusqlite::params;
+
 use crate::{EventLog, StoreError};
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::Connection;
 
 /// A metadata CAS is distinct from event-log append and delivery revisions.
 pub enum SessionMutation<T> {
@@ -53,19 +54,18 @@ impl EventLog {
         archived: bool,
         now: u64,
     ) -> Result<SessionMutation<T>, StoreError> {
-        self.validate_root()?;
         validate_id(id)?;
         validate_time(now)?;
         let id = id.to_owned();
         let commits = self.commits.session(&id);
-        self.connection.run(move |connection| Box::pin(async move {
-        let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-        super::removal::require_mutable(&mut tx, &id).await?;
-        let record: SessionRecord<T> = read(&mut tx, &id).await?.ok_or(StoreError::SessionNotFound)?;
+        self.connection.run(move |connection| {
+        let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+        super::removal::require_mutable(&tx, &id)?;
+        let record: SessionRecord<T> = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
         if let Some(expected) = expected && expected != record.revision {
             return Ok(SessionMutation::RevisionConflict { expected, actual: record.revision });
         }
-        if super::has_active_invocation(&mut tx, &id).await? {
+        if super::has_active_invocation(&tx, &id)? {
             return Err(StoreError::SessionBusy);
         }
         if record.archived == archived {
@@ -75,20 +75,16 @@ impl EventLog {
             return Err(invalid("session revision exhausted"));
         }
         if !archived {
-            sqlx::query("DELETE FROM session_retirements WHERE session_id=? AND remove_session=0 AND completed=1")
-                .bind(&id).execute(&mut *tx).await?;
+            tx.execute("DELETE FROM session_retirements WHERE session_id=? AND remove_session=0 AND completed=1", params![&id])?;
         }
-        let changed = sqlx::query(
-            "UPDATE session_control SET archived = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision < ?",
-        ).bind(archived).bind(now.max(record.updated_at) as i64).bind(&id)
-            .bind(MAX_SAFE_INTEGER as i64).execute(&mut *tx).await?.rows_affected();
+        let changed = tx.execute("UPDATE session_control SET archived = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision < ?", params![archived, now.max(record.updated_at) as i64, &id, MAX_SAFE_INTEGER as i64])?;
         if changed != 1 { return Err(invalid("session revision exhausted")); }
-        advance_catalog(&mut tx).await?;
-        let record = read(&mut tx, &id).await?.ok_or(StoreError::SessionNotFound)?;
-        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+        advance_catalog(&tx)?;
+        let record = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
+        tx.commit().map_err(StoreError::CommitUnknown)?;
         commits.metadata();
         Ok(SessionMutation::Committed(Box::new(record)))
-        })).await
+        }).await
     }
 
     /// Mutates validated control metadata, including while execution is active.
@@ -144,20 +140,20 @@ impl EventLog {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // One SQL transaction owns metadata and optional checkpoint receipt.
     pub(crate) async fn mutate_session_metadata<T, F>(
         &self,
         id: &str,
         expected: u64,
         always_advance: bool,
         permission_time: Option<u64>,
-        root_app_control: Option<std::sync::Arc<EventLog>>,
+        checkpoint: Option<crate::root_store::checkpoints::restore::Commit>,
         update: F,
     ) -> Result<SessionMutation<T>, StoreError>
     where
         T: Serialize + DeserializeOwned + Clone + PartialEq + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), StoreError> + Send + 'static,
     {
-        self.validate_root()?;
         validate_id(id)?;
         if expected == 0 || expected > MAX_SAFE_INTEGER {
             return Err(invalid("invalid expected Session revision"));
@@ -166,12 +162,17 @@ impl EventLog {
         let commits = self.commits.session(&id);
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    super::removal::require_mutable(&mut tx, &id).await?;
-                    let record: SessionRecord<T> = read(&mut tx, &id)
-                        .await?
-                        .ok_or(StoreError::SessionNotFound)?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
+                    super::removal::require_mutable(&tx, &id)?;
+                    if let Some(commit) = &checkpoint {
+                        commit.validate(&tx)?;
+                    }
+                    let record: SessionRecord<T> =
+                        read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
                     if record.revision != expected {
                         return Ok(SessionMutation::RevisionConflict {
                             expected,
@@ -180,8 +181,7 @@ impl EventLog {
                     }
                     let boundary = if permission_time.is_some() {
                         Some(
-                            crate::workspace_bindings::permission_basis(&mut tx, &id)
-                                .await?
+                            crate::workspace_bindings::permission_basis(&tx, &id)?
                                 .ok_or_else(|| invalid("session permission boundary is missing"))?,
                         )
                     } else {
@@ -199,71 +199,50 @@ impl EventLog {
                         return Ok(SessionMutation::Committed(Box::new(record)));
                     }
                     let configuration = serde_json::to_value(configuration)?;
-                    crate::workspace_bindings::require_current_reference(&mut tx, &configuration)
-                        .await?;
+                    crate::workspace_bindings::require_current_reference(&tx, &configuration)?;
                     let configuration = serde_json::to_string(&configuration)?;
                     let next_revision = expected
                         .checked_add(1)
                         .filter(|revision| *revision <= MAX_SAFE_INTEGER)
                         .ok_or_else(|| invalid("session metadata revision exhausted"))?;
                     // Metadata is not activity: neither timestamps nor runtime_events move.
-                    if sqlx::query(
+                    if tx.execute(
                         "UPDATE session_control SET configuration = ?, revision = ? WHERE id = ?",
-                    )
-                    .bind(configuration)
-                    .bind(next_revision as i64)
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected()
-                        != 1
+                        params![configuration, next_revision as i64, &id],
+                    )? != 1
                     {
                         return Err(invalid("session metadata revision exhausted"));
                     }
                     if let (Some(old), Some(now)) = (boundary, permission_time) {
-                        crate::interactions::permissions::close_previous_basis(
-                            &mut tx, &id, old, now,
-                        )
-                        .await?;
+                        crate::interactions::permissions::close_previous_basis(&tx, &id, old, now)?;
                     }
                     let retired_basis = if let Some(old) = boundary {
-                        (crate::workspace_bindings::permission_basis(&mut tx, &id).await?
-                            != Some(old))
-                        .then_some(old)
+                        (crate::workspace_bindings::permission_basis(&tx, &id)? != Some(old))
+                            .then_some(old)
                     } else {
                         None
                     };
                     let approval_revoked = if retired_basis.is_some() {
                         crate::native_approvals::revoke_for_session(
-                            &mut tx,
+                            &tx,
                             &id,
                             permission_time.expect("permission retirement has a timestamp"),
-                        )
-                        .await?
+                        )?
                     } else {
                         false
                     };
-                    advance_catalog(&mut tx).await?;
-                    let record = read(&mut tx, &id)
-                        .await?
-                        .ok_or(StoreError::SessionNotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    advance_catalog(&tx)?;
+                    let record = read(&tx, &id)?.ok_or(StoreError::SessionNotFound)?;
+                    if let Some(commit) = checkpoint {
+                        commit.record(&tx, next_revision)?;
+                    }
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     if approval_revoked {
                         commits.activations();
                     }
-                    if let (Some(control), Some(old), Some(now)) =
-                        (root_app_control, retired_basis, permission_time)
-                    {
-                        // The accepted source actor owns this completion even
-                        // if its caller disappears. No following source grant
-                        // or CAS can pass while obsolete app prompts settle.
-                        control
-                            .close_computer_app_previous_basis(&id, old, now)
-                            .await?;
-                    }
                     commits.metadata();
                     Ok(SessionMutation::Committed(Box::new(record)))
-                })
+                }
             })
             .await
     }

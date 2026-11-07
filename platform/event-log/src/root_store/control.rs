@@ -27,7 +27,7 @@ use maka_agent_facts::workspace::BindingRef;
 impl RootStore {
     pub fn owned_root(&self) -> Result<Arc<root::RootOwner>, StoreError> {
         self.require_open()?;
-        self.control.owned_root()
+        self.log.owned_root()
     }
 
     pub async fn attach_workspace<T: Serialize>(
@@ -38,7 +38,7 @@ impl RootStore {
         self.require_open()?;
         let mutation = self.project_mutations.clone().lock_owned().await;
         self.require_open()?;
-        self.control
+        self.log
             .scoped(Arc::new(mutation))
             .attach_workspace(scope, workspace)
             .await
@@ -48,7 +48,7 @@ impl RootStore {
         id: uuid::Uuid,
     ) -> Result<Option<crate::workspace_bindings::WorkspaceBinding<T>>, StoreError> {
         self.require_open()?;
-        self.control.workspace_binding(id).await
+        self.log.workspace_binding(id).await
     }
     pub async fn preview_bundle(&self, session: &str) -> Result<Inventory, BundleError> {
         self.session(session)
@@ -71,8 +71,7 @@ impl RootStore {
             .export_bundle(session, expected, output)
             .await
     }
-    /// Host startup only. Excludes live physical work while recovering every
-    /// partition; no raw partition or global sequence cursor escapes this API.
+    /// Host startup only. Excludes live work while recovering abandoned invocations.
     pub async fn recover_invocations(&self) -> Result<usize, crate::recovery::RecoveryError> {
         self.require_open()?;
         let (recovery, released) = self.gates.recovery()?;
@@ -86,22 +85,10 @@ impl RootStore {
                 .as_millis();
             let now = u64::try_from(now)
                 .map_err(|_| StoreError::InvalidTransition("timestamp exhausted".into()))?;
-            // Root-owned pending app decisions must close before a partition
-            // can seal its abandoned invocation through the read-only view.
+            // Pending app decisions close before their abandoned invocations.
             self.close_abandoned_computer_apps(now, recovery.clone())
                 .await?;
-            let mut recovered = 0usize;
-            for partition in &self.partitions {
-                recovered = recovered
-                    .checked_add(
-                        crate::recovery::recover_invocations(&partition.scoped(recovery.clone()))
-                            .await?,
-                    )
-                    .ok_or_else(|| {
-                        StoreError::InvalidTransition("recovery count exhausted".into())
-                    })?;
-            }
-            Ok::<_, crate::recovery::RecoveryError>(recovered)
+            crate::recovery::recover_invocations(&self.log.scoped(recovery.clone())).await
         }
         .await;
         drop(recovery);

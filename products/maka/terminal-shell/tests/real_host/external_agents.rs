@@ -53,8 +53,7 @@ async fn fixture() -> Fixture {
             "codex":{"executable":node,"args":[worker,state,trace]},
             "claude":{"executable":directory.join("not-installed-claude")}
         }});
-        configuration["agent"]["external"] = external.clone();
-        configuration["coordinator"]["external"] = external;
+        configuration["agent"]["external"] = external;
     })
     .await
 }
@@ -134,7 +133,7 @@ async fn see(view: &mut AppView, text: &str) {
 }
 
 async fn button(view: &mut AppView, label: &str) -> AccessibleNode {
-    if label != "Close settings"
+    if !["Close settings", CONFIRM, "Cancel enabling external agents"].contains(&label)
         && view
             .accessibility_snapshot()
             .iter()
@@ -185,23 +184,24 @@ async fn source(client: &Client) -> (u64, Value) {
     )
 }
 
-fn externals(document: &Value) -> [Value; 2] {
-    [
-        document["input"]["instances"]["agent"]["configuration"]["values"]["external"].clone(),
-        document["input"]["instances"]["workhub"]["configuration"]["values"]["agent"]["external"]
-            .clone(),
-    ]
+fn external(document: &Value) -> Value {
+    document["input"]["instances"]["agent"]["configuration"]["values"]["external"].clone()
 }
 
 async fn open_settings(view: &mut AppView) {
     click(view, "Choose model and effort").await;
     click(view, "Manage external agents").await;
-    button(view, "Refresh external agents").await;
+    button(view, "Settings section External agents").await;
+}
+
+async fn reopen_section(view: &mut AppView) {
+    click(view, "Settings section General").await;
+    click(view, "Settings section External agents").await;
 }
 
 async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &str, enabled: bool) {
     let (revision, before) = source(client).await;
-    let mut expected = externals(&before);
+    let mut expected = external(&before);
     click(
         view,
         &format!("{} {name}", if enabled { "Enable" } else { "Disable" }),
@@ -227,17 +227,15 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
         &format!("{} {name}", if enabled { "Disable" } else { "Enable" }),
     )
     .await;
-    for external in &mut expected {
-        external["runtimes"][id] = json!(enabled);
-    }
+    expected["runtimes"][id] = json!(enabled);
     let (changed_revision, changed) = source(client).await;
     assert_eq!(
         changed_revision,
         revision + 1,
-        "both targets change in one source revision"
+        "agent target changes in one source revision"
     );
     assert_eq!(
-        externals(&changed),
+        external(&changed),
         expected,
         "only this runtime changes; preserve native launch settings and other switches"
     );
@@ -359,7 +357,7 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
     update_worker_state(fixture.directory.path(), |state| {
         state["modelsFail"] = json!(true)
     });
-    click(&mut view, "Refresh external agents").await;
+    reopen_section(&mut view).await;
     button(&mut view, "Disable Codex").await;
     click(&mut view, "Close settings").await;
     model_choices(&mut view).await;
@@ -382,7 +380,7 @@ async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation()
     open_settings(&mut view).await;
     toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
     let settled = requests(fixture.directory.path());
-    click(&mut view, "Refresh external agents").await;
+    reopen_section(&mut view).await;
     button(&mut view, "Enable Codex").await;
     click(&mut view, "Close settings").await;
     model_choices(&mut view).await;

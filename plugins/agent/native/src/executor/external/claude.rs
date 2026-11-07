@@ -339,20 +339,34 @@ fn configuration_directory(env: impl Fn(&str) -> Option<String>) -> Result<PathB
 
 struct Cursor {
     path: PathBuf,
-    file: Option<tokio::fs::File>,
-    identity: Option<std::fs::Metadata>,
+    opened: Option<OpenedTranscript>,
+}
+struct OpenedTranscript {
+    file: tokio::fs::File,
+    identity: std::fs::Metadata,
     offset: u64,
     pending: Vec<u8>,
     scanned: usize,
 }
 impl Cursor {
     async fn fence(path: PathBuf, resume: bool) -> Result<Self, Error> {
-        let file = match tokio::fs::File::open(&path).await {
+        let opened = match tokio::fs::File::open(&path).await {
             Ok(mut file) => {
-                file.seek(std::io::SeekFrom::End(0))
+                let offset = file
+                    .seek(std::io::SeekFrom::End(0))
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
-                Some(file)
+                let identity = file
+                    .metadata()
+                    .await
+                    .map_err(|e| Error::Provider(e.to_string()))?;
+                Some(OpenedTranscript {
+                    file,
+                    identity,
+                    offset,
+                    pending: Vec::new(),
+                    scanned: 0,
+                })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !resume => None,
             Err(error) => {
@@ -361,86 +375,78 @@ impl Cursor {
                 )));
             }
         };
-        let identity = match &file {
-            Some(file) => Some(
-                file.metadata()
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?,
-            ),
-            None => None,
-        };
-        let offset = identity.as_ref().map_or(0, |m| m.len());
-        Ok(Self {
-            path,
-            file,
-            identity,
-            offset,
-            pending: Vec::new(),
-            scanned: 0,
-        })
+        Ok(Self { path, opened })
     }
     async fn next(&mut self) -> Result<Option<Value>, Error> {
         let metadata = match tokio::fs::metadata(&self.path).await {
             Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.file.is_none() => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opened.is_none() => {
                 return Ok(None);
             }
             Err(_) => return Err(Error::Invalid("Claude live transcript disappeared".into())),
         };
-        if let Some(identity) = &self.identity {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if metadata.dev() != identity.dev() || metadata.ino() != identity.ino() {
+        let opened = match &mut self.opened {
+            Some(opened) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if metadata.dev() != opened.identity.dev()
+                        || metadata.ino() != opened.identity.ino()
+                    {
+                        return Err(Error::Invalid("Claude live transcript rotated".into()));
+                    }
+                }
+                #[cfg(not(unix))]
+                if metadata.created().ok() != opened.identity.created().ok() {
                     return Err(Error::Invalid("Claude live transcript rotated".into()));
                 }
+                if metadata.len() < opened.offset {
+                    return Err(Error::Invalid("Claude live transcript truncated".into()));
+                }
+                opened
             }
-            #[cfg(not(unix))]
-            if metadata.created().ok() != identity.created().ok() {
-                return Err(Error::Invalid("Claude live transcript rotated".into()));
-            }
-        }
-        if metadata.len() < self.offset {
-            return Err(Error::Invalid("Claude live transcript truncated".into()));
-        }
-        if self.file.is_none() {
-            let file = tokio::fs::File::open(&self.path)
-                .await
-                .map_err(|e| Error::Provider(e.to_string()))?;
-            self.identity = Some(
-                file.metadata()
+            slot @ None => {
+                let file = tokio::fs::File::open(&self.path)
                     .await
-                    .map_err(|e| Error::Provider(e.to_string()))?,
-            );
-            self.file = Some(file);
-        }
+                    .map_err(|e| Error::Provider(e.to_string()))?;
+                let identity = file
+                    .metadata()
+                    .await
+                    .map_err(|e| Error::Provider(e.to_string()))?;
+                slot.insert(OpenedTranscript {
+                    file,
+                    identity,
+                    offset: 0,
+                    pending: Vec::new(),
+                    scanned: 0,
+                })
+            }
+        };
         loop {
-            if let Some(relative) = self.pending[self.scanned..]
+            if let Some(relative) = opened.pending[opened.scanned..]
                 .iter()
                 .position(|b| *b == b'\n')
             {
-                let end = self.scanned + relative;
-                self.scanned = 0;
-                let line = self.pending.drain(..=end).collect::<Vec<_>>();
+                let end = opened.scanned + relative;
+                opened.scanned = 0;
+                let line = opened.pending.drain(..=end).collect::<Vec<_>>();
                 return runtime::parse_json(line, "complete Claude JSONL line")
                     .await
                     .map(Some);
             }
-            self.scanned = self.pending.len();
+            opened.scanned = opened.pending.len();
             let mut bytes = [0u8; 8192];
-            let count = self
+            let count = opened
                 .file
-                .as_mut()
-                .expect("live transcript opened")
                 .read(&mut bytes)
                 .await
                 .map_err(|e| Error::Provider(e.to_string()))?;
             if count == 0 {
                 return Ok(None);
             }
-            self.offset += count as u64;
-            self.pending.extend_from_slice(&bytes[..count]);
-            if self.pending.len() > runtime::MAX_MESSAGE_BYTES {
+            opened.offset += count as u64;
+            opened.pending.extend_from_slice(&bytes[..count]);
+            if opened.pending.len() > runtime::MAX_MESSAGE_BYTES {
                 return Err(Error::Invalid(
                     "Claude live JSONL line exceeds 256 MiB".into(),
                 ));
@@ -1306,6 +1312,47 @@ mod tests {
             matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="msg-answer")
         );
     }
+    #[tokio::test]
+    async fn new_transcript_waits_for_creation_and_preserves_buffered_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("new.jsonl");
+        let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
+        assert!(cursor.next().await.unwrap().is_none());
+
+        tokio::fs::write(&path, b"{\"row\":1}\n{\"row\":2}\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            cursor.next().await.unwrap(),
+            Some(serde_json::json!({"row":1}))
+        );
+        assert_eq!(
+            cursor.next().await.unwrap(),
+            Some(serde_json::json!({"row":2}))
+        );
+        assert!(cursor.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn resumed_transcript_cannot_be_missing_and_opened_transcript_cannot_return_to_waiting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        assert!(
+            matches!(Cursor::fence(path.clone(), true).await, Err(Error::Invalid(message)) if message.starts_with("Claude original transcript unavailable:"))
+        );
+
+        let mut cursor = Cursor::fence(path.clone(), false).await.unwrap();
+        tokio::fs::write(&path, b"{\"row\":1}\n").await.unwrap();
+        assert_eq!(
+            cursor.next().await.unwrap(),
+            Some(serde_json::json!({"row":1}))
+        );
+        tokio::fs::remove_file(&path).await.unwrap();
+        assert!(
+            matches!(cursor.next().await, Err(Error::Invalid(message)) if message == "Claude live transcript disappeared")
+        );
+    }
+
     #[tokio::test]
     async fn live_cursor_fences_history_waits_for_partial_lines_and_rejects_truncation() {
         use tokio::io::AsyncWriteExt;

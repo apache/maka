@@ -56,8 +56,19 @@ struct Mods {
 }
 
 /// Every keystroke the view binds on this platform.
-pub(crate) fn key_table() -> Vec<KeySpec> {
-    key_table_for(apple_keys(), reserved_key_os())
+pub(crate) fn key_table(editable: bool) -> Vec<KeySpec> {
+    let apple = apple_keys();
+    let mut table = key_table_for(apple, reserved_key_os());
+    if !editable {
+        table.retain(|spec| {
+            movement_for(&spec.event, apple).is_some()
+                || (spec.event.mod_key
+                    && !spec.event.alt
+                    && !spec.event.shift
+                    && matches!(spec.event.key.as_str(), "a" | "c" | "x"))
+        });
+    }
+    table
 }
 
 fn key_table_for(apple: bool, reserved_os: Os) -> Vec<KeySpec> {
@@ -90,7 +101,7 @@ fn key_table_for(apple: bool, reserved_os: Os) -> Vec<KeySpec> {
         for m in combos.iter().filter(|m| m.ctrl || m.cmd) {
             let s = c.to_string();
             // Pastes are the native input's (an event with the text).
-            if c == 'v' && !m.shift && !m.alt && (if apple { m.cmd && !m.ctrl } else { m.ctrl }) {
+            if c == 'v' && !m.alt && (if apple { m.cmd && !m.ctrl } else { m.ctrl }) {
                 continue;
             }
             let key = if m.shift && c.is_ascii_alphabetic() {

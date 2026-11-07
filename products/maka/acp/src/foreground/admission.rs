@@ -25,7 +25,7 @@ impl Foreground {
         peer: Peer,
         session: Arc<Session>,
         active: Active,
-        capabilities: acp::ClientCapabilities,
+        capabilities: Capabilities,
         prompt: Prompt,
     ) -> Result<(String, Self), Error> {
         let preferences = session.preferences.lock().await.clone();
@@ -64,9 +64,7 @@ impl Foreground {
             session,
             active,
             target,
-            execution: None,
-            shared: false,
-            cancelled: false,
+            work: WorkObservation::Pending,
             projection: Projection::default(),
             capabilities,
             after: observation.through,
@@ -81,8 +79,8 @@ impl Foreground {
                 return Ok(message);
             }
             let execution = foreground
-                .execution
-                .as_ref()
+                .work
+                .execution()
                 .ok_or("Accepted invocation has no execution receipt")?;
             foreground.user = history::read(
                 &foreground.client,

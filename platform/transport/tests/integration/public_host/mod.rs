@@ -34,9 +34,15 @@ use maka_host_runtime::{
 };
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, Receipt};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+async fn retire_when_idle(address: &Path, epoch: Uuid) {
+    while !Client::retire(address, epoch).await.unwrap() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_ipc_persists_original_gateway_intent_and_retires_original_owner() {
@@ -397,9 +403,7 @@ async fn reconnect_captures_the_replacement_host_registration() {
         original.close().await.unwrap();
         connected.close().await.unwrap();
         // The replacement is visible before the old VM finishes shutting down.
-        while !Client::retire(&fixture.address, fixture.host.epoch()).await.unwrap() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        retire_when_idle(&fixture.address, fixture.host.epoch()).await;
         fixture.serving.await.unwrap().unwrap();
     }).await.unwrap();
 }
@@ -1089,7 +1093,7 @@ async fn configured_native_grants_apply_live_survive_source_update_and_root_rest
         assert_eq!(saved.configuration, serde_json::to_value(&desired).unwrap());
         assert!(saved.pending.is_none());
         client.close().await.unwrap();
-        assert!(Client::retire(&address, host.epoch()).await.unwrap());
+        retire_when_idle(&address, host.epoch()).await;
         serving.await.unwrap().unwrap();
         drop((client, services, host, store));
         // Reopen from the durable launcher selection, as a new Host process does.

@@ -35,12 +35,12 @@ pub struct FileListRead {
     pub after: Option<FileCursor>,
 }
 
-/// Workspace-relative file suggestions from this Session's admitted directory.
+/// Workspace-relative file suggestions from the selected completion context.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentFileCandidatesRead")]
 pub struct FileCandidatesRead {
-    pub session_id: String,
+    pub target: super::CompletionTarget,
     /// Omission or null selects the workspace root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<WorkspacePath>,

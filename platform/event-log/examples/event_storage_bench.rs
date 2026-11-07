@@ -755,19 +755,13 @@ async fn main() -> Result<()> {
         }
     }
     manifest["descriptor_digest"] = hex::encode(descriptors.finalize()).into();
-    let resources: Vec<_>=root.sqlite_resource_stats().await?.iter().map(|owner|json!({"writer":resource_summary(&owner.writer),"readers":owner.readers.iter().map(|reader|reader.as_ref().map(resource_summary)).collect::<Vec<_>>()})).collect();
+    let resources: Vec<_>=[root.sqlite_resource_stats().await?].iter().map(|owner|json!({"writer":resource_summary(&owner.writer),"readers":owner.readers.iter().map(|reader|reader.as_ref().map(resource_summary)).collect::<Vec<_>>()})).collect();
     let after_io = io_stats();
     drop(captured);
     drop(running);
     lease.finish();
     root.close().await?;
-    let mut database_bytes = 0;
-    for entry in std::fs::read_dir(directory.join("root/runtime-partitions"))? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            database_bytes += entry.metadata()?.len();
-        }
-    }
+    let database_bytes = std::fs::metadata(directory.join("root/runtime-rust.sqlite"))?.len();
     println!(
         "{}",
         json!({"mode":mode,"root_store_open_ns":root_store_open_ns,"fixture":manifest,"operation":operation,"iterations":iterations,"profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":samples.report(),"completed_rows":completed_rows,"completed_bytes":completed_bytes,"directory_pages":directory_pages,"child_pages":child_pages,"peak_charged_bytes":PEAK.load(Ordering::Relaxed),"charged_allocations":ALLOCATIONS.load(Ordering::Relaxed),"errors":0,"database_bytes_after_close":database_bytes,"io_before":before_io,"io_after":after_io,"sqlite_resources":resources,"usage_before":before_usage,"usage_after":usage(),"timestamp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()})

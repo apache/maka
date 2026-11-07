@@ -29,7 +29,7 @@ use maka_plugin_core::operation::{
 #[derive(Clone)]
 pub struct OperationStore {
     reference: RecoveryRef,
-    partition: Weak<EventLog>,
+    log: Weak<EventLog>,
     closed: Arc<AtomicBool>,
     gates: Arc<gates::Gates>,
 }
@@ -97,16 +97,10 @@ impl OperationAuxiliary {
 impl RootStore {
     pub fn operation(&self, reference: &RecoveryRef) -> Result<OperationStore, StoreError> {
         self.require_open()?;
-        self.control.operation_domain(reference)?;
-        let identity = serde_json::to_string(&(
-            reference.source.deployment,
-            &reference.namespace,
-            reference.operation,
-        ))?;
-        let partition = partition_for(b"application-operation-v1", &identity);
+        self.log.operation_domain(reference)?;
         Ok(OperationStore {
             reference: reference.clone(),
-            partition: Arc::downgrade(&self.partitions[partition]),
+            log: Arc::downgrade(&self.log),
             closed: self.closed.clone(),
             gates: self.gates.clone(),
         })
@@ -120,7 +114,7 @@ impl OperationStore {
         if self.closed.load(Ordering::Acquire) || self.gates.is_closing() {
             return Err(StoreError::ConnectionClosed);
         }
-        self.partition.upgrade().ok_or(StoreError::ConnectionClosed)
+        self.log.upgrade().ok_or(StoreError::ConnectionClosed)
     }
     fn check(&self, reference: &RecoveryRef) -> Result<(), StoreError> {
         if reference == &self.reference {
@@ -169,10 +163,7 @@ impl OperationStore {
     ) -> Result<OperationObservation, StoreError> {
         self.check(claim.reference())?;
         // Original accepted work may settle while Root admission is closed.
-        let owner = self
-            .partition
-            .upgrade()
-            .ok_or(StoreError::ConnectionClosed)?;
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
         owner
             .scoped(owner.clone())
             .finish_operation(claim, outcome, cleanup)
@@ -246,10 +237,7 @@ impl OperationStore {
             .custody()?;
         // Accepted work retains access during Root draining. Its Session lease
         // is registered in the original Root's lifetime and retirement gates.
-        let owner = self
-            .partition
-            .upgrade()
-            .ok_or(StoreError::ConnectionClosed)?;
+        let owner = self.log.upgrade().ok_or(StoreError::ConnectionClosed)?;
         let work = dispatch.acquire(&owner, &self.reference)?;
         let mut completion = AuxiliaryCompletion {
             work: Some(work.clone()),

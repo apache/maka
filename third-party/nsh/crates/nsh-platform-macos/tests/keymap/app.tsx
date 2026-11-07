@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, keymap, mount, signal, Text, View, type ViewRef } from "nsh";
+import { effect, Input as NativeInput, keymap, mount, signal, Text, View, type ViewRef } from "nsh";
 import { Input, type InputRef } from "nsh/base";
 
 function App() {
@@ -27,6 +27,8 @@ function App() {
   const text = signal("");
   const vault = signal<ViewRef | null>(null);
   const interrupts = signal(0);
+  const nativeText = signal("");
+  const nativeCaret = signal(false);
   const limit = signal<ViewRef | null>(null);
   let limited: InputRef | null = null;
   let field: InputRef | null = null;
@@ -94,6 +96,24 @@ function App() {
     </View>
     <Text>{`escapes: ${escapes()}, moves: ${moves()}`}</Text>
     <Text>{`interrupts: ${interrupts()}`}</Text>
+    <NativeInput
+      testID="sink"
+      multiline
+      caret={false}
+      style={{ width: 1, height: 16, fontSize: 16 }}
+      onChangeText={(text) => nativeText.set(text)}
+      onCaretMove={({ bounds }) => nativeCaret.set(
+        bounds.size.height > 0
+          && bounds.origin.x >= 0 && bounds.origin.x <= 1
+          && bounds.origin.y >= 0 && bounds.origin.y < 16,
+      )}
+    />
+    <Text>{`native caret ${nativeText()}: ${nativeCaret()}`}</Text>
+    <Text testID="output" selectable>Model output</Text>
+    <View testID="area" selectable>
+      <Text>First paragraph</Text>
+      <Text>Second paragraph</Text>
+    </View>
   </View>;
 }
 

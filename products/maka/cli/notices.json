@@ -14,9 +14,9 @@
     "cargo:aes-kw@0.3.1 registry+https://github.com/rust-lang/crates.io-index": "b246dd5abe3a1565f53d4a851c348e797492562657298f9d3129fbfd2b6c0dcc",
     "cargo:aes@0.8.4 registry+https://github.com/rust-lang/crates.io-index": "ce7b7952ca574d419cf6cc2659bc81226752269727c1d8f31be76facdfe4a11c",
     "cargo:aes@0.9.3 registry+https://github.com/rust-lang/crates.io-index": "e482b912d840b6611e635616a0ad7f141db2b78bffc7f906d178c7c7161cc35b",
-    "cargo:agent-client-protocol-derive@3.5.0 registry+https://github.com/rust-lang/crates.io-index": "1efc30674dee32da0d8d89df58db0297d7eae96989a79cf1e80624fb1710d930",
-    "cargo:agent-client-protocol-schema@1.12.0 registry+https://github.com/rust-lang/crates.io-index": "5a4d5e88dde6370f89556af059989b49f3f4d909cfcba5554bc37a5010977a6e",
-    "cargo:agent-client-protocol@3.5.0 registry+https://github.com/rust-lang/crates.io-index": "ac6292c12636def4d7158b02bf70cb91fbc36fb0ffa2d84579c71b61d9f6e5c0",
+    "cargo:agent-client-protocol-derive@5.0.0 registry+https://github.com/rust-lang/crates.io-index": "9fd6504b1d4691fe9f4faa41fdc1c19d16e14bb6c86f0385104b92ef814ede92",
+    "cargo:agent-client-protocol-schema@1.15.1 registry+https://github.com/rust-lang/crates.io-index": "e4d26d008fc22257b34841929707161a0891dbd8b42d6e2cab51146b5aea6edc",
+    "cargo:agent-client-protocol@5.0.0 registry+https://github.com/rust-lang/crates.io-index": "4d52e19208c2af8dc4381154ca3acc34aef543854b82a5c88232531e7909548c",
     "cargo:ahash@0.8.12 registry+https://github.com/rust-lang/crates.io-index": "77aef1fa2e90f0eaa66f18dffd723dd2ec19046bdd0f3487418abd5ede11b1e6",
     "cargo:aho-corasick@1.1.5 registry+https://github.com/rust-lang/crates.io-index": "693133c566dd9007ee6fdbf969d4c3ad9031f8e1a75739647ceb87e47c742fde",
     "cargo:alacritty_terminal@0.26.0 registry+https://github.com/rust-lang/crates.io-index": "403dfc94fcbee2111f0556cab9c5814be2ffba93ad52ac6a7a103287c3e7fc59",
@@ -93,7 +93,6 @@
     "cargo:bincode@1.3.3 registry+https://github.com/rust-lang/crates.io-index": "59b46dfc19d27ebd50442b6444df890a8e5aa113dc745048f319118d84140499",
     "cargo:bindgen@0.70.1 registry+https://github.com/rust-lang/crates.io-index": "8d1020bd082960fd6f96dfc46727dbd4cbbdc0c75c9c23e18c131bca2b5e1570",
     "cargo:bindgen@0.72.1 registry+https://github.com/rust-lang/crates.io-index": "54c69ad1014deea425479f671290b485acd894d47f4bbe4ec50666ea4e76f074",
-    "cargo:bindgen@0.73.2 registry+https://github.com/rust-lang/crates.io-index": "3dd0883a80404d2b497e1e521d81a5613696b735c49ef7c98f5dc2e4502580fd",
     "cargo:bit_field@0.10.3 registry+https://github.com/rust-lang/crates.io-index": "3a709c729a95276ef5e5e6926e45584e5ae5b4a002bf855fb18463fdf78ce816",
     "cargo:bit-set@0.10.0 registry+https://github.com/rust-lang/crates.io-index": "89921022d989530cb64fa14d850e4b8b31a6e0ffbe03a86fd0a78f4cccc2de5b",
     "cargo:bit-set@0.8.0 registry+https://github.com/rust-lang/crates.io-index": "57ffa9085ea88b1e61f7ee365389578a853971ba897900a27c5aeda693aa067f",
@@ -1382,5 +1381,5 @@
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
     "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
   },
-  "sha256": "108dc4a8155199fb452059c8c3fb9a9751dc127182cd9cb8910f2ba7d1759146"
+  "sha256": "5e22407fff4826762c3c1292b25b99cf2752020ff6d1d2d4d2f9e109984e6728"
 }

@@ -496,7 +496,7 @@ export function createGeneralSettings(
               ? tr('Compaction prompt')
               : editor()?.kind === 'predictions'
                 ? tr('Message predictions')
-                : tr('General settings'),
+                : tr('General'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -533,8 +533,8 @@ export function createGeneralSettings(
       editor.set({ ...form, document: { ...form.document, content } });
     },
     recovered,
-    reload(request: GeneralAction) {
-      if (!current(request) || request.kind !== 'root' || operations.busy() || loading()) return;
+    refresh() {
+      if (!visible() || editor() || operations.busy() || loading()) return;
       operations.error.set('');
       void load();
     },
@@ -546,7 +546,7 @@ export function createGeneralSettings(
       kind,
     }: {
       request: GeneralAction;
-      kind: 'instructions' | 'privacy' | 'titles' | 'predictions';
+      kind: 'instructions' | 'titles' | 'predictions';
     }) {
       const saved = facts();
       if (!saved || request.kind !== 'root') return;
@@ -554,19 +554,27 @@ export function createGeneralSettings(
         request,
         kind === 'instructions'
           ? { kind: 'workspace_instructions', enabled: !saved.workspaceInstructions }
-          : kind === 'privacy'
-            ? { kind: 'privacy', incognitoActive: !saved.incognitoActive }
-            : kind === 'titles'
-              ? { kind: 'shell', value: { ...saved.shell, titles: !saved.shell.titles } }
-              : {
-                  kind: 'message_predictions',
-                  settings: { ...saved.predictions, enabled: !saved.predictions.enabled },
-                },
+          : kind === 'titles'
+            ? { kind: 'shell', value: { ...saved.shell, titles: !saved.shell.titles } }
+            : {
+                kind: 'message_predictions',
+                settings: { ...saved.predictions, enabled: !saved.predictions.enabled },
+              },
       );
     },
     language({ request, preference }: { request: GeneralAction; preference: LanguagePreference }) {
       if (request.kind !== 'root' || facts()?.language === preference) return;
       return mutate(request, { kind: 'language', preference });
+    },
+    sandboxMode({
+      request,
+      mode,
+    }: {
+      request: GeneralAction;
+      mode: SettingsAssistantPreferences['defaultSandboxMode'];
+    }) {
+      if (request.kind !== 'root' || facts()?.defaultSandboxMode === mode) return;
+      return mutate(request, { kind: 'default_sandbox', mode });
     },
     editShell({
       request,

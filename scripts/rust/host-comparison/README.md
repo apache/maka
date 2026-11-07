@@ -54,8 +54,9 @@ Build artifacts and installation are outside the measured interval.
 Each run requires a new output directory under the OS account's accessible home
 workspace. Do not change `HOME` to simulate a different account. The harness
 sanitizes inherited model keys and proxy variables, configures only a local dummy
-provider, and enables incognito initialization on both implementations. This
-suppresses optional helpers while retaining production execution and persistence.
+provider. The independent TypeScript baseline uses its supported incognito
+initialization to suppress optional background helpers; Rust uses ordinary
+initialization. Both retain production execution and transcript persistence.
 Explicit session names also suppress model-generated titles.
 
 ```sh

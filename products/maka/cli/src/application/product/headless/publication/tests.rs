@@ -63,15 +63,103 @@ fn rebase_updates_default_routes_without_restoring_or_expanding_grants() {
             "user-api":endpoint(4, "custom", &["write"], false)
         },
         "productMethods":["retired"],
-        "native":[{
+        "native":[
+            {
+                "origin":["00000000-0000-0000-0000-000000000001"],
+                "consumer":["00000000-0000-0000-0000-000000000001"],
+                "provider":["00000000-0000-0000-0000-000000000006"],
+                "export":"skills",
+                "methods":["prepare","search"],
+                "recovery":false
+            },
+            {
+                "origin":["00000000-0000-0000-0000-000000000001"],
+                "consumer":["00000000-0000-0000-0000-000000000005"],
+                "provider":["00000000-0000-0000-0000-000000000001"],
+                "export":"retired-native",
+                "methods":["read"],
+                "recovery":true
+            },
+            {
+                "origin":["00000000-0000-0000-0000-000000000001"],
+                "consumer":["00000000-0000-0000-0000-000000000007"],
+                "provider":["00000000-0000-0000-0000-000000000001"],
+                "export":"customized-retired",
+                "methods":["read"],
+                "recovery":false
+            },
+            {
+                "origin":["00000000-0000-0000-0000-000000000001"],
+                "consumer":["00000000-0000-0000-0000-000000000001"],
+                "provider":["00000000-0000-0000-0000-000000000004"],
+                "export":"custom",
+                "methods":["write"],
+                "recovery":false
+            }
+        ]
+    }))
+    .unwrap();
+    let previous_native: Vec<NativeGrant> = serde_json::from_value(json!([
+        {
             "origin":["00000000-0000-0000-0000-000000000001"],
             "consumer":["00000000-0000-0000-0000-000000000001"],
-            "provider":["00000000-0000-0000-0000-000000000004"],
-            "export":"custom",
-            "methods":["write"],
+            "provider":["00000000-0000-0000-0000-000000000006"],
+            "export":"skills",
+            "methods":["prepare","search"],
             "recovery":false
-        }]
-    }))
+        },
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000005"],
+            "provider":["00000000-0000-0000-0000-000000000001"],
+            "export":"retired-native",
+            "methods":["read"],
+            "recovery":true
+        },
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000007"],
+            "provider":["00000000-0000-0000-0000-000000000001"],
+            "export":"customized-retired",
+            "methods":["read","write"],
+            "recovery":true
+        },
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000008"],
+            "provider":["00000000-0000-0000-0000-000000000001"],
+            "export":"opted-out-native",
+            "methods":["read"],
+            "recovery":false
+        }
+    ]))
+    .unwrap();
+    let target_native: Vec<NativeGrant> = serde_json::from_value(json!([
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000001"],
+            "provider":["00000000-0000-0000-0000-000000000006"],
+            "export":"skills",
+            "methods":["candidates","prepare","search"],
+            "recovery":false
+        },
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000008"],
+            "provider":["00000000-0000-0000-0000-000000000001"],
+            "export":"opted-out-native",
+            "methods":["read","write"],
+            "recovery":false
+        },
+        {
+            "origin":["00000000-0000-0000-0000-000000000001"],
+            "consumer":["00000000-0000-0000-0000-000000000009"],
+            "provider":["00000000-0000-0000-0000-000000000001"],
+            "export":"new-default",
+            "methods":["read"],
+            "recovery":false
+        }
+    ]))
     .unwrap();
 
     assert_eq!(
@@ -79,6 +167,13 @@ fn rebase_updates_default_routes_without_restoring_or_expanding_grants() {
         [
             "/publication/endpoints/retired: remove obsolete product endpoint",
             "/publication/endpoints/service: follow current product binding",
+        ]
+    );
+    assert_eq!(
+        rebase_native(&mut selection, &previous_native, &target_native),
+        [
+            "/publication/native/skills: follow current product grant",
+            "/publication/native/retired-native: remove obsolete product grant",
         ]
     );
     selection.validate().unwrap();
@@ -100,14 +195,32 @@ fn rebase_updates_default_routes_without_restoring_or_expanding_grants() {
                     "import":"custom","grant":{"methods":["write"],"recovery":false}
                 }
             },
-            "native":[{
-                "origin":["00000000-0000-0000-0000-000000000001"],
-                "consumer":["00000000-0000-0000-0000-000000000001"],
-                "provider":["00000000-0000-0000-0000-000000000004"],
-                "export":"custom",
-                "methods":["write"],
-                "recovery":false
-            }]
+            "native":[
+                {
+                    "origin":["00000000-0000-0000-0000-000000000001"],
+                    "consumer":["00000000-0000-0000-0000-000000000001"],
+                    "provider":["00000000-0000-0000-0000-000000000006"],
+                    "export":"skills",
+                    "methods":["candidates","prepare","search"],
+                    "recovery":false
+                },
+                {
+                    "origin":["00000000-0000-0000-0000-000000000001"],
+                    "consumer":["00000000-0000-0000-0000-000000000007"],
+                    "provider":["00000000-0000-0000-0000-000000000001"],
+                    "export":"customized-retired",
+                    "methods":["read"],
+                    "recovery":false
+                },
+                {
+                    "origin":["00000000-0000-0000-0000-000000000001"],
+                    "consumer":["00000000-0000-0000-0000-000000000001"],
+                    "provider":["00000000-0000-0000-0000-000000000004"],
+                    "export":"custom",
+                    "methods":["write"],
+                    "recovery":false
+                }
+            ]
         })
     );
 }

@@ -56,10 +56,10 @@ impl PreparedOnboarding {
         } = self;
         store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
+                {
                     use OnboardingRejection as R;
                     let reject = |reason| OnboardingSaveResult::Rejected { reason };
-                    let catalog = catalog::read(tx).await?;
+                    let catalog = catalog::read(tx)?;
                     let mut row = material.connection.clone();
                     let previous = catalog
                         .connections
@@ -80,9 +80,7 @@ impl PreparedOnboarding {
                             return Ok(reject(R::Superseded));
                         }
                     }
-                    if material.credentials_changed(tx).await?
-                        || material.network_changed(tx).await?
-                    {
+                    if material.credentials_changed(tx)? || material.network_changed(tx)? {
                         return Ok(reject(R::Superseded));
                     }
                     // Keep manually enabled IDs that the discovery endpoint did not offer.
@@ -107,7 +105,7 @@ impl PreparedOnboarding {
                     if previous.is_none_or(|p| !same_test_basis(p, &row)) {
                         row.last_test = None;
                     }
-                    catalog::write_entry(tx, &row).await?;
+                    catalog::write_entry(tx, &row)?;
                     let target = catalog.default_target.or_else(|| {
                         (row.enabled
                             && row.provider.scope == maka_plugin_core::scope::Scope::Profile)
@@ -116,7 +114,7 @@ impl PreparedOnboarding {
                                 model_id: row.enabled_model_ids[0].clone(),
                             })
                     });
-                    catalog::advance(tx, catalog.revision, target.as_ref()).await?;
+                    catalog::advance(tx, catalog.revision, target.as_ref())?;
                     Ok(OnboardingSaveResult::Saved {
                         connection: OnboardedConnection {
                             connection_id: row.connection_id,
@@ -125,7 +123,7 @@ impl PreparedOnboarding {
                             provider: row.provider,
                         },
                     })
-                })
+                }
             })
             .await
     }

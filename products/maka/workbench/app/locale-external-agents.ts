@@ -86,11 +86,6 @@ export const externalAgentMessages = {
     '请使用 Agent 原生登录方式登录，然后刷新。Maka 不管理这些凭据。',
     '請使用 Agent 原生登入方式登入，然後重新整理。Maka 不管理這些憑證。',
   ],
-  'No external agent configuration targets are bound.': [
-    'No external agent configuration targets are bound.',
-    '未绑定外部 Agent 配置目标。',
-    '未繫結外部 Agent 設定目標。',
-  ],
   'This agent belongs to another deployment and cannot be configured here.': [
     'This agent belongs to another deployment and cannot be configured here.',
     '此 Agent 属于其他部署，无法在此配置。',

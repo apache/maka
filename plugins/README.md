@@ -30,7 +30,6 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 | [settings](settings/native/README.md) | Connections, credentials and preferences |
 | [skills](skills/native/README.md) | Skill discovery, reads and publication |
 | [interactions](interactions/native/README.md) | Questions and forms |
-| [workhub](workhub/core/README.md) | Task coordination and worker results |
 | `application/` | Deployment management, plugin installation and UI authoring |
 | `shared/` | Shared TypeScript contracts and authoring helpers |
 

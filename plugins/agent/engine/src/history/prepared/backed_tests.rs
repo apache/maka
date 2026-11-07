@@ -77,6 +77,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
         let cancellation = CancellationToken::new();
         let resident = super::capture(
             &log,
+            &crate::cleanup::Evidence::default(),
             selection.clone(),
             Language::En,
             false,
@@ -95,6 +96,7 @@ async fn numeric_history_preserves_resident_commitments_counts_and_direct_metada
         .unwrap();
         let backed = super::capture(
             &log,
+            &crate::cleanup::Evidence::default(),
             selection,
             Language::En,
             false,

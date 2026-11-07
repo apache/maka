@@ -19,7 +19,6 @@
 
 //! Complete canonical model parts and their original identity/acceptance boundary.
 use crate::StoreError;
-use futures_util::TryStreamExt;
 use maka_agent_facts::{
     context::ModelPurpose,
     event::{Fact, Invocation, RuntimeEvent, StoredEvent},
@@ -28,7 +27,7 @@ use maka_agent_facts::{
         recorded::{CompletionPart, ModelObservation, ModelPartRecord},
     },
 };
-use sqlx::{SqliteConnection, sqlite::SqliteWorkerConnection};
+use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
 // One selection rule for recovery, context fences and archive causality.
@@ -62,29 +61,30 @@ fn provider_identity(value: &str) -> Result<(), StoreError> {
     }
 }
 
-pub(crate) async fn mode(
-    connection: &mut SqliteConnection,
+pub(crate) fn mode(
+    connection: &rusqlite::Connection,
     invocation: &str,
     step: &str,
 ) -> Result<(bool, Option<ModelPurpose>), StoreError> {
-    let (enabled, purpose): (bool, Option<String>) = sqlx::query_as(
-        "SELECT COALESCE(json_extract(event_header,'$.fact.item_acceptance'),0),
+    let (enabled, purpose): (bool, Option<String>) = connection
+        .prepare_cached(
+            "SELECT COALESCE(json_extract(event_header,'$.fact.item_acceptance'),0),
                 json_extract(event_header,'$.fact.purpose') FROM runtime_events
          WHERE invocation_id=? AND operation_id=? AND kind='model_requested'",
-    )
-    .bind(invocation)
-    .bind(step)
-    .fetch_optional(connection)
-    .await?
-    .ok_or_else(|| invalid("model part lacks its original request"))?;
+        )?
+        .query_row(rusqlite::params![invocation, step], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?
+        .ok_or_else(|| invalid("model part lacks its original request"))?;
     let purpose = purpose
         .map(|value| serde_json::from_value(serde_json::Value::String(value)))
         .transpose()?;
     Ok((enabled, purpose))
 }
 
-pub(crate) async fn validate(
-    connection: &mut SqliteConnection,
+pub(crate) fn validate(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
 ) -> Result<(), StoreError> {
     let (step, parts, inputs) = match &event.fact {
@@ -103,8 +103,7 @@ pub(crate) async fn validate(
             step_id,
             event: ModelObservation::Part(record),
         } => {
-            let (enabled, purpose) =
-                mode(connection, &event.invocation.invocation_id, step_id).await?;
+            let (enabled, purpose) = mode(connection, &event.invocation.invocation_id, step_id)?;
             if !(purpose == Some(ModelPurpose::Main) && enabled)
                 && !matches!(record.part.as_ref(),
                 ModelPart::ToolCall { call } if call.provider_executed)
@@ -114,18 +113,16 @@ pub(crate) async fn validate(
                     "completion-only request cannot accept an early local part",
                 ));
             }
-            check_record(connection, event, step_id, record).await?;
-            validate_result(connection, event, step_id, record, &HashMap::new()).await?;
+            check_record(connection, event, step_id, record)?;
+            validate_result(connection, event, step_id, record, &HashMap::new())?;
             return Ok(());
         }
         Fact::ModelCompleted { step_id, output } => {
-            let (enabled, _) = mode(connection, &event.invocation.invocation_id, step_id).await?;
-            let witness: Option<(String, String)> = sqlx::query_as(
-                "SELECT json_extract(event_header,'$.fact.event.data.reason'),json_extract(event_header,'$.fact.event.data.usage')
+            let (enabled, _) = mode(connection, &event.invocation.invocation_id, step_id)?;
+            let witness: Option<(String, String)> = connection.prepare_cached("SELECT json_extract(event_header,'$.fact.event.data.reason'),json_extract(event_header,'$.fact.event.data.usage')
                  FROM runtime_events WHERE invocation_id=? AND kind='model_observed'
                  AND json_extract(event_header,'$.fact.step_id')=? AND json_extract(event_header,'$.fact.event.kind')='finished'
-                 ORDER BY sequence DESC LIMIT 1",
-            ).bind(&event.invocation.invocation_id).bind(step_id).fetch_optional(&mut *connection).await?;
+                 ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![&event.invocation.invocation_id, step_id], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             if let Some((reason, usage)) = witness {
                 let reason: maka_agent_facts::model::ModelFinishReason =
                     serde_json::from_value(serde_json::Value::String(reason))?;
@@ -147,7 +144,7 @@ pub(crate) async fn validate(
             partial: Some(partial),
             ..
         } => {
-            let (_, purpose) = mode(connection, &event.invocation.invocation_id, step_id).await?;
+            let (_, purpose) = mode(connection, &event.invocation.invocation_id, step_id)?;
             if purpose == Some(ModelPurpose::Summary) {
                 return Err(invalid(
                     "summary interruption cannot publish private partial output",
@@ -177,44 +174,39 @@ pub(crate) async fn validate(
     let mut previous = None;
     let mut messages = HashSet::new();
     for (index, part) in parts.iter().enumerate() {
-        let ordinal =
-            match part {
-                CompletionPart::Own(record) => {
-                    if !messages.insert(record.message_id.as_str()) {
-                        return Err(invalid("duplicate visible message identity"));
-                    }
-                    check_record(connection, event, step, record).await?;
-                    if let ModelPart::ToolResult { id, name, .. } = record.part.as_ref()
-                        && !results.insert((id.as_str(), name.as_str()))
-                    {
-                        return Err(invalid("duplicate provider result"));
-                    }
-                    validate_result(connection, event, step, record, &incoming_provider_calls)
-                        .await?;
+        let ordinal = match part {
+            CompletionPart::Own(record) => {
+                if !messages.insert(record.message_id.as_str()) {
+                    return Err(invalid("duplicate visible message identity"));
+                }
+                check_record(connection, event, step, record)?;
+                if let ModelPart::ToolResult { id, name, .. } = record.part.as_ref()
+                    && !results.insert((id.as_str(), name.as_str()))
+                {
+                    return Err(invalid("duplicate provider result"));
+                }
+                validate_result(connection, event, step, record, &incoming_provider_calls)?;
 
-                    record.ordinal
+                record.ordinal
+            }
+            CompletionPart::Ref(reference) => {
+                let original: Option<(String, String, String, i64)> = connection.prepare_cached("SELECT owner_session_id,invocation_id,step_id,ordinal FROM model_part_records
+                     WHERE event_id=? AND ordinal=? AND record_kind='part'")?.query_row(rusqlite::params![&reference.event_id, i64::try_from(reference.ordinal).map_err(invalid)?], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,))).optional()?;
+                if original
+                    != Some((
+                        event.invocation.session_id.clone(),
+                        event.invocation.invocation_id.clone(),
+                        step.clone(),
+                        i64::try_from(reference.ordinal).map_err(invalid)?,
+                    ))
+                {
+                    return Err(invalid(
+                        "reference does not name this invocation's original step part",
+                    ));
                 }
-                CompletionPart::Ref(reference) => {
-                    let original: Option<(String, String, String, i64)> = sqlx::query_as(
-                    "SELECT owner_session_id,invocation_id,step_id,ordinal FROM model_part_records
-                     WHERE event_id=? AND ordinal=? AND record_kind='part'",
-                ).bind(&reference.event_id).bind(i64::try_from(reference.ordinal).map_err(invalid)?)
-                    .fetch_optional(&mut *connection).await?;
-                    if original
-                        != Some((
-                            event.invocation.session_id.clone(),
-                            event.invocation.invocation_id.clone(),
-                            step.clone(),
-                            i64::try_from(reference.ordinal).map_err(invalid)?,
-                        ))
-                    {
-                        return Err(invalid(
-                            "reference does not name this invocation's original step part",
-                        ));
-                    }
-                    reference.ordinal
-                }
-            };
+                reference.ordinal
+            }
+        };
         if matches!(&event.fact, Fact::ModelCompleted { .. }) && ordinal != index as u64 {
             return Err(invalid(
                 "completion does not contain the whole original ordinal sequence",
@@ -228,14 +220,8 @@ pub(crate) async fn validate(
     // A completion names the whole attempt. An interruption may omit already
     // accepted items because their original rows remain authoritative.
     if matches!(&event.fact, Fact::ModelCompleted { .. }) {
-        let originals: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT event_id,ordinal FROM model_part_records WHERE invocation_id=? AND step_id=?
-             AND record_kind='part' ORDER BY ordinal",
-        )
-        .bind(&event.invocation.invocation_id)
-        .bind(step)
-        .fetch_all(&mut *connection)
-        .await?;
+        let originals: Vec<(String, i64)> = connection.prepare_cached("SELECT event_id,ordinal FROM model_part_records WHERE invocation_id=? AND step_id=?
+             AND record_kind='part' ORDER BY ordinal")?.query_map(rusqlite::params![&event.invocation.invocation_id, step], |row| Ok((row.get(0)?, row.get(1)?,)))?.collect::<Result<Vec<_>, _>>()?;
         let references: HashSet<_> = parts
             .iter()
             .filter_map(|part| match part {
@@ -271,14 +257,13 @@ pub(crate) async fn validate(
             event,
             &input.message_id,
             &format!("{step}:{}", input.id),
-        )
-        .await?;
+        )?;
     }
     Ok(())
 }
 
-async fn validate_display_identity(
-    connection: &mut SqliteConnection,
+fn validate_display_identity(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
     message: &str,
 ) -> Result<(), StoreError> {
@@ -286,12 +271,9 @@ async fn validate_display_identity(
     if message == event.id {
         return Err(invalid("part identity collides with its canonical event"));
     }
-    crate::message_identity::validate_source_id(connection, &event.invocation.session_id, message)
-        .await?;
-    let admitted: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_message_sources WHERE owner_session_id=?1 AND message_id=?2
-         UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2)",
-    ).bind(&event.invocation.session_id).bind(message).fetch_one(connection).await?;
+    crate::message_identity::validate_source_id(connection, &event.invocation.session_id, message)?;
+    let admitted: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_message_sources WHERE owner_session_id=?1 AND message_id=?2
+         UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2)")?.query_row(rusqlite::params![&event.invocation.session_id, message], |row| row.get(0))?;
     if admitted {
         Err(invalid(
             "part identity collides with a visible source message",
@@ -301,8 +283,8 @@ async fn validate_display_identity(
     }
 }
 
-async fn validate_derived_tool_identity(
-    connection: &mut SqliteConnection,
+fn validate_derived_tool_identity(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
     message: &str,
     operation: &str,
@@ -317,11 +299,10 @@ async fn validate_derived_tool_identity(
         &event.invocation.invocation_id,
         operation,
     )
-    .await
 }
 
-async fn check_record(
-    connection: &mut SqliteConnection,
+fn check_record(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
     step: &str,
     record: &ModelPartRecord,
@@ -337,30 +318,25 @@ async fn check_record(
         {
             return Err(invalid("tool part identity differs from its original call"));
         }
-        validate_derived_tool_identity(connection, event, &record.message_id, &operation).await?;
+        validate_derived_tool_identity(connection, event, &record.message_id, &operation)?;
     } else {
-        validate_display_identity(connection, event, &record.message_id).await?;
+        validate_display_identity(connection, event, &record.message_id)?;
     }
     let ordinal = i64::try_from(record.ordinal).map_err(invalid)?;
-    let duplicate: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM model_part_records WHERE invocation_id=? AND step_id=? AND ordinal=?)",
-    ).bind(&event.invocation.invocation_id).bind(step).bind(ordinal).fetch_one(&mut *connection).await?;
+    let duplicate: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM model_part_records WHERE invocation_id=? AND step_id=? AND ordinal=?)")?.query_row(rusqlite::params![&event.invocation.invocation_id, step, ordinal], |row| row.get(0))?;
     if duplicate {
         return Err(invalid("observed part requires a reference at terminal"));
     }
     Ok(())
 }
 
-pub(crate) async fn record(
-    db: &mut SqliteWorkerConnection<'_>,
-    stored: &StoredEvent,
-) -> Result<(), StoreError> {
+pub(crate) fn record(db: &rusqlite::Connection, stored: &StoredEvent) -> Result<(), StoreError> {
     let (step, parts, inputs) = match &stored.event.fact {
         Fact::ModelObserved {
             step_id,
             event: ModelObservation::Part(part),
         } => {
-            insert_record(db, stored, step_id, 0, RecordIdentity::Part(part)).await?;
+            insert_record(db, stored, step_id, 0, RecordIdentity::Part(part))?;
             return Ok(());
         }
         Fact::ModelCompleted { step_id, output } => (step_id, output.parts.as_slice(), &[][..]),
@@ -377,17 +353,17 @@ pub(crate) async fn record(
     };
     for (index, part) in parts.iter().enumerate() {
         if let CompletionPart::Own(part) = part {
-            insert_record(db, stored, step, index, RecordIdentity::Part(part)).await?;
+            insert_record(db, stored, step, index, RecordIdentity::Part(part))?;
         }
     }
     for (index, input) in inputs.iter().enumerate() {
-        insert_record(db, stored, step, index, RecordIdentity::ToolInput(input)).await?;
+        insert_record(db, stored, step, index, RecordIdentity::ToolInput(input))?;
     }
     Ok(())
 }
 
-async fn validate_result(
-    connection: &mut SqliteConnection,
+fn validate_result(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
     step: &str,
     record: &ModelPartRecord,
@@ -400,14 +376,11 @@ async fn validate_result(
     if name.is_empty() {
         return Err(invalid("empty provider result name"));
     }
-    let (original_call, duplicate): (bool, bool) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM model_part_bodies WHERE invocation_id=?1 AND step_id=?2
+    let (original_call, duplicate): (bool, bool) = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM model_part_bodies WHERE invocation_id=?1 AND step_id=?2
            AND ordinal<?3 AND json_extract(part,'$.kind')='tool_call'
            AND json_extract(part,'$.call.provider_executed')=1 AND json_extract(part,'$.call.id')=?4 AND json_extract(part,'$.call.name')=?5),
            EXISTS(SELECT 1 FROM model_part_bodies WHERE invocation_id=?1 AND step_id=?2
-           AND json_extract(part,'$.kind')='tool_result' AND json_extract(part,'$.id')=?4 AND json_extract(part,'$.name')=?5)",
-    ).bind(&event.invocation.invocation_id).bind(step).bind(i64::try_from(record.ordinal).map_err(invalid)?)
-        .bind(id).bind(name).fetch_one(connection).await?;
+           AND json_extract(part,'$.kind')='tool_result' AND json_extract(part,'$.id')=?4 AND json_extract(part,'$.name')=?5)")?.query_row(rusqlite::params![&event.invocation.invocation_id, step, i64::try_from(record.ordinal).map_err(invalid)?, id, name], |row| Ok((row.get(0)?, row.get(1)?,)))?;
     if duplicate {
         return Err(invalid("provider result was already recorded"));
     }
@@ -428,8 +401,8 @@ enum RecordIdentity<'a> {
     ToolInput(&'a maka_agent_facts::model::recorded::ToolInputView),
 }
 
-async fn insert_record(
-    db: &mut SqliteWorkerConnection<'_>,
+fn insert_record(
+    db: &rusqlite::Connection,
     stored: &StoredEvent,
     step: &str,
     index: usize,
@@ -439,31 +412,26 @@ async fn insert_record(
         RecordIdentity::Part(part) => (Some(part.ordinal), part.message_id.as_str(), "part"),
         RecordIdentity::ToolInput(input) => (None, input.message_id.as_str(), "tool_input"),
     };
-    sqlx::query("INSERT INTO model_part_records(owner_session_id,invocation_id,step_id,ordinal,event_id,source_sequence,record_index,message_id,record_kind)
-                 VALUES(?,?,?,?,?,?,?,?,?)")
-        .bind(&stored.event.invocation.session_id).bind(&stored.event.invocation.invocation_id)
-        .bind(step).bind(ordinal.map(i64::try_from).transpose().map_err(invalid)?)
-        .bind(&stored.event.id).bind(i64::try_from(stored.sequence).map_err(invalid)?)
-        .bind(i64::try_from(index).map_err(invalid)?).bind(message).bind(kind).execute(db).await?;
+    db.prepare_cached("INSERT INTO model_part_records(owner_session_id,invocation_id,step_id,ordinal,event_id,source_sequence,record_index,message_id,record_kind)
+                 VALUES(?,?,?,?,?,?,?,?,?)")?.execute(rusqlite::params![&stored.event.invocation.session_id, &stored.event.invocation.invocation_id, step, ordinal.map(i64::try_from).transpose().map_err(invalid)?, &stored.event.id, i64::try_from(stored.sequence).map_err(invalid)?, i64::try_from(index).map_err(invalid)?, message, kind])?;
     Ok(())
 }
 
-pub(crate) async fn accepted_call(
-    connection: &mut SqliteConnection,
+pub(crate) fn accepted_call(
+    connection: &rusqlite::Connection,
     invocation: &str,
     step: &str,
     call: &str,
 ) -> Result<Option<ModelToolCall>, StoreError> {
-    let value: Option<String> = sqlx::query_scalar(concat!("WITH ", accepted_calls!(),
-        " SELECT call FROM accepted_calls WHERE invocation_id=? AND step_id=? AND json_extract(call,'$.id')=? AND json_extract(call,'$.provider_executed')=0"))
-        .bind(invocation).bind(step).bind(call).fetch_optional(connection).await?;
+    let value: Option<String> = connection.prepare_cached(concat!("WITH ", accepted_calls!(),
+        " SELECT call FROM accepted_calls WHERE invocation_id=? AND step_id=? AND json_extract(call,'$.id')=? AND json_extract(call,'$.provider_executed')=0"))?.query_row(rusqlite::params![invocation, step, call], |row| row.get(0)).optional()?;
     value
         .map(|value| serde_json::from_str(&value).map_err(StoreError::from))
         .transpose()
 }
 
-pub(crate) async fn resolve_parts(
-    connection: &mut SqliteConnection,
+pub(crate) fn resolve_parts(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
 ) -> Result<Vec<ModelPartRecord>, StoreError> {
     let parts = match &event.fact {
@@ -479,10 +447,7 @@ pub(crate) async fn resolve_parts(
         resolved.push(match part {
             CompletionPart::Own(record) => record.clone(),
             CompletionPart::Ref(reference) => {
-                let json: String = sqlx::query_scalar("SELECT record FROM model_part_bodies WHERE event_id=? AND ordinal=? AND invocation_id=? AND step_id=?")
-                    .bind(&reference.event_id).bind(i64::try_from(reference.ordinal).map_err(invalid)?)
-                    .bind(&event.invocation.invocation_id).bind(event.fact.operation_id())
-                    .fetch_one(&mut *connection).await?;
+                let json: String = connection.prepare_cached("SELECT record FROM model_part_bodies WHERE event_id=? AND ordinal=? AND invocation_id=? AND step_id=?")?.query_row(rusqlite::params![&reference.event_id, i64::try_from(reference.ordinal).map_err(invalid)?, &event.invocation.invocation_id, event.fact.operation_id()], |row| row.get(0))?;
                 serde_json::from_str(&json)?
             }
         });
@@ -490,26 +455,29 @@ pub(crate) async fn resolve_parts(
     Ok(resolved)
 }
 
-pub(crate) async fn project(
-    connection: &mut SqliteConnection,
+pub(crate) fn project(
+    connection: &rusqlite::Connection,
     invocation: Invocation,
     step_id: String,
     sequence: u64,
     event_id: String,
     max_bytes: usize,
 ) -> Result<crate::context::AcceptedModelStep, StoreError> {
-    let mut rows = sqlx::query_as::<_, (i64, String, i64, String)>(
+    let mut statement = connection.prepare_cached(
         "SELECT source_sequence,event_id,ordinal,part FROM model_part_bodies
          WHERE invocation_id=? AND step_id=? AND source_sequence<? AND source_kind='model_observed'
          ORDER BY ordinal",
-    )
-    .bind(&invocation.invocation_id)
-    .bind(&step_id)
-    .bind(i64::try_from(sequence).map_err(invalid)?)
-    .fetch(connection);
+    )?;
+    let mut rows = statement.query(rusqlite::params![
+        &invocation.invocation_id,
+        &step_id,
+        i64::try_from(sequence).map_err(invalid)?
+    ])?;
     let mut bytes = 0usize;
     let mut items = Vec::new();
-    while let Some((sequence, event_id, ordinal, json)) = rows.try_next().await? {
+    while let Some(row) = rows.next()? {
+        let (sequence, event_id, ordinal, json): (i64, String, i64, String) =
+            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
         bytes = bytes
             .checked_add(json.len())
             .ok_or(StoreError::PrefixTooLarge)?;

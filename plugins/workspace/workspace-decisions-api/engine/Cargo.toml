@@ -25,7 +25,6 @@ publish.workspace = true
 [dependencies]
 hex.workspace = true
 maka-agent-facts.workspace = true
-maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
 futures-util.workspace = true
 serde.workspace = true

@@ -135,6 +135,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
                 screen.contains("Stop the current task?")
             })
             .await;
+            commit_native_events(&mut view).await;
             // A second Ctrl+C dismisses the choice; it cannot confirm Stop.
             shortcut(&mut view, 'c');
             wait_view(&mut view, |screen| {

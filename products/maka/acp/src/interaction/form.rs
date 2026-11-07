@@ -17,16 +17,17 @@
  * under the License.
  */
 
-use super::{Callback, acp, schema};
+use super::{Callback, Capabilities, Form, FormAnswer, schema};
 use maka_agent_facts::capability::FormResult;
 use maka_agent_facts::capability::FormValue;
 use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
+use serde_json::Value;
 
 pub(super) fn request(
     snapshot: &InteractionRecord,
-    capabilities: &acp::ClientCapabilities,
+    capabilities: &Capabilities,
 ) -> Result<Callback, crate::Error> {
     match &snapshot.request {
         InteractionRequest::Form {
@@ -56,57 +57,48 @@ pub(super) fn request(
 }
 fn elicitation(
     snapshot: &InteractionRecord,
-    capabilities: &acp::ClientCapabilities,
+    capabilities: &Capabilities,
     tool_use_id: &str,
     message: &str,
-    schema: acp::ElicitationSchema,
+    schema: Value,
 ) -> Result<Callback, crate::Error> {
-    if !capabilities
-        .elicitation
-        .as_ref()
-        .is_some_and(acp::ElicitationCapabilities::supports_form)
-    {
+    if !capabilities.form {
         return Err("ACP client does not support form elicitation".into());
     }
-    let scope =
-        acp::ElicitationSessionScope::new(acp::SessionId::new(snapshot.session_id.as_str()))
-            .tool_call_id(acp::ToolCallId::new(tool_use_id));
-    let params =
-        acp::CreateElicitationRequest::new(acp::ElicitationFormMode::new(scope, schema), message);
-    Ok(Callback::Elicitation(params))
+    Ok(Callback::Elicitation(Form {
+        session: snapshot.session_id.clone(),
+        tool_id: tool_use_id.into(),
+        message: message.into(),
+        schema,
+    }))
 }
 
 pub(super) fn answer(
     snapshot: &InteractionRecord,
-    response: acp::CreateElicitationResponse,
+    response: FormAnswer,
 ) -> Result<InteractionAnswer, crate::Error> {
     Ok(match &snapshot.request {
         InteractionRequest::Form { .. } => {
-            let result = match response.action {
-                acp::ElicitationAction::Accept(accept) => FormResult::Accept {
-                    values: accept
-                        .content
-                        .ok_or("Accepted form is missing content")?
+            let result = match response {
+                FormAnswer::Accept(content) => FormResult::Accept {
+                    values: content
                         .into_iter()
                         .map(|(name, value)| Ok((name, form_value(value)?)))
                         .collect::<Result<_, crate::Error>>()?,
                 },
-                acp::ElicitationAction::Decline => FormResult::Decline,
-                acp::ElicitationAction::Cancel => FormResult::Cancel,
-                _ => return Err("Unsupported ACP elicitation action".into()),
+                FormAnswer::Decline => FormResult::Decline,
+                FormAnswer::Cancel => FormResult::Cancel,
             };
             InteractionAnswer::Form { result }
         }
         InteractionRequest::Question { questions, .. } => {
-            let answers = match response.action {
-                acp::ElicitationAction::Accept(accept) => {
-                    let mut content = accept
-                        .content
-                        .ok_or("Accepted questions are missing content")?;
+            let answers = match response {
+                FormAnswer::Accept(content) => {
+                    let mut content = content;
                     let mut answers = Vec::with_capacity(questions.len());
                     for index in 0..questions.len() {
                         answers.push(match content.remove(&format!("question_{index}")) {
-                            Some(acp::ElicitationContentValue::String(value)) => Some(value),
+                            Some(Value::String(value)) => Some(value),
                             None => None,
                             _ => return Err("Question answer must be a string".into()),
                         });
@@ -116,42 +108,55 @@ pub(super) fn answer(
                     }
                     answers
                 }
-                acp::ElicitationAction::Decline | acp::ElicitationAction::Cancel => {
+                FormAnswer::Decline | FormAnswer::Cancel => {
                     vec![None; questions.len()]
                 }
-                _ => return Err("Unsupported ACP elicitation action".into()),
             };
             InteractionAnswer::Question { answers }
         }
         _ => return Err("Expected a form interaction".into()),
     })
 }
-fn form_value(value: acp::ElicitationContentValue) -> Result<FormValue, crate::Error> {
+fn form_value(value: Value) -> Result<FormValue, crate::Error> {
     Ok(match value {
-        acp::ElicitationContentValue::String(value) => FormValue::String(value),
-        acp::ElicitationContentValue::Integer(value) => {
-            if value.unsigned_abs() > 9_007_199_254_740_991 {
+        Value::String(value) => FormValue::String(value),
+        Value::Bool(value) => FormValue::Boolean(value),
+        Value::Number(value) => {
+            if value
+                .as_i64()
+                .is_some_and(|n| n.unsigned_abs() > 9_007_199_254_740_991)
+                || value.as_u64().is_some_and(|n| n > 9_007_199_254_740_991)
+            {
                 return Err("Form integer exceeds exact numeric range".into());
             }
-            FormValue::Number(value as f64)
+            FormValue::Number(value.as_f64().ok_or("Form number is not representable")?)
         }
-        acp::ElicitationContentValue::Number(value) => FormValue::Number(value),
-        acp::ElicitationContentValue::Boolean(value) => FormValue::Boolean(value),
-        acp::ElicitationContentValue::StringArray(value) => FormValue::Strings(value),
+        Value::Array(values) => FormValue::Strings(
+            values
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => Ok(s),
+                    _ => Err("Form array must contain strings".into()),
+                })
+                .collect::<Result<_, crate::Error>>()?,
+        ),
         _ => return Err("Unsupported ACP form value".into()),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{request, tests::snapshot};
+    use super::super::tests::{Callback, request, snapshot};
     use super::*;
+    use agent_client_protocol::v2::schema as acp;
     use serde_json::json;
     fn answer(
         snapshot: &InteractionRecord,
         value: serde_json::Value,
     ) -> Result<InteractionAnswer, crate::Error> {
-        let response = super::super::Response::Elicitation(serde_json::from_value(value)?);
+        let response = super::super::Response::Elicitation(crate::transport::v2::form_answer(
+            serde_json::from_value(value)?,
+        )?);
         super::super::answer(snapshot, response)
     }
 
@@ -225,8 +230,13 @@ mod tests {
         let mut capabilities = acp::ClientCapabilities::default();
         capabilities.elicitation =
             Some(acp::ElicitationCapabilities::new().form(acp::ElicitationFormCapabilities::new()));
-        let callback = request(&snapshot, &capabilities).unwrap();
-        assert!(matches!(callback, Callback::Elicitation(_)));
+        let Callback::Elicitation(callback) = request(&snapshot, &capabilities).unwrap() else {
+            panic!("expected form callback");
+        };
+        assert_eq!(
+            serde_json::to_value(callback).unwrap()["requestedSchema"]["properties"]["count"]["maximum"],
+            3
+        );
         for content in [
             json!({}),
             json!({"count":4}),

@@ -30,7 +30,6 @@
 | [settings](settings/native/README.zh-CN.md) | 连接、凭据和偏好 |
 | [skills](skills/native/README.zh-CN.md) | 技能发现、读取和发布 |
 | [interactions](interactions/native/README.zh-CN.md) | 问题和表单 |
-| [workhub](workhub/core/README.zh-CN.md) | 任务协调和 worker 结果 |
 | `application/` | 部署管理、插件安装与 UI 编写 |
 | `shared/` | 共用 TypeScript 契约与开发辅助函数 |
 

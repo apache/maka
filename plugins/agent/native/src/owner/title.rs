@@ -43,7 +43,6 @@ struct Worker {
     active: Arc<std::sync::Mutex<BTreeMap<String, Arc<Work>>>>,
     session: String,
     work: Arc<Work>,
-    reported: bool,
 }
 impl Registry {
     fn start(&self, session: &str, cancellation: CancellationToken) -> Option<Worker> {
@@ -61,7 +60,6 @@ impl Registry {
             active: self.active.clone(),
             session: session.to_owned(),
             work,
-            reported: false,
         })
     }
 
@@ -83,14 +81,14 @@ impl Registry {
 }
 impl Worker {
     fn complete(&mut self, success: bool) {
-        self.reported = true;
         self.work.completed.send_replace(Some(success));
     }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.active.lock().unwrap().remove(&self.session);
-        if !self.reported {
+        let completed = self.work.completed.borrow().is_some();
+        if !completed {
             self.work.completed.send_replace(Some(false));
         }
     }
@@ -225,18 +223,7 @@ impl Owner {
         else {
             return Ok(());
         };
-        if session.configuration.title_is_manual
-            || session.archived
-            || self
-                .store
-                .session(&invocation.session_id)
-                .await
-                .map_err(persistence)?
-                .session_manager(&invocation.session_id)
-                .await
-                .map_err(persistence)?
-                .is_some()
-        {
+        if session.configuration.title_is_manual || session.archived {
             return Ok(());
         }
         let Some(opening) = self
@@ -386,6 +373,11 @@ impl Owner {
         // Main execution also moves the public revision. Retry metadata only;
         // each attempt gives queued manual changes and shutdown a turn at the gate.
         loop {
+            let _admission = tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Ok(()),
+                admission = self.runs.ordered(&invocation.session_id) => admission,
+            };
             let runs = tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Ok(()),
@@ -405,15 +397,6 @@ impl Owner {
             if current.archived
                 || current.configuration.title_is_manual
                 || current.configuration.title != session.configuration.title
-                || self
-                    .store
-                    .session(&invocation.session_id)
-                    .await
-                    .map_err(persistence)?
-                    .session_manager(&invocation.session_id)
-                    .await
-                    .map_err(persistence)?
-                    .is_some()
             {
                 return Ok(());
             }

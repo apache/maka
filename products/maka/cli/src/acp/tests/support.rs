@@ -18,7 +18,8 @@
  */
 
 use super::provider::{ModelRequest, Provider};
-use agent_client_protocol::schema::v2 as acp;
+use agent_client_protocol::v2::schema as acp;
+use maka_agent_facts::configuration::ModelOverride;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::{
     application::{host::Client as Native, transport::wire::Reply},
@@ -84,23 +85,7 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn runtime_databases(&self) -> Vec<PathBuf> {
-        let mut entries =
-            tokio::fs::read_dir(self.database.parent().unwrap().join("runtime-partitions"))
-                .await
-                .unwrap();
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await.unwrap() {
-            let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "sqlite")
-                && entry.file_type().await.unwrap().is_file()
-            {
-                paths.push(path);
-            }
-        }
-        assert!(!paths.is_empty(), "fixture must have runtime databases");
-        paths
+        vec![self.database.clone()]
     }
 
     pub async fn database_containing(&self, query: &'static str, parameters: &[&str]) -> PathBuf {
@@ -132,6 +117,9 @@ impl Fixture {
     }
 
     pub async fn open() -> Self {
+        Self::with_model_override(ModelOverride::default()).await
+    }
+    pub async fn with_model_override(model: ModelOverride) -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();
         let namespaces = RootNamespaces {
@@ -146,6 +134,7 @@ impl Fixture {
         super::provider::configure(
             RootOwner::create(&root, &namespaces).unwrap(),
             &provider.base_url,
+            model,
         )
         .await;
         let mut product = crate::application::open_host(
@@ -217,7 +206,9 @@ pub async fn until_idle(
             .await
             .expect("SDK update stream closed before idle");
         let idle = match &update {
-            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle)) => {
+            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(idle))
+                if idle.stop_reason.is_some() =>
+            {
                 Some(idle.stop_reason.clone())
             }
             _ => None,

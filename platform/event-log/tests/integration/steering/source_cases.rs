@@ -72,7 +72,6 @@ fn resource(
             registration: uuid::Uuid::parse_str("12345678-1234-4234-8234-123456789abc").unwrap(),
             session_id: invocation.session_id.clone(),
         }],
-        turn_orchestration: None,
     });
     pending.source.message.content = prepared(&pending.source.unprepared_content);
     pending

@@ -21,8 +21,8 @@ import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
-import { ContextMenu, Input, MenuItem, Popover } from 'nsh/base';
-import type { InputRef, JSX, ViewRef } from 'nsh';
+import { ContextMenu, Input, MenuItem } from 'nsh/base';
+import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
@@ -45,39 +45,26 @@ import {
   captionTextStyle,
   compact,
   controlFocusStyle,
-  controlHoverStyle,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
-import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
 import { createComposerPaste } from './composerPaste';
+import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
+import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
-// Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
-const skillTokens = () => [
-  {
-    pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
-    style: {
-      color: C.accent,
-      backgroundColor: `${C.accent}20`,
-      borderRadius: 4,
-    },
-    atomic: true,
-  },
-];
-
 export function Composer(props: ComposerViewInput<JSX.Element>) {
-  const pendingAdd = signal(false);
   const completion = createComposerCompletion({
     session: props.session,
+    pending: () => props.pending?.() ?? null,
     commands: props.commands,
     active: props.active,
   });
-  const predictionEditor = signal<{ owner: ComposerSession; node: InputRef } | null>(null);
+  const predictionEditor = signal<{ owner: ComposerSession; node: ComposerEditor } | null>(null);
   const suggestedMessage = () => {
     const owner = props.session();
     if (
@@ -136,10 +123,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       text: suggestion.text,
     };
     const bindings = ['tab', 'right', 'enter'].map((key) =>
-      keymap.bind(key, () => acceptSuggestedMessage(offered), {
-        when: 'always',
-        within: editor.node,
-      }),
+      editor.node.bindKey(key, () => acceptSuggestedMessage(offered)),
     );
     return () => bindings.forEach((unbind) => unbind());
   });
@@ -155,56 +139,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (owner) completion.drop(owner, event);
     else pendingDrop?.(event);
   });
-  type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
-  let pendingCommand: {
-    owner: Pending;
-    text: string;
-    confirmation: string;
-    id: string;
-  } | null = null;
-  const submitPending = (owner: Pending, text: string, expected?: string) => {
-    if (
-      pending() !== owner ||
-      !props.active() ||
-      owner.sending() ||
-      completion.composing() ||
-      owner.draft() !== text ||
-      (expected !== undefined && owner.confirmation() !== expected)
-    )
-      return;
-    const command = matchComposerCommand(props.commands(), text);
-    if (!command) {
-      owner.submit(text, expected);
-      return;
-    }
-    const confirmation = owner.confirmation();
-    if (
-      pendingCommand?.owner === owner &&
-      pendingCommand.text === text &&
-      pendingCommand.confirmation === confirmation &&
-      pendingCommand.id === command.found.id
-    )
-      return;
-    const ticket = { owner, text, confirmation, id: command.found.id };
-    pendingCommand = ticket;
-    const finish = (accepted: void | boolean) => {
-      if (pendingCommand === ticket) pendingCommand = null;
-      if (accepted !== false && pending() === owner && owner.confirmation() === confirmation)
-        owner.changeDraft('');
-    };
-    try {
-      const result = command.found.run(command.argument || undefined);
-      if (result instanceof Promise)
-        void result.then(finish, (reason) => {
-          if (pendingCommand === ticket) pendingCommand = null;
-          throw reason;
-        });
-      else finish(result);
-    } catch (reason) {
-      if (pendingCommand === ticket) pendingCommand = null;
-      throw reason;
-    }
-  };
   const sendPending = ({
     owner,
     text,
@@ -215,7 +149,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     expected: string;
   }) => {
     const current = pending();
-    if (current?.id === owner) submitPending(current, text, expected);
+    if (current?.id === owner) completion.submitPending(current, text, expected);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -229,7 +163,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     (props.session() === null &&
       (pending() === null ||
         pending()!.sending() ||
-        !pending()!.ready() ||
+        (!completion.isCommand() && !pending()!.ready()) ||
         (!pending()!.draft().trim() && !pending()!.files().length))) ||
     (props.session() !== null && !props.session()!.editable()) ||
     (!completion.isCommand() &&
@@ -279,6 +213,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  const toggleAttachments = () => {
+    const owner = props.session();
+    if (owner && owner.editable())
+      owner.attachments.open({ owner: owner.sessionId, value: !owner.attachments.picker() });
+    else if (pending()) pending()!.openPicker(!pending()!.picking());
+  };
   // A file drag over the editor leaves the conversation's own drop target.
   const draggingOverEditor = signal(false);
   const fileDragging = () =>
@@ -290,25 +230,33 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const node = cardRoot();
     if (node && props.active() && owner?.editable() && owner.invocation() === null && owner.draft())
       return keymap.bind('ctrl+c', completion.clearDraft, {
-        when: 'always',
+        when: 'notEditing',
         within: node,
         fallback: true,
       });
   });
   effect(() => {
-    const stop = props.stopAction();
+    const owner = props.session();
+    const current = predictionEditor();
+    if (
+      owner &&
+      current?.owner === owner &&
+      props.active() &&
+      owner.editable() &&
+      owner.invocation() === null &&
+      owner.draft()
+    )
+      return current.node.bindKey('ctrl+c', completion.clearDraft, { fallback: true });
+  });
+  const escapeComposer = () => {
+    if (completion.composing()) return;
+    const suggestion = suggestedMessage();
+    if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
+    else props.stopAction()();
+  };
+  effect(() => {
     const node = cardRoot();
-    if (node)
-      return keymap.bind(
-        'escape',
-        () => {
-          if (completion.composing()) return;
-          const suggestion = suggestedMessage();
-          if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
-          else stop();
-        },
-        { when: 'always', within: node },
-      );
+    if (node) return keymap.bind('escape', escapeComposer, { when: 'notEditing', within: node });
   });
   const workspaceLabel = () => {
     const path = props.session()?.workspace() ?? pending()?.workspace();
@@ -461,7 +409,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     flexShrink: 1,
                     gap: 8,
                   }}
-                  hoverStyle={{ backgroundColor: C.surface }}
+                  hoverStyle={{ backgroundColor: C.card }}
                   focusStyle={{ backgroundColor: C.raised }}
                 >
                   <Icon name="folder" color={C.secondary} />
@@ -491,7 +439,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={{ backgroundColor: C.surface }}
+                  hoverStyle={{ backgroundColor: C.card }}
                   focusStyle={{ backgroundColor: C.raised }}
                 >
                   <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
@@ -570,13 +518,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             unbind = keymap.bind(
               'mod+u',
               () => {
-                const owner = props.session();
-                if (owner && owner.editable())
-                  owner.attachments.open({
-                    owner: owner.sessionId,
-                    value: !owner.attachments.picker(),
-                  });
-                else if (pending()) pending()!.openPicker(!pending()!.picking());
+                toggleAttachments();
               },
               { when: 'always', within: node },
             );
@@ -584,10 +526,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           accessibilityLabel={tr('Conversation composer')}
           style={{
             flexShrink: 0,
-            backgroundColor: C.raised,
+            backgroundColor: platform.isTerminal ? C.raised : C.card,
             borderRadius: cardRadius(),
             borderWidth: 1,
-            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.raised,
+            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.card,
             ...(platform.isTerminal
               ? {
                   paddingHorizontal: 16,
@@ -607,7 +549,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               const owner = session();
               const local = owner === null ? pending() : null;
               const path = signal('');
-              const editor = signal<InputRef | null>(null);
+              const editor = signal<ComposerEditor | null>(null);
               const selection = signal({ start: 0, end: 0 });
               const paste = local
                 ? createComposerPaste({
@@ -719,26 +661,25 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         maxHeight: compact() ? 64 : 144,
                       }}
                     >
-                      <Input
+                      <SkillInput
                         ref={(node) => {
                           editor.set(node);
                           props.attach(node);
+                          node.bindKey('mod+u', toggleAttachments);
                           completion.attach(owner?.sessionId ?? null, node);
                           predictionEditor.set(owner ? { owner, node } : null);
                         }}
+                        onEscape={escapeComposer}
                         testID="message"
                         accessibilityLabel={tr('Message composer')}
                         autoFocus={owner !== null || local !== null}
-                        multiline
-                        submitBehavior="submit"
-                        tokens={skillTokens()}
                         value={owner?.draft() ?? local?.draft() ?? ''}
                         readonly={owner ? !owner.editable() : !local || local.sending()}
                         onChange={
                           owner
                             ? ({ value }) => completion.change(owner, value)
                             : local
-                              ? ({ value }) => local.changeDraft(value)
+                              ? ({ value }) => completion.change(local, value)
                               : undefined
                         }
                         onPaste={
@@ -787,17 +728,16 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             : local
                               ? (event) => {
                                   selection.set({ ...event });
+                                  completion.selection(local, event);
                                 }
                               : undefined
                         }
-                        onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
-                        onCompositionChange={
-                          owner || local
-                            ? (event) => {
-                                if (owner || pending() === local)
-                                  completion.composition(owner, event);
-                              }
-                            : undefined
+                        onCaretMove={
+                          owner
+                            ? (event) => completion.caret(owner, event)
+                            : local
+                              ? (event) => completion.caret(local, event)
+                              : undefined
                         }
                         onSubmit={
                           owner
@@ -812,7 +752,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                                 else completion.submit(owner, event);
                               }
                             : local
-                              ? (event) => submitPending(local, event.text)
+                              ? (event) => completion.submitPending(local, event.text)
                               : undefined
                         }
                         placeholder={
@@ -828,7 +768,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             flexGrow: 1,
                             flexShrink: 1,
                             color: C.text,
-                            placeholderColor: C.muted,
                             ...bodyTextStyle,
                             ...(owner !== null && suggestedMessage() !== null
                               ? {
@@ -872,7 +811,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                               verticalAlign: 'middle',
                               pointerEvents: 'auto',
                             }}
-                            hoverStyle={controlHoverStyle()}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
@@ -897,83 +836,30 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               { pointerEvents: 'box-none' },
             ]}
           >
-            <Popover
-              open={pending() !== null && pendingAdd()}
-              onOpenChange={({ open }) => pendingAdd.set(open && pending() !== null)}
-              placement="top"
-              align="start"
-              offset={8}
-              margin={8}
-              popupStyle={{
-                width: 240,
-                padding: 8,
-                backgroundColor: C.surface,
-                borderRadius: 12,
-              }}
-              trigger={
-                <Button
-                  ref={completion.addButton}
-                  onPress={
-                    pending()
-                      ? undefined
-                      : inputAction(completion.toggleAdd, {
-                          sessionId: props.session()?.sessionId ?? null,
-                        })
-                  }
-                  accessibilityLabel={tr('Add to message')}
-                  tooltip={textTooltip(() => tr('Add to message'))}
-                  disabled={
-                    pending()
-                      ? pending()!.sending() || !pending()!.ready()
-                      : !props.session()?.editable() || completion.composing()
-                  }
-                  style={{
-                    width: 32,
-                    height: 32,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderRadius: 16,
-                  }}
-                  hoverStyle={{ backgroundColor: C.line }}
-                  focusStyle={{ backgroundColor: C.line }}
-                  activeStyle={{ backgroundColor: C.surface }}
-                >
-                  <Icon name="plus" color={C.secondary} />
-                </Button>
+            <Button
+              ref={completion.addButton}
+              onPress={inputAction(completion.toggleAdd, {
+                owner: props.session()?.sessionId ?? pending()?.id ?? null,
+              })}
+              accessibilityLabel={tr('Add to message')}
+              tooltip={textTooltip(() => tr('Add to message'))}
+              disabled={
+                completion.composing() ||
+                (pending() ? pending()!.sending() : !props.session()?.editable())
               }
+              style={{
+                width: 32,
+                height: 32,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 16,
+              }}
+              hoverStyle={{ backgroundColor: C.line }}
+              focusStyle={{ backgroundColor: C.line }}
+              activeStyle={{ backgroundColor: C.surface }}
             >
-              <Button
-                accessibilityLabel={tr('Attach files')}
-                onPress={inputAction(() => {
-                  pendingAdd.set(false);
-                  pending()?.openPicker(true);
-                }, null)}
-                style={controlStyle}
-                hoverStyle={{ backgroundColor: C.raised }}
-                focusStyle={{ backgroundColor: C.raised }}
-              >
-                <Text style={{ color: C.text }}>{tr('Attach files')}</Text>
-              </Button>
-              <Each
-                of={props.commands().filter((command) => command.trigger === 'goal')}
-                key={(command) => command.id}
-              >
-                {(item) => (
-                  <Button
-                    accessibilityLabel={item().title}
-                    onPress={inputAction(() => {
-                      pendingAdd.set(false);
-                      return item().run();
-                    }, null)}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.raised }}
-                  >
-                    <Text style={{ color: C.text }}>{item().title}</Text>
-                  </Button>
-                )}
-              </Each>
-            </Popover>
+              <Icon name="plus" color={C.secondary} />
+            </Button>
             <SessionPermissionsSelect
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}

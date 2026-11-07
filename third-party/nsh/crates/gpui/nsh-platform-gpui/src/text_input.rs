@@ -907,6 +907,10 @@ pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
     focused_view(surface).filter(|view| input_of(view).is_some())
 }
 
+pub(crate) fn composing(view: &NshView) -> bool {
+    input_of(view).is_some_and(|input| input.model.borrow().composition.is_some())
+}
+
 pub(crate) fn window_active(surface: &Surface) -> bool {
     FOCUS.with(|f| f.borrow().get(&surface.key()).is_none_or(|f| !f.inactive))
 }
@@ -1056,8 +1060,8 @@ pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
     }
 }
 
-/// Keeps editing keys and their releases behind the text waiting for the
-/// next field. Character keys deliver their text through the input method.
+/// Keeps editing keys and shortcuts behind an unsettled focus transition
+/// or queued text. Character keys deliver text through the input method.
 pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
     let m = event.modifiers;
     let edits = matches!(
@@ -1079,12 +1083,13 @@ pub(crate) fn hold_key(surface: &Surface, event: &KeyEvent) -> bool {
     if (event.down && !(edits || chord)) || !armed(surface) {
         return false;
     }
+    let waiting_for_engine = behind(surface);
     FOCUS.with(|f| {
         let mut map = f.borrow_mut();
         let Some(focus) = map.get_mut(&surface.key()) else {
             return false;
         };
-        if focus.pending.is_empty() {
+        if focus.pending.is_empty() && !waiting_for_engine {
             return false;
         }
         if !event.down

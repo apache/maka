@@ -33,9 +33,14 @@ pub struct Lane {
     semantic: Arc<Mutex<Semantic>>,
 }
 #[derive(Default)]
-struct Semantic {
-    pending: Option<Prefix>,
-    confirmed: Option<(Prefix, String)>,
+enum Semantic {
+    #[default]
+    Empty,
+    Pending(Prefix),
+    Confirmed {
+        prefix: Prefix,
+        response_id: String,
+    },
 }
 struct Prefix {
     length: usize,
@@ -93,12 +98,8 @@ impl Lane {
         settled_tool_call_ids: &[&str],
         response_id: Option<&str>,
     ) -> bool {
-        let pending = {
-            let mut state = self.semantic.lock().unwrap();
-            state.confirmed = None;
-            state.pending.take()
-        };
-        let Some(pending) = pending else {
+        let state = std::mem::take(&mut *self.semantic.lock().unwrap());
+        let Semantic::Pending(pending) = state else {
             return false;
         };
         let Some(id) = self.transport.response_id() else {
@@ -205,18 +206,17 @@ impl Lane {
         if self.transport.response_id().as_ref() != Some(&id) {
             return false;
         }
-        self.semantic.lock().unwrap().confirmed = Some((prefix, id));
+        *self.semantic.lock().unwrap() = Semantic::Confirmed {
+            prefix,
+            response_id: id,
+        };
         true
     }
 
     /// The original prompt remains intact. Only a live confirmed connection may
     /// omit a prefix, and that comparison uses structural prefix metadata.
     pub(crate) async fn prepare(&self, request: &mut ModelRequest) -> usize {
-        let confirmed = {
-            let mut state = self.semantic.lock().unwrap();
-            state.pending = None;
-            state.confirmed.take()
-        };
+        let state = std::mem::take(&mut *self.semantic.lock().unwrap());
         if !matches!(
             request.provider.kind,
             ProviderKind::OpenaiResponses | ProviderKind::OpenResponses(_)
@@ -230,8 +230,12 @@ impl Lane {
             return 0;
         }
         let pending = Prefix::new(&request.prompt, request.prompt.len()).await;
-        self.semantic.lock().unwrap().pending = pending;
-        let Some((prefix, id)) = confirmed else {
+        *self.semantic.lock().unwrap() = pending.map_or(Semantic::Empty, Semantic::Pending);
+        let Semantic::Confirmed {
+            prefix,
+            response_id: id,
+        } = state
+        else {
             return 0;
         };
         if self.transport.response_id().as_ref() != Some(&id)

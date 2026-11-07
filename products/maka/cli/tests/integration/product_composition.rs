@@ -25,7 +25,7 @@ fn read(directory: &Path, name: &str) -> Value {
 }
 
 fn compose(configuration: &Path, output: &Path, isolated: &Path) {
-    let result = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let result = Command::new(crate::maka_executable())
         .args(["application", "compose", "--configuration"])
         .arg(configuration)
         .arg("--output")
@@ -42,23 +42,31 @@ fn compose(configuration: &Path, output: &Path, isolated: &Path) {
 }
 
 #[test]
-fn workhub_composition_preserves_bindings_authority_and_installation_identities_without_node() {
+fn product_composition_preserves_bindings_authority_and_installation_identities_without_node() {
     let directory = tempfile::tempdir().unwrap();
     let configuration = directory.path().join("configuration.json");
     let output = directory.path().join("host-source");
     let agent = json!({
         "workspaceRoots":[{"label":"Project","path":"/private/product-workspace"}],
+        "skillLibrary":"skills",
         "permissions":{"access":"workspace_write","requestPermissions":true},
-        "tools":[{"name":"ReadPlugins","description":"Read enabled UI plugins","target":{"kind":"import","name":"ui"},"method":"readUi","result":"json","confirmation":"preapproved"}],
+        "tools":[
+            {"name":"ReadPlugins","description":"Read enabled UI plugins","target":{"kind":"import","name":"ui"},"method":"readUi","result":"json","confirmation":"preapproved"},
+            {"name":"Execute","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","result":"json","confirmation":"preapproved"},
+            {"name":"Skill","description":"Load a skill","target":{"kind":"import","name":"skills"},"method":"load","result":"json","confirmation":"preapproved"}
+        ],
     });
-    let mut coordinator = agent.clone();
-    coordinator["tools"] = json!([{"name":"Execute","description":"Run a command","target":{"kind":"import","name":"processes"},"method":"execute","result":"json","confirmation":"preapproved"}]);
-    fs::write(&configuration, serde_json::to_vec(&json!({
-        "locale":"en",
-        "agent":agent,
-        "coordinator":coordinator,
-        "coordinatorProcesses":{"filesystem":{"default":"read","rules":[],"denyGlobs":[]},"network":"denied","helper":null},
-    })).unwrap()).unwrap();
+    fs::write(
+        &configuration,
+        serde_json::to_vec(&json!({
+            "locale":"en",
+            "agent":agent,
+            "processes":{"filesystem":{"default":"read","rules":[],"denyGlobs":[]},"network":"denied","helper":null},
+            "skills":{"bundled":true,"sources":[]},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     compose(&configuration, &output, directory.path());
     let installation = read(&output, "installation");
     let keys = &installation["keys"];
@@ -87,12 +95,8 @@ fn workhub_composition_preserves_bindings_authority_and_installation_identities_
         json!([{"kind":"instance","path":["agent"],"export":"agent"}])
     );
     assert_eq!(
-        conversation["bindings"]["coordinator"],
-        json!([{"kind":"instance","path":["workhub"],"export":"agent"}])
-    );
-    assert_eq!(
-        conversation["bindings"]["coordinatorTerminal"],
-        json!([{"kind":"instance","path":["coordinator-workspace-processes"],"export":"terminal"}])
+        conversation["bindings"]["terminal"],
+        json!([{"kind":"instance","path":["workspace-processes"],"export":"terminal"}])
     );
     let workbench =
         maka_packages::Package::read_from(&output.join("packages/workbench.maka-plugin")).unwrap();
@@ -102,32 +106,29 @@ fn workhub_composition_preserves_bindings_authority_and_installation_identities_
     );
     assert!(!output.join("ui.json").exists());
     assert!(!output.join("management-host.json").exists());
-    assert_eq!(
-        host["instances"]["workhub"]["bindings"]["worker"],
-        json!([{"kind":"instance","path":["agent"],"export":"agent"}])
-    );
-    let processes =
-        &host["instances"]["coordinator-workspace-processes"]["configuration"]["values"];
-    assert_eq!(processes["sessionOwner"], json!([keys["workhub"]]));
-    assert_eq!(processes["sessionKind"], "workhub");
-    assert!(host["instances"].get("workspace-processes").is_none());
+    let processes = &host["instances"]["workspace-processes"]["configuration"]["values"];
+    assert_eq!(processes["sessionOwner"], json!([keys["agent"]]));
     let endpoints = read(&output, "endpoints");
-    for name in ["coordinator", "workhub"] {
+    for name in ["agent", "terminal"] {
         assert_eq!(endpoints[name]["consumer"], json!([keys["gateway"]]));
         assert_eq!(endpoints[name]["import"], name);
     }
     let grants = read(&output, "native-grants");
     let grants = grants.as_array().unwrap();
-    assert!(grants.iter().any(|grant| {
-        grant["origin"][0] == keys["workhub"]
-            && grant["consumer"][0] == keys["workhub"]
-            && grant["provider"][0] == keys["agent"]
-            && grant["export"] == "agent"
-            && grant["methods"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("send"))
-    }));
+    assert!(
+        grants.iter().any(|grant| {
+            grant["origin"][0] == keys["agent"]
+                && grant["consumer"][0] == keys["agent"]
+                && grant["provider"][0] == keys["skills"]
+                && grant["export"] == "skills"
+                && grant["methods"] == json!(["candidates", "prepare", "search"])
+        }),
+        "{grants:?}"
+    );
+    assert_eq!(
+        host["instances"]["agent"]["bindings"]["processes"],
+        json!([{"kind":"instance","path":["workspace-processes"],"export":"processes"}])
+    );
     assert_eq!(
         host["instances"]["agent"]["bindings"]["ui"],
         json!([{"kind":"instance","path":["host-deployment-manager"],"export":"Management"}])

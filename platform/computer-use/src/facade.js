@@ -631,14 +631,12 @@ const playwrightFor = (handle, identity) => {
   return Object.freeze(playwrightTarget);
 };
 
-let documented = false;
 let reference;
 const documentation = async () => {
   const text = await invoke('documentation');
-  if (!documented || reference !== text) {
+  if (reference !== text) {
     reference = text;
     write(text);
-    documented = true;
   }
   return text;
 };
@@ -1778,7 +1776,7 @@ Object.defineProperty(globalThis, 'cua', {
       });
     },
     rewriteDocumentation: async () => {
-      documented = false;
+      reference = undefined;
       return documentation();
     },
   }),

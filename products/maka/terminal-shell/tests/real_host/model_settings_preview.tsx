@@ -143,6 +143,24 @@ function Preview() {
             },
           ],
         };
+      if (method === 'models') {
+        const choice = (modelId: string) => ({
+          selection: { connectionId: 'connection', modelId },
+          connectionName: name,
+          label: modelId,
+          thinkingLevels: ['off', 'medium', 'high'],
+          defaultThinkingLevel: 'medium',
+        });
+        return {
+          kind: 'ready',
+          revision: catalogRevision,
+          choices: enabled ? modelIds.map(choice) : [],
+          defaultModel: defaultTarget
+            ? { kind: 'ready', choice: choice(defaultTarget.modelId), defaults: null }
+            : { kind: 'none' },
+          next: null,
+        };
+      }
       if (method === 'providers') {
         if (failProviders) {
           failProviders = false;
@@ -323,7 +341,11 @@ function Preview() {
               : owner.page() === 'model'
                 ? tr('Model settings')
                 : tr('Connections & models'),
-        nested: () => owner.page() !== 'connections',
+        action: () =>
+          owner.page() === 'connections' && !owner.confirmation()
+            ? { label: tr('Add connection'), run: owner.newConnection, disabled: owner.loading() }
+            : null,
+        nested: () => owner.page() !== 'connections' || !!owner.confirmation(),
         navigation: owner.navigation,
         back: owner.back,
         busy: owner.busy,
@@ -346,7 +368,6 @@ function Preview() {
         defaultRoute={{ instance, id: 'connections' }}
         route={signal({ instance, id: 'connections' })}
         operations={operations}
-        recover={() => {}}
       />
     </HostProvider>
   );

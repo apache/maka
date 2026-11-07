@@ -37,8 +37,15 @@ impl Session {
                 // Preserve the source-provided installed identity. Neither a
                 // display name nor a caller-selected pid becomes an app ID.
                 let apps: ListAppsOutput = decode(
-                    self.raw_tool(RawTool::ListApps, json!({}), false, cancellation, language)
-                        .await?,
+                    self.raw_tool(
+                        RawTool::ListApps,
+                        json!({}),
+                        false,
+                        cancellation,
+                        language,
+                        invocation,
+                    )
+                    .await?,
                 )?;
                 return Ok(json!(
                     apps.apps
@@ -52,7 +59,7 @@ impl Session {
             }
             ListWindows | GetWindow => {
                 let windows = self
-                    .windows(invocation.session(), cancellation, language)
+                    .windows(invocation.session(), cancellation, language, invocation)
                     .await?;
                 if matches!(operation, ListWindows) {
                     return Ok(json!(
@@ -79,6 +86,7 @@ impl Session {
                     false,
                     cancellation,
                     language,
+                    invocation,
                 )
                 .await?;
                 return Ok(Value::Null);
@@ -113,6 +121,7 @@ impl Session {
                 expected,
                 cancellation,
                 language,
+                invocation,
             )
             .await?;
             // Fold the exact native commit before decoding, formatting,
@@ -355,6 +364,7 @@ impl Session {
                 (generation, frame),
                 cancellation,
                 language,
+                invocation,
             )
             .await?;
             return Ok(Value::Null);
@@ -390,10 +400,11 @@ impl Session {
                 generation,
                 cancellation,
                 language,
+                invocation,
             )
             .await?;
         } else {
-            self.raw_tool(tool, arguments, false, cancellation, language)
+            self.raw_tool(tool, arguments, false, cancellation, language, invocation)
                 .await?;
         }
         Ok(Value::Null)

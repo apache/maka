@@ -31,6 +31,7 @@ use std::sync::{
 use tokio::sync::Notify;
 
 pub(super) struct Goals {
+    pub(super) admissions: Arc<runs::Registry>,
     storage: Arc<maka_host_runtime::storage::Storage>,
     pub(super) repository: Repository<MessageBasis>,
     pub(super) gate: Mutex<()>,
@@ -50,6 +51,7 @@ impl Goals {
                 .expect("goal namespace"),
         ));
         Self {
+            admissions: Arc::new(runs::Registry::default()),
             repository: Repository::new(storage.clone()),
             storage,
             gate: Mutex::new(()),
@@ -190,26 +192,11 @@ impl Owner {
         }
         self.goals.receipt(&reference).await
     }
-    async fn goal_privacy(&self) -> Result<(), String> {
-        if self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(reason)?
-            .policy
-            .privacy
-            .incognito_active
-        {
-            return Err("goal_incognito".into());
-        }
-        Ok(())
-    }
     pub(in crate::owner) async fn check_goal_background(
         &self,
         session: &str,
         id: Uuid,
     ) -> Result<(), String> {
-        self.goal_privacy().await?;
         let saved = self
             .goals
             .repository
@@ -242,7 +229,6 @@ impl Owner {
         id: Uuid,
         approval: GoalApproval,
     ) -> Result<MessageBasis, String> {
-        self.goal_privacy().await?;
         if approval.target.session_id != session {
             return Err("goal_approval_session_changed".into());
         }
@@ -274,6 +260,15 @@ impl Owner {
         }
         if runs.busy(session) {
             return Ok(false);
+        }
+        if self.runs.has_checkpoints() {
+            let current = self.session(session).await?;
+            if !self.runs.workspace_available(
+                session,
+                std::path::Path::new(&current.configuration.workspace.path),
+            ) {
+                return Ok(false);
+            }
         }
         if !self
             .store
@@ -312,13 +307,15 @@ impl Owner {
                 session_id
             }
         };
-        self.session(session).await?;
+        let admission = self.goals.admissions.ordered(session).await;
+        self.mutable_session(session).await?;
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
         let owner = self.clone();
         let job = self.workers.spawn(async move {
+            let _admission = admission;
             let _gate = owner.goals.gate.lock().await;
             if let Some(result) = owner.goals.receipt(&operation).await? {
                 return Ok(result);
@@ -464,9 +461,6 @@ impl Owner {
                     saved.goal.arm.token_budget = budget.token_budget;
                 }
                 if action == GoalControl::Resume {
-                    if let Err(error) = self.goal_privacy().await {
-                        return self.reject_goal(operation, error).await;
-                    }
                     saved.goal.authority_blocked = false;
                 }
                 if let Err(error) = saved.goal.control(action) {

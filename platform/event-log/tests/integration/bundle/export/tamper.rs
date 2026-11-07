@@ -29,6 +29,35 @@ pub(super) async fn verify_original_proofs(
     digest: &str,
     empty: &maka_event_log::context::ModelContextSource,
 ) {
+    // A valid raw JSON value and transport checksum must not establish bytes
+    // that the destination cannot reproduce after splitting immutable content.
+    let mut raw = None;
+    let changed = super::frames::rewrite_material(bytes, |record, payload| {
+        if raw.is_none() && record["resource"] == "tool_result" {
+            payload.insert(0, b' ');
+            let digest = format!("sha256:{}", hex::encode(Sha256::digest(&payload)));
+            record["bytes"] = json!(payload.len());
+            record["digest"] = json!(digest);
+            raw = Some((record["event_id"].clone(), payload.len(), digest));
+        }
+        true
+    });
+    let (event_id, length, raw_digest) = raw.expect("tool result fixture");
+    let changed = super::frames::rewrite_events(&changed, |event| {
+        if event["id"] == event_id {
+            event["fact"]["outcome"]["raw"]["bytes"] = json!(length);
+            event["fact"]["outcome"]["raw"]["digest"] = json!(raw_digest);
+        }
+        true
+    });
+    bundle::inspect(changed.as_slice()).await.unwrap();
+    let mut staged = StagedBundle::read(changed.as_slice()).await.unwrap();
+    let result = staged.validate_history().await;
+    staged.close().await.unwrap();
+    assert!(
+        matches!(result, Err(BundleError::Store(StoreError::InvalidTransition(message)))
+        if message.contains("canonical raw result encoding"))
+    );
     // Invalid history with a newly valid transport checksum must still fail.
     for (field, value) in [
         ("source_digest", json!(format!("sha256:{}", "0".repeat(64)))),

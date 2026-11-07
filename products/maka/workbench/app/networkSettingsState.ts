@@ -29,6 +29,7 @@ import type {
   SettingsNetworkUpdated,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { credentialBasis, settingsRejection, type SettingsOperations } from './settingsOperations';
+import { sameValue } from '../../../../plugins/shared/value';
 
 type CredentialAction = SettingsNetworkUpdate['credential'];
 type Draft = {
@@ -76,6 +77,18 @@ export function createNetworkSettings(
     request.revision === (snapshot()?.revision ?? null);
   const disabled = () =>
     operations.busy() || loading() || !operations.pendingKnown() || operations.pending().length > 0;
+  const initial = (next: SettingsNetworkSnapshot): Draft => ({
+    proxy: { ...next.proxy },
+    port: String(next.proxy.port),
+    bypass: next.proxy.bypassList.join('\n'),
+    credential: next.proxy.authEnabled ? 'keep' : 'delete',
+    secret: '',
+  });
+  const dirty = () => {
+    const saved = snapshot(),
+      value = draft();
+    return !!saved && !!value && !sameValue(value, initial(saved));
+  };
   const load = async () => {
     if (!alive || !active() || loading()) return;
     const generation = ++read;
@@ -85,13 +98,7 @@ export function createNetworkSettings(
       if (!alive || !active() || generation !== read) return;
       view += 1;
       snapshot.set(next);
-      draft.set({
-        proxy: { ...next.proxy },
-        port: String(next.proxy.port),
-        bypass: next.proxy.bypassList.join('\n'),
-        credential: next.proxy.authEnabled ? 'keep' : 'delete',
-        secret: '',
-      });
+      draft.set(initial(next));
     } catch (reason) {
       if (alive && active() && generation === read) operations.report(reason);
     } finally {
@@ -217,9 +224,13 @@ export function createNetworkSettings(
     draft,
     loading,
     disabled,
+    dirty,
     action,
     navigation: () => JSON.stringify(action()),
     reload,
+    refresh() {
+      if (!dirty() && !operations.busy()) void load();
+    },
     edit,
     choose,
     save,
@@ -227,7 +238,7 @@ export function createNetworkSettings(
     deactivate,
     reset,
     back: () => true,
-    title: () => tr('Network settings'),
+    title: () => tr('Network'),
   };
 }
 export type NetworkSettingsOwner = ReturnType<typeof createNetworkSettings>;
