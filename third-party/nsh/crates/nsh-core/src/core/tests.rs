@@ -24998,6 +24998,217 @@ fn a_page_list_in_a_cell_of_a_list_follows_that_list() {
     assert_eq!(c.nodes[key as usize].list.as_ref().unwrap().outer, None);
 }
 
+struct ScrollRig {
+    c: Core<FakeEngine>,
+    list: NodeId,
+    y: f32,
+    applied: u32,
+}
+
+impl ScrollRig {
+    fn mount<R: crate::element::Component<Props = ()>>() -> Self {
+        let mut c = core();
+        c.mount_root(&crate::element::Root::new::<R>(|| ()));
+        let list = commit_with_native_retirement(&mut c)
+            .unwrap()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Create {
+                    id,
+                    kind: ViewKind::Scroll,
+                } => Some(*id),
+                _ => None,
+            })
+            .expect("outer list");
+        Self {
+            c,
+            list,
+            y: 0.0,
+            applied: 0,
+        }
+    }
+
+    fn commit(&mut self) -> Vec<(bool, f32)> {
+        let Some(batch) = commit_with_native_retirement(&mut self.c) else {
+            return Vec::new();
+        };
+        let mut scrolls = Vec::new();
+        for item in &batch.items {
+            match item {
+                MountItem::ScrollBy { id, dy, .. } if *id == self.list => {
+                    self.y += dy.0;
+                    self.applied += 1;
+                    scrolls.push((false, dy.0));
+                }
+                MountItem::Command {
+                    id,
+                    command: Command::ScrollTo { y, .. },
+                } if *id == self.list => {
+                    self.y = y.0;
+                    self.applied += 1;
+                    scrolls.push((true, y.0));
+                }
+                _ => {}
+            }
+        }
+        scrolls
+    }
+
+    fn scroll_to(&mut self, y: f32) -> Vec<(bool, f32)> {
+        self.y = y;
+        self.c
+            .set_scroll_offset(self.list, point(px(0.0), px(y)), self.applied);
+        self.commit()
+    }
+
+    fn update(&mut self, f: impl FnOnce()) -> Vec<(bool, f32)> {
+        {
+            let _g = self.c.components.runtime.enter();
+            f();
+        }
+        self.commit()
+    }
+}
+
+#[test]
+fn a_page_list_in_an_overscan_cell_above_the_viewport_does_not_double_anchor_or_trap_scroll() {
+    use crate::prelude::*;
+
+    #[component]
+    fn Transcript() -> impl IntoElement {
+        virtual_list(30, move |at| {
+            view().child(dynamic(move || {
+                if at.index() == 12 {
+                    view()
+                        .child(view().h(px(28.0)))
+                        .child(
+                            virtual_list(1, |_| view().h(px(300.0)))
+                                .viewport(crate::ListViewport::Parent),
+                        )
+                        .into_element()
+                } else {
+                    view().h(px(80.0)).into_element()
+                }
+            }))
+        })
+        .estimated_item_size(px(80.0))
+        .h(px(400.0))
+    }
+
+    let mut rig = ScrollRig::mount::<Transcript>();
+    assert_eq!(rig.scroll_to(2000.0), []);
+
+    let mut first_pass = Vec::new();
+    while rig.y > 0.0 {
+        let next = (rig.y - 48.0).max(0.0);
+        first_pass.extend(rig.scroll_to(next));
+    }
+    assert_eq!(first_pass, [(false, 248.0)]);
+    assert_eq!(rig.y, 0.0);
+
+    // Retire and recycle item 12 below overscan, then scroll back up:
+    // remounting the already-measured 328pt cell must emit no ScrollBy.
+    for y in [2000.0, 1600.0] {
+        assert_eq!(rig.scroll_to(y), []);
+    }
+    while rig.y > 0.0 {
+        let target = (rig.y - 48.0).max(0.0);
+        assert_eq!(rig.scroll_to(target), []);
+        assert_eq!(rig.y, target);
+    }
+}
+
+#[test]
+fn a_page_list_in_an_outer_list_anchors_once_above_and_across_the_viewport_top() {
+    use crate::prelude::*;
+
+    type Signals = (
+        Signal<f32>,
+        Signal<Vec<u32>>,
+        Signal<f32>,
+        Signal<f32>,
+        Signal<f32>,
+    );
+    thread_local! {
+        static SIGNALS: Cell<Option<Signals>> = const { Cell::new(None) };
+    }
+
+    #[component]
+    fn Nested() -> impl IntoElement {
+        let header_h = signal(50.0f32);
+        let keys = signal(vec![10u32, 11, 12, 13]);
+        let first_h = signal(50.0f32);
+        let last_h = signal(50.0f32);
+        let outer_1_h = signal(50.0f32);
+        SIGNALS.set(Some((header_h, keys, first_h, last_h, outer_1_h)));
+
+        virtual_list(20, move |at| match at.index() {
+            0 => view()
+                .child(view().h(px(20.0)))
+                .child(
+                    virtual_list(
+                        move || keys.with(Vec::len),
+                        move |inner| {
+                            view().h(move || match keys.with(|k| k[inner.index()]) {
+                                0 => px(first_h.get()),
+                                13 => px(last_h.get()),
+                                _ => px(50.0),
+                            })
+                        },
+                    )
+                    .keys(move || keys.get())
+                    .viewport(crate::ListViewport::Parent),
+                )
+                .into_element(),
+            1 => view().h(move || px(outer_1_h.get())).into_element(),
+            _ => view().h(px(50.0)).into_element(),
+        })
+        .header(
+            virtual_list(1, move |_| view().h(move || px(header_h.get())))
+                .viewport(crate::ListViewport::Parent),
+        )
+        .h(px(400.0))
+    }
+
+    let mut rig = ScrollRig::mount::<Nested>();
+    let (header_h, keys, first_h, last_h, outer_1_h) = SIGNALS.take().unwrap();
+
+    // At y = 350, both Header (0..50) and item 0 (50..270) lie wholly above
+    // the viewport: resizing Header (+60) and splicing 2 rows at the start of
+    // item 0 (+100) each anchor once.
+    assert_eq!(rig.scroll_to(350.0), []);
+    assert_eq!(rig.update(|| header_h.set(110.0)), [(false, 60.0)]);
+    assert_eq!(
+        rig.update(|| keys.set(vec![0, 1, 10, 11, 12, 13])),
+        [(false, 100.0)]
+    );
+
+    // At y = 400, item 0 (110..430) straddles the viewport top. Growing an
+    // above-viewport inner row (+100, pushing offset to 500 > 430 before
+    // spacer relayout) and a visible inner row (+60) anchors only +100, once.
+    assert_eq!(rig.scroll_to(400.0), []);
+    assert_eq!(
+        rig.update(|| {
+            first_h.set(150.0);
+            last_h.set(110.0);
+        }),
+        [(false, 100.0)]
+    );
+
+    // At y = 500, item 0 (110..590) straddles 500 and item 1 (590..640) is
+    // visible. Shrinking key 0 by -140 moves offset to 360 and pulls item 1
+    // to 450..500 (still visible); resizing item 1 (+40) must not anchor.
+    assert_eq!(rig.scroll_to(500.0), []);
+    assert_eq!(
+        rig.update(|| {
+            first_h.set(10.0);
+            outer_1_h.set(90.0);
+        }),
+        [(false, -140.0)]
+    );
+}
+
 #[test]
 fn a_page_list_keeps_its_scroll_commands_until_it_is_placed() {
     let mut c = core();

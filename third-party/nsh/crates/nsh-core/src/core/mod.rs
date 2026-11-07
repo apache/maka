@@ -346,6 +346,8 @@ struct ScrollState {
     /// the offset before the content grows back). With the batch it is in
     /// ([`Core::batches`]).
     content_item: Option<(u64, usize)>,
+    /// Main-axis content length before the current batch changed it.
+    batch_old_len: Option<(u64, f32)>,
     behavior: ScrollBehavior,
     /// Minimum milliseconds between `onScroll` events.
     event_throttle_ms: f32,
@@ -385,6 +387,7 @@ impl Default for ScrollState {
             keyboard_dismiss: KeyboardDismissMode::None,
             content: None,
             content_item: None,
+            batch_old_len: None,
             behavior: ScrollBehavior::default(),
             event_throttle_ms: 0.0,
             zoom: 1.0,
@@ -2403,6 +2406,9 @@ impl<M: TextEngine> Core<M> {
             let starts = std::mem::take(&mut self.transition_starts);
             self.mount.splice(0..0, starts);
         }
+        self.mount.retain(
+            |m| !matches!(m, MountItem::ScrollBy { dx, dy, .. } if dx.0 == 0.0 && dy.0 == 0.0),
+        );
         if self.mount.is_empty() || matches!(self.mount[..], [MountItem::LayoutAnimation(_)]) {
             self.mount.clear();
             None
@@ -7332,6 +7338,38 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// Retracts the last non-zero `ScrollBy` emitted for list `key` in the
+    /// current commit (unless superseded by a `ScrollTo`) so consecutive
+    /// rounds settle into a single net `ScrollBy`.
+    pub(super) fn retract_batch_list_scroll_by(&mut self, key: Key, id: NodeId) -> f32 {
+        let Some(prev_at) = self.mount.iter().rposition(|m| match m {
+            MountItem::ScrollBy { id: s, dx, dy } => *s == id && (dx.0 != 0.0 || dy.0 != 0.0),
+            MountItem::Command {
+                id: c,
+                command: Command::ScrollTo { .. },
+            } => *c == id,
+            _ => false,
+        }) else {
+            return 0.0;
+        };
+        if !matches!(self.mount[prev_at], MountItem::ScrollBy { .. }) {
+            return 0.0;
+        }
+        let Some(prev) = self.nodes[key as usize]
+            .list
+            .as_mut()
+            .and_then(|l| l.unissue_last_scroll_by())
+        else {
+            return 0.0;
+        };
+        self.mount[prev_at] = MountItem::ScrollBy {
+            id,
+            dx: Points::ZERO,
+            dy: Points::ZERO,
+        };
+        prev
+    }
+
     fn set_scroll_content(&mut self, key: Key, size: Size<Points>) {
         let node = &mut self.nodes[key as usize];
         let (id, rtl, kind, viewport) = (node.id, node.rtl, node.kind, node.frame.size.width.0);
@@ -7356,9 +7394,13 @@ impl<M: TextEngine> Core<M> {
             }
             // A scroll queued after it must still come before the new size.
             let scrolled_since = queued.is_some_and(|j| {
-                self.mount[j + 1..]
-                    .iter()
-                    .any(|m| matches!(m, MountItem::ScrollBy { id: s, .. } if *s == id))
+                self.mount[j + 1..].iter().any(|m| {
+                    matches!(
+                        m,
+                        MountItem::ScrollBy { id: s, dx, dy }
+                            if *s == id && (dx.0 != 0.0 || dy.0 != 0.0)
+                    )
+                })
             });
             if queued.is_none() || scrolled_since {
                 scroll.content_item = Some((batch, self.mount.len()));
@@ -7622,7 +7664,9 @@ impl<M: TextEngine> Core<M> {
                 .iter()
                 .filter_map(|s| s.ready().map(|i| (i, s.cell))),
         );
+        ready.sort_unstable_by_key(|&(index, _)| index);
         let extras = list.extras;
+        let inverted = list.inverted;
         // An inverted list that loads at its start keeps its rows in
         // place when scrolled away from it (`keeps_visible_rows`).
         self.nodes[key as usize]
@@ -7632,6 +7676,24 @@ impl<M: TextEngine> Core<M> {
             .loads_at_start = events.contains(EventKind::LoadMoreAtStart);
         let mut anchor = 0.0;
         let mut extents_changed = false;
+        let measure_extra = |this: &mut Self, kind: ExtraKind, extents_changed: &mut bool| {
+            let cell = extras[kind as usize].cell;
+            if this.awaiting_renders.binary_search(&cell).is_ok() {
+                return 0.0;
+            }
+            let Some(cell_layout) = this.nodes.get(cell as usize).and_then(|c| c.layout) else {
+                return 0.0;
+            };
+            let size = main_of(this.rounded_layout(cell_layout).size);
+            let list = this.nodes[key as usize].list.as_mut().expect("list");
+            *extents_changed |= list.extras[kind as usize].size != size;
+            let d = list.measured_extra(kind, size);
+            if !inverted {
+                list.compensate_layout_offset(d);
+            }
+            d
+        };
+        anchor += measure_extra(self, ExtraKind::Header, &mut extents_changed);
         for &(index, cell) in &ready {
             // Waiting for JS's render: it keeps its estimate (or the size
             // measured last) until the holder arrives and lays it out
@@ -7644,29 +7706,23 @@ impl<M: TextEngine> Core<M> {
                 let size = main_of(self.rounded_layout(cell_layout).size);
                 let list = self.nodes[key as usize].list.as_mut().expect("list");
                 extents_changed |= !list.source_row_matches_layout(index, size);
-                anchor += list.measured(index, size);
+                let d = list.measured(index, size);
+                if !inverted {
+                    list.compensate_layout_offset(d);
+                }
+                anchor += d;
             }
         }
-        for (kind, extra) in [ExtraKind::Header, ExtraKind::Footer, ExtraKind::Empty]
-            .into_iter()
-            .zip(extras)
-        {
-            if self.awaiting_renders.binary_search(&extra.cell).is_ok() {
-                continue;
-            }
-            if let Some(cell_layout) = self.nodes.get(extra.cell as usize).and_then(|c| c.layout) {
-                let size = main_of(self.rounded_layout(cell_layout).size);
-                let list = self.nodes[key as usize].list.as_mut().expect("list");
-                extents_changed |= list.extras[kind as usize].size != size;
-                anchor += list.measured_extra(kind, size);
-            }
-        }
+        anchor += measure_extra(self, ExtraKind::Empty, &mut extents_changed);
+        anchor += measure_extra(self, ExtraKind::Footer, &mut extents_changed);
 
         let list = self.nodes[key as usize].list.as_mut().expect("list");
         // Not on the first layout: there is nothing to clamp yet.
         let grew = outer.is_none() && list.viewport > 0.0 && main > list.viewport;
         list.viewport = main;
-        list.compensate_layout_offset(anchor);
+        if inverted {
+            list.compensate_layout_offset(anchor);
+        }
         // A splice above the viewport already moved the offset.
         anchor += list.take_splice_anchor();
         if outer.is_none() {
@@ -8080,8 +8136,8 @@ impl<M: TextEngine> Core<M> {
             // The view around the list scrolls (the commit sends it at
             // its end; a scroll to an offset after the anchoring, which
             // it supersedes), and the list takes its new length in layout.
-            if anchor != 0.0 {
-                self.ask_outer(o.view, None, anchor);
+            if anchor != 0.0 && !o.outer_anchors {
+                self.forward_outer_anchor(key, o.view, anchor);
             }
             if outer_to.is_some() {
                 self.ask_outer(o.view, outer_to, 0.0);
@@ -8096,11 +8152,23 @@ impl<M: TextEngine> Core<M> {
         };
         // Platforms clamp the offset to the content: grow the content
         // before scrolling, scroll before shrinking it.
-        let old_len = self.nodes[key as usize]
-            .scroll
-            .as_ref()
-            .and_then(|s| s.content)
-            .map_or(0.0, |c| if horizontal { c.width.0 } else { c.height.0 });
+        let batch = self.batches;
+        let old_len = {
+            let scroll = self.nodes[key as usize].scroll.as_mut().expect("scroll");
+            match scroll.batch_old_len {
+                Some((b, len)) if b == batch => len,
+                _ => {
+                    let len = scroll
+                        .content
+                        .map_or(0.0, |c| if horizontal { c.width.0 } else { c.height.0 });
+                    scroll.batch_old_len = Some((batch, len));
+                    len
+                }
+            }
+        };
+        if anchor != 0.0 {
+            anchor += self.retract_batch_list_scroll_by(key, id);
+        }
         if anchor != 0.0 {
             self.nodes[key as usize]
                 .list
@@ -8133,8 +8201,22 @@ impl<M: TextEngine> Core<M> {
                 self.set_scroll_content(key, content);
             }
             (Some(item), None) if content_len < old_len => {
-                self.mount.push(item);
                 self.set_scroll_content(key, content);
+                let before = self.nodes[key as usize]
+                    .scroll
+                    .as_ref()
+                    .and_then(|s| s.content_item)
+                    .filter(|&(b, _)| b == batch)
+                    .and_then(|(_, i)| {
+                        let at = self.mount.get(i..)?.iter().position(
+                            |m| matches!(m, MountItem::ScrollContent { id: c, .. } if *c == id),
+                        )?;
+                        Some(i + at)
+                    });
+                match before {
+                    Some(at) => self.mount.insert(at, item),
+                    None => self.mount.push(item),
+                }
             }
             (item, _) => {
                 self.set_scroll_content(key, content);
