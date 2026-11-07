@@ -479,7 +479,12 @@ export const settingsMessages = {
   Include: ['Include', '包含', '包含'],
   'Include {label}': ['Include {label}', '包含 {label}', '包含 {label}'],
   Included: ['Included', '已包含', '已包含'],
-  'Incognito mode': ['Incognito mode', '无痕模式', '無痕模式'],
+  'Default sandbox policy': ['Default sandbox policy', '默认沙箱策略', '預設沙箱策略'],
+  'Applied to new conversations.': [
+    'Applied to new conversations.',
+    '应用于新对话。',
+    '套用至新對話。',
+  ],
   'Instructions for summarizing conversation context.': [
     'Instructions for summarizing conversation context.',
     '用于总结对话上下文的指令。',

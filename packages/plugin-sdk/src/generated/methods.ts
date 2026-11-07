@@ -487,6 +487,13 @@ export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * User-facing isolation preset, independent of whether approval may be requested.
+ */
+export type SettingsAssistantPreferencesOutput_Mode =
+  | 'read-only'
+  | 'workspace-write'
+  | 'danger-full-access';
 export type SettingsAssistantPreferencesOutput_ShellPreference = 'auto' | 'git_bash';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
@@ -1509,7 +1516,7 @@ export interface ServiceMethods {
         revision: number;
         displayName: string;
         workspaceInstructions: boolean;
-        incognitoActive: boolean;
+        defaultSandboxMode: SettingsAssistantPreferencesOutput_Mode;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
     };

@@ -91,11 +91,6 @@ export const goalMessages = {
     '请先完成或取消当前目标。',
     '請先完成或取消目前目標。',
   ],
-  'Turn off incognito to start a Goal.': [
-    'Turn off incognito to start a Goal.',
-    '请先关闭隐私模式，再开始目标。',
-    '請先關閉隱私模式，再開始目標。',
-  ],
   'Conversation settings changed. Try again.': [
     'Conversation settings changed. Try again.',
     '对话设置已更改，请重试。',

@@ -21,7 +21,7 @@ use super::*;
 use auxiliary::{failed, persistence};
 use futures_util::FutureExt;
 use maka_agent_facts::{model::ModelGeneration, tools::ToolError};
-use maka_agent_ports::{llm, preferences, session::history};
+use maka_agent_ports::{llm, session::history};
 use maka_capabilities::call::Scope;
 use maka_event_log::applications::operations::OperationDispatchScope;
 use maka_model::{ModelRequest, prompt::Message};
@@ -35,24 +35,12 @@ struct Backend {
     original_resources: Arc<maka_capabilities::call::Resources>,
 }
 impl Owner {
-    async fn check_recap(
-        &self,
-        scope: &Scope,
-        session: &str,
-    ) -> Result<RuntimePolicySnapshot, ToolError> {
+    async fn check_recap(&self, scope: &Scope, session: &str) -> Result<(), ToolError> {
         if !self.settings.recaps || self.stop.is_cancelled() || scope.cancellation.is_cancelled() {
             return Err(failed("Session recap unavailable"));
         }
         self.scoped_session(scope, session).await.map_err(failed)?;
-        let snapshot = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(persistence)?;
-        if snapshot.policy.privacy.incognito_active {
-            return Err(failed("Session recap is unavailable in incognito mode"));
-        }
-        Ok(snapshot)
+        Ok(())
     }
     fn recaps(
         self: &Arc<Self>,
@@ -69,8 +57,7 @@ impl Owner {
         Recaps {
             store: self.recap_storage.clone(),
             history: backend.clone(),
-            models: backend.clone(),
-            preferences: backend,
+            models: backend,
         }
     }
     pub async fn recap(
@@ -112,8 +99,12 @@ impl Owner {
         operation: &RecoveryRef,
         dispatch: OperationDispatchScope,
     ) -> Result<RecapReceipt, String> {
+        self.check_recap(scope, &input.session_id)
+            .await
+            .map_err(|e| e.to_string())?;
         let snapshot = self
-            .check_recap(scope, &input.session_id)
+            .configuration
+            .runtime_policy()
             .await
             .map_err(|e| e.to_string())?;
         let language = self.resolve_language(&snapshot);
@@ -175,24 +166,6 @@ impl recap::History for Backend {
                 .map_err(persistence)?;
             self.owner.check_recap(&scope, &self.session).await?;
             Ok(page)
-        })
-    }
-}
-impl preferences::Preferences for Backend {
-    fn read(&self) -> BoxFuture<'_, Result<preferences::Snapshot, maka_capabilities::Error>> {
-        Box::pin(async {
-            let snapshot = self
-                .owner
-                .configuration
-                .runtime_policy()
-                .await
-                .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))?;
-            Ok(preferences::Snapshot {
-                revision: snapshot.revision,
-                privacy: snapshot.policy.privacy,
-                personalization: snapshot.policy.personalization,
-                workspace_instructions: snapshot.policy.workspace_instructions.enabled,
-            })
         })
     }
 }

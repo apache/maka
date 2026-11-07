@@ -192,26 +192,11 @@ impl Owner {
         }
         self.goals.receipt(&reference).await
     }
-    async fn goal_privacy(&self) -> Result<(), String> {
-        if self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(reason)?
-            .policy
-            .privacy
-            .incognito_active
-        {
-            return Err("goal_incognito".into());
-        }
-        Ok(())
-    }
     pub(in crate::owner) async fn check_goal_background(
         &self,
         session: &str,
         id: Uuid,
     ) -> Result<(), String> {
-        self.goal_privacy().await?;
         let saved = self
             .goals
             .repository
@@ -244,7 +229,6 @@ impl Owner {
         id: Uuid,
         approval: GoalApproval,
     ) -> Result<MessageBasis, String> {
-        self.goal_privacy().await?;
         if approval.target.session_id != session {
             return Err("goal_approval_session_changed".into());
         }
@@ -477,9 +461,6 @@ impl Owner {
                     saved.goal.arm.token_budget = budget.token_budget;
                 }
                 if action == GoalControl::Resume {
-                    if let Err(error) = self.goal_privacy().await {
-                        return self.reject_goal(operation, error).await;
-                    }
                     saved.goal.authority_blocked = false;
                 }
                 if let Err(error) = saved.goal.control(action) {

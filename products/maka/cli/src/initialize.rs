@@ -20,8 +20,6 @@
 use crate::args::Root;
 use clap::Args;
 use maka_agent_facts::configuration::policy::NetworkProxy;
-use maka_agent_facts::configuration::policy::PrivacyPolicy;
-use maka_agent_facts::configuration::policy::RuntimePolicyMutationResult;
 use maka_agent_facts::configuration::policy::network_update::CredentialUpdate;
 use maka_agent_facts::configuration::policy::network_update::Update;
 use maka_agent_facts::configuration::policy::network_update::UpdateResult;
@@ -39,7 +37,7 @@ use std::{
 pub(super) struct Init {
     #[command(flatten)]
     root: Root,
-    /// Read initial privacy/proxy settings from stdin. Requires a new, empty root.
+    /// Read initial proxy settings from stdin. Requires a new, empty root.
     #[arg(long)]
     pub(super) settings_stdin: bool,
 }
@@ -48,7 +46,6 @@ pub(super) struct Init {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Settings {
-    privacy: PrivacyPolicy,
     network_proxy: Option<NetworkProxy>,
     proxy_password: Option<String>,
 }
@@ -63,12 +60,6 @@ impl Init {
             let owner = Arc::new(RootOwner::create(&self.root.root, &namespaces)?);
             let id = owner.root_id().to_owned();
             let store = ConfigurationStore::for_root(owner).await?;
-            if !matches!(
-                store.set_privacy(0, settings.privacy).await?,
-                RuntimePolicyMutationResult::Committed { revision: 1 }
-            ) {
-                return Err("initial privacy settings were not committed".into());
-            }
             if let Some(update) = update {
                 let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
                 if !matches!(
@@ -125,7 +116,7 @@ impl Settings {
             _ => return Err("proxy authentication does not match its credential".into()),
         };
         let mut update = Update {
-            expected_policy_revision: 1,
+            expected_policy_revision: 0,
             expected_credential: None,
             network_proxy: proxy.clone(),
             credential,

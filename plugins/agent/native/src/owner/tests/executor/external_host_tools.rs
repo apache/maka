@@ -362,21 +362,8 @@ async fn native_external_host_stop_drains_admitted_tool_after_worker_terminal_an
 }
 
 #[tokio::test]
-async fn native_external_host_bindings_hide_private_recall_and_supply_real_skill_tools() {
+async fn native_external_host_bindings_supply_real_skill_tools() {
     tokio::time::timeout(Duration::from_secs(45), async {
-        let (f, listener) = with_tools("http://127.0.0.1:9/v1", None, |settings| settings.recall = true).await;
-        let session = f.create("Private Recall bridge").await;
-        let before = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(before.revision, maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active: true }).await.unwrap();
-        f.mutation(2, "send", input(&session, "private"), Uuid::new_v4()).await.unwrap();
-        let mut control = BufReader::new(listener.accept().await.unwrap().0);
-        let opened = packet(&mut control, "opened").await;
-        assert_eq!(opened["request"]["tools"], json!([]));
-        plan(&mut control, json!([{ "callId":1,"name":"Recall","input":{"terms":["secret"]}}])).await;
-        assert_eq!(replies(&mut control, 1).await[&1]["isError"], true);
-        finish(&f, &mut control).await;
-        f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
-
         let home = tempfile::tempdir().unwrap();
         let tooling = service_tools::Setup::skill_preparation(home.path().into(), true).with_standard_sources();
         let (f, listener) = with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;

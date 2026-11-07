@@ -420,7 +420,6 @@ impl Owner {
         );
         let recall = Arc::new(recall::Recall {
             store: persistence.store().clone(),
-            configuration: configuration.clone(),
             prefix: prefix.clone(),
             data_source: data_source.clone(),
             enabled: settings.recall,
@@ -866,7 +865,21 @@ impl Owner {
             });
         }
         let policy = self.creation_policy(scope).await?;
-        let permissions = policy.permissions;
+        let mut permissions = policy.permissions;
+        if scope.identity.agent().is_none() {
+            let defaults = self
+                .configuration
+                .runtime_policy()
+                .await
+                .map_err(|_| "agent_settings_unavailable")?
+                .policy
+                .chat_defaults;
+            permissions.access = match defaults.sandbox_mode {
+                SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
+                SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
+                SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+            };
+        }
         let mut tools = intersect_tools(input.tools, policy.tools);
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {

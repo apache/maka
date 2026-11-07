@@ -929,6 +929,34 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_slash_commands_open_settings_without_creating_a_session() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.platform.paste("/set").unwrap();
+    desktop.control("/settings").await;
+    desktop.control("Send message").await;
+    desktop.artifact("new-draft-slash-menu");
+    desktop.press("/settings").await;
+    desktop.control("Close settings").await;
+    desktop.artifact("new-draft-slash-settings");
+    desktop.press("Close settings").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .until("the command did not leave an empty new draft", || {
+            desktop.controls("Send message").is_empty().then_some(())
+        })
+        .await;
+    desktop.artifact("new-draft-slash-consumed");
+    desktop.platform.paste("AFTER_SLASH_COMMAND").unwrap();
+    desktop.expect_text("AFTER_SLASH_COMMAND").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot() {
     let mut fixture = images_fixture().await;
     let (path, bytes) = image_file(&fixture);

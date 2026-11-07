@@ -103,7 +103,6 @@ impl Owner {
         }
         let preferences = maka_agent_ports::preferences::Snapshot {
             revision: snapshot.revision,
-            privacy: snapshot.policy.privacy.clone(),
             personalization: snapshot.policy.personalization.clone(),
             workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         };

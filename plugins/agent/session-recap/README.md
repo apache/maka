@@ -23,6 +23,6 @@
 
 Generates and stores manual Session recaps through authorized history and model ports. The recap is derived data and leaves canonical history intact. Generation records an operation before calling the model; a repeated operation ID resolves that original request. An unknown result must not silently start a new paid request. Implementation and receipt handling live in `recap`.
 
-The ordinary Agent service selects this domain with `recaps: true`. Its `recap` query reads the latest or one original cached receipt; `generateRecap` is an admitted mutation with an explicit model selection. The default product provides a Session recap panel with fee confirmation. The native adapter supplies only history reads and bounded generation, preserving session access, incognito checks and physical cleanup through cancellation.
+The ordinary Agent service selects this domain with `recaps: true`. Its `recap` query reads the latest or one original cached receipt; `generateRecap` is an admitted mutation with an explicit model selection. The default product provides a Session recap panel with fee confirmation. The native adapter supplies only history reads and bounded generation, preserving session access and physical cleanup through cancellation.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

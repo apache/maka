@@ -19,8 +19,8 @@
 
 use maka_agent_facts::configuration::policy::EnabledPolicy;
 use maka_agent_facts::configuration::policy::Personalization;
-use maka_agent_facts::configuration::policy::PrivacyPolicy;
 use maka_agent_facts::configuration::policy::RuntimePolicyMutationResult;
+use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::language::{Language, LanguagePreference};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub struct Preferences {
     pub revision: u64,
     pub display_name: String,
     pub workspace_instructions: bool,
-    pub incognito_active: bool,
+    pub default_sandbox_mode: SandboxMode,
     pub shell: maka_agent_facts::configuration::policy::ShellPolicy,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -79,8 +79,8 @@ pub enum Mutation {
     WorkspaceInstructions {
         enabled: bool,
     },
-    Privacy {
-        incognito_active: bool,
+    DefaultSandbox {
+        mode: SandboxMode,
     },
     Shell {
         value: maka_agent_facts::configuration::policy::ShellPolicy,
@@ -135,7 +135,7 @@ pub(crate) async fn read(
         revision: snapshot.revision,
         display_name: snapshot.policy.personalization.display_name,
         workspace_instructions: snapshot.policy.workspace_instructions.enabled,
-        incognito_active: snapshot.policy.privacy.incognito_active,
+        default_sandbox_mode: snapshot.policy.chat_defaults.sandbox_mode,
         shell: snapshot.policy.shell,
     })
 }
@@ -176,9 +176,12 @@ pub(crate) async fn update(
             }
             store.set_shell(input.expected_revision, value).await
         }
-        Mutation::Privacy { incognito_active } => {
+        Mutation::DefaultSandbox { mode } => {
             store
-                .set_privacy(input.expected_revision, PrivacyPolicy { incognito_active })
+                .set_chat_defaults(
+                    input.expected_revision,
+                    maka_agent_facts::configuration::policy::ChatDefaults { sandbox_mode: mode },
+                )
                 .await
         }
         Mutation::Personalization { display_name } => {

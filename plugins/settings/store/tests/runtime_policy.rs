@@ -37,6 +37,49 @@ fn count(database: &rusqlite::Connection) -> i64 {
 }
 
 #[tokio::test]
+async fn removing_saved_privacy_policy_preserves_other_settings_and_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = root(temp.path());
+    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    store.close().await.unwrap();
+    let mut expected = RuntimePolicySnapshot {
+        revision: 17,
+        policy: RuntimePolicy::default(),
+    };
+    expected.policy.personalization.display_name = "Saved user".into();
+    expected.policy.memory.enabled = false;
+    expected.policy.workspace_instructions.enabled = false;
+    expected.policy.network_proxy.port = 8443;
+    expected.policy.compaction_prompt = Some("Keep the confirmed decisions.".into());
+    let mut legacy = serde_json::to_value(&expected).unwrap();
+    legacy["policy"]["privacy"] = serde_json::json!({"incognitoActive": true});
+    let db = database(&owner);
+    // Keep the original schema and migration receipts from before this removal.
+    db.execute("DELETE FROM _sqlx_migrations WHERE version = 3", [])
+        .unwrap();
+    db.execute(
+        "INSERT INTO runtime_policy VALUES (1, ?)",
+        [serde_json::to_string(&legacy).unwrap()],
+    )
+    .unwrap();
+    drop(db);
+
+    let upgraded = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    assert_eq!(upgraded.runtime_policy().await.unwrap(), expected);
+    let document: String = database(&owner)
+        .query_row("SELECT document FROM runtime_policy", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&document).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    upgraded.close().await.unwrap();
+    let reopened = ConfigurationStore::for_root(owner).await.unwrap();
+    assert_eq!(reopened.runtime_policy().await.unwrap(), expected);
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn proxy_policy_and_password_commit_together_with_cas_noops_and_rollback() {
     use maka_agent_facts::configuration::CredentialState;
     use maka_agent_facts::configuration::CredentialVersionBasis;

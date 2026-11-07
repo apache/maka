@@ -183,7 +183,6 @@ impl ToolPreparer for Goals {
                         match input {
                             Input::Read => {}
                             Input::Create(input) => {
-                                captured.goal_privacy().await.map_err(failed)?;
                                 let id = Uuid::from_bytes(
                                     Sha256::digest(
                                         serde_json::to_vec(&(

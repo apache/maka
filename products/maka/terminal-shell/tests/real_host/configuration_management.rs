@@ -59,6 +59,78 @@ async fn choose(view: &mut AppView, select: &str, option: &str) {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn general_settings_save_the_sandbox_default_for_new_conversations() {
+    let fixture = Fixture::configured(Default::default()).await;
+    let client = fixture.client().await;
+    let original = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    view.resize(160, 80);
+    wait_editable_composer(&mut view).await;
+    click(&mut view, "Connections & models").await;
+    click(&mut view, "Settings section General").await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Incognito mode")
+    );
+    choose(
+        &mut view,
+        "Default sandbox policy",
+        "Full access · Sandbox off",
+    )
+    .await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    assert_eq!(
+        client
+            .query("settings", "assistantPreferences", json!({}))
+            .await
+            .unwrap()["defaultSandboxMode"],
+        "danger-full-access"
+    );
+    click(&mut view, "Close settings").await;
+    click(&mut view, "Connections & models").await;
+    click(&mut view, "Settings section General").await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    support::evidence("general-default-sandbox", &view.snapshot());
+    support::evidence_cells("general-default-sandbox", &view);
+    let roots = client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let created = support::mutate(
+        &client,
+        "create",
+        json!({
+            "title":"Default sandbox", "labels":[],
+            "workspace":{"kind":"directory","path":roots["roots"][0]["path"]}
+        }),
+    )
+    .await;
+    assert_eq!(created["kind"], "created");
+    assert_eq!(
+        created["session"]["permissions"]["access"],
+        "danger_full_access"
+    );
+    let unchanged = client
+        .query("agent", "observe", json!({"sessionId":fixture.session}))
+        .await
+        .unwrap();
+    assert_eq!(
+        unchanged["session"]["permissions"],
+        original["session"]["permissions"]
+    );
+    drop(view);
+    drop(bindings);
+    client.close().await.unwrap();
+    fixture.finish().await;
+}
+
 fn skill(source: &std::path::Path, name: &str, body: &str) {
     let directory = source.join(name);
     std::fs::create_dir_all(&directory).unwrap();

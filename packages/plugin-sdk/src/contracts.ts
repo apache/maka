@@ -42975,8 +42975,8 @@ export const contracts = {
               workspaceInstructions: {
                 type: 'boolean',
               },
-              incognitoActive: {
-                type: 'boolean',
+              defaultSandboxMode: {
+                $ref: '#/$defs/Mode',
               },
               shell: {
                 $ref: '#/$defs/ShellPolicy',
@@ -42993,7 +42993,7 @@ export const contracts = {
               'revision',
               'displayName',
               'workspaceInstructions',
-              'incognitoActive',
+              'defaultSandboxMode',
               'shell',
             ],
             $defs: {
@@ -43039,6 +43039,12 @@ export const contracts = {
               Language: {
                 type: 'string',
                 enum: ['en', 'zh-CN', 'zh-TW'],
+              },
+              Mode: {
+                description:
+                  'User-facing isolation preset, independent of whether approval may be requested.',
+                type: 'string',
+                enum: ['read-only', 'workspace-write', 'danger-full-access'],
               },
               ShellPolicy: {
                 type: 'object',
@@ -47370,14 +47376,14 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'privacy',
+                        const: 'default_sandbox',
                       },
-                      incognitoActive: {
-                        type: 'boolean',
+                      mode: {
+                        $ref: '#/$defs/Mode',
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'incognitoActive'],
+                    required: ['kind', 'mode'],
                   },
                   {
                     type: 'object',
@@ -47432,6 +47438,12 @@ export const contracts = {
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+              },
+              Mode: {
+                description:
+                  'User-facing isolation preset, independent of whether approval may be requested.',
+                type: 'string',
+                enum: ['read-only', 'workspace-write', 'danger-full-access'],
               },
               ShellPolicy: {
                 type: 'object',

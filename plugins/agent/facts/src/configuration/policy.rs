@@ -54,7 +54,6 @@ pub struct RuntimePolicy {
     pub personalization: Personalization,
     pub memory: MemoryPolicy,
     pub workspace_instructions: EnabledPolicy,
-    pub privacy: PrivacyPolicy,
     pub chat_defaults: ChatDefaults,
     pub shell: ShellPolicy,
     pub external_agents: ExternalAgents,
@@ -107,9 +106,6 @@ impl Default for RuntimePolicy {
                 agent_read_enabled: false,
             },
             workspace_instructions: EnabledPolicy { enabled: true },
-            privacy: PrivacyPolicy {
-                incognito_active: false,
-            },
             chat_defaults: ChatDefaults::default(),
             shell: ShellPolicy {
                 preference: ShellPreference::Auto,
@@ -141,7 +137,6 @@ pub enum RuntimePolicyMutation {
     SetPersonalization { value: Personalization },
     SetMemory { value: MemoryPolicy },
     SetWorkspaceInstructions { value: EnabledPolicy },
-    SetPrivacy { value: PrivacyPolicy },
     SetChatDefaults { value: ChatDefaults },
     SetShell { value: ShellPolicy },
     SetExternalAgents { value: ExternalAgents },

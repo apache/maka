@@ -7562,7 +7562,6 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "maka-agent-facts",
- "maka-agent-ports",
  "maka-capabilities",
  "schemars 1.2.3",
  "serde",
@@ -7799,7 +7798,6 @@ dependencies = [
  "hex",
  "jsonschema 0.60.1",
  "maka-agent-facts",
- "maka-agent-ports",
  "maka-capabilities",
  "schemars 1.2.3",
  "serde",

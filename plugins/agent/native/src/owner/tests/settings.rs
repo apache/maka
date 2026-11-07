@@ -191,22 +191,6 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         response(&mut third).await;
         fixture.drained().await;
         let current = query(&fixture, "assistantPreferences", json!({})).await;
-        assert_eq!(current["incognitoActive"], false);
-        let (privacy, reference) = mutate(&fixture, "updateAssistantPreferences", json!({
-            "expectedRevision":current["revision"],
-            "mutation":{"kind":"privacy","incognitoActive":true}
-        }), None).await;
-        assert_eq!(privacy["kind"], "committed");
-        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["incognitoActive"], true);
-        assert!(fixture.config.runtime_policy().await.unwrap().policy.privacy.incognito_active);
-        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
-            OperationOutcome::Returned { value: privacy });
-        let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
-            "expectedRevision":current["revision"],
-            "mutation":{"kind":"privacy","incognitoActive":false}
-        }), None).await;
-        assert_eq!(stale["kind"], "revision_conflict");
-        let current = query(&fixture, "assistantPreferences", json!({})).await;
         assert_eq!(current["shell"]["titles"], true);
         let (disabled, reference) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
@@ -226,6 +210,80 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn default_sandbox_preferences_apply_only_to_new_root_conversations() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let original = fixture.create("Existing conversation").await;
+        let mut preferences = query(&fixture, "assistantPreferences", json!({})).await;
+        assert_eq!(preferences["defaultSandboxMode"], "workspace-write");
+        for (mode, access) in [
+            ("read-only", "read_only"),
+            ("danger-full-access", "danger_full_access"),
+            ("workspace-write", "workspace_write"),
+        ] {
+            let revision = preferences["revision"].clone();
+            let (saved, reference) = mutate(
+                &fixture,
+                "updateAssistantPreferences",
+                json!({
+                    "expectedRevision":revision,
+                    "mutation":{"kind":"default_sandbox","mode":mode}
+                }),
+                None,
+            )
+            .await;
+            assert_eq!(saved["kind"], "committed");
+            assert_eq!(
+                fixture
+                    .store
+                    .operation(&reference)
+                    .unwrap()
+                    .operation_observation()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .outcome,
+                OperationOutcome::Returned { value: saved }
+            );
+            preferences = query(&fixture, "assistantPreferences", json!({})).await;
+            assert_eq!(preferences["defaultSandboxMode"], mode);
+            let existing = fixture
+                .query("observe", json!({"sessionId":original}))
+                .await
+                .unwrap();
+            assert_eq!(
+                existing["session"]["permissions"]["access"],
+                "workspace_write"
+            );
+            let created = fixture.create(mode).await;
+            let created = fixture
+                .query("observe", json!({"sessionId":created}))
+                .await
+                .unwrap();
+            assert_eq!(
+                created["session"]["permissions"],
+                json!({"access":access,"requestPermissions":true})
+            );
+            let (stale, _) = mutate(
+                &fixture,
+                "updateAssistantPreferences",
+                json!({
+                    "expectedRevision":revision,
+                    "mutation":{"kind":"default_sandbox","mode":"read-only"}
+                }),
+                None,
+            )
+            .await;
+            assert_eq!(stale["kind"], "revision_conflict");
+        }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
