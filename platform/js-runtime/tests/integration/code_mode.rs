@@ -182,37 +182,6 @@ async fn json_boundaries_reject_inexact_integers_and_preserve_tool_diagnostics()
     assert_eq!(tool_calls.len(), 1);
 }
 
-struct Direct;
-impl ToolExecutor for Direct {
-    fn names(&self) -> Vec<String> {
-        vec!["echo".into()]
-    }
-    fn direct_names(&self) -> Vec<String> {
-        vec!["SessionCreate".into(), "echo".into()]
-    }
-    fn invoke(&self, _name: String, value: Value, _cancel: CancellationToken) -> ToolFuture {
-        Box::pin(async { Ok(value) })
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn direct_only_names_explain_their_calling_mode_without_shadowing_callable_tools() {
-    let result = executor()
-        .execute(
-            "if (Object.keys(tools).join() !== 'echo') throw Error('direct name enumerated'); await tools.echo(1); await tools.SessionCreate({});".into(),
-            Arc::new(Direct),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    let CellResult::Failure { error, tool_calls } = result else {
-        panic!("a direct-only call must fail: {result:?}")
-    };
-    assert_eq!(error.kind, CellDiagnosticKind::DirectOnlyTool);
-    assert!(error.message.contains("SessionCreate"), "{}", error.message);
-    assert_eq!(tool_calls.len(), 1, "only the callable echo is dispatched");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fresh_cells_await_parallel_rust_tools_without_leaking_globals() {
     let barrier = Arc::new(Barrier::new(2));

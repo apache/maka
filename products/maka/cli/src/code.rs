@@ -262,7 +262,6 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
                 CellDiagnosticKind::ParseError => "cell_parse",
                 CellDiagnosticKind::ExecutionError => "javascript",
                 CellDiagnosticKind::UnknownTool => "unknown_tool",
-                CellDiagnosticKind::DirectOnlyTool => "direct_only_tool",
                 CellDiagnosticKind::LimitExceeded => "cell_limit",
                 CellDiagnosticKind::ToolFailure => "tool_execution",
             }

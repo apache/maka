@@ -257,44 +257,6 @@ async fn cpu_memory_parse_and_os_errors_stay_inside_worker() {
     success(run("text('Host still works')", context()).await.unwrap());
 }
 
-struct Direct;
-impl ToolExecutor for Direct {
-    fn names(&self) -> Vec<String> {
-        vec!["echo".into()]
-    }
-    fn direct_names(&self) -> Vec<String> {
-        vec!["SessionCreate".into(), "echo".into()]
-    }
-    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
-        Box::pin(async move { Ok(input) })
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn direct_only_names_explain_their_calling_mode_without_shadowing_callable_tools() {
-    let result = executor(CellLimits::default())
-        .execute_module(
-            "await tools.echo({})\nawait tools.SessionCreate({})".into(),
-            Arc::new(Direct),
-            CancellationToken::new(),
-            context(),
-        )
-        .await
-        .unwrap();
-    let CellResult::Failure { error, tool_calls } = result else {
-        panic!("a direct-only call must fail: {result:?}")
-    };
-    // Host call failures surface as Python exceptions, so only the message
-    // carries the calling-mode guidance.
-    assert_eq!(error.kind, CellDiagnosticKind::ExecutionError);
-    assert!(
-        error.message.contains("SessionCreate is a direct tool"),
-        "{}",
-        error.message
-    );
-    assert_eq!(tool_calls.len(), 1, "only the callable echo is dispatched");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_waits_and_python_sleep_do_not_spend_execution_budget() {
     let tools = Arc::new(Tools(|_, input, _| -> ToolFuture {

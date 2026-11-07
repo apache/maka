@@ -26,7 +26,6 @@ pub(crate) async fn evaluate(
     runtime: &mut JsRuntime,
     source: &str,
     names: &[String],
-    direct: &[String],
     metadata: &[ToolMetadata],
     module: bool,
 ) -> Result<Value, CellDiagnostic> {
@@ -41,16 +40,7 @@ pub(crate) async fn evaluate(
             "tool names collide after JavaScript normalization".into(),
         ));
     }
-    // A callable alias wins; a direct name only explains an otherwise missing one.
-    let mut taken: std::collections::HashSet<_> =
-        names.iter().map(|(alias, _)| alias.clone()).collect();
-    let direct: Vec<_> = direct
-        .iter()
-        .map(|name| (crate::tool_identifier(name), name))
-        .filter(|(alias, _)| taken.insert(alias.clone()))
-        .collect();
     let names = serde_json::to_string(&names).unwrap();
-    let direct = serde_json::to_string(&direct).unwrap();
     let metadata = serde_json::to_string(metadata).unwrap();
     runtime
         .execute_script(
@@ -162,9 +152,6 @@ pub(crate) async fn evaluate(
             Object.defineProperty(catalog, alias, {{
                 value: (input) => invoke(name, input), enumerable: true
             }});
-        }}
-        for (const [alias, name] of {direct}) {{
-            Object.defineProperty(catalog, alias, {{value: (input) => invoke(name, input)}});
         }}
         Object.defineProperty(globalThis, "tools", {{value: Object.freeze(catalog)}});
         globalThis.__maka_run = async (promise) => {{

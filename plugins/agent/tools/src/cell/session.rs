@@ -218,7 +218,6 @@ impl Cells {
         let nested = Arc::new(NestedTools {
             execution: self.0.execution.clone(),
             catalog: tool.catalog,
-            direct: tool.direct,
             journal: tool.journal.clone(),
             origin: ToolOrigin::CodeMode {
                 parent_operation_id: id.clone(),
@@ -226,6 +225,7 @@ impl Cells {
             },
         });
         let journal = tool.journal;
+        let direct = tool.direct;
         let identity = ToolCallIdentity {
             tool_call_id: call_id,
             origin: ToolOrigin::CodeCell {
@@ -272,7 +272,9 @@ impl Cells {
                                 }
                             };
                             publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await?;
-                            let result = serde_json::to_value(result.map_err(abort)?)
+                            let mut result = result.map_err(abort)?;
+                            direct.explain(&mut result);
+                            let result = serde_json::to_value(result)
                                 .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
                             Ok(project(Observation::Completed {
                                 cell_id: completion_id,

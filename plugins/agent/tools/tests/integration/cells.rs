@@ -264,7 +264,9 @@ async fn a_throwing_cell_settles_as_an_error_result() {
 struct Unreachable(Arc<std::sync::atomic::AtomicUsize>);
 impl ToolExecutor for Unreachable {
     fn names(&self) -> Vec<String> {
-        vec!["SessionCreate".into()]
+        ["SessionCreate", "Session-Open", "Session_Open"]
+            .map(String::from)
+            .into()
     }
     fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -273,7 +275,7 @@ impl ToolExecutor for Unreachable {
 }
 
 #[tokio::test]
-async fn a_direct_only_tool_called_from_a_cell_names_its_calling_mode() {
+async fn a_direct_tool_called_from_a_cell_names_its_calling_mode() {
     let directory = tempfile::tempdir().unwrap();
     let log = Arc::new(
         EventLog::open(&directory.path().join("events.sqlite"))
@@ -286,10 +288,10 @@ async fn a_direct_only_tool_called_from_a_cell_names_its_calling_mode() {
         .unwrap();
     fixture::accepted(&log, &invocation, &[]).await;
     let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let catalog = ToolCatalog::new([ToolRegistration {
+    let direct = |name: &str| ToolRegistration {
         definition: ToolDefinition {
-            name: "SessionCreate".into(),
-            description: "create".into(),
+            name: name.into(),
+            description: "direct".into(),
             input_schema: json!({"type":"object"}),
             freeform: None,
             output_schema: None,
@@ -298,7 +300,13 @@ async fn a_direct_only_tool_called_from_a_cell_names_its_calling_mode() {
         handler: ToolHandler::Immediate(Arc::new(Unreachable(effects.clone()))),
         nesting: ToolNesting::DirectOnly,
         semantics: ToolSemantics::Parallel,
-    }])
+    };
+    // Both open tools are the cell member `Session_Open`.
+    let catalog = ToolCatalog::new([
+        direct("SessionCreate"),
+        direct("Session-Open"),
+        direct("Session_Open"),
+    ])
     .unwrap();
     let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
     let run = RunTools::new(
@@ -313,23 +321,37 @@ async fn a_direct_only_tool_called_from_a_cell_names_its_calling_mode() {
     let mut results = Vec::new();
     for (step, code) in [
         ("direct", "await tools.SessionCreate({});"),
+        ("wait", "await tools.wait({cell_id: 'x'});"),
+        ("ambiguous", "await tools.Session_Open({});"),
         ("unknown", "await tools.UnknownTool({});"),
-        ("hidden", "text(Object.keys(tools));"),
+        (
+            "probe",
+            "text([typeof tools.SessionCreate, 'SessionCreate' in tools, Object.getOwnPropertyNames(tools)]);",
+        ),
     ] {
         results.push(invoke(&log, &run, &invocation, step, "exec", json!({"code":code})).await);
     }
-    assert_eq!(results[0]["result"]["error"]["kind"], "direct_only_tool");
-    let direct = results[0]["result"]["error"]["message"].as_str().unwrap();
-    assert!(
-        direct.contains("SessionCreate") && direct.contains("outside exec"),
-        "{direct}"
-    );
+    for (result, name) in [(0, "SessionCreate"), (1, "wait")] {
+        assert_eq!(
+            results[result]["result"]["error"],
+            json!({
+                "kind": "execution_error",
+                "message": format!("TypeError: tools.{name} is not a function\n{name} is a direct tool: call it outside exec, not through tools"),
+            })
+        );
+    }
+    for (result, member) in [(2, "Session_Open"), (3, "UnknownTool")] {
+        assert_eq!(
+            results[result]["result"]["error"],
+            json!({"kind":"execution_error","message":format!("TypeError: tools.{member} is not a function")}),
+            "an ambiguous or unknown member keeps the generic error"
+        );
+    }
     assert_eq!(
-        results[1]["result"]["error"],
-        json!({"kind":"execution_error","message":"TypeError: tools.UnknownTool is not a function"}),
-        "unknown names keep the generic JavaScript error"
+        results[4]["content"],
+        json!([{"kind":"text","text":"[\"undefined\",false,[]]"}]),
+        "direct tools stay absent from tools"
     );
-    assert_eq!(results[2]["content"], json!([{"kind":"text","text":"[]"}]));
     assert_eq!(effects.load(std::sync::atomic::Ordering::SeqCst), 0);
     run.shutdown().await.unwrap();
     loaded.clear().unwrap();
