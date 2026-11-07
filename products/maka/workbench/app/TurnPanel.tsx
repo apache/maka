@@ -31,6 +31,7 @@ import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
+import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
 const panelStyle = {
@@ -54,6 +55,8 @@ export type LiveActivity = {
 export type TurnViewState = {
   /** The user's own choice to open or fold the turn's work; null until they make one. */
   expanded: Signal<boolean | null>;
+  /** Seen running and not yet given its outcome, which arrives a moment after the run ends. */
+  ran: boolean;
 };
 export type GroupViewState = {
   open: Signal<boolean>;
@@ -129,6 +132,7 @@ export function activityCounts(
 
 export function TurnSummary(props: {
   turn: () => TurnPresentation;
+  state: TurnViewState;
   groups: () => readonly ProcessGroup[];
   row(id: string): Row | undefined;
   expanded: () => boolean;
@@ -142,8 +146,11 @@ export function TurnSummary(props: {
     preview(image: ImagePreview): void;
   };
 }) {
-  const running = computed(() => props.turn().active && turnOutcome(props.turn()) === null);
-  // Between the run ending and its outcome arriving, the last tick keeps the time in place.
+  const running = computed(() => {
+    const turn = props.turn();
+    if (turnOutcome(turn) !== null) return (props.state.ran = false);
+    return (props.state.ran ||= turn.active);
+  });
   const clock = signal<number | undefined>(undefined);
   effect(() => {
     if (!running()) return;
@@ -539,6 +546,8 @@ type TurnPanelProps = {
   toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
   toolActivity: () => ToolActivity | undefined;
+  /** The group's tools whose calls are still streaming in, without a row of their own yet. */
+  liveTools: () => readonly ToolActivity[];
   state: GroupViewState;
   row(id: string): Row | undefined;
   rowState(id: string): MessageViewState;
@@ -567,12 +576,17 @@ export function TurnPanel(props: TurnPanelProps) {
       props.state.open.set(true);
     });
   return (
-    <View style={platform.isTerminal ? panelStyle : { ...panelStyle, marginTop: 0 }}>
+    <View style={platform.isTerminal ? panelStyle : { ...panelStyle, marginTop: 0, gap: 0 }}>
       <If when={platform.isTerminal}>
         <GroupHeader {...props} />
       </If>
       <If when={props.state.open() && props.group().rowIds.length > 0}>
         <ActivityLog {...props} />
+      </If>
+      <If when={!platform.isTerminal}>
+        <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
+          {(tool) => <LiveToolRow activity={tool} />}
+        </Each>
       </If>
     </View>
   );

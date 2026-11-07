@@ -486,7 +486,7 @@ export function Conversation(props: ConversationProps) {
   const turnState = (id: string) => {
     let state = turnStates.get(id);
     if (!state) {
-      state = { expanded: signal<boolean | null>(null) };
+      state = { expanded: signal<boolean | null>(null), ran: false };
       turnStates.set(id, state);
     }
     return state;
@@ -3086,6 +3086,7 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <TurnSummary
                             turn={turn}
+                            state={turnState(initial.turnId)}
                             groups={groups}
                             row={currentRow}
                             expanded={() => turnExpanded(turn())}
@@ -3119,11 +3120,22 @@ export function Conversation(props: ConversationProps) {
                             invocation(),
                             group().turnId,
                           );
+                        const liveTools = computed(() =>
+                          toolActivity().filter((item) =>
+                            group().members.some(
+                              (member) =>
+                                member.kind === 'activity' &&
+                                member.toolUseId === item.toolUseId &&
+                                group().toolIds.includes(item.toolUseId),
+                            ),
+                          ),
+                        );
                         return (
                           <TurnPanel
                             group={group}
                             turn={turn}
                             toolActivity={tool}
+                            liveTools={liveTools}
                             toolProgress={toolProgress}
                             state={groupState(initial.group.key)}
                             row={currentRow}

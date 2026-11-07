@@ -619,6 +619,11 @@ test('a turn has work to fold only beside its final answer', () => {
     true,
   );
   assert.equal(worked([request, row('draft', 'Streaming', 2)]), true, 'a running reply is work');
+  assert.equal(
+    worked([request, row('limit', 'Rate limited', 2, { role: 'failure' }), answer]),
+    true,
+    'a recovered failure folds away',
+  );
 });
 
 test('agent attribution arriving with canonical metadata invalidates the live grouping', () => {

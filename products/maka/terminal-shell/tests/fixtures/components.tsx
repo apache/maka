@@ -511,6 +511,7 @@ function ActivityFollow() {
             worked: true,
           })}
           toolActivity={() => undefined}
+          liveTools={() => []}
           toolProgress={() => null}
           state={state}
           row={(id) => {

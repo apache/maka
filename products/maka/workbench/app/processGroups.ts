@@ -348,6 +348,8 @@ export function projectProcessGroups(input: {
       row.role === 'compaction';
     if (!row.turnId || outside) {
       flush(true);
+      // A failure the turn recovered from folds away with its work.
+      if (row.role === 'failure' && row.turnId) turn(row.turnId).worked = true;
       // A provider that keeps refusing (a rate limit, an overload) fails each retry
       // with the same text; show the run once with its count.
       const last = entries.at(-1);
