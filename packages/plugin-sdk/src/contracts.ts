@@ -5278,11 +5278,11 @@ export const contracts = {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentFileCandidatesRead',
             description:
-              "Workspace-relative file suggestions from this Session's admitted directory.",
+              'Workspace-relative file suggestions from the selected completion context.',
             type: 'object',
             properties: {
-              sessionId: {
-                type: 'string',
+              target: {
+                $ref: '#/$defs/AgentCompletionTarget',
               },
               directory: {
                 description: 'Omission or null selects the workspace root.',
@@ -5302,8 +5302,136 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'query'],
+            required: ['target', 'query'],
             $defs: {
+              AgentCompletionTarget: {
+                description:
+                  'Read-only completion context before or after a conversation is created.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'draft',
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentWorkspaceSelection',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'workspace'],
+                  },
+                ],
+              },
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    description: 'A registered Project at one of its locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'path'],
+                  },
+                  {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
               WorkspacePath: {
                 type: 'object',
                 properties: {
@@ -16620,6 +16748,7 @@ export const contracts = {
                     type: 'null',
                   },
                 ],
+                default: null,
               },
               title: {
                 type: ['string', 'null'],
@@ -25796,12 +25925,11 @@ export const contracts = {
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             title: 'AgentSkillCandidatesRead',
-            description:
-              "Read-only suggestions resolved against the session's actual skill context.",
+            description: 'Read-only suggestions resolved against the selected completion context.',
             type: 'object',
             properties: {
-              sessionId: {
-                type: 'string',
+              target: {
+                $ref: '#/$defs/AgentCompletionTarget',
               },
               backend: {
                 $ref: '#/$defs/AgentBackendPreference',
@@ -25811,8 +25939,136 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'backend', 'query'],
+            required: ['target', 'backend', 'query'],
             $defs: {
+              AgentCompletionTarget: {
+                description:
+                  'Read-only completion context before or after a conversation is created.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'draft',
+                      },
+                      workspace: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/AgentWorkspaceSelection',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'workspace'],
+                  },
+                ],
+              },
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    description: 'A Git worktree of the directory at `path`, managed by the Host.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    description: 'A registered Project at one of its locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'path'],
+                  },
+                  {
+                    description:
+                      'The directory at `path`: absolute, `~` standing for the home directory,\nwithin the configured workspace locations.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
               AgentBackendPreference: {
                 description:
                   "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
@@ -35074,6 +35330,148 @@ export const contracts = {
     interface: {
       kind: 'service',
       methods: {
+        candidates: {
+          mode: 'query',
+          input: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              directory: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/SkillLibraryCandidateDirectory',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              tools: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+              query: {
+                type: 'string',
+              },
+            },
+            required: ['directory', 'tools', 'query'],
+            title: 'SkillLibraryCandidatesRead',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SkillLibraryCandidateDirectory: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                },
+                required: ['path', 'directoryIdentity'],
+                description:
+                  'A read-only directory observation; it does not allocate an execution workspace.',
+              },
+            },
+          },
+          output: {
+            type: 'object',
+            properties: {
+              revision: {
+                type: 'string',
+              },
+              query: {
+                type: 'string',
+              },
+              matches: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SearchMatch',
+                },
+              },
+              totalEligible: {
+                type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              matchedCount: {
+                type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              truncated: {
+                type: 'boolean',
+              },
+            },
+            required: [
+              'revision',
+              'query',
+              'matches',
+              'totalEligible',
+              'matchedCount',
+              'truncated',
+            ],
+            title: 'SkillModelSearchResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SearchMatch: {
+                type: 'object',
+                properties: {
+                  ref: {
+                    type: 'string',
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  scope: {
+                    $ref: '#/$defs/SkillScope',
+                  },
+                  source: {
+                    $ref: '#/$defs/SkillSource',
+                  },
+                  metadataTruncated: {
+                    type: 'boolean',
+                  },
+                  score: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                },
+                required: [
+                  'ref',
+                  'id',
+                  'name',
+                  'description',
+                  'scope',
+                  'source',
+                  'metadataTruncated',
+                  'score',
+                ],
+              },
+              SkillScope: {
+                type: 'string',
+                enum: ['project', 'workspace', 'user', 'custom'],
+              },
+              SkillSource: {
+                type: 'string',
+                enum: ['maka', 'agents', 'custom'],
+              },
+            },
+          },
+          resources: {},
+        },
         delete: {
           mode: 'mutation',
           input: {

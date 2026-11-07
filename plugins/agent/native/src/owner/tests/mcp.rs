@@ -272,14 +272,14 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
     .expect("MCP permission scenario completes");
 }
 
-fn portable(record: &std::path::Path) -> Value {
+pub(super) fn portable(record: &std::path::Path) -> Value {
     json!({"mcpServers":{"fixture":{
         "command":"node", "args":[std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mcp/tests/server.mjs"),"normal",record],
         "tools":["echo"], "preapproved":true,
         "env":{"MCP_TEST_SECRET":"do-not-display-this-value"}
     }}})
 }
-fn write_config(path: &std::path::Path, config: &Value) {
+pub(super) fn write_config(path: &std::path::Path, config: &Value) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec(config).unwrap()).unwrap();
 }

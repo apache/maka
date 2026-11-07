@@ -1344,10 +1344,10 @@ export interface ServiceMethods {
     skillCandidates: {
       mode: 'query';
       /**
-       * Read-only suggestions resolved against the session's actual skill context.
+       * Read-only suggestions resolved against the selected completion context.
        */
       input: {
-        sessionId: string;
+        target: Runtime.AgentCompletionTarget;
         backend: Runtime.AgentBackendPreference;
         query: string;
       };
@@ -2115,6 +2115,15 @@ export interface ServiceMethods {
     };
   };
   skillLibrary: {
+    candidates: {
+      mode: 'query';
+      input: {
+        directory: SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory | null;
+        tools: string[];
+        query: string;
+      };
+      output: Runtime.SkillModelSearchResult;
+    };
     delete: {
       mode: 'mutation';
       input: Runtime.SkillLibraryManageSkill;
@@ -3149,4 +3158,11 @@ export interface TerminalReadDisplayOutput_Style {
   background: TerminalReadDisplayOutput_Color;
   flags: number;
   underline?: TerminalReadDisplayOutput_Color | null;
+}
+/**
+ * A read-only directory observation; it does not allocate an execution workspace.
+ */
+export interface SkillLibraryCandidatesInput_SkillLibraryCandidateDirectory {
+  path: string;
+  directoryIdentity: string;
 }

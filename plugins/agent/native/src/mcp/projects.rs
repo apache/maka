@@ -278,6 +278,19 @@ impl Projects {
         }
         self.capture(workspace).await
     }
+    /// Completion observes captured tools without opening MCP connections.
+    pub async fn observed(&self, workspace: Option<&Workspace>) -> Result<Arc<Catalog>, String> {
+        let mut proposal = self.propose(workspace.cloned()).await?;
+        if !self.trusted(&proposal).await? {
+            proposal = self.propose(None).await?;
+        }
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        Ok(snapshots
+            .revisions
+            .get(&proposal.revision)
+            .map(|snapshot| snapshot.catalog.clone())
+            .unwrap_or_else(|| self.base.clone()))
+    }
     fn supersede(&self, scope: &str, current: Option<&str>) {
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         match current {

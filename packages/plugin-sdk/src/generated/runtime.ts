@@ -3779,6 +3779,18 @@ export type FormResult =
 export type QuestionRejection = 'invalid_input' | 'unavailable';
 export type WorkspaceProcessSessionKind = 'agent' | 'workhub';
 export type AgentContextRequestState = 'requested' | 'completed' | 'interrupted';
+/**
+ * Read-only completion context before or after a conversation is created.
+ */
+export type AgentCompletionTarget =
+  | {
+      kind: 'session';
+      sessionId: string;
+    }
+  | {
+      kind: 'draft';
+      workspace: AgentWorkspaceSelection | null;
+    };
 export type AgentFileKind = 'file' | 'directory' | 'symlink' | 'other';
 export type AgentFileChange =
   | {
@@ -8459,10 +8471,10 @@ export interface AgentFileCursor {
   after: WorkspacePath;
 }
 /**
- * Workspace-relative file suggestions from this Session's admitted directory.
+ * Workspace-relative file suggestions from the selected completion context.
  */
 export interface AgentFileCandidatesRead {
-  sessionId: string;
+  target: AgentCompletionTarget;
   /**
    * Omission or null selects the workspace root.
    */

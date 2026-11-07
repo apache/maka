@@ -420,7 +420,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
   const skillCalls = [
     ...new Set([
       ...skillMethods,
-      ...(configuration.agent.skillLibrary ? ['prepare', 'search'] : []),
+      ...(configuration.agent.skillLibrary ? ['prepare', 'search', 'candidates'] : []),
     ]),
   ];
   if (skillCalls.length && !configuration.skills)
@@ -678,7 +678,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
             consumer: [keys.agent],
             provider: [keys.skills],
             export: 'skills',
-            methods: ['prepare', 'search'],
+            methods: ['prepare', 'search', 'candidates'],
             recovery: false,
           },
         ]

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Session-bound directory observations; the worker owns watcher settlement.
+//! Captured directory observations; the worker owns watcher settlement.
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_capabilities::call::Scope;
@@ -28,7 +28,100 @@ use std::{io, path::Path};
 // The existing readFile byte quantum also targets path-observation batches.
 const FILE_STREAM_BYTES: usize = 32 * 1024;
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum DraftWorkspace {
+    Directory(maka_skills_api::contract::CandidateDirectory),
+    Session(Box<Workspace>),
+}
+impl DraftWorkspace {
+    fn path(&self) -> &str {
+        match self {
+            Self::Directory(directory) => &directory.path,
+            Self::Session(workspace) => &workspace.path,
+        }
+    }
+    fn directory_identity(&self) -> &maka_agent_facts::execution::DirectoryIdentity {
+        match self {
+            Self::Directory(directory) => &directory.directory_identity,
+            Self::Session(workspace) => &workspace.directory_identity,
+        }
+    }
+    fn worktree(&self) -> Option<&maka_fs_tools::worktree::Binding> {
+        match self {
+            Self::Directory(_) => None,
+            Self::Session(workspace) => workspace.worktree.as_deref(),
+        }
+    }
+    pub(super) fn workspace(&self) -> Option<&Workspace> {
+        match self {
+            Self::Directory(_) => None,
+            Self::Session(workspace) => Some(workspace),
+        }
+    }
+    pub(super) fn directory(&self) -> maka_skills_api::contract::CandidateDirectory {
+        maka_skills_api::contract::CandidateDirectory {
+            path: self.path().into(),
+            directory_identity: self.directory_identity().clone(),
+        }
+    }
+}
+
+enum CandidateContext {
+    Session(Box<ResolvedConfiguration>),
+    Draft(DraftWorkspace),
+}
+
 impl Owner {
+    pub(super) async fn draft_completion_workspace(
+        &self,
+        selection: Option<&WorkspaceSelection>,
+        scope: &Scope,
+    ) -> Result<Option<DraftWorkspace>, String> {
+        if scope.identity.agent().is_some() {
+            return Err("agent_completion_user_required".into());
+        }
+        if scope.cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err("agent_completion_cancelled".into());
+        }
+        let Some(selection) = selection else {
+            return Ok(None);
+        };
+        if let WorkspaceSelection::Session { session_id } = selection {
+            let workspace = self.session(session_id).await?.configuration.workspace;
+            if !self.project_accepts_session(&workspace).await? {
+                return Err("agent_workspace_unavailable".into());
+            }
+            workspace::validate(&self.workspace_roots, &workspace, &self.managed_worktrees).await?;
+            return Ok(Some(DraftWorkspace::Session(Box::new(workspace))));
+        }
+        let path = match selection {
+            WorkspaceSelection::Directory { path } | WorkspaceSelection::IsolatedGit { path } => {
+                path.clone()
+            }
+            WorkspaceSelection::Project { project, path } => {
+                self.project_selection(project, path)
+                    .await?
+                    .ok_or("agent_project_unavailable")?
+                    .1
+            }
+            WorkspaceSelection::Session { .. } => unreachable!("session workspace handled above"),
+        };
+        let observed = workspace::observed(
+            self.workspace_roots.clone(),
+            &path,
+            self.home.as_deref(),
+            self.managed_worktrees.clone(),
+        )
+        .await?
+        .ok_or("agent_workspace_unavailable")?;
+        Ok(Some(DraftWorkspace::Directory(
+            maka_skills_api::contract::CandidateDirectory {
+                path: observed.path,
+                directory_identity: observed.identity,
+            },
+        )))
+    }
+
     pub async fn read_file(
         self: &Arc<Self>,
         input: FileRead,
@@ -166,7 +259,7 @@ impl Owner {
         self.resource_work(&scope, move |owner, scope| {
             Box::pin(async move {
                 let (original, directory) = owner
-                    .file_directory(&input.session_id, input.directory, &scope)
+                    .candidate_directory(&input.target, input.directory, &scope)
                     .await?;
                 // One batch can wait for the emitter; its consumer's backpressure
                 // stops the filesystem producer without capping the result set.
@@ -236,12 +329,89 @@ impl Owner {
                 emitted?;
                 scanned?;
                 owner
-                    .check_file_session(&input.session_id, &original, &scope)
+                    .check_candidate_context(&input.target, &original, &scope)
                     .await?;
                 Ok(Value::Null)
             })
         })
         .await
+    }
+
+    async fn candidate_directory(
+        &self,
+        target: &CompletionTarget,
+        path: Option<WorkspacePath>,
+        scope: &Scope,
+    ) -> Result<(CandidateContext, Arc<Directory>), String> {
+        match target {
+            CompletionTarget::Session { session_id } => {
+                self.scoped_session(scope, session_id).await?;
+                let (original, directory) = self.file_directory(session_id, path, scope).await?;
+                Ok((CandidateContext::Session(Box::new(original)), directory))
+            }
+            CompletionTarget::Draft { workspace } => {
+                if let Some(path) = &path {
+                    path.validate().map_err(|_| "agent_files_invalid_path")?;
+                }
+                let original = self
+                    .draft_completion_workspace(workspace.as_ref(), scope)
+                    .await?
+                    .ok_or("agent_completion_workspace_required")?;
+                let root = self
+                    .store
+                    .owned_root()
+                    .map_err(|_| "agent_root_unavailable")?;
+                let private = root.canonical_path().to_owned();
+                let control = root.control_directory().to_owned();
+                let selected = original.clone();
+                let directory = worktrees::blocking(scope, &self.stop, move |cancel| {
+                    Directory::open(
+                        Path::new(selected.path()),
+                        selected.directory_identity(),
+                        &private,
+                        &control,
+                        selected.worktree(),
+                        path.as_ref(),
+                        &cancel,
+                    )
+                    .map(Arc::new)
+                    .map_err(file_failure)
+                })
+                .await?;
+                self.check_candidate_context(
+                    target,
+                    &CandidateContext::Draft(original.clone()),
+                    scope,
+                )
+                .await?;
+                Ok((CandidateContext::Draft(original), directory))
+            }
+        }
+    }
+
+    async fn check_candidate_context(
+        &self,
+        target: &CompletionTarget,
+        original: &CandidateContext,
+        scope: &Scope,
+    ) -> Result<(), String> {
+        match (target, original) {
+            (CompletionTarget::Session { session_id }, CandidateContext::Session(original)) => {
+                self.check_file_session(session_id, original, scope).await
+            }
+            (CompletionTarget::Draft { workspace }, CandidateContext::Draft(original)) => {
+                if self
+                    .draft_completion_workspace(workspace.as_ref(), scope)
+                    .await?
+                    .as_ref()
+                    != Some(original)
+                {
+                    return Err("agent_files_changed".into());
+                }
+                Ok(())
+            }
+            _ => unreachable!("candidate capture belongs to its target"),
+        }
     }
 
     pub async fn watch_files(

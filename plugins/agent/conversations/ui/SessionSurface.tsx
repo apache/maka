@@ -40,6 +40,7 @@ import { backendName } from '../../../../products/maka/workbench/app/modelSelect
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type {
+  AgentCompletionTarget,
   AgentInteractionResult,
   AgentWorkspaceAccess,
   ModelSelection,
@@ -56,6 +57,7 @@ import {
   type ConversationPreviewInput,
   type ConversationSessionHandle,
   type ComposerSession,
+  type ComposerCompletionSource,
   type ComposerFocusHandle,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
@@ -954,8 +956,11 @@ export function createConversationUi(
     const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
     return {
       id: `pending/${generation}`,
+      completion: projectComposerCompletion(host, { kind: 'draft', workspace }),
       draft: pendingText,
       workspace: pendingWorkspaceLabel,
+      backend: pendingBackend,
+      modelDetails: pendingModelDetails,
       permissions: {
         id: `pending/${generation}`,
         access: pendingAccess,
@@ -2746,6 +2751,26 @@ export function createConversationUi(
   };
 }
 
+function projectComposerCompletion(
+  host: Host,
+  target: AgentCompletionTarget,
+): ComposerCompletionSource {
+  return {
+    files:
+      target.kind === 'draft' && target.workspace === null
+        ? null
+        : (query, directory) =>
+            host.subscribe('agent', 'fileCandidates', {
+              target,
+              query,
+              ...(directory ? { directory } : {}),
+            }),
+    skills: ({ query, backend }) =>
+      host.query('agent', 'skillCandidates', { target, backend, query }),
+    pathLabel: host.pathLabel,
+  };
+}
+
 function projectComposerSession(
   owner: ConversationHandle,
   host: Host,
@@ -2758,21 +2783,7 @@ function projectComposerSession(
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
-    completion: {
-      files: (query, directory) =>
-        host.subscribe('agent', 'fileCandidates', {
-          sessionId: owner.sessionId,
-          query,
-          ...(directory ? { directory } : {}),
-        }),
-      skills: ({ query, backend }) =>
-        host.query('agent', 'skillCandidates', {
-          sessionId: owner.sessionId,
-          backend,
-          query,
-        }),
-      pathLabel: host.pathLabel,
-    },
+    completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
     checklist: {
       read: (offset) =>
         host.query('agent', 'checklist', {
