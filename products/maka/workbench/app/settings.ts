@@ -282,6 +282,7 @@ export function createModelSettings(
   let modelRead = 0;
   let editorInstance = restored?.editor?.instance ?? 0;
   let pendingInitialModel = restored?.initialModel ?? (restored ? null : (initialModel ?? null));
+  let leaving: (() => void) | null = null;
   cleanup(() => {
     alive = false;
     read += 1;
@@ -1217,10 +1218,14 @@ export function createModelSettings(
       form.baseUrl !== (defaults?.baseUrl ?? '')
     );
   };
+  const clearDiscard = () => {
+    leaving = null;
+    discardTarget.set(null);
+  };
   const back = () => {
     if (busy()) return false;
     if (discardTarget()) {
-      discardTarget.set(null);
+      clearDiscard();
       return false;
     }
     if (confirmation()) {
@@ -1253,7 +1258,7 @@ export function createModelSettings(
   };
   const deactivate = () => {
     cancelRead();
-    discardTarget.set(null);
+    clearDiscard();
     if (editor()) editor.set({ ...editor()!, instance: ++editorInstance });
   };
   const activate = () => {
@@ -1269,6 +1274,7 @@ export function createModelSettings(
   };
   const reset = (target: ModelSelection | null = null) => {
     cancelRead();
+    clearDiscard();
     editor.set(null);
     model.set(null);
     confirmation.set(null);
@@ -1358,14 +1364,28 @@ export function createModelSettings(
     discardEdits(request: ConnectionAction) {
       if (!current(request) || busy()) return;
       const target = discardTarget();
-      discardTarget.set(null);
+      const next = leaving;
+      clearDiscard();
       if (target === 'model') {
+        confirmation.set(null);
         model.set(null);
         page.set('connection');
       } else if (target === 'connection') leaveEditor();
+      next?.();
     },
-    keepEditing() {
-      discardTarget.set(null);
+    keepEditing: clearDiscard,
+    leave(next: () => void) {
+      const target =
+        page() === 'model' && modelDirty()
+          ? 'model'
+          : editor() && connectionEdited()
+            ? 'connection'
+            : null;
+      if (!target) next();
+      else {
+        leaving = next;
+        discardTarget.set(target);
+      }
     },
     dirty,
     action,

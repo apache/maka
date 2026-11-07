@@ -93,21 +93,34 @@ export function ModelSettings(props: {
       runtime.settings().find((item) => matches(item, props.defaultRoute)) ?? runtime.settings()[0];
     props.route.set(fallback ? { instance: fallback.instance.instance, id: fallback.id } : null);
   });
+  // The page may hold the exit behind a prompt, so the request is checked again when it runs.
+  const leave = (next: () => void) => {
+    const current = page();
+    if (current?.leave) current.leave(next);
+    else next();
+  };
   const choose = (request: { from: string | null; to: string }) => {
-    if (
-      !alive ||
-      busy() ||
-      (contributed()?.key ?? null) !== request.from ||
-      request.from === request.to
-    )
-      return;
-    const target = runtime.settings().find((item) => item.key === request.to);
-    if (!target) return;
-    if (!operations.pending().length) {
-      operations.error.set('');
-      operations.notice.set('');
-    }
-    props.route.set({ instance: target.instance.instance, id: target.id });
+    const valid = () =>
+      alive &&
+      !busy() &&
+      (contributed()?.key ?? null) === request.from &&
+      request.from !== request.to;
+    if (!valid()) return;
+    leave(() => {
+      const target = runtime.settings().find((item) => item.key === request.to);
+      if (!valid() || !target) return;
+      if (!operations.pending().length) {
+        operations.error.set('');
+        operations.notice.set('');
+      }
+      props.route.set({ instance: target.instance.instance, id: target.id });
+    });
+  };
+  const closeNow = () => {
+    if (alive && !busy()) props.input.close();
+  };
+  const close = () => {
+    if (alive && !busy()) leave(closeNow);
   };
   const backAction = (): BackAction => ({
     key: contributed()?.key ?? null,
@@ -121,12 +134,9 @@ export function ModelSettings(props: {
       request.navigation !== (page()?.navigation() ?? null)
     )
       return;
-    if (page()?.back() ?? true) props.input.close();
+    if (page()?.back() ?? true) close();
   };
   const cancel = (request: BackAction) => () => back(request);
-  const close = () => {
-    if (alive && !busy()) props.input.close();
-  };
   const input = (contribution: UiContributionRef): SettingsPageInput => ({
     settings: {
       attach(value) {

@@ -27,6 +27,7 @@ import { tr } from './locale';
 import {
   SettingsBody,
   SettingsConfirm,
+  SettingsDiscard,
   SettingsLede,
   SettingsProblem,
   SettingsRow,
@@ -208,18 +209,14 @@ export function Status(props: { owner: ModelSettingsOwner; retry(): void }) {
 function Discard(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;
   return (
-    <SettingsConfirm
-      title={tr('Discard unsaved changes?')}
-      body={
+    <SettingsDiscard
+      name={
         owner.discardTarget() === 'model'
           ? owner.model()?.label || owner.model()?.id
           : owner.editor()?.name
       }
-      confirm={tr('Discard changes')}
-      cancel={tr('Keep editing')}
-      destructive
-      onConfirm={inputAction(owner.discardEdits, owner.action())}
-      onCancel={owner.keepEditing}
+      onDiscard={inputAction(owner.discardEdits, owner.action())}
+      onKeep={owner.keepEditing}
     />
   );
 }
