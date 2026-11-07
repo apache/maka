@@ -326,7 +326,7 @@ pub struct Create {
     pub workspace: WorkspaceSelection,
 }
 
-#[derive(Clone, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -355,6 +355,26 @@ pub enum WorkspaceSelection {
     Session {
         #[schemars(length(min = 1))]
         session_id: String,
+    },
+}
+
+/// Read-only completion context before or after a conversation is created.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentCompletionTarget")]
+pub enum CompletionTarget {
+    Session {
+        #[schemars(length(min = 1))]
+        session_id: String,
+    },
+    Draft {
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<WorkspaceSelection>")]
+        workspace: Option<WorkspaceSelection>,
     },
 }
 /// A directory on the Host: an absolute path, `~` standing for the home
@@ -513,12 +533,12 @@ pub enum GlobalInstructionsUpdated {
     Unavailable,
 }
 
-/// Read-only suggestions resolved against the session's actual skill context.
+/// Read-only suggestions resolved against the selected completion context.
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSkillCandidatesRead")]
 pub struct SkillCandidatesRead {
-    pub session_id: String,
+    pub target: CompletionTarget,
     pub backend: BackendPreference,
     pub query: String,
 }

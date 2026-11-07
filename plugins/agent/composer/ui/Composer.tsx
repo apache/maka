@@ -21,7 +21,7 @@ import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
-import { ContextMenu, Input, MenuItem, Popover } from 'nsh/base';
+import { ContextMenu, Input, MenuItem } from 'nsh/base';
 import type { JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
@@ -59,7 +59,6 @@ import type { ComposerEditor } from '../../../../products/maka/workbench/app/Com
 import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
-  const pendingAdd = signal(false);
   const completion = createComposerCompletion({
     session: props.session,
     pending: () => props.pending?.() ?? null,
@@ -838,83 +837,30 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               { pointerEvents: 'box-none' },
             ]}
           >
-            <Popover
-              open={pending() !== null && pendingAdd()}
-              onOpenChange={({ open }) => pendingAdd.set(open && pending() !== null)}
-              placement="top"
-              align="start"
-              offset={8}
-              margin={8}
-              popupStyle={{
-                width: 240,
-                padding: 8,
-                backgroundColor: C.surface,
-                borderRadius: 12,
-              }}
-              trigger={
-                <Button
-                  ref={completion.addButton}
-                  onPress={
-                    pending()
-                      ? undefined
-                      : inputAction(completion.toggleAdd, {
-                          sessionId: props.session()?.sessionId ?? null,
-                        })
-                  }
-                  accessibilityLabel={tr('Add to message')}
-                  tooltip={textTooltip(() => tr('Add to message'))}
-                  disabled={
-                    pending()
-                      ? pending()!.sending() || !pending()!.ready()
-                      : !props.session()?.editable() || completion.composing()
-                  }
-                  style={{
-                    width: 32,
-                    height: 32,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderRadius: 16,
-                  }}
-                  hoverStyle={{ backgroundColor: C.line }}
-                  focusStyle={{ backgroundColor: C.line }}
-                  activeStyle={{ backgroundColor: C.surface }}
-                >
-                  <Icon name="plus" color={C.secondary} />
-                </Button>
+            <Button
+              ref={completion.addButton}
+              onPress={inputAction(completion.toggleAdd, {
+                owner: props.session()?.sessionId ?? pending()?.id ?? null,
+              })}
+              accessibilityLabel={tr('Add to message')}
+              tooltip={textTooltip(() => tr('Add to message'))}
+              disabled={
+                completion.composing() ||
+                (pending() ? pending()!.sending() : !props.session()?.editable())
               }
+              style={{
+                width: 32,
+                height: 32,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 16,
+              }}
+              hoverStyle={{ backgroundColor: C.line }}
+              focusStyle={{ backgroundColor: C.line }}
+              activeStyle={{ backgroundColor: C.surface }}
             >
-              <Button
-                accessibilityLabel={tr('Attach files')}
-                onPress={inputAction(() => {
-                  pendingAdd.set(false);
-                  pending()?.openPicker(true);
-                }, null)}
-                style={controlStyle}
-                hoverStyle={{ backgroundColor: C.raised }}
-                focusStyle={{ backgroundColor: C.raised }}
-              >
-                <Text style={{ color: C.text }}>{tr('Attach files')}</Text>
-              </Button>
-              <Each
-                of={props.commands().filter((command) => command.trigger === 'goal')}
-                key={(command) => command.id}
-              >
-                {(item) => (
-                  <Button
-                    accessibilityLabel={item().title}
-                    onPress={inputAction(() => {
-                      pendingAdd.set(false);
-                      return item().run();
-                    }, null)}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.raised }}
-                  >
-                    <Text style={{ color: C.text }}>{item().title}</Text>
-                  </Button>
-                )}
-              </Each>
-            </Popover>
+              <Icon name="plus" color={C.secondary} />
+            </Button>
             <SessionPermissionsSelect
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}

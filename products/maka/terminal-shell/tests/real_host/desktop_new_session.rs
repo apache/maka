@@ -929,8 +929,18 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_new_draft_slash_commands_open_settings_without_creating_a_session() {
-    let fixture = Fixture::open().await;
+async fn desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session() {
+    let fixture = Fixture::open_with_configuration(Options::default(), |_, directory| {
+        let skill = directory.join("assistant-home/.maka/skills/draft-guide");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: draft-guide\ndescription: Guide for a new draft\n---\nReview the workspace.",
+        )
+        .unwrap();
+        std::fs::write(directory.join("workspace/draft-reference.md"), "Reference").unwrap();
+    })
+    .await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.platform.paste("/set").unwrap();
@@ -950,6 +960,26 @@ async fn desktop_new_draft_slash_commands_open_settings_without_creating_a_sessi
     desktop.artifact("new-draft-slash-consumed");
     desktop.platform.paste("AFTER_SLASH_COMMAND").unwrap();
     desktop.expect_text("AFTER_SLASH_COMMAND").await;
+    desktop.type_text("/draft").await;
+    desktop.key("right", false);
+    desktop.control("draft-guide").await;
+    desktop.artifact("new-draft-skill-menu");
+    desktop.press("draft-guide").await;
+    desktop.expect_text("/skill:draft-guide ").await;
+    desktop.key("right", false);
+    desktop.platform.paste("@draft-ref").unwrap();
+    desktop.control("draft-reference.md").await;
+    desktop.artifact("new-draft-file-menu");
+    desktop.press("draft-reference.md").await;
+    desktop
+        .expect_text("/skill:draft-guide @draft-reference.md ")
+        .await;
+    desktop.press("Add to message").await;
+    desktop.press("Use a skill").await;
+    desktop.control("draft-guide").await;
+    desktop.artifact("new-draft-add-skill-menu");
+    desktop.press("draft-guide").await;
+    desktop.expect_text("/skill:draft-guide ").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
     desktop.close().await;

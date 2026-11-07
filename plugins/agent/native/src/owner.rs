@@ -1207,28 +1207,13 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        // SendUser and sleep are granted by Bot identity, independent of the tool list.
-        let bot = self.bot.is(session);
-        let excluded: Vec<_> = catalog
-            .tools
-            .definitions()
-            .map(|definition| definition.name.as_str())
-            .filter(|name| {
-                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
-                (speaks && !bot)
-                    || (basis.graph.is_none() && crate::workhub::tasks::graph::NAMES.contains(name))
-                    || (!(speaks && bot)
-                        && basis.allowed_tools.as_ref().is_some_and(|allowed| {
-                            !allowed.iter().any(|allowed| allowed.as_str() == *name)
-                        }))
-                    || editing.is_some_and(|editing| {
-                        self.editing_tools
-                            .iter()
-                            .any(|(tool, style)| tool.as_str() == *name && *style != editing)
-                    })
-            })
-            .collect();
-        let selected = catalog.tools.excluding(&excluded);
+        let selected = self.select_catalog_tools(
+            &catalog.tools,
+            Some(session),
+            basis.graph.is_some(),
+            basis.allowed_tools.as_deref(),
+            editing,
+        );
         let selected = if discovery {
             selected.with_discovery()
         } else {
@@ -1242,6 +1227,42 @@ impl Owner {
         basis: &MessageBasis,
     ) -> Result<crate::executor::external::HostTools, String> {
         let selected = self.selected_tools(session, basis, false, None)?;
+        Ok(self.external_catalog_tools(selected))
+    }
+    fn select_catalog_tools(
+        &self,
+        catalog: &maka_tools::ToolCatalog,
+        session: Option<&str>,
+        graph: bool,
+        allowed_tools: Option<&[String]>,
+        editing: Option<maka_agent_facts::execution::EditingTools>,
+    ) -> maka_tools::ToolCatalog {
+        // SendUser and sleep are granted by Bot identity, independent of the tool list.
+        let bot = session.is_some_and(|session| self.bot.is(session));
+        let excluded: Vec<_> = catalog
+            .definitions()
+            .map(|definition| definition.name.as_str())
+            .filter(|name| {
+                let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
+                (speaks && !bot)
+                    || (!graph && crate::workhub::tasks::graph::NAMES.contains(name))
+                    || (!(speaks && bot)
+                        && allowed_tools.is_some_and(|allowed| {
+                            !allowed.iter().any(|allowed| allowed.as_str() == *name)
+                        }))
+                    || editing.is_some_and(|editing| {
+                        self.editing_tools
+                            .iter()
+                            .any(|(tool, style)| tool.as_str() == *name && *style != editing)
+                    })
+            })
+            .collect();
+        catalog.excluding(&excluded)
+    }
+    fn external_catalog_tools(
+        &self,
+        selected: maka_tools::ToolCatalog,
+    ) -> crate::executor::external::HostTools {
         let excluded = selected
             .names()
             .into_iter()
@@ -1252,10 +1273,10 @@ impl Owner {
         for name in &self.resource_reads {
             catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
         }
-        Ok(crate::executor::external::HostTools {
+        crate::executor::external::HostTools {
             catalog,
             resource_reads: self.resource_reads.clone(),
-        })
+        }
     }
 
     pub async fn send(

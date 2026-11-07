@@ -55,6 +55,7 @@ type Owner = ComposerSession | Pending;
 const isSession = (owner: Owner): owner is ComposerSession => 'sessionId' in owner;
 const editable = (owner: Owner) => (isSession(owner) ? owner.editable() : !owner.sending());
 const sessionId = (owner: Owner) => (isSession(owner) ? owner.sessionId : null);
+const ownerId = (owner: Owner) => (isSession(owner) ? owner.sessionId : owner.id);
 type Editor = { sessionId: string | null; node: ComposerEditor };
 type Read = {
   serial: number;
@@ -95,10 +96,10 @@ type FileRead = { close(): Promise<void>; closing: Promise<void> | null };
 
 const sameSelection = (a: Selection, b: Selection) => a.start === b.start && a.end === b.end;
 const contextKey = (owner: Owner) => {
-  if (!isSession(owner)) return owner.confirmation();
   const backend = owner.backend();
   const details = owner.modelDetails();
   return JSON.stringify([
+    isSession(owner) ? null : owner.confirmation(),
     backend,
     details.kind === 'ready' ? details.choice.selection : details.kind,
   ]);
@@ -232,7 +233,7 @@ export function createComposerCompletion(options: Options) {
         }),
       );
   const localRows = (read: Read): Row[] => {
-    if (read.source === 'add' && isSession(read.owner))
+    if (read.source === 'add')
       return [
         row(read, {
           id: 'add:attachment',
@@ -242,7 +243,9 @@ export function createComposerCompletion(options: Options) {
           },
           detail: keymap.label('mod+u'),
           icon: 'paperclip',
-          disabled: read.owner.attachments.restoring(),
+          disabled: isSession(read.owner)
+            ? read.owner.attachments.restoring()
+            : read.owner.completion.files === null,
         }),
         row(read, {
           id: 'add:files',
@@ -253,6 +256,7 @@ export function createComposerCompletion(options: Options) {
           },
           detail: '@',
           icon: 'file',
+          disabled: read.owner.completion.files === null,
         }),
         row(read, {
           id: 'add:skills',
@@ -300,9 +304,10 @@ export function createComposerCompletion(options: Options) {
   };
   const lookup = async (read: Read): Promise<void> => {
     const owner = read.owner;
-    if (!isSession(owner)) return;
     if (read.source === 'files') {
-      const stream = await owner.completion.files(read.query, read.directory);
+      const files = owner.completion.files;
+      if (!files) return;
+      const stream = await files(read.query, read.directory);
       const active: FileRead = { close: () => stream.close(), closing: null };
       fileRead = active;
       const decoder = new TextDecoder('utf-8', {
@@ -445,18 +450,15 @@ export function createComposerCompletion(options: Options) {
       return;
     }
     const token = completionToken(text, range);
-    const source = !isSession(currentOwner)
-      ? token?.kind === 'slash' && token.leading
-        ? 'commands'
-        : null
-      : (requested ??
-        (token?.kind === 'file'
-          ? 'files'
-          : token?.kind === 'skill'
-            ? 'skills'
-            : token
-              ? 'slash'
-              : null));
+    const source =
+      requested ??
+      (token?.kind === 'file'
+        ? 'files'
+        : token?.kind === 'skill'
+          ? 'skills'
+          : token
+            ? 'slash'
+            : null);
     if (source === null) {
       hide();
       return;
@@ -489,11 +491,11 @@ export function createComposerCompletion(options: Options) {
     rows.set(localRows(read));
     list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
     const remote = source === 'files' || source === 'skills' || source === 'slash';
-    const model = isSession(currentOwner) ? currentOwner.modelDetails() : null;
+    const model = currentOwner.modelDetails();
     const available =
-      isSession(currentOwner) &&
-      (source === 'files' ||
-        (model?.kind === 'ready' && sameRoute(currentOwner.backend(), model.choice.selection)));
+      source === 'files'
+        ? currentOwner.completion.files !== null
+        : model.kind === 'ready' && sameRoute(currentOwner.backend(), model.choice.selection);
     loading.set(remote && available);
     wanted = remote && available ? read : null;
     if (wanted) void pump();
@@ -600,9 +602,10 @@ export function createComposerCompletion(options: Options) {
     }
     read.editor.focus();
     if (item.kind === 'attachment') {
-      if (!isSession(read.owner)) return;
       close();
-      read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
+      if (isSession(read.owner))
+        read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
+      else read.owner.openPicker(true);
       return;
     }
     if (item.kind === 'command') {
@@ -764,13 +767,13 @@ export function createComposerCompletion(options: Options) {
     selection(target: Owner, event: Selection) {
       if (owner() === target) selection.set({ ...event });
     },
-    toggleAdd(target: { sessionId: string | null }) {
-      const owner = options.session();
+    toggleAdd(target: { owner: string | null }) {
+      const currentOwner = owner();
       if (
-        !owner ||
+        !currentOwner ||
         !options.active() ||
-        owner.sessionId !== target.sessionId ||
-        !owner.editable() ||
+        ownerId(currentOwner) !== target.owner ||
+        !editable(currentOwner) ||
         composing()
       )
         return;
@@ -850,8 +853,7 @@ export function createComposerCompletion(options: Options) {
         ? tr('No matching files.')
         : opened()?.source === 'commands'
           ? tr('No matching commands.')
-          : options.session()?.backend() === null ||
-              options.session()?.modelDetails().kind !== 'ready'
+          : owner()?.backend() === null || owner()?.modelDetails().kind !== 'ready'
             ? tr('Choose a model to browse skills.')
             : tr('No matching skills.'),
   };

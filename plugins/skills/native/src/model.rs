@@ -50,8 +50,35 @@ impl Library {
         let request: SkillToolRequest<Value> =
             serde_json::from_value(input).map_err(|_| "skills_query_invalid")?;
         let library = self.for_workspace(request.workspace, scope).await?;
-        let host = host(request.tools)?;
-        let discovery = library.discover(scope).await?;
+        library
+            .model_query(method, request.input, request.tools, scope)
+            .await
+    }
+    pub(super) async fn candidates(&self, input: Value, scope: &Scope) -> Result<Value, String> {
+        if scope.identity.agent().is_some() {
+            return Err("skills_user_action_required".into());
+        }
+        let input: CandidatesRead =
+            serde_json::from_value(input).map_err(|_| "skills_query_invalid")?;
+        let library = self.for_directory(input.directory, scope).await?;
+        let query = serde_json::to_value(ModelSearch {
+            query: input.query,
+            limit: None,
+        })
+        .map_err(|_| "skills_query_invalid")?;
+        library
+            .model_query("search", query, input.tools, scope)
+            .await
+    }
+    async fn model_query(
+        &self,
+        method: &str,
+        input: Value,
+        tools: Vec<String>,
+        scope: &Scope,
+    ) -> Result<Value, String> {
+        let host = host(tools)?;
+        let discovery = self.discover(scope).await?;
         let preferences = self.preferences.read(scope).await?;
         let preference_revision = preferences.revision;
         let preferences = Preferences::Available(preferences.entries);
@@ -62,7 +89,7 @@ impl Library {
         };
         let revision = maka_agent_facts::artifact::content_digest(
             &serde_json::to_vec(&(
-                &library.workspace,
+                &self.workspace,
                 catalog
                     .fingerprint()
                     .map_err(|_| "skills_encoding_failed")?,
@@ -73,12 +100,12 @@ impl Library {
         match method {
             "prepare" => {
                 let input: Prepare =
-                    serde_json::from_value(request.input).map_err(|_| "skills_query_invalid")?;
+                    serde_json::from_value(input).map_err(|_| "skills_query_invalid")?;
                 super::preparation::prepare(&catalog, revision, input)
             }
             "search" => {
                 let input: ModelSearch =
-                    serde_json::from_value(request.input).map_err(|_| "skills_query_invalid")?;
+                    serde_json::from_value(input).map_err(|_| "skills_query_invalid")?;
                 if input.limit == Some(0) {
                     return Err("skills_query_invalid".into());
                 }
@@ -90,7 +117,7 @@ impl Library {
             }
             "load" => {
                 let input: ModelLoad =
-                    serde_json::from_value(request.input).map_err(|_| "skills_query_invalid")?;
+                    serde_json::from_value(input).map_err(|_| "skills_query_invalid")?;
                 if input.revision != revision {
                     return encode(ModelLoadResult::Changed);
                 }

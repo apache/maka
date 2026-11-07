@@ -458,6 +458,7 @@ impl Handler for Library {
         let library = self.clone();
         Box::pin(async move {
             match method.as_str() {
+                "candidates" => library.candidates(input, context.scope()).await,
                 "prepare" | "search" | "load" => {
                     library.model(&method, input, context.scope()).await
                 }
