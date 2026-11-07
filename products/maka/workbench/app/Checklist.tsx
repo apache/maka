@@ -19,7 +19,7 @@
 
 import { createText, UiError, errorText, isObservationCancelled } from './text';
 import { tr } from './locale';
-import { batch, cleanup, signal, Text, View, List } from 'nsh';
+import { batch, Canvas, cleanup, platform, signal, Text, View, List } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Subscription } from './history';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
@@ -29,7 +29,40 @@ import { ChoiceIndicator } from './ChoiceIndicator';
 
 const itemHeight = bodyTextStyle.lineHeight + 16;
 
-export function createChecklist(source: ComposerChecklistSource, height: () => number) {
+// The list each conversation's strip was hidden for, so switching away and
+// back does not bring it back. A different list is new work and shows again.
+const hidden = new Map<string, string>();
+
+// How far the list has come: a pie filling clockwise from twelve o'clock.
+function ChecklistProgress(props: { share: () => number }) {
+  return (
+    <Canvas
+      accessibilityElementsHidden
+      style={[{ width: 16, height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
+      draw={(cx) => {
+        cx.lineWidth = 1.5;
+        cx.strokeStyle = C.muted;
+        cx.beginPath();
+        cx.arc(8, 8, 6.25, 0, Math.PI * 2);
+        cx.stroke();
+        if (props.share() <= 0) return;
+        const start = -Math.PI / 2;
+        cx.fillStyle = C.accent;
+        cx.beginPath();
+        cx.moveTo(8, 8);
+        cx.arc(8, 8, 4, start, start + props.share() * Math.PI * 2);
+        cx.closePath();
+        cx.fill();
+      }}
+    />
+  );
+}
+
+export function createChecklist(
+  source: ComposerChecklistSource,
+  height: () => number,
+  sessionId: string,
+) {
   const snapshot = signal<AgentChecklist | null>(null);
   const items = signal<AgentTodoItem[]>([]);
   const nextOffset = signal<AgentChecklist['nextOffset']>(null);
@@ -109,8 +142,52 @@ export function createChecklist(source: ComposerChecklistSource, height: () => n
   })().catch((reason) => {
     if (alive) error.set(errorText(reason));
   });
+  // Statuses change as work moves on; the items' text and count identify the list.
+  const identity = () =>
+    error()
+      ? `error:${error()}`
+      : JSON.stringify([
+          snapshot()?.total ?? 0,
+          (snapshot()?.items ?? []).map((item) => item.content),
+        ]);
+  const hiddenList = signal(hidden.get(sessionId) ?? null);
+  const complete = () => !!snapshot()?.total && snapshot()!.completed === snapshot()!.total;
+  // The list opens at the item in progress, or else the first one left to do.
+  const current = () => {
+    const active = items().findIndex((item) => item.status === 'in_progress');
+    return Math.max(
+      0,
+      active >= 0 ? active : items().findIndex((item) => item.status !== 'completed'),
+    );
+  };
   return {
-    shown: () => !!error() || (!!snapshot()?.enabled && snapshot()!.total > 0),
+    shown: () =>
+      (!!error() || (!!snapshot()?.enabled && snapshot()!.total > 0)) &&
+      hiddenList() !== identity(),
+    hide() {
+      const list = identity();
+      hidden.set(sessionId, list);
+      hiddenList.set(list);
+    },
+    mark: () => (
+      <If
+        when={!error() && !complete()}
+        else={
+          <Icon
+            name={error() ? 'statusError' : 'statusSuccess'}
+            color={error() ? C.warning : C.success}
+          />
+        }
+      >
+        {platform.isTerminal ? (
+          <Icon name="activity" color={C.accent} />
+        ) : (
+          <ChecklistProgress
+            share={() => (snapshot()?.total ? snapshot()!.completed / snapshot()!.total : 0)}
+          />
+        )}
+      </If>
+    ),
     summary: () => (snapshot()?.total ? `${snapshot()!.completed}/${snapshot()!.total}` : ''),
     preview: () =>
       error() ||
@@ -130,6 +207,7 @@ export function createChecklist(source: ComposerChecklistSource, height: () => n
             </If>
           )}
           estimatedItemSize={itemHeight}
+          initialScrollIndex={current()}
           keyExtractor={(_, index) => String(index)}
           style={{
             minHeight: 0,

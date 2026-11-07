@@ -2122,6 +2122,123 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes() {
+    let mut fixture = Fixture::open().await;
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    let toggle = "Toggle conversation todo";
+    let release = |statuses: [&str; 4]| {
+        let items = [
+            "Read the release notes",
+            "Update the changelog",
+            "Build the release candidate",
+            "Tag the release",
+        ];
+        json!({"todos": items.iter().zip(statuses).map(|(content, status)| {
+            json!({"content": content, "status": status})
+        }).collect::<Vec<_>>()})
+    };
+    desktop.new_draft().await;
+    desktop.type_text("Prepare the release").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("tool_search", json!({"query":"todo_write"}))
+        .await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "todo_write",
+            release(["completed", "completed", "in_progress", "pending"]),
+        )
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    let row = desktop.control(toggle).await;
+    desktop.artifact(&format!("todo-strip-collapsed-{theme}-{layout}"));
+
+    // The list opens above the row, so the row can be pressed again where it was.
+    // One point lies in the strip's padding beside the row, the other above the row:
+    // the strip's surface reaches it only once the list is open.
+    let sample = |at: gpui::Point<gpui::Pixels>| {
+        desktop.app.update(|cx| cx.refresh_windows());
+        desktop.pump();
+        desktop.pixels(Bounds::new(at, size(px(1.), px(1.))))
+    };
+    let beside = point(row.left() - px(2.), row.center().y);
+    let above = point(row.left() - px(2.), row.top() - px(20.));
+    let surface = sample(beside).unwrap();
+    assert_ne!(
+        sample(above).unwrap(),
+        surface,
+        "the closed strip reached above its row"
+    );
+    desktop.press(toggle).await;
+    desktop
+        .until("the todo list did not open above its row", || {
+            (sample(above)? == surface).then_some(())
+        })
+        .await;
+    desktop.artifact(&format!("todo-strip-expanded-{theme}-{layout}"));
+    assert_eq!(desktop.control(toggle).await, row);
+    desktop.press(toggle).await;
+
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the closed todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    // Progress on the same list leaves it closed.
+    running
+        .tool_call(
+            "todo_write",
+            release(["completed", "completed", "completed", "in_progress"]),
+        )
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    let settled = std::time::Instant::now();
+    desktop
+        .until("waiting for the progress update to settle", || {
+            assert!(
+                desktop.controls(toggle).is_empty(),
+                "a progress update reopened the closed todo"
+            );
+            (settled.elapsed() >= Duration::from_secs(1)).then_some(())
+        })
+        .await;
+    // A different list is new work and shows again.
+    running
+        .tool_call(
+            "todo_write",
+            json!({"todos":[
+                {"content":"Publish the release notes", "status":"completed"},
+                {"content":"Announce the release", "status":"completed"},
+            ]}),
+        )
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.control(toggle).await;
+    desktop.artifact(&format!("todo-strip-complete-{theme}-{layout}"));
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the completed todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    answer.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
     use super::support::mutate;
     use maka_agent_api::session::StoredSessionConfiguration;
