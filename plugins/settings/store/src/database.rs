@@ -40,11 +40,6 @@ static MIGRATIONS: &[Migration] = &[
         description: "message predictions",
         sql: include_str!("../migrations/0002_message_predictions.sql"),
     },
-    Migration {
-        version: 3,
-        description: "remove privacy policy",
-        sql: include_str!("../migrations/0003_remove_privacy_policy.sql"),
-    },
 ];
 
 pub(crate) fn unsigned(value: i64) -> Result<u64> {

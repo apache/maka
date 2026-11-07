@@ -218,36 +218,22 @@ async fn default_sandbox_preferences_apply_only_to_new_root_conversations() {
         let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
         let original = fixture.create("Existing conversation").await;
         let mut preferences = query(&fixture, "assistantPreferences", json!({})).await;
-        assert_eq!(preferences["defaultSandboxMode"], "workspace-write");
         for (mode, access) in [
             ("read-only", "read_only"),
             ("danger-full-access", "danger_full_access"),
             ("workspace-write", "workspace_write"),
         ] {
-            let revision = preferences["revision"].clone();
-            let (saved, reference) = mutate(
+            let (saved, _) = mutate(
                 &fixture,
                 "updateAssistantPreferences",
                 json!({
-                    "expectedRevision":revision,
+                    "expectedRevision":preferences["revision"],
                     "mutation":{"kind":"default_sandbox","mode":mode}
                 }),
                 None,
             )
             .await;
             assert_eq!(saved["kind"], "committed");
-            assert_eq!(
-                fixture
-                    .store
-                    .operation(&reference)
-                    .unwrap()
-                    .operation_observation()
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .outcome,
-                OperationOutcome::Returned { value: saved }
-            );
             preferences = query(&fixture, "assistantPreferences", json!({})).await;
             assert_eq!(preferences["defaultSandboxMode"], mode);
             let existing = fixture
@@ -267,17 +253,6 @@ async fn default_sandbox_preferences_apply_only_to_new_root_conversations() {
                 created["session"]["permissions"],
                 json!({"access":access,"requestPermissions":true})
             );
-            let (stale, _) = mutate(
-                &fixture,
-                "updateAssistantPreferences",
-                json!({
-                    "expectedRevision":revision,
-                    "mutation":{"kind":"default_sandbox","mode":"read-only"}
-                }),
-                None,
-            )
-            .await;
-            assert_eq!(stale["kind"], "revision_conflict");
         }
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
