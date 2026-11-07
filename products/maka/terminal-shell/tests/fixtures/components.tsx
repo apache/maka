@@ -235,8 +235,10 @@ function CompletionComposer(props: { prediction?: boolean }) {
                 Promise.resolve({
                   enabled: false,
                   revision: 1,
+                  digest: null,
                   total: 0,
                   completed: 0,
+                  activeIndex: null,
                   current: null,
                   offset: 0,
                   items: [],

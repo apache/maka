@@ -2785,10 +2785,11 @@ function projectComposerSession(
     computerAccess: owner.computerAccess,
     completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
     checklist: {
-      read: (offset) =>
+      read: (offset, limit) =>
         host.query('agent', 'checklist', {
           sessionId: owner.sessionId,
           offset,
+          ...(limit === undefined ? {} : { limit }),
         }),
       watch: (offset) =>
         host.subscribe('agent', 'watchChecklist', {

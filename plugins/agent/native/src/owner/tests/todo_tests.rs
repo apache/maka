@@ -120,9 +120,22 @@ async fn todo_real_model_direct_and_code_mode_keep_full_list_isolation_and_resta
             let first = page(&f,&session,0).await;
             assert_eq!(first["total"],240);
             assert_eq!(first["completed"],1);
+            assert_eq!(first["activeIndex"],1);
             assert_eq!(first["current"],items[1]);
+            assert!(first["digest"].as_str().is_some_and(|digest| digest.len() == 64));
             assert_eq!(first["items"],json!(items[..20]));
             assert!(serde_json::to_vec(&first).unwrap().len() < 48 * 1024);
+            let window = f
+                .query("checklist", json!({"sessionId":&session,"offset":20,"limit":220}))
+                .await
+                .unwrap();
+            assert_eq!(window["items"], json!(items[20..]));
+            assert_eq!(window["nextOffset"], Value::Null);
+            assert_eq!(window["digest"], first["digest"]);
+            let past_end = page(&f, &session, 240).await;
+            assert_eq!(past_end["offset"], 240);
+            assert_eq!(past_end["items"], json!([]));
+            assert_eq!(past_end["nextOffset"], Value::Null);
             let mut all = vec![];
             for offset in (0..240).step_by(20) {
                 let current = page(&f,&session,offset).await;
@@ -130,7 +143,10 @@ async fn todo_real_model_direct_and_code_mode_keep_full_list_isolation_and_resta
                 assert_eq!(current["revision"],first["revision"]);
             }
             assert_eq!(all,items);
-            assert_eq!(page(&f,&other,0).await["total"],0);
+            let empty_other = page(&f,&other,0).await;
+            assert_eq!(empty_other["total"],0);
+            assert_eq!(empty_other["digest"],Value::Null);
+            assert_eq!(empty_other["activeIndex"],Value::Null);
             assert!(f.query("checklist",json!({"sessionId":"foreign-session","offset":0})).await.is_err());
             let facts = service_tools::facts(&f,&session).await;
             let dispatched: Vec<_> = facts.iter().filter_map(|fact| match fact { Fact::ToolDispatched { name, operation_id, .. } if name == "todo_write" || name == "todo_read" => Some(operation_id), _ => None }).collect();
@@ -216,7 +232,10 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             check(&sent);
             response(&mut socket).await;
             while !f.query("observe", json!({"sessionId":session})).await.unwrap()["run"].is_null() { tokio::task::yield_now().await; }
-            assert_eq!(page(&f, &session, 0).await["items"][0]["content"], "durable side effect");
+            let pending_only = page(&f, &session, 0).await;
+            assert_eq!(pending_only["items"][0]["content"], "durable side effect");
+            assert_eq!(pending_only["activeIndex"], 0);
+            assert_eq!(pending_only["current"]["content"], "durable side effect");
             f.app.shutdown().await.unwrap();
             let history = f.session(&session).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 4 * 1024 * 1024).await.unwrap();
             assert_eq!(history.events.iter().filter(|event| matches!(&event.event.fact, Fact::ToolDispatched { name, .. } if name == "todo_write")).count(), 1);

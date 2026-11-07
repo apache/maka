@@ -669,6 +669,7 @@ export const conversationMessages = {
     '格式化無法使用：{reason}',
   ],
   'Full access': ['Full access', '完全访问', '完整存取'],
+  'Hide todo': ['Hide todo', '隐藏任务清单', '隱藏待辦清單'],
   'History changed its requested fence.': [
     'History changed its requested fence.',
     '历史记录的请求边界已变化。',
