@@ -2362,6 +2362,19 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         appearance,
     )
     .await;
+    // New conversations may write their workspace by default. A read-only
+    // parent lacks the write its child asks for, so a person must confirm it.
+    let observed = desktop
+        .client
+        .query("agent", "observe", json!({"sessionId":parent}))
+        .await
+        .unwrap();
+    let restricted = mutate(&desktop.client, "metadata", json!({
+        "sessionId":parent, "expectedRevision":observed["session"]["revision"],
+        "title":observed["session"]["title"], "labels":[],
+        "permissions":{"settings":{"access":"read_only","requestPermissions":true},"revokeGrants":false},
+    })).await;
+    assert_eq!(restricted["kind"], "committed", "{restricted}");
     let backend = json!({
         "kind": "model",
         "connectionId": fixture.selection["connectionId"],
