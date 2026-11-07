@@ -47,7 +47,7 @@ const detailsGap = 8;
 // The 32-point copy button in the card's first row is concentric with its corner.
 const cardPadding = { top: 4, right: 4, bottom: 12, left: disclosureContentInset(0) };
 const cardStyle = () => ({
-  backgroundColor: C.surface,
+  backgroundColor: C.card,
   borderRadius: 12,
   paddingTop: cardPadding.top,
   paddingRight: cardPadding.right,

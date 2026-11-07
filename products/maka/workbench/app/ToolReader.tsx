@@ -24,7 +24,14 @@ import { Button } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
-import { C, bodyTextStyle, captionTextStyle, codeTextStyle, controlStyle } from './ui';
+import {
+  C,
+  bodyTextStyle,
+  captionTextStyle,
+  cardFocusStyle,
+  codeTextStyle,
+  controlStyle,
+} from './ui';
 import { Icon } from './Icon';
 
 function Copy(props: { text(): string; label: string; source: ToolSource }) {
@@ -68,8 +75,8 @@ function Copy(props: { text(): string; label: string; source: ToolSource }) {
           tooltip={textTooltip(() => (copied() ? tr('Copied') : props.label))}
           onPress={action()}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.raised }}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
+          focusStyle={cardFocusStyle()}
         >
           <Icon name={copied() ? 'check' : 'copy'} color={C.secondary} />
         </Button>
