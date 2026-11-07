@@ -64,6 +64,7 @@ function fixture(t: any, mode: 'memories' | 'computer-history' = 'memories') {
 }
 test('memory distinguishes generated summaries; excludes instructions, hidden files and symlink escapes', async (t) => {
   const f = fixture(t);
+  assert.equal(f.a.changeRole, 'context');
   f.put('MEMORY.md', 'User likes tea');
   f.put('extensions/skysight/resources/day-10min-reading.md', 'User read an article');
   f.put('extensions/skysight/instructions.md', 'DO NOT import');
@@ -96,6 +97,7 @@ test('activity publishes complete lines; append changes revision with stable IDs
     line = JSON.stringify({ id: 'one', timestamp: '2026-10-23T15:00:00Z' }) + '\n';
   const file = f.put('segments/2026-10-23T15-00-00Z/events.jsonl', line + '{"id":');
   f.put('segments/2026-10-23T15-00-00Z/metadata.json', '{}');
+  assert.equal(f.a.changeRole, 'activity', 'computer activity remains an event source');
   const first = (await f.a.enumerate(undefined, caller)).items[0];
   assert.equal((await f.a.read(first, caller)).content, line);
   appendFileSync(file, '"two"}\n');

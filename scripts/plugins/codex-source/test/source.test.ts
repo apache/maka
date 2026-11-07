@@ -78,6 +78,11 @@ function fixture(t: any) {
 }
 test('October boundary is per item, old sessions gain new originals and visible tool types are retained', async (t) => {
   const { a, put } = fixture(t);
+  assert.equal(
+    a.changeRole,
+    'context',
+    'work history is for scheduled discovery, not event screening',
+  );
   put('before', since - 1, 1);
   put('boundary', since, 2);
   put('tool', since + 1, 3, 'commandExecution');

@@ -97,7 +97,8 @@ with durable signed positions bound to source scope. Codex metadata revisions
 identify edits even when the original occurrence time has not changed. Complete
 Computer History JSONL records appended to changed files are emitted separately;
 partial lines wait for completion, and rewrites/rotation are detected. Generated
-memories expose context changes but do not independently wake event intake.
+memories and Codex session work history expose context changes but do not
+independently wake event intake.
 
 Unlike the query pagination cache above, the change journal stores excerpts of
 new evidence locally in `pages.sqlite` (mode 0600), so an interrupted consumer can
@@ -107,3 +108,10 @@ are not returned from the journal. This journal is independent from index covera
 and from Codex's own retention; it does not turn missing upstream observations
 into a complete event history. It currently retains received change records for
 recovery and diagnostics; retention policy is not yet configurable.
+
+Session work history is a `context` source: its originals, versioned queries and
+index maintenance remain available, but message/tool progress does not trigger
+per-event screening or immediate discovery. Scheduled discovery still observes
+its activity token. Generated memories are also context; Computer History remains
+an activity source. Maka's own ordinary session history follows the same scheduled
+path, while delegated-task feedback continues directly to Bot.

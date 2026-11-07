@@ -72,6 +72,7 @@ export interface PluginSourceAdapter {
   /** Describes provider-supported query fields and the configured enumeration scope. */
   readonly queryHelp: string;
   readonly scope: Readonly<Record<string, unknown>>;
+  /** context sources remain queryable/indexable and observed by scheduled discovery, but do not trigger event intake. */
   readonly changeRole?: 'activity' | 'context';
   /** Cheap scoped change token. Must check permission; must not enumerate bodies or run a model.
    * Null means no complete observation yet. Unsupported adapters use periodic discovery. */

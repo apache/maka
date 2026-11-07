@@ -189,6 +189,7 @@ test('worker tools expose no event reader, per-event report fields or mandatory 
   t.after(() => f.close());
   const registered: any[] = [];
   let hooks = 0;
+  let filter: any;
   const q = initializeQuickDiscovery(
     {
       ...f.ctx,
@@ -196,7 +197,12 @@ test('worker tools expose no event reader, per-event report fields or mandatory 
       onClose: () => {},
       backgroundSessions: { register: () => {} },
       api: { register: () => {} },
-      tools: { register: (tool: any) => registered.push(tool) },
+      tools: {
+        register: (tool: any) => registered.push(tool),
+        filter: (fn: any) => {
+          filter = fn;
+        },
+      },
       systemPrompt: { section: () => {} },
       turns: {
         beforeFinish: () => {
@@ -208,8 +214,32 @@ test('worker tools expose no event reader, per-event report fields or mandatory 
     f.root + '/tools',
     3600000,
   );
-  t.after(() => q.store.close());
+  t.after(async () => {
+    await q.close();
+    q.store.close();
+  });
   assert.equal(hooks, 0);
+  q.start(3600000);
+  await q.control({ action: 'enable' });
+  q.store.update((s: any) => {
+    s.workerSession = 'worker';
+  });
+  const next = registered.find((tool: any) => tool.name === 'QuickDiscoveryNext');
+  assert.equal(next.discovery, 'direct');
+  assert.equal(next.executionSemantics, 'exclusive_step');
+  assert.deepEqual(next.parameters.parse({ key: 'reset', screeningPrompt: null }), {
+    key: 'reset',
+    screeningPrompt: null,
+  });
+  assert.deepEqual(
+    filter('worker', [
+      next,
+      { name: 'MemoryExtract', categoryHint: 'read' },
+      { name: 'MemoryIndexCreate', categoryHint: 'file_write' },
+    ]).map((tool: any) => tool.name),
+    ['QuickDiscoveryNext', 'MemoryExtract'],
+  );
+
   assert.ok(!registered.some((t) => t.name === 'QuickDiscoveryEvents'));
   const report = registered.find((t) => t.name === 'QuickDiscoveryReport');
   assert.deepEqual(report.parameters.parse({ key: 'quiet', messages: [] }), {

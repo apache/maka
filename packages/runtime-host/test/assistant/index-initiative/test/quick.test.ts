@@ -242,7 +242,14 @@ test('unknown or failed source observation is explicit; it does not enumerate or
   }
 });
 test('native quick worker can read context and report offers, without starting the two-stage flow', async () => {
-  const f = await fixture();
+  const f = await fixture({
+    llmBudget: async ({ maxOutputTokens }: any) => ({
+      modelId: 'fixture-review',
+      maxInputTokens: 64000,
+      maxOutputTokens,
+      estimate: 'utf8-conservative',
+    }),
+  });
   try {
     await f.remote('assistant.bind', { sessionId: 'owner' });
     const workers: string[] = [];
@@ -253,8 +260,23 @@ test('native quick worker can read context and report offers, without starting t
         return;
       }
       workers.push(id);
+      if (workers.length === 2) assert.match(prompt, /10月26日客户已确认15点/);
       await invoke('DiscoveryContext', {});
       await invoke('QuickDiscoveryNotebook', {});
+      const range = await invoke('MemoryRange', {});
+      const extracted = await invoke('MemoryExtract', {
+        to: range.to,
+        requirements: '找出原文里需要关注的安排',
+        maxOutputTokens: 1024,
+      });
+      assert.equal(extracted.status, 'generated');
+      assert.ok(extracted.path, 'extractor returns a result file to the discovery worker');
+      await invoke('QuickDiscoveryNext', {
+        key: 'next',
+        nextAt: workers.length === 1 ? new Date(Date.now() + 3600000).toISOString() : null,
+        screeningPrompt: workers.length === 1 ? '调查与用户有关的新请求' : null,
+        screeningContext: workers.length === 1 ? '10月26日客户已确认15点；用户已知。' : null,
+      });
       await invoke('QuickDiscoveryReport', {
         key: 'help',
         messages: ['你在整理候选方案，我可以帮你对比这两项。'],
@@ -269,6 +291,12 @@ test('native quick worker can read context and report offers, without starting t
       );
     }
     assert.equal(new Set(workers).size, 1);
+    const quick = await f.remote('assistant.quick-discovery-status', {});
+    assert.equal(quick.lastError, null);
+    assert.equal(quick.screeningPrompt, null);
+    assert.equal(quick.screeningContext, null);
+    assert.equal(quick.wakeAt, null);
+    assert.equal(quick.screeningRevision, 2);
     const state = (await f.remote('assistant.binding', {})).state;
     assert.equal(state.discoverySession, undefined);
     assert.equal(state.judgementSession, undefined);

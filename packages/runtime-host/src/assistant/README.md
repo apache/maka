@@ -255,12 +255,57 @@ The scheduler checks permitted Session revision metadata and optional source `ac
 
 The worker keeps one Session, receives UTC and a last-successful-check/start-of-this-run time boundary, and chooses how much recent and historical information to investigate. The boundary is a discovery checkpoint, not an index coverage declaration. New arrivals during execution remain for a later wake; failures retain the pending window and never advance it. Restart recovery reuses the worker and durable submission identities.
 
-`QuickDiscoveryReport` durably hands user-facing discoveries, concrete offers of help and questions to the Bot with retry-safe inbox identities. Its messages contain the actual conversational text, not instructions to the Bot about wording, filtering or timing. Acceptance means delivery to the Bot inbox, not user notification or task delegation. The worker cannot delegate Matters or change schedules; it can read the existing notebook through `QuickDiscoveryNotebook` but cannot maintain it. There is no separate quick-discovery notebook and no whole-turn time limit.
+`QuickDiscoveryReport` durably hands user-facing discoveries, concrete offers of help and questions to the Bot with retry-safe inbox identities. Its messages contain the actual conversational text, not instructions to the Bot about wording, filtering or timing. Acceptance means delivery to the Bot inbox, not user notification or task delegation. The worker cannot delegate Matters or change global schedules; it can read the existing notebook through `QuickDiscoveryNotebook` but cannot maintain it. There is no separate quick-discovery notebook and no whole-turn time limit.
 
 
 The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. The quick worker remains read-only.
 
 The quick-discovery, exploration and judgement Sessions use native history compaction, not timed Session replacement. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.
+
+### Worker-selected next wake
+
+Periodic and model-triggered wakes share the existing quick-discovery Session,
+lease, admission guard, retry and Bot handoff. `QuickDiscoveryNext` is an optional,
+directly exposed worker-only tool: `key` is retry-safe within the current wake;
+`nextAt` sets a one-shot absolute timestamp with timezone; `screeningPrompt` sets
+the criteria for subsequent tool-free intake calls. Omitted fields preserve the
+current setting; explicit `null` restores the configured cadence or default
+screening criteria. `MemoryExtract` remains the independent on-demand model tool
+for processing originals; its requirements do not configure wake screening.
+
+`screeningContext` replaces a separate short factual background, not the screening
+criteria. Omission preserves it; `null` clears it. The worker compresses/replaces
+current context, known results, existing owners and communicated information,
+retaining event dates and uncertainty. This is neither an append-only notebook
+nor a whitelist of permissible interests. Each screening call receives the
+background and its update timestamp as reference data; new evidence may supersede
+it and unrelated opportunities remain eligible. The timestamp is not an event date.
+The initial cap is 2,000 **conservative estimated** input tokens using the existing
+UTF-8-byte estimator (including JSON/framing), not a provider tokenizer count.
+Oversized submissions fail without truncation or mutation; the worker can shorten
+and resubmit. Full request sizing includes this background for both ordinary and
+chunked inputs. No extra maintenance model is invoked.
+
+The tool stages settings in the current activation. They take effect atomically
+only after successful execution, separately from `QuickDiscoveryReport`; neither
+tool forces the Agent to exit. Natural completion without calling Next remains
+valid. Failed executions retain their staged settings for retry. Settings and
+submission identities survive restart. A time future at submission but elapsed
+by completion is admitted on the next scheduler check. The custom time replaces
+the next default periodic check, is consumed once, and then the configured cadence
+resumes. Incoming model wakes can run earlier without consuming that future time.
+An explicit timer runs even without new activity or during idle quiet hours.
+Simultaneous triggers coalesce; arrivals during execution remain pending. Pause
+and the assistant master switch still prevent admission. A later user cadence
+change clears the custom timer and takes precedence over an older staged timer.
+
+Each wake includes the effective screening criteria and timer settings. The Agent
+may adjust them, but is not required to rewrite them each run. Custom criteria
+retain the existing output protocol and input-capacity accounting. A committed
+criteria or background change invalidates in-flight decisions made under the old version and
+restarts only unfinished long-event summaries from retained originals. It does
+not reset source positions or rescreen previously completed inputs. Broad
+exploration, index maintenance and Matter scheduling are unchanged.
 
 ### Continuous event intake (opt-in)
 
