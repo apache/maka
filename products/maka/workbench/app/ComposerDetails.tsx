@@ -39,9 +39,14 @@ import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
+// The composer card's corner radius on the desktop. The strip sits on the
+// card's straight top edge, inside its rounded corners.
+const composerCorner = 24;
+
 export function ComposerDetails(props: {
   session: Pick<
     ComposerSession,
+    | 'sessionId'
     | 'checklist'
     | 'computerAccess'
     | 'queue'
@@ -57,6 +62,7 @@ export function ComposerDetails(props: {
   const height = () => windowSize().height / 4;
   const goal = () => session.goal?.view()?.current;
   const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
+  const todo = createChecklist(session.checklist, height, session.sessionId);
   const panels = {
     goal: {
       shown: () => !!goal(),
@@ -70,7 +76,7 @@ export function ComposerDetails(props: {
         <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>{renderGoal!()}</View>
       ),
     },
-    todo: createChecklist(session.checklist, height),
+    todo,
     computer: createComputerAppControls(session.computerAccess, height),
     messages: createMessagesDock(session, height),
   };
@@ -86,7 +92,6 @@ export function ComposerDetails(props: {
   };
   const icons = {
     goal: 'statusPending',
-    todo: 'check',
     computer: 'shield',
     messages: 'queue',
   } as const;
@@ -103,10 +108,169 @@ export function ComposerDetails(props: {
   const toggle = (key: Panel) => {
     if (alive && panels[key].shown()) selected.set(selected() === key ? null : key);
   };
+  const hideTodo = () => {
+    if (alive && todo.shown()) todo.hide();
+  };
   effect(() => {
     const current = selected();
     if (current !== null && !panels[current].shown()) selected.set(null);
   });
+  // The list opens above the row on the desktop, so the row stays under the
+  // pointer and the chevron points the way the list opens.
+  const chevron = (key: Panel) => (
+    <Icon
+      name={selected() === key ? 'down' : platform.isTerminal ? 'right' : 'up'}
+      color={C.muted}
+    />
+  );
+  const mark = (key: Panel) =>
+    key === 'todo' ? (
+      todo.mark()
+    ) : (
+      <If
+        when={
+          (key === 'goal' && goal()?.status === 'active') ||
+          (key === 'messages' && session.sends().some((item) => item.busy))
+        }
+        else={
+          <Icon
+            name={key === 'goal' && goal()?.status === 'achieved' ? 'statusSuccess' : icons[key]}
+            color={panels[key].problem() ? C.warning : C.secondary}
+          />
+        }
+      >
+        <LoadingIndicator color={C.secondary} />
+      </If>
+    );
+  const summary = (key: Panel) => (
+    <Text style={{ ...captionTextStyle, color: panels[key].problem() ? C.warning : C.muted }}>
+      {panels[key].summary()}
+    </Text>
+  );
+  // On the desktop the checklist's current item says what is happening, so it
+  // reads as text. Beside chips it wraps to its own line rather than shrink away.
+  const preview = (key: Panel, besideChips: boolean) => (
+    <Text
+      style={[
+        {
+          ...captionTextStyle,
+          flex: 1,
+          minWidth: besideChips ? 120 : 0,
+          color: panels[key].problem()
+            ? C.warning
+            : key === 'todo' && !platform.isTerminal
+              ? C.text
+              : C.muted,
+        },
+        { numberOfLines: 1 },
+      ]}
+    >
+      {panels[key].preview()}
+    </Text>
+  );
+  // What follows the chips: the checklist's current item on the desktop; in the
+  // terminal, as before, the only panel's preview while it is closed.
+  const lead = (): Panel | null =>
+    platform.isTerminal
+      ? available().length === 1 && selected() === null
+        ? available()[0]
+        : null
+      : todo.shown()
+        ? 'todo'
+        : null;
+  const button = (key: Panel, wide: boolean) => (
+    <Button
+      accessibilityLabel={accessibilityLabels[key]()}
+      tooltip={textTooltip(panels[key].preview)}
+      selected={selected() === key}
+      onPress={inputAction(toggle, key)}
+      style={{
+        ...controlStyle,
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+        ...(wide ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
+        backgroundColor: !wide && selected() === key ? C.raised : 'transparent',
+      }}
+      hoverStyle={{ backgroundColor: C.raised }}
+      focusStyle={{ backgroundColor: C.line }}
+    >
+      {mark(key)}
+      {wide && key === 'todo' ? (
+        <>
+          {preview(key, false)}
+          {summary(key)}
+        </>
+      ) : (
+        <>
+          <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+          {summary(key)}
+          {wide ? preview(key, false) : null}
+        </>
+      )}
+      {chevron(key)}
+    </Button>
+  );
+  const row = () => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4, flexShrink: 0 }}>
+      <If
+        when={available().length === 1 && !platform.isTerminal}
+        else={
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <Each of={available()} key={(key) => key}>
+              {(key) => button(key(), false)}
+            </Each>
+            <Each of={lead() === null ? [] : [lead()!]} key={(key) => key}>
+              {(key) => preview(key(), true)}
+            </Each>
+          </View>
+        }
+      >
+        <Each of={available()} key={(key) => key}>
+          {(key) => button(key(), true)}
+        </Each>
+      </If>
+      <If when={todo.shown()}>
+        <Button
+          accessibilityLabel={tr('Hide todo')}
+          tooltip={textTooltip(() => tr('Hide todo'))}
+          onPress={inputAction(hideTodo, null)}
+          style={{ ...controlStyle, paddingHorizontal: 8, flexShrink: 0 }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+        >
+          <Icon name="close" color={C.muted} />
+        </Button>
+      </If>
+    </View>
+  );
+  const detail = () => (
+    <Each of={selected() === null ? [] : [selected()!]} key={(key) => key}>
+      {(key) => (
+        <View
+          style={{
+            minHeight: 0,
+            flexShrink: 1,
+            maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
+            ...(platform.isTerminal
+              ? { borderTopWidth: 1, borderTopColor: C.line }
+              : { borderBottomWidth: 1, borderBottomColor: C.line }),
+          }}
+        >
+          {panels[key()].content()}
+        </View>
+      )}
+    </Each>
+  );
   return (
     <If when={available().length > 0}>
       <View
@@ -114,102 +278,26 @@ export function ComposerDetails(props: {
         style={{
           minHeight: 0,
           flexShrink: 1,
-          marginBottom: platform.isTerminal ? 16 : 8,
-          borderWidth: 1,
-          borderColor: C.line,
-          borderRadius: 12,
           backgroundColor: C.surface,
           overflow: 'hidden',
+          ...(platform.isTerminal
+            ? { marginBottom: 16, borderWidth: 1, borderColor: C.line, borderRadius: 12 }
+            : {
+                // A tab on the composer card rather than a second card above it.
+                marginHorizontal: composerCorner,
+                borderTopWidth: 1,
+                borderLeftWidth: 1,
+                borderRightWidth: 1,
+                borderBottomWidth: 0,
+                borderColor: C.line,
+                borderTopLeftRadius: 12,
+                borderTopRightRadius: 12,
+              }),
         }}
       >
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, padding: 4, flexShrink: 0 }}>
-          <Each of={available()} key={(key) => key}>
-            {(item) => {
-              const key = item();
-              const panel = panels[key];
-              return (
-                <Button
-                  accessibilityLabel={accessibilityLabels[key]()}
-                  tooltip={textTooltip(panel.preview)}
-                  selected={selected() === key}
-                  onPress={inputAction(toggle, key)}
-                  style={{
-                    ...controlStyle,
-                    flexDirection: 'row',
-                    gap: 8,
-                    alignItems: 'center',
-                    flexShrink: 0,
-                    backgroundColor: selected() === key ? C.raised : 'transparent',
-                  }}
-                  hoverStyle={{ backgroundColor: C.raised }}
-                  focusStyle={{ backgroundColor: C.line }}
-                >
-                  <If
-                    when={
-                      (key === 'goal' && goal()?.status === 'active') ||
-                      (key === 'messages' && session.sends().some((item) => item.busy))
-                    }
-                    else={
-                      <Icon
-                        name={
-                          key === 'goal' && goal()?.status === 'achieved'
-                            ? 'statusSuccess'
-                            : icons[key]
-                        }
-                        color={panel.problem() ? C.warning : C.secondary}
-                      />
-                    }
-                  >
-                    <LoadingIndicator color={C.secondary} />
-                  </If>
-                  <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
-                  <Text
-                    style={{ ...captionTextStyle, color: panel.problem() ? C.warning : C.muted }}
-                  >
-                    {panel.summary()}
-                  </Text>
-                  <Icon name={selected() === key ? 'down' : 'right'} color={C.muted} />
-                </Button>
-              );
-            }}
-          </Each>
-          <Each
-            of={available().length === 1 && selected() === null ? available() : []}
-            key={(key) => key}
-          >
-            {(key) => (
-              <Text
-                style={[
-                  {
-                    ...captionTextStyle,
-                    flex: 1,
-                    minWidth: 0,
-                    alignSelf: 'center',
-                    color: panels[key()].problem() ? C.warning : C.muted,
-                  },
-                  { numberOfLines: 1 },
-                ]}
-              >
-                {panels[key()].preview()}
-              </Text>
-            )}
-          </Each>
-        </View>
-        <Each of={selected() === null ? [] : [selected()!]} key={(key) => key}>
-          {(key) => (
-            <View
-              style={{
-                minHeight: 0,
-                flexShrink: 1,
-                maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
-                borderTopWidth: 1,
-                borderTopColor: C.line,
-              }}
-            >
-              {panels[key()].content()}
-            </View>
-          )}
-        </Each>
+        {platform.isTerminal ? null : detail()}
+        {row()}
+        {platform.isTerminal ? detail() : null}
       </View>
     </If>
   );

@@ -20,6 +20,7 @@ const icons = {
   play: { lucide: 'play', glyph: '▶' },
   close: { lucide: 'x', glyph: '×' },
   down: { lucide: 'chevron-down', glyph: '⌄' },
+  up: { lucide: 'chevron-up', glyph: '⌃' },
   right: { lucide: 'chevron-right', glyph: '›' },
   search: { lucide: 'search', glyph: '⌕' },
   settings: { lucide: 'settings', glyph: '⚙' },

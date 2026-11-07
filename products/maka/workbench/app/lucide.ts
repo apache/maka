@@ -42,6 +42,7 @@ export const lucide = {
   'chevron-down': [{ tag: 'path', d: 'm6 9 6 6 6-6' }],
   'chevron-left': [{ tag: 'path', d: 'm15 18-6-6 6-6' }],
   'chevron-right': [{ tag: 'path', d: 'm9 18 6-6-6-6' }],
+  'chevron-up': [{ tag: 'path', d: 'm18 15-6-6-6 6' }],
   circle: [{ tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 }],
   'circle-arrow-up': [
     { tag: 'circle', cx: 12.0, cy: 12.0, r: 10.0 },
