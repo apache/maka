@@ -431,6 +431,7 @@ impl<'a> StepTools<'a> {
                         run.cells.clone(),
                         cell::source(input, run.cells.language())?,
                         request.catalog.clone(),
+                        request.direct.names(),
                         run.journal.clone(),
                         operation_id.clone(),
                         call.id.clone(),

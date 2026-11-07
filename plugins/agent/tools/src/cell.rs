@@ -183,6 +183,7 @@ pub(super) struct CellTool {
     cells: CodeExecutor,
     input: CodeInput,
     catalog: ToolCatalog,
+    direct: Vec<String>,
     journal: ToolJournal,
     parent_operation_id: String,
     parent_tool_call_id: String,
@@ -193,6 +194,7 @@ impl CellTool {
         cells: CodeExecutor,
         input: CodeInput,
         catalog: ToolCatalog,
+        direct: Vec<String>,
         journal: ToolJournal,
         parent_operation_id: String,
         parent_tool_call_id: String,
@@ -201,6 +203,7 @@ impl CellTool {
             cells,
             input,
             catalog,
+            direct,
             journal,
             parent_operation_id,
             parent_tool_call_id,
@@ -209,10 +212,12 @@ impl CellTool {
 }
 
 /// Nested preflight precedes T1. The cell supplies only arguments, never its
-/// parent identity or a broader catalog. Direct-only entries were removed once.
+/// parent identity or a broader catalog. Direct-only entries were removed once;
+/// their names remain only to explain the calling mode.
 struct NestedTools {
     execution: Arc<tokio::sync::RwLock<()>>,
     catalog: ToolCatalog,
+    direct: Vec<String>,
     journal: ToolJournal,
     origin: ToolOrigin,
 }
@@ -220,6 +225,10 @@ struct NestedTools {
 impl ToolExecutor for NestedTools {
     fn names(&self) -> Vec<String> {
         self.catalog.names()
+    }
+
+    fn direct_names(&self) -> Vec<String> {
+        self.direct.clone()
     }
 
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {

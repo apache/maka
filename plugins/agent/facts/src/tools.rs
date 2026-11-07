@@ -117,6 +117,11 @@ pub type ToolFuture<T = Value> = Pin<Box<dyn Future<Output = Result<T, ToolError
 /// explicitly; a generic failed result cannot stand for an unknown side effect.
 pub trait ToolExecutor: Send + Sync + 'static {
     fn names(&self) -> Vec<String>;
+    /// Names advertised to the same request that only accept a direct call.
+    /// A cell rejects them with calling-mode guidance instead of an unknown name.
+    fn direct_names(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture;
 }
 
@@ -143,6 +148,10 @@ impl JournaledTools {
 impl ToolExecutor for JournaledTools {
     fn names(&self) -> Vec<String> {
         self.executor.names()
+    }
+
+    fn direct_names(&self) -> Vec<String> {
+        self.executor.direct_names()
     }
 
     fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {

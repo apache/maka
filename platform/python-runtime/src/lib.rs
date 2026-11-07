@@ -117,6 +117,12 @@ impl CodeExecutor {
                 vec![],
             ));
         }
+        // A callable alias wins; a direct name only explains an otherwise missing one.
+        let direct: Vec<_> = tools
+            .direct_names()
+            .into_iter()
+            .filter(|name| unique.insert(tool_identifier(name)))
+            .collect();
         let scope = ToolScope::new(
             context.clone(),
             tools,
@@ -156,6 +162,7 @@ impl CodeExecutor {
         let start = Start {
             source,
             names,
+            direct,
             metadata: context.metadata().to_vec(),
         };
         let result = tokio::select! {

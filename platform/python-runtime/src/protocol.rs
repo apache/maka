@@ -26,6 +26,8 @@ use std::time::Duration;
 pub(crate) struct Start {
     pub source: String,
     pub names: Vec<String>,
+    /// Direct-only names whose aliases do not collide with a callable tool.
+    pub direct: Vec<String>,
     pub metadata: Vec<ToolMetadata>,
 }
 
