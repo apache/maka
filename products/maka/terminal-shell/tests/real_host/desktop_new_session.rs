@@ -1221,13 +1221,14 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .await
         .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
         .await;
-    let answer = desktop.request(&mut fixture).await;
-    desktop.press("Process group").await;
-    let group = desktop.control("Process group").await;
+    let mut answer = desktop.request(&mut fixture).await;
+    // A running turn is open under its summary row, with no group header of its own.
+    let summary = desktop.control("Turn work details").await;
     let nested = desktop.control("Toggle tool GetGoal").await;
+    assert!(desktop.controls("Process group").is_empty());
     // A turn has two lanes and no indent: each step's icon sits under the
-    // group's chevron, and an open tool card starts on that same lane.
-    assert_eq!(nested.left(), group.left());
+    // summary's chevron, and an open tool card starts on that same lane.
+    assert_eq!(nested.left(), summary.left());
     assert!(desktop.controls("Toggle tool exec").is_empty());
     desktop.press("Toggle tool GetGoal").await;
     let lane = nested.left() + px(8.);
@@ -1247,6 +1248,19 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         })
         .await;
     desktop.artifact("script-tools");
+    // Folding a running turn is the user's choice, and finishing keeps the latest one.
+    desktop.press("Turn work details").await;
+    desktop
+        .until("the running turn did not fold", || {
+            desktop
+                .controls("Toggle tool GetGoal")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.press("Turn work details").await;
+    desktop.control("Toggle tool GetGoal").await;
+    answer.delta("The goal is unchanged.").await;
     answer.finish().await;
     let sessions = desktop.sessions().await;
     let session = sessions
@@ -1256,6 +1270,12 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
         .as_str()
         .unwrap();
     fixture.idle(&desktop.client, session).await;
+    desktop.control("Copy message").await;
+    assert_eq!(
+        desktop.control("Turn work details").await.origin,
+        summary.origin
+    );
+    assert!(!desktop.controls("Toggle tool GetGoal").is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
@@ -2374,7 +2394,6 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
-    desktop.press("Process group").await;
     desktop.control("Toggle tool todo_write").await;
     // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
     running

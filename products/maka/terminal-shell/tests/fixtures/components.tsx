@@ -508,6 +508,7 @@ function ActivityFollow() {
             active: true,
             finalOutputIds: [],
             interleavedInput: false,
+            worked: true,
           })}
           toolActivity={() => undefined}
           toolProgress={() => null}

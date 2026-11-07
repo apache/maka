@@ -73,7 +73,8 @@ export type TurnPresentation = {
   active: boolean;
   finalOutputIds: string[];
   interleavedInput: boolean;
-  answerKey?: string;
+  /** Whether the turn did anything besides its final answer: steps or text between them. */
+  worked: boolean;
 };
 export type ProcessProjection = {
   entries: ProcessEntry[];
@@ -216,6 +217,7 @@ export function projectProcessGroups(input: {
         active: input.activeTurnId === turnId,
         finalOutputIds: [],
         interleavedInput: false,
+        worked: false,
       };
       turns.set(turnId, value);
     }
@@ -244,10 +246,8 @@ export function projectProcessGroups(input: {
       row.role === 'assistant' &&
       row.field === 'body' &&
       !presentation.finalOutputIds.includes(rowId)
-    ) {
+    )
       presentation.finalOutputIds.push(rowId);
-      presentation.answerKey ??= rowId;
-    }
   }
   if (input.activeTurnId) turn(input.activeTurnId);
 
@@ -277,6 +277,7 @@ export function projectProcessGroups(input: {
   const flush = (closed: boolean) => {
     if (!current) return;
     const presentation = turn(current.turnId);
+    presentation.worked = true;
     const { turnId, members } = current;
     // A script is shown as the tools it ran, and as itself only when it fails.
     const callers = new Set(
@@ -366,7 +367,10 @@ export function projectProcessGroups(input: {
         if (row.role === 'user' && progressed.has(row.turnId))
           turn(row.turnId).interleavedInput = true;
         if (body) {
-          if (!row.finalOutput) message.processTurnId = row.turnId;
+          if (!row.finalOutput) {
+            message.processTurnId = row.turnId;
+            turn(row.turnId).worked = true;
+          }
           progressed.add(row.turnId);
         }
       }
