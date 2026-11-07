@@ -240,10 +240,13 @@ export function MessageRow({
             .replace(/\s+/g, ' ')
             .trim(),
         );
-        // Thinking that is only its title has nothing more to show.
+        // Thinking that is only a bold title has nothing more to show; any other
+        // single line may be longer than its one-line preview.
         const detailed = () => {
           const line = firstLine();
-          return !!line && /\S/.test(text().slice(line.index + line[0].length));
+          if (!line) return false;
+          if (/\S/.test(text().slice(line.index + line[0].length))) return true;
+          return !/^\*\*[^*].*\*\*$/.test(line[0].trim());
         };
         const isTool = () =>
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';

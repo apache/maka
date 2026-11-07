@@ -338,16 +338,18 @@ export function ToolCard(props: {
     }
   };
   // Open at the recorded output; the complete original arguments remain below,
-  // except a process's command, which its recorded result already shows.
+  // except a process's command, which a successful recorded result already shows.
   const references = () =>
     tool()
       ? (['result', 'arguments'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
+          const result = tool()!.result;
           if (
             field === 'arguments' &&
             !props.original() &&
             processFamily(family()) &&
-            tool()!.result
+            result?.settlement === 'returned' &&
+            !result.isError
           )
             return [];
           return value ? [value] : [];

@@ -144,6 +144,7 @@ import {
   predictionTrigger,
 } from '../../../../products/maka/workbench/app/messagePrediction';
 import {
+  canFoldTurn,
   TurnPanel,
   TurnSummary,
   turnOutcome,
@@ -610,8 +611,6 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => (canOpenWorker() ? openWorker : undefined),
   );
-  const canFoldTurn = (turn: TurnPresentation) =>
-    turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
   const turnExpanded = (turn: TurnPresentation) => {
     if (!canFoldTurn(turn)) return true;
     const stored = turnState(turn.turnId).expanded();

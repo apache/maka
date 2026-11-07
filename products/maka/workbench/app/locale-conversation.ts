@@ -561,6 +561,7 @@ export const conversationMessages = {
     '複製請求的取代內容',
   ],
   'Copy stderr': ['Copy stderr', '复制标准错误输出', '複製標準錯誤輸出'],
+  'Copy stdout': ['Copy stdout', '复制标准输出', '複製標準輸出'],
   'Copy terminal screen': ['Copy terminal screen', '复制终端屏幕', '複製終端畫面'],
   'Copy terminal scrollback': ['Copy terminal scrollback', '复制终端历史输出', '複製終端歷史輸出'],
   'Copy user message': ['Copy user message', '复制用户消息', '複製使用者訊息'],

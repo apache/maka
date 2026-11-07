@@ -271,7 +271,14 @@ function Process(props: { value: ToolProcess; source: ToolSource; userScroll(): 
       {output?.mode === 'pipes' ? (
         <View style={{ gap: 8 }}>
           <If when={output.stdout !== '' || output.stderr === ''}>
-            <CodeText text={output.stdout} userScroll={props.userScroll} />
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <CodeText text={output.stdout} userScroll={props.userScroll} />
+              </View>
+              <If when={output.stdout !== ''}>
+                <Copy label={tr('Copy stdout')} text={() => output.stdout} source={props.source} />
+              </If>
+            </View>
           </If>
           <If when={output.stderr !== ''}>
             <ToolText
