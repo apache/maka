@@ -37,6 +37,31 @@ fn count(database: &rusqlite::Connection) -> i64 {
 }
 
 #[tokio::test]
+async fn opening_a_pre_privacy_removal_profile_preserves_its_other_preferences() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = root(temp.path());
+    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    let mut expected = store.runtime_policy().await.unwrap();
+    expected.revision = 7;
+    expected.policy.predictions.enabled = false;
+    let mut legacy = serde_json::to_value(&expected).unwrap();
+    legacy["policy"]["privacy"] = serde_json::json!({"incognitoActive":false});
+    drop(store);
+    {
+        let db = database(&owner);
+        db.execute("DELETE FROM _sqlx_migrations WHERE version = 3", [])
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_policy(singleton,document) VALUES(1,?)",
+            [legacy.to_string()],
+        )
+        .unwrap();
+    }
+    let reopened = ConfigurationStore::for_root(owner).await.unwrap();
+    assert_eq!(reopened.runtime_policy().await.unwrap(), expected);
+}
+
+#[tokio::test]
 async fn proxy_policy_and_password_commit_together_with_cas_noops_and_rollback() {
     use maka_agent_facts::configuration::CredentialState;
     use maka_agent_facts::configuration::CredentialVersionBasis;
