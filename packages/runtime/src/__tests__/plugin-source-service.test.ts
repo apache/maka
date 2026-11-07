@@ -140,3 +140,58 @@ test('lightweight activity requires caller identity and preserves adapter failur
     await root.fiber.dispose();
   }
 });
+
+test('change feed validates transport and reauthorizes originals under caller identity', async () => {
+  const root = new Context();
+  const agents = new PluginAgentService(root);
+  const service = new PluginSourceService(root, agents);
+  const owner = root.extend({
+    maka: { rootId: 'profile' as const, packageId: 'changes', entryId: 'changes', generation: 1 },
+  });
+  let permitted = true;
+  const object = { id: 'message', revision: '2', kind: 'message', locator: { id: 'message' } };
+  const page = {
+    items: [{ id: 'event', group: 'chat', object, content: 'changed' }],
+    cursor: '2',
+    more: false,
+  };
+  owner.sources.register({
+    ...adapter('changes'),
+    changes: async (cursor, limit, caller) => {
+      assert.equal(cursor, '1');
+      assert.equal(limit, 1);
+      assert.equal(caller.invocation?.sessionId, 'test');
+      return page;
+    },
+    authorize: async () => (permitted ? ['message'] : []),
+  });
+  const abort = new AbortController();
+  const invoke = () =>
+    agents.withInvocation(
+      {
+        sessionId: 'test',
+        turnId: 'turn',
+        cwd: '/tmp',
+        toolCallId: 'call',
+        abortSignal: abort.signal,
+        emitOutput: () => undefined,
+      },
+      () => service.changes('example.docs', '1', 1),
+    );
+  try {
+    await assert.rejects(service.changes('example.docs', '1', 1));
+    const result = await invoke();
+    assert.deepEqual(result, page);
+    assert.notEqual(result, page);
+    permitted = false;
+    await assert.rejects(invoke(), /permission denied/);
+    permitted = true;
+    page.cursor = '';
+    await assert.rejects(invoke(), /Invalid source changes/);
+    page.cursor = '2';
+    abort.abort(Error('cancelled'));
+    await assert.rejects(invoke(), /cancelled/);
+  } finally {
+    await root.fiber.dispose();
+  }
+});

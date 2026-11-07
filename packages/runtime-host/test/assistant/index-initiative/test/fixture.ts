@@ -33,6 +33,7 @@ export async function fixture(options: any = {}) {
   {
     const llm = new Main.PluginLlmService(ctx, agents);
     llm.bindRuntime({
+      ...(options.llmBudget ? { budget: options.llmBudget } : {}),
       generate: async () => ({
         text: JSON.stringify({ approved: true, feedback: 'Controlled review accepted' }),
         modelId: 'fixture-review',
