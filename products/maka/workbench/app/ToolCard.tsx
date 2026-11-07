@@ -37,7 +37,7 @@ import {
   textTooltip,
 } from './ui';
 import { LoadingIndicator } from './Loading';
-import type { ToolActivity } from './toolActivity';
+import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { Icon } from './Icon';
 import { viewRuntimeContext } from './plugins/viewContext';
 import { PluginView } from './plugins/PluginView';
@@ -291,6 +291,36 @@ function Field(props: {
         )}
       </Each>
     </If>
+  );
+}
+
+/** A tool whose call is still streaming in has no record to open yet. */
+export function LiveToolRow(props: { activity(): ToolActivity }) {
+  const phase = () =>
+    props.activity().phase === 'preparing' ? tr('Preparing tool') : tr('Running tool');
+  const title = () => {
+    const value = props.activity();
+    return value.title ? displayText(value.title) : value.name;
+  };
+  return (
+    <Disclosure
+      label={toolActivitySummary(props.activity(), phase(), title())}
+      icon="activity"
+      open={false}
+      foldable={false}
+      terminalInset={controlStyle.paddingHorizontal}
+      onPress={() => {}}
+      trailing={<Status label={phase()} kind={props.activity().phase} />}
+    >
+      <Text
+        style={[
+          { ...disclosureTitleStyle, color: C.secondary },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
+      >
+        {title()}
+      </Text>
+    </Disclosure>
   );
 }
 

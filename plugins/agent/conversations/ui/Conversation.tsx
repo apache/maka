@@ -145,6 +145,7 @@ import {
 } from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   canFoldTurn,
+  foldsByDefault,
   TurnPanel,
   TurnSummary,
   turnOutcome,
@@ -485,12 +486,7 @@ export function Conversation(props: ConversationProps) {
   const turnState = (id: string) => {
     let state = turnStates.get(id);
     if (!state) {
-      state = {
-        expanded: signal<{
-          open: boolean;
-          answerKey: string | undefined;
-        } | null>(null),
-      };
+      state = { expanded: signal<boolean | null>(null), ran: false };
       turnStates.set(id, state);
     }
     return state;
@@ -611,11 +607,11 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => (canOpenWorker() ? openWorker : undefined),
   );
-  const turnExpanded = (turn: TurnPresentation) => {
-    if (!canFoldTurn(turn)) return true;
-    const stored = turnState(turn.turnId).expanded();
-    if (stored && stored.answerKey === turn.answerKey) return stored.open;
-    return false;
+  const turnExpanded = (turn: TurnPresentation) =>
+    !canFoldTurn(turn) || (turnState(turn.turnId).expanded() ?? !foldsByDefault(turn));
+  // Showing something in a folded turn opens it; an open turn keeps folding by default.
+  const unfoldTurn = (turn: TurnPresentation) => {
+    if (!turnExpanded(turn)) turnState(turn.turnId).expanded.set(true);
   };
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
@@ -700,14 +696,17 @@ export function Conversation(props: ConversationProps) {
         speak();
         openTurn = turnId;
       }
+      // On the desktop a turn's summary leads it from its first step, so finishing
+      // changes only its text and fold; the terminal adds it once the turn ends.
       if (
         turn &&
         (entry.kind === 'process' ||
           row?.role === 'assistant' ||
           // Recovered failures sit under the summary that folds them.
-          (row?.role === 'failure' && turnOutcome(turn) === 'completed')) &&
+          (row?.role === 'failure' &&
+            (!platform.isTerminal || turnOutcome(turn) === 'completed'))) &&
         !summaries.has(turn.turnId) &&
-        turnOutcome(turn) !== null
+        (!platform.isTerminal || turnOutcome(turn) !== null)
       ) {
         summaries.add(turn.turnId);
         result.push({
@@ -1524,11 +1523,7 @@ export function Conversation(props: ConversationProps) {
     reading.set('chat');
     if (row.turnId) {
       const turn = projection().turns.get(row.turnId);
-      if (turn)
-        turnState(turn.turnId).expanded.set({
-          open: true,
-          answerKey: turn.answerKey,
-        });
+      if (turn) unfoldTurn(turn);
     }
     const id = stableRowId(row);
     const entry = display().find((item) =>
@@ -2513,10 +2508,7 @@ export function Conversation(props: ConversationProps) {
       }
       const turn = projection().turns.get(group.turnId);
       if (!turn) return;
-      turnState(turn.turnId).expanded.set({
-        open: true,
-        answerKey: turn.answerKey,
-      });
+      unfoldTurn(turn);
       const state = groupState(group.key);
       if (!state.open()) {
         innerReader.set(group.closed ? group.key : null);
@@ -3094,6 +3086,7 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <TurnSummary
                             turn={turn}
+                            state={turnState(initial.turnId)}
                             groups={groups}
                             row={currentRow}
                             expanded={() => turnExpanded(turn())}
@@ -3105,10 +3098,7 @@ export function Conversation(props: ConversationProps) {
                               preview: props.previewImage,
                             }}
                             toggle={(open) => {
-                              turnState(initial.turnId).expanded.set({
-                                open,
-                                answerKey: turn().answerKey,
-                              });
+                              turnState(initial.turnId).expanded.set(open);
                               if (open) reveal();
                             }}
                           />
@@ -3130,11 +3120,22 @@ export function Conversation(props: ConversationProps) {
                             invocation(),
                             group().turnId,
                           );
+                        const liveTools = computed(() =>
+                          toolActivity().filter((item) =>
+                            group().members.some(
+                              (member) =>
+                                member.kind === 'activity' &&
+                                member.toolUseId === item.toolUseId &&
+                                group().toolIds.includes(item.toolUseId),
+                            ),
+                          ),
+                        );
                         return (
                           <TurnPanel
                             group={group}
                             turn={turn}
                             toolActivity={tool}
+                            liveTools={liveTools}
                             toolProgress={toolProgress}
                             state={groupState(initial.group.key)}
                             row={currentRow}

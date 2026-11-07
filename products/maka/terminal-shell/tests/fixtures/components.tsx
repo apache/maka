@@ -508,8 +508,10 @@ function ActivityFollow() {
             active: true,
             finalOutputIds: [],
             interleavedInput: false,
+            worked: true,
           })}
           toolActivity={() => undefined}
+          liveTools={() => []}
           toolProgress={() => null}
           state={state}
           row={(id) => {

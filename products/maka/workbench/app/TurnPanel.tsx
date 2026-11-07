@@ -31,6 +31,7 @@ import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
+import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
 const panelStyle = {
@@ -52,7 +53,10 @@ export type LiveActivity = {
   rowId?: string;
 };
 export type TurnViewState = {
-  expanded: Signal<{ open: boolean; answerKey: string | undefined } | null>;
+  /** The user's own choice to open or fold the turn's work; null until they make one. */
+  expanded: Signal<boolean | null>;
+  /** Seen running and not yet given its outcome, which arrives a moment after the run ends. */
+  ran: boolean;
 };
 export type GroupViewState = {
   open: Signal<boolean>;
@@ -72,18 +76,31 @@ export function turnOutcome(turn: TurnPresentation): string | null {
   return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
 }
 
+/**
+ * A turn that stopped, failed or took the user's input midway never folds. On the
+ * desktop the rest fold from their first step, so finishing changes no structure.
+ */
 export function canFoldTurn(turn: TurnPresentation): boolean {
-  return turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
+  if (!turn.worked || turn.interleavedInput) return false;
+  const outcome = turnOutcome(turn);
+  if (platform.isTerminal) return outcome === 'completed' && !turn.active;
+  return outcome === null || outcome === 'completed';
 }
 
-/** On the desktop a foldable turn's summary row stands in for its groups' headers. */
-const summarizes = (turn: TurnPresentation) => !platform.isTerminal && canFoldTurn(turn);
+/** Until the user chooses, a turn's work stays open while it runs and folds once it completes. */
+export function foldsByDefault(turn: TurnPresentation): boolean {
+  return turnOutcome(turn) === 'completed' && !turn.active;
+}
 
-function duration(turn: TurnPresentation, now?: number): string {
+function elapsed(turn: TurnPresentation, now?: number): number | null {
   const start = turn.timing?.startedAt;
   const end = turn.timing?.finished?.at ?? now;
-  if (start == null || end == null || end < start) return '';
-  return formatDuration(end - start);
+  return start == null || end == null || end < start ? null : end - start;
+}
+
+function duration(turn: TurnPresentation, now?: number): string {
+  const time = elapsed(turn, now);
+  return time === null ? '' : formatDuration(time);
 }
 
 /** What a turn's work did, counted over its groups: "2 thoughts · 3 tools". */
@@ -115,6 +132,7 @@ export function activityCounts(
 
 export function TurnSummary(props: {
   turn: () => TurnPresentation;
+  state: TurnViewState;
   groups: () => readonly ProcessGroup[];
   row(id: string): Row | undefined;
   expanded: () => boolean;
@@ -128,9 +146,28 @@ export function TurnSummary(props: {
     preview(image: ImagePreview): void;
   };
 }) {
+  const running = computed(() => {
+    const turn = props.turn();
+    if (turnOutcome(turn) !== null) return (props.state.ran = false);
+    return (props.state.ran ||= turn.active);
+  });
+  const clock = signal<number | undefined>(undefined);
+  effect(() => {
+    if (!running()) return;
+    clock.set(Date.now());
+    const timer = setInterval(() => clock.set(Date.now()), 1000);
+    cleanup(() => clearInterval(timer));
+  });
   const label = () => {
-    const outcome = turnOutcome(props.turn());
-    const time = duration(props.turn());
+    const turn = props.turn();
+    if (running()) {
+      const time = elapsed(turn, clock());
+      return time !== null && time >= 1000
+        ? tr('Working for {duration}', { duration: formatDuration(time) })
+        : tr('Working…');
+    }
+    const outcome = turnOutcome(turn);
+    const time = duration(turn, clock());
     const status =
       outcome === 'failed'
         ? time
@@ -143,13 +180,12 @@ export function TurnSummary(props: {
           : time
             ? tr('Worked for {duration}', { duration: time })
             : '';
-    const counts = summarizes(props.turn()) ? activityCounts(props.groups(), props.row) : '';
+    const counts =
+      !platform.isTerminal && props.canFold() ? activityCounts(props.groups(), props.row) : '';
     return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
   };
-  const choose = (action: { turnId: string; answerKey: string | undefined; open: boolean }) => {
-    const turn = props.turn();
-    if (turn.turnId === action.turnId && turn.answerKey === action.answerKey && props.canFold())
-      props.toggle(action.open);
+  const choose = (action: { turnId: string; open: boolean }) => {
+    if (props.turn().turnId === action.turnId && props.canFold()) props.toggle(action.open);
   };
   return (
     <View style={{ marginTop: 8, marginBottom: platform.isTerminal ? 0 : 8 }}>
@@ -160,25 +196,44 @@ export function TurnSummary(props: {
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(choose, {
           turnId: props.turn().turnId,
-          answerKey: props.turn().answerKey,
           open: !props.expanded(),
         })}
         trailing={
-          <If when={props.images && !props.expanded() && props.images.refs().length > 0}>
-            <ToolImageStrip
-              sessionId={props.images!.sessionId}
-              through={props.images!.through}
-              images={props.images!.refs}
-              preview={props.images!.preview}
-            />
-          </If>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <If when={props.images && !props.expanded() && props.images.refs().length > 0}>
+              <ToolImageStrip
+                sessionId={props.images!.sessionId}
+                through={props.images!.through}
+                images={props.images!.refs}
+                preview={props.images!.preview}
+              />
+            </If>
+            <If when={running()}>
+              <View
+                style={{
+                  width: 20,
+                  height: 20,
+                  marginRight: 8,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <LoadingIndicator label={label()} />
+              </View>
+            </If>
+          </View>
         }
       >
         <Text
           style={[
             {
               ...disclosureTitleStyle,
-              color: turnOutcome(props.turn()) === 'failed' ? C.danger : C.muted,
+              color:
+                turnOutcome(props.turn()) === 'failed'
+                  ? C.danger
+                  : running()
+                    ? C.secondary
+                    : C.muted,
             },
             { numberOfLines: 1 },
           ]}
@@ -486,11 +541,13 @@ function ActivityLog(props: {
   );
 }
 
-export function TurnPanel(props: {
+type TurnPanelProps = {
   group: () => ProcessGroup;
   toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
   toolActivity: () => ToolActivity | undefined;
+  /** The group's tools whose calls are still streaming in, without a row of their own yet. */
+  liveTools: () => readonly ToolActivity[];
   state: GroupViewState;
   row(id: string): Row | undefined;
   rowState(id: string): MessageViewState;
@@ -505,7 +562,37 @@ export function TurnPanel(props: {
   userScroll(): void;
   reading(away: boolean): void;
   settled?(atEnd: boolean): void;
-}) {
+};
+
+export function TurnPanel(props: TurnPanelProps) {
+  // On the desktop the turn's summary row is the only disclosure: groups have no
+  // header of their own and show their members whenever the turn is open.
+  if (!platform.isTerminal)
+    effect(() => {
+      if (props.state.open() || !props.group().rowIds.length) return;
+      const live = !props.group().closed;
+      props.state.opening = live ? 'bottom' : 'top';
+      props.state.following.set(live);
+      props.state.open.set(true);
+    });
+  return (
+    <View style={platform.isTerminal ? panelStyle : { ...panelStyle, marginTop: 0, gap: 0 }}>
+      <If when={platform.isTerminal}>
+        <GroupHeader {...props} />
+      </If>
+      <If when={props.state.open() && props.group().rowIds.length > 0}>
+        <ActivityLog {...props} />
+      </If>
+      <If when={!platform.isTerminal}>
+        <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
+          {(tool) => <LiveToolRow activity={tool} />}
+        </Each>
+      </If>
+    </View>
+  );
+}
+
+function GroupHeader(props: TurnPanelProps) {
   const active = () =>
     props.turn().active &&
     turnOutcome(props.turn()) === null &&
@@ -518,15 +605,6 @@ export function TurnPanel(props: {
     cleanup(() => clearInterval(timer));
   });
   const counts = () => activityCounts([props.group()], props.row) || tr('Process');
-  // A finished turn's summary row is the only disclosure: its groups have no
-  // header of their own and show their members whenever the turn is open.
-  const summarized = () => summarizes(props.turn());
-  effect(() => {
-    if (!summarized() || props.state.open() || !props.group().rowIds.length) return;
-    props.state.opening = 'top';
-    props.state.following.set(false);
-    props.state.open.set(true);
-  });
   const desiredTitle = computed(() => {
     if (!active()) return counts();
     const activity = props.activity();
@@ -563,56 +641,32 @@ export function TurnPanel(props: {
     if (action.open) props.reveal();
   };
   return (
-    <View style={summarized() ? { ...panelStyle, marginTop: 0 } : panelStyle}>
-      <If when={!summarized()}>
-        <Disclosure
-          label={tr('Process group')}
-          open={props.state.open()}
-          foldable={props.group().rowIds.length > 0}
-          onPress={inputAction(choose, {
-            sessionId: props.sessionId,
-            key: props.group().key,
-            open: !props.state.open(),
-          })}
-          trailing={
-            platform.isTerminal ? undefined : (
-              <If when={active()}>
-                <View
-                  style={{
-                    width: 20,
-                    height: 20,
-                    marginRight: 8,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <LoadingIndicator label={stableTitle()} />
-                </View>
-              </If>
-            )
-          }
-        >
-          <If when={active() && platform.isTerminal}>
-            <LoadingIndicator label={stableTitle()} />
-          </If>
-          <Text
-            style={[
-              { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },
-              { numberOfLines: 1, textOverflow: 'ellipsis' },
-            ]}
-          >
-            {active() ? stableTitle() : desiredTitle()}
-          </Text>
-          <If when={active()}>
-            <Text style={{ ...captionTextStyle, color: C.muted }}>
-              {duration(props.turn(), clock())}
-            </Text>
-          </If>
-        </Disclosure>
+    <Disclosure
+      label={tr('Process group')}
+      open={props.state.open()}
+      foldable={props.group().rowIds.length > 0}
+      onPress={inputAction(choose, {
+        sessionId: props.sessionId,
+        key: props.group().key,
+        open: !props.state.open(),
+      })}
+    >
+      <If when={active()}>
+        <LoadingIndicator label={stableTitle()} />
       </If>
-      <If when={props.state.open() && props.group().rowIds.length > 0}>
-        <ActivityLog {...props} />
+      <Text
+        style={[
+          { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
+      >
+        {active() ? stableTitle() : desiredTitle()}
+      </Text>
+      <If when={active()}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {duration(props.turn(), clock())}
+        </Text>
       </If>
-    </View>
+    </Disclosure>
   );
 }
