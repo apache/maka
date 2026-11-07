@@ -74,12 +74,18 @@ pub fn project(
         ));
     }
     use maka_agent_facts::history::semantic::{
-        FragmentSource, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
+        FragmentSource, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind,
+        append_executor_message, reduce,
     };
     use std::collections::{BTreeMap, HashMap};
     let mut frontiers: HashMap<&str, Frontier> = HashMap::new();
     let mut rows = BTreeMap::new();
     let mut fragments = BTreeMap::new();
+    struct ExecutorMessage {
+        start_sequence: u64,
+        text: String,
+    }
+    let mut executor_messages: HashMap<&str, HashMap<&str, ExecutorMessage>> = HashMap::new();
     for stored in prefix
         .events
         .iter()
@@ -88,8 +94,58 @@ pub fn project(
         let frontier = frontiers
             .entry(&stored.event.invocation.invocation_id)
             .or_default();
-        let transition = reduce(frontier, stored)
+        let mut transition = reduce(frontier, stored)
             .map_err(|error| RunError::ReconciliationRequired(error.into()))?;
+        match &stored.event.fact {
+            maka_agent_facts::event::Fact::ExecutorObserved { output } => {
+                use maka_agent_facts::executor::Output;
+                let invocation = stored.event.invocation.invocation_id.as_str();
+                match output {
+                    Output::MessageStart { message_id } => {
+                        executor_messages.entry(invocation).or_default().insert(
+                            message_id,
+                            ExecutorMessage {
+                                start_sequence: stored.sequence,
+                                text: String::new(),
+                            },
+                        );
+                    }
+                    Output::OutputDelta { message_id, text } => {
+                        executor_messages
+                            .get_mut(invocation)
+                            .and_then(|messages| messages.get_mut(message_id.as_str()))
+                            .ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "executor text lacks its message start".into(),
+                                )
+                            })?
+                            .text
+                            .push_str(text);
+                    }
+                    Output::MessageEnd { message_id } => {
+                        let message = executor_messages
+                            .get_mut(invocation)
+                            .and_then(|messages| messages.remove(message_id.as_str()))
+                            .ok_or_else(|| {
+                                RunError::ReconciliationRequired(
+                                    "executor message end lacks its start".into(),
+                                )
+                            })?;
+                        append_executor_message(
+                            &mut transition,
+                            stored,
+                            message.start_sequence,
+                            message.text,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            maka_agent_facts::event::Fact::InvocationEnded { .. } => {
+                executor_messages.remove(stored.event.invocation.invocation_id.as_str());
+            }
+            _ => {}
+        }
         for fragment in transition.fragments {
             let payload = match fragment.source {
                 FragmentSource::Payload(payload) => *payload,
@@ -212,6 +268,88 @@ mod tests {
     use maka_agent_facts::tool_call::ToolOrigin;
     use maka_agent_facts::tool_call::ToolRejection;
     use serde_json::json;
+    #[test]
+    fn native_messages_replay_in_start_order_without_thinking_or_interrupted_bodies() {
+        use maka_agent_facts::event::InvocationOutcome;
+        use maka_agent_facts::executor::{Binding, Output};
+        let invocation: Invocation = serde_json::from_value(json!({
+            "session_id":"session","turn_id":"turn","run_id":"run","invocation_id":"invocation"
+        }))
+        .unwrap();
+        let mut facts = vec![
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    content: "task".into(),
+                    request_fingerprint: None,
+                    source_messages: Vec::new(),
+                },
+            },
+            Fact::ExecutorStarted {
+                settings: Default::default(),
+                binding: Binding {
+                    executor_id: "example".to_owned().try_into().unwrap(),
+                    package_id: "example".into(),
+                    entry_id: "example".into(),
+                    activation: "activation".into(),
+                },
+            },
+        ];
+        let outputs: Vec<Output> = serde_json::from_value(json!([
+            {"type":"message_start","messageId":"first"},
+            {"type":"output_delta","messageId":"first","text":"before"},
+            {"type":"tool_start","toolCallId":"tool","name":"read","input":{}},
+            {"type":"message_start","messageId":"second"},
+            {"type":"output_delta","messageId":"second","text":"after"},
+            {"type":"message_end","messageId":"second"},
+            {"type":"message_end","messageId":"first"},
+            {"type":"tool_result","toolCallId":"tool","text":"done","isError":false},
+            {"type":"message_start","messageId":"thinking"},
+            {"type":"thinking_delta","messageId":"thinking","text":"summary"},
+            {"type":"message_end","messageId":"thinking"},
+            {"type":"message_start","messageId":"partial"},
+            {"type":"output_delta","messageId":"partial","text":"unfinished"}
+        ]))
+        .unwrap();
+        facts.extend(
+            outputs
+                .into_iter()
+                .map(|output| Fact::ExecutorObserved { output }),
+        );
+        facts.push(Fact::InvocationEnded {
+            outcome: InvocationOutcome::Cancelled {
+                source: "test".into(),
+            },
+        });
+        let prefix = LogPrefix {
+            scope: LogScope::Root,
+            high_water: facts.len() as u64,
+            digest: "test".into(),
+            events: facts
+                .into_iter()
+                .enumerate()
+                .map(|(index, fact)| StoredEvent {
+                    sequence: index as u64 + 1,
+                    event: RuntimeEvent::new(invocation.clone(), fact),
+                })
+                .collect(),
+        };
+        let history = project(&prefix, "session", Language::En).unwrap();
+        let bodies: Vec<_> = history
+            .iter()
+            .filter_map(|message| match message {
+                Message::Assistant { content, .. } => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                maka_model::prompt::AssistantPart::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies, ["before", "after"]);
+    }
+
     #[test]
     fn rejection_closes_only_its_proven_provider_call_as_error_text() {
         let invocation: Invocation = serde_json::from_value(json!({

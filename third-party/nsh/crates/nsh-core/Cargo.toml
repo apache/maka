@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 unicode-linebreak.workspace = true
+unicode-properties.workspace = true
 unicode-segmentation.workspace = true
 regex.workspace = true
 rustc-hash.workspace = true
@@ -31,6 +32,8 @@ sha2.workspace = true
 # Picked images' sizes and types (`picker.rs`).
 imagesize.workspace = true
 naga.workspace = true
+# WOFF and WOFF2 fonts (`text::font_data`).
+wuff.workspace = true
 
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
@@ -41,6 +44,11 @@ svg = ["dep:resvg", "dep:flate2"]
 loader = ["dep:ureq"]
 # Shaders as GLSL ES 3.00 (`Shader::glsl_es`), for the web runtime's WebGL 2.
 glsl = ["naga/glsl-out"]
+# The text of declarations (documentation and TypeScript of the specs),
+# which only `.nsh/types` needs: `nsh` and the program describing an app's
+# UI sets turn it on; apps and the web runtime go without
+# (`element::DECLARATIONS`).
+declarations = []
 
 # Native socket/file implementations. Browser WebSockets and files use
 # the host services; their shared checks do not need these dependencies.
@@ -74,4 +82,6 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 # The `unit_types` check reads the crate's public API.
 syn = { workspace = true, features = ["visit"] }
+# The fonts `text::font_data` decompresses are checked as fonts.
+ttf-parser.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }

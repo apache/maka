@@ -58,7 +58,17 @@ impl Owner {
         &self,
         input: SetCompactionPrompt,
     ) -> Result<MetadataResult, String> {
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         let runs = self.runs.lock().await;
+        if self.runs.checkpointed(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Busy,
+            });
+        }
         if runs.closing {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::Closed,
@@ -104,7 +114,7 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<CompactResult, String> {
         let mut runs = self.runs.lock().await;
-        let session = self.session(&input.session_id).await?;
+        let session = self.mutable_session(&input.session_id).await?;
         let identity = self.operation_id(operation);
         let invocation = Invocation {
             session_id: input.session_id.clone(),
@@ -214,7 +224,6 @@ impl Owner {
             boundary_revision: session.configuration.boundary_revision,
             workspace_binding: Some(session.configuration.binding),
             collaboration_mode: session.configuration.collaboration_mode,
-            orchestration_mode: BehaviorId::default(),
             tool_mode: source.accepted.tool_mode,
             code_language: source.accepted.code_language,
             model: Some(source.accepted.binding.clone()),
@@ -224,10 +233,10 @@ impl Owner {
         };
         let basis = MessageBasis {
             mcp_revision: None,
+            client_mcp: None,
             mcp_catalog: None,
             language,
             compaction_prompt: Some(prompt),
-            graph: None,
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: false,
@@ -282,6 +291,9 @@ impl Owner {
         runs.controls.insert(
             input.session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),

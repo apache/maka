@@ -35,7 +35,6 @@ use maka_event_log::{
     sessions::SessionCopy,
 };
 use serde_json::{Value, json};
-use sqlx::Connection;
 
 pub(super) async fn verify_nested_copy(log: &EventLog) {
     let revision = log
@@ -213,16 +212,11 @@ async fn generated_media_remain_required_material_not_deletable_upload_reference
         );
         staged.close().await.unwrap();
     }
-    let mut corrupt = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.path().join("events.sqlite")),
-    )
-    .await
-    .unwrap();
-    sqlx::query("DELETE FROM artifacts")
-        .execute(&mut corrupt)
-        .await
+    let corrupt = rusqlite::Connection::open(dir.path().join("events.sqlite")).unwrap();
+    corrupt
+        .execute("DELETE FROM artifacts", rusqlite::params![])
         .unwrap();
-    corrupt.close().await.unwrap();
+    corrupt.close().unwrap();
     let error = log
         .export_bundle("images", &inventory.subtree_digest, Vec::new())
         .await;

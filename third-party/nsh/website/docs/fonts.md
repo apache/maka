@@ -1,6 +1,6 @@
 ---
 title: Fonts
-description: The system font and generic families, shipping .ttf and .otf files from a Rust crate's assets or TSX imports, families with several weights and italics, and fonts in typed styles and Tailwind classes.
+description: The system font and generic families, fallback lists, shipping .ttf, .otf, .woff and .woff2 files from a Rust crate's assets or TSX imports, families with several weights and italics, and fonts in typed styles and Tailwind classes.
 order: 37
 group: ui
 ---
@@ -20,11 +20,11 @@ Text uses the system font (San Francisco on iOS, Roboto on Android) unless a fon
 
 The system font honors every weight from 100 to 900. Tailwind's `font-sans`, `font-serif` and `font-mono` map to the first three rows, and `font-sans` and `font-mono` to the theme's fonts when it sets them ([A default font for the app](#a-default-font-for-the-app)).
 
-A family installed on the device can be named directly (`"Georgia"`, `"Avenir Next"` on iOS). Installed fonts differ between platforms and versions, so ship the fonts your design depends on. On iOS, a family that does not exist falls back to the system font with a warning in the log (`font family 'X' is not available`).
+A family installed on the device can be named directly (`"Georgia"`, `"Avenir Next"` on iOS). Installed fonts differ between platforms and versions, so ship the fonts your design depends on. On iOS, a family that does not exist falls back to the system font with a warning in the log (`font family 'X' is not available`); name a list to choose what comes instead ([Fallback lists](#fallback-lists)).
 
 ## Shipping a font
 
-A Rust crate ships the files of its `assets/` directory: `registry.assets(assets!())` in its `#[native_module]` function ships them all, and `asset!("fonts/Pacifico-Regular.ttf")` is a `FontAsset` whose `family` is the font's family name, read from the file when the crate compiles. In TSX, import a `.ttf` or `.otf` file: the import evaluates to the font's family name. Either way the font is registered before the first frame, so it is ready when text first renders:
+A Rust crate ships the files of its `assets/` directory: `registry.assets(assets!())` in its `#[native_module]` function ships them all, and `asset!("fonts/Pacifico-Regular.ttf")` is a `FontAsset` whose `family` is the font's family name, read from the file when the crate compiles. In TSX, import a `.ttf`, `.otf`, `.woff` or `.woff2` file: the import evaluates to the font's family name. Either way the font is registered before the first frame, so it is ready when text first renders. WOFF and WOFF2 files are compressed TrueType or OpenType fonts (a WOFF2 file is often half its TrueType's size, which the app's package and the web's downloads save): NSH reads them as the fonts they hold, on every platform:
 
 ```rust tabs
 use nsh_core::{element::FontAsset, prelude::*};
@@ -52,6 +52,20 @@ The files ship with the app like any other [asset](./images-and-assets.md). Font
 
 > [!WARNING]
 > In TSX, an import whose value is never used is removed by TypeScript's import elision, and with it the font. If you only refer to a family by its name (for example in the Tailwind theme), import the file for its side effect: `import "./fonts/Inter-Bold.ttf";`. A Rust crate ships every file of `assets/` through `assets!()`.
+
+## Fallback lists
+
+`fontFamily` takes a list, as CSS does: families separated by commas, most preferred first, a name with spaces quoted or not (`"Brand, 'Noto Sans SC', sans-serif"`), a quoted name keeping its commas (`'ACME, Inc'`). Text is set in the first family the platform has, and a character that family lacks (another script, a symbol) comes from the next family in the list that has it, then from the system's fallback fonts. A list lets a brand font that covers Latin only show Chinese in a matching font, or name a font the app downloads with a system font to show until it arrives:
+
+```rust tabs
+text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
+```
+
+```tsx tabs
+<Text style={{ fontFamily: "Brand, 'Noto Sans SC', sans-serif" }}>Brand 品牌</Text>
+```
+
+Each platform keeps the list's order with its own font machinery: a cascade list on iOS and macOS, a font fallback on Windows (one per paragraph: its first style's list), a Pango family list on Linux, the browser's on the web, GPUI's fallbacks. On Android, text is set in the first family it has; when that one is a font the app registers, the registered fonts after it in the list are its fallbacks (Android 10 and later).
 
 ## Weights and italics
 

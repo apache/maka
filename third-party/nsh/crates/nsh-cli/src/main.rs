@@ -318,10 +318,12 @@ enum Command {
     },
     /// Build an app in release mode and sign it into a package (`.nshpkg`)
     /// for apps that embed nsh to verify and run. Metadata comes from
-    /// `nsh.json` next to the entry, overridden by the flags below.
+    /// `nsh.json` next to the entry, overridden by the flags below. Given a
+    /// package instead of an app, signs it again with this key: only its
+    /// certificate, signing time and signature change.
     Publish {
-        /// The entry module, or the app's directory (default: the current one),
-        /// whose `App.tsx` is the entry.
+        /// The entry module, the app's directory (default: the current one),
+        /// whose `App.tsx` is the entry, or a package (`.nshpkg`) to sign again.
         #[arg(default_value = ".")]
         entry: PathBuf,
         /// The release key's secret key (`.secret`).
@@ -330,7 +332,8 @@ enum Command {
         /// Its certificate (`nsh certify`).
         #[arg(long)]
         cert: PathBuf,
-        /// The package to write (default: `.nsh/out/<id>-<build>.nshpkg`).
+        /// The package to write (default: `.nsh/out/<id>-<build>.nshpkg`); a
+        /// package signed again may name the one read.
         #[arg(short, long)]
         out: Option<PathBuf>,
         /// App id, e.g. `com.example.app`.
@@ -344,9 +347,10 @@ enum Command {
         build: Option<u32>,
         /// Where the source map goes: into the package (devices report
         /// errors at app source positions), into a file next to it
-        /// (`<package>.map`, for `nsh symbolicate`), or nowhere.
-        #[arg(long, value_enum, default_value_t = sign::SourceMapOut::Package)]
-        source_map: sign::SourceMapOut,
+        /// (`<package>.map`, for `nsh symbolicate`), or nowhere (default:
+        /// into the package).
+        #[arg(long, value_enum)]
+        source_map: Option<sign::SourceMapOut>,
         /// Leave the line and column tables out of the bytecode: a smaller
         /// package whose error stacks have no positions.
         #[arg(long)]
@@ -516,6 +520,36 @@ fn no_limits_for_rust(
 }
 
 fn run(mut command: Command) -> anyhow::Result<()> {
+    // A package given to `nsh publish` has no app to resolve or build.
+    if let Command::Publish {
+        entry,
+        key,
+        cert,
+        out,
+        id,
+        version,
+        build,
+        source_map,
+        strip_debug,
+        min_runtime,
+    } = &command
+        && sign::is_package(entry)
+    {
+        let build_flags = [
+            ("--id", id.is_some()),
+            ("--app-version", version.is_some()),
+            ("--build", build.is_some()),
+            ("--source-map", source_map.is_some()),
+            ("--strip-debug", *strip_debug),
+            ("--min-runtime", min_runtime.is_some()),
+        ];
+        if let Some((flag, _)) = build_flags.iter().find(|(_, given)| *given) {
+            anyhow::bail!(
+                "{flag} applies to a build: a package signed again keeps its contents as they are"
+            );
+        }
+        return sign::resign(entry, key, cert, out.clone());
+    }
     let mut types = true;
     // The app a test's path is part of.
     if let Command::Test { path, entry, .. } = &mut command {
@@ -792,7 +826,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 cert: &cert,
                 out,
                 config,
-                source_map,
+                source_map: source_map.unwrap_or(sign::SourceMapOut::Package),
                 strip_debug,
             })
         }
@@ -818,6 +852,25 @@ mod command_tests {
     use clap::Parser as _;
 
     use super::{Cli, Command, run::Target};
+
+    /// Signing a package again changes no contents, so a flag that shapes a
+    /// build is refused rather than ignored, before any file is read.
+    #[test]
+    fn publishing_a_package_refuses_the_flags_of_a_build() {
+        for (flag, args) in [
+            ("--id", &["--id", "a.b"][..]),
+            ("--app-version", &["--app-version", "2.0.0"]),
+            ("--build", &["--build", "2"]),
+            ("--source-map", &["--source-map", "package"]),
+            ("--strip-debug", &["--strip-debug"]),
+            ("--min-runtime", &["--min-runtime", "0.2.0"]),
+        ] {
+            let mut line = vec!["nsh", "publish", "a.nshpkg", "--key", "k", "--cert", "c"];
+            line.extend_from_slice(args);
+            let error = super::run(Cli::try_parse_from(line).unwrap().command).unwrap_err();
+            assert!(error.to_string().starts_with(flag), "{flag}: {error}");
+        }
+    }
 
     #[test]
     fn version_includes_the_source_revision() {

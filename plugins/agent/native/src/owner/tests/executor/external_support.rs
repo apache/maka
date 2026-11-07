@@ -170,3 +170,29 @@ pub(super) async fn record_runtime(f: &Fixture, session: &str, runtime: &str) ->
 pub(super) fn host_tool(method: &str, name: &str) -> contract::ServiceTool {
     serde_json::from_value(json!({"name":name,"description":format!("Host {method}"),"target":{"kind":"export","name":"agent"},"method":method,"result":"json","confirmation":"preapproved"})).unwrap()
 }
+
+pub(super) async fn assistant_texts(f: &Fixture, session: &str) -> Vec<String> {
+    use maka_agent_facts::{event::Fact, executor::Output};
+    let events = f.prefix(session, 1024, 4 * 1024 * 1024).await.events;
+    let mut messages = Vec::<(String, String)>::new();
+    for row in events {
+        match row.event.fact {
+            Fact::ExecutorObserved {
+                output: Output::MessageStart { message_id },
+            } => messages.push((message_id, String::new())),
+            Fact::ExecutorObserved {
+                output: Output::OutputDelta { message_id, text },
+            } => {
+                messages
+                    .iter_mut()
+                    .rev()
+                    .find(|(id, _)| *id == message_id)
+                    .expect("native message start")
+                    .1
+                    .push_str(&text);
+            }
+            _ => {}
+        }
+    }
+    messages.into_iter().map(|(_, text)| text).collect()
+}

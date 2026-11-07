@@ -24,7 +24,7 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::message::RootSourceMessage;
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::{Connection, OptionalExtension};
 
 pub(crate) fn roots(event: &RuntimeEvent) -> &[RootSourceMessage] {
     match &event.fact {
@@ -43,16 +43,18 @@ pub(crate) fn identities(event: &RuntimeEvent) -> impl Iterator<Item = &str> {
         .iter()
         .map(|source| source.message.message_id.as_str())
 }
-pub(crate) async fn initialize(connection: &mut SqliteConnection) -> Result<(), StoreError> {
-    let populated: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM message_sources)")
-        .fetch_one(&mut *connection)
-        .await?;
+pub(crate) fn initialize(connection: &Connection) -> Result<(), StoreError> {
+    let populated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM message_sources)",
+        rusqlite::params![],
+        |row| row.get(0),
+    )?;
     if populated {
         return Ok(());
     }
-    let mut tx = connection.begin().await?;
-    sqlx::raw_sql(
-        "INSERT INTO message_sources
+    let tx =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+    tx.execute_batch("INSERT INTO message_sources
          SELECT json_extract(event_header, '$.invocation.session_id'),
             json_extract(event_header, '$.fact.message.message_id'), event_id
          -- Match runtime_events while using the sparse steering identity index.
@@ -63,22 +65,16 @@ pub(crate) async fn initialize(connection: &mut SqliteConnection) -> Result<(), 
             json_extract(s.value, '$.message_id'), e.event_id
          FROM runtime_events e, json_each(e.event_header, '$.fact.input.source_messages') s
          WHERE e.kind = 'invocation_opened' AND json_extract(e.event_header, '$.fact.input.kind') = 'message'
-         AND json_array_length(e.event_header, '$.fact.input.source_messages') > 0;"
-    ).execute(&mut *tx).await?;
-    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+         AND json_array_length(e.event_header, '$.fact.input.source_messages') > 0;")?;
+    tx.commit().map_err(StoreError::CommitUnknown)?;
     Ok(())
 }
-pub(crate) async fn insert(
-    connection: &mut SqliteConnection,
-    event: &RuntimeEvent,
-) -> Result<(), StoreError> {
+pub(crate) fn insert(connection: &Connection, event: &RuntimeEvent) -> Result<(), StoreError> {
     for id in identities(event) {
-        sqlx::query("INSERT INTO message_sources VALUES (?, ?, ?)")
-            .bind(&event.invocation.session_id)
-            .bind(id)
-            .bind(&event.id)
-            .execute(&mut *connection)
-            .await?;
+        connection.execute(
+            "INSERT INTO message_sources VALUES (?, ?, ?)",
+            rusqlite::params![&event.invocation.session_id, id, &event.id],
+        )?;
     }
     Ok(())
 }
@@ -103,12 +99,10 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<StoredEvent>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session_id)?;
         let session = session_id.to_owned();
-        self.connection.read(move |connection| Box::pin(async move {
-            let row: Option<(i64, String)> = sqlx::query_as(
-                "WITH candidates AS (
+        self.connection.read(move |connection| {
+            let row: Option<(i64, String)> = connection.query_row("WITH candidates AS (
                  SELECT sequence FROM (
                      SELECT e.sequence FROM runtime_events e
                      WHERE json_extract(e.event_header,'$.invocation.session_id')=?1 AND e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message'
@@ -126,10 +120,9 @@ impl EventLog {
                      WHERE r.session_id=?1 AND e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message'
                      ORDER BY r.sequence DESC LIMIT 1))
                  SELECT e.sequence,e.event_header FROM runtime_events e
-                 WHERE e.sequence=(SELECT MAX(sequence) FROM candidates)"
-            ).bind(session).fetch_optional(connection).await?;
+                 WHERE e.sequence=(SELECT MAX(sequence) FROM candidates)", rusqlite::params![session], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
             row.map(|(sequence, json)| decode_delivery(sequence, json)).transpose()
-        })).await
+        }).await
     }
     /// The earliest user-message opening in owned history, including inherited
     /// prefixes. Later messages and successor invocations cannot become the first.
@@ -137,13 +130,10 @@ impl EventLog {
         &self,
         session_id: &str,
     ) -> Result<Option<StoredEvent>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session_id)?;
         let session = session_id.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move { first_message_opening(connection, &session).await })
-            })
+            .read(move |connection| first_message_opening(connection, &session))
             .await
     }
 
@@ -155,7 +145,6 @@ impl EventLog {
         turn_id: &str,
         message_id: &str,
     ) -> Result<Option<maka_agent_facts::message::EditableMessage>, StoreError> {
-        self.validate_root()?;
         for id in [session_id, turn_id, message_id] {
             crate::sessions::validate_id(id)?;
         }
@@ -165,33 +154,32 @@ impl EventLog {
             message_id.to_owned(),
         );
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let row: Option<(i64, String)> = sqlx::query_as(
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let row: Option<(i64, String)> = tx
+                    .query_row(
                         "SELECT e.sequence, e.event_header
                  FROM session_message_sources s JOIN runtime_events e ON e.event_id=s.event_id
                  WHERE s.owner_session_id=?1 AND s.message_id=?2
                    AND (e.kind='invocation_opened' OR e.kind='message_steered')
                    AND json_extract(e.event_header,'$.invocation.turn_id')=?3",
+                        rusqlite::params![&session, &message, &turn],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
-                    .bind(&session)
-                    .bind(&message)
-                    .bind(&turn)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    let Some((sequence, json)) = row else {
-                        return Ok(None);
-                    };
-                    let proof = decode_root(sequence, json, &message)?;
-                    if proof.opening.event.invocation.turn_id != turn {
-                        return Err(invalid("source proof Turn changed"));
-                    }
-                    let result =
-                        editable(&mut tx, &session, &proof.opening, proof.source()).await?;
-                    tx.commit().await?;
-                    Ok(Some(result))
-                })
+                    .optional()?;
+                let Some((sequence, json)) = row else {
+                    return Ok(None);
+                };
+                let proof = decode_root(sequence, json, &message)?;
+                if proof.opening.event.invocation.turn_id != turn {
+                    return Err(invalid("source proof Turn changed"));
+                }
+                let result = editable(&tx, &session, &proof.opening, proof.source())?;
+                tx.commit()?;
+                Ok(Some(result))
             })
             .await
     }
@@ -202,33 +190,30 @@ impl EventLog {
         session_id: &str,
         message_id: &str,
     ) -> Result<Option<RootMessageProof>, StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session_id)?;
         crate::sessions::validate_id(message_id)?;
         let session = session_id.to_owned();
         let message = message_id.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row: Option<(i64, String)> = sqlx::query_as(
+            .read(move |connection| {
+                let row: Option<(i64, String)> = connection
+                    .query_row(
                         "SELECT e.sequence, e.event_header
                  FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
                  WHERE s.session_id = ? AND s.message_id = ?
                    AND (e.kind='invocation_opened' OR e.kind='message_steered')",
+                        rusqlite::params![&session, &message],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
-                    .bind(&session)
-                    .bind(&message)
-                    .fetch_optional(connection)
-                    .await?;
-                    let Some((sequence, json)) = row else {
-                        return Ok(None);
-                    };
-                    let proof = decode_root(sequence, json, &message)?;
-                    if proof.opening.event.invocation.session_id != session {
-                        return Err(invalid("source proof Session changed"));
-                    }
-                    Ok(Some(proof))
-                })
+                    .optional()?;
+                let Some((sequence, json)) = row else {
+                    return Ok(None);
+                };
+                let proof = decode_root(sequence, json, &message)?;
+                if proof.opening.event.invocation.session_id != session {
+                    return Err(invalid("source proof Session changed"));
+                }
+                Ok(Some(proof))
             })
             .await
     }
@@ -281,8 +266,8 @@ fn decode_delivery(sequence: i64, json: String) -> Result<StoredEvent, StoreErro
     })
 }
 
-async fn editable(
-    connection: &mut SqliteConnection,
+fn editable(
+    connection: &Connection,
     session: &str,
     opening: &StoredEvent,
     source: &RootSourceMessage,
@@ -300,8 +285,7 @@ async fn editable(
                     session,
                     session_id,
                     relative_path,
-                )
-                .await?
+                )?
                 .ok_or_else(|| invalid("editable source Artifact is missing"))?;
             }
         }
@@ -318,12 +302,11 @@ fn invalid(message: &str) -> StoreError {
 }
 
 /// Shared with auxiliary admission, inside its write transaction.
-pub(crate) async fn first_message_opening(
-    connection: &mut SqliteConnection,
+pub(crate) fn first_message_opening(
+    connection: &Connection,
     session: &str,
 ) -> Result<Option<StoredEvent>, StoreError> {
-    let row: Option<(i64, String, String)> = sqlx::query_as(
-        "WITH candidates AS (
+    let row: Option<(i64, String, String)> = connection.query_row("WITH candidates AS (
                  SELECT sequence FROM (
                      SELECT e.sequence FROM runtime_events e
                      WHERE e.event_header IS NOT NULL AND e.event_session=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_header,'$.fact.record.content.kind')='user'))
@@ -341,8 +324,7 @@ pub(crate) async fn first_message_opening(
                      WHERE r.session_id=?1 AND ((e.kind='invocation_opened' AND json_extract(e.event_header,'$.fact.input.kind')='message') OR (e.kind='message_imported' AND json_extract(e.event_header,'$.fact.record.content.kind')='user'))
                      ORDER BY r.sequence ASC LIMIT 1))
                  SELECT e.sequence,e.event_header,e.kind FROM runtime_events e
-                 WHERE e.sequence=(SELECT MIN(sequence) FROM candidates)"
-    ).bind(session).fetch_optional(connection).await?;
+                 WHERE e.sequence=(SELECT MIN(sequence) FROM candidates)", rusqlite::params![session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
     match row {
         Some((sequence, json, kind)) if kind == "invocation_opened" => {
             decode_delivery(sequence, json).map(Some)

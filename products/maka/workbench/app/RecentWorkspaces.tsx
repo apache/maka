@@ -19,15 +19,11 @@
 
 import { Text, View, windowSize } from 'nsh';
 import { Select } from 'nsh/base';
-import type { BrowserWorkspace } from './browsing';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle, textTooltip } from './ui';
 
-export type RecentWorkspace = {
-  workspace: Extract<BrowserWorkspace, { kind: 'directory' }>;
-  path: string;
-};
+export type RecentWorkspace = { path: string };
 const name = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 export function RecentWorkspaces(props: {
@@ -114,6 +110,7 @@ export function RecentWorkspaces(props: {
         </View>
       }
       itemStyle={{ padding: 0 }}
+      itemClass={`rounded-lg focus:bg-[${C.raised}]`}
       renderGroup={(group) =>
         group.title === 'recent' ? (
           <Text style={{ color: C.muted, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 }}>
@@ -135,7 +132,6 @@ export function RecentWorkspaces(props: {
             paddingHorizontal: 10,
             paddingVertical: 8,
             minHeight: item.group === 'recent' ? 54 : 36,
-            backgroundColor: item.highlighted ? C.raised : 'transparent',
           }}
         >
           <Icon name={item.value === 'forget' ? 'close' : 'folder'} color={C.secondary} />
@@ -160,7 +156,7 @@ export function RecentWorkspaces(props: {
             </If>
           </View>
           <View style={{ width: 16 }}>
-            <If when={item.selected}>
+            <If when={item.value === props.path()}>
               <Icon name="check" color={C.accent} />
             </If>
           </View>

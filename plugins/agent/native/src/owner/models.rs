@@ -207,8 +207,12 @@ impl Owner {
         Ok(choices)
     }
     pub(super) async fn external_cwd(&self) -> Result<Option<String>, String> {
-        let DirectoryPage::Roots { roots } =
-            workspace::query(self.workspace_roots.clone(), Directories::Roots).await?
+        let DirectoryPage::Roots { roots } = workspace::query(
+            self.workspace_roots.clone(),
+            Directories::Roots,
+            self.home.as_deref(),
+        )
+        .await?
         else {
             unreachable!("roots query")
         };

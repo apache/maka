@@ -23,7 +23,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use rusqlite::OptionalExtension;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Selection {
@@ -41,8 +41,8 @@ impl Selection {
         }
     }
 
-    pub async fn resolve(
-        connection: &mut SqliteConnection,
+    pub fn resolve(
+        connection: &rusqlite::Connection,
         scope: &LogScope,
     ) -> Result<Self, StoreError> {
         let (session, run) = match scope {
@@ -61,16 +61,15 @@ impl Selection {
         };
         crate::sessions::validate_id(session)?;
         crate::sessions::validate_id(run)?;
-        let invocation = crate::turns::run_invocation(connection, session, run)
-            .await?
+        let invocation = crate::turns::run_invocation(connection, session, run)?
             .ok_or_else(|| super::invalid("lineage root Run is missing"))?;
-        let base: i64 = sqlx::query_scalar(
-            "SELECT base_sequence FROM context_source_lineages WHERE invocation_id=?",
-        )
-        .bind(&invocation)
-        .fetch_optional(connection)
-        .await?
-        .ok_or_else(|| super::invalid("opening does not inherit model history"))?;
+        let base: i64 = connection
+            .prepare_cached(
+                "SELECT base_sequence FROM context_source_lineages WHERE invocation_id=?",
+            )?
+            .query_row(rusqlite::params![&invocation], |row| row.get(0))
+            .optional()?
+            .ok_or_else(|| super::invalid("opening does not inherit model history"))?;
         let lineage = serde_json::to_string(&serde_json::json!({"base":base,"run":invocation}))?;
         Ok(Self {
             scope: scope.clone(),
@@ -81,8 +80,8 @@ impl Selection {
 
     /// The canonical opening authenticates selection independently of the read cut.
     /// In particular, pre-turn compaction reads before this opening.
-    pub async fn for_opening(
-        connection: &mut SqliteConnection,
+    pub fn for_opening(
+        connection: &rusqlite::Connection,
         opening: &RuntimeEvent,
     ) -> Result<Self, StoreError> {
         let Fact::InvocationOpened { input, .. } = &opening.fact else {
@@ -96,14 +95,13 @@ impl Selection {
                     run_id: opening.invocation.run_id.clone(),
                 },
             )
-            .await
         } else {
             Ok(Self::session(&opening.invocation.session_id))
         }
     }
 
-    pub async fn for_invocation(
-        connection: &mut SqliteConnection,
+    pub fn for_invocation(
+        connection: &rusqlite::Connection,
         invocation: &Invocation,
     ) -> Result<Self, StoreError> {
         let (_, opening) = super::proof::by_kind(
@@ -111,12 +109,11 @@ impl Selection {
             &invocation.invocation_id,
             "invocation_opened",
             None,
-        )
-        .await?;
+        )?;
         if opening.invocation != *invocation {
             return Err(super::invalid("selection opening identity changed"));
         }
-        Self::for_opening(connection, &opening).await
+        Self::for_opening(connection, &opening)
     }
 
     /// Test one candidate using immutable logarithmic ancestry jumps.
@@ -143,9 +140,9 @@ impl Selection {
         )
     }
 
-    pub async fn high_water(
+    pub fn high_water(
         &self,
-        connection: &mut SqliteConnection,
+        connection: &rusqlite::Connection,
         through: u64,
     ) -> Result<u64, StoreError> {
         let filter = Self::predicate("e", "?3");
@@ -154,19 +151,21 @@ impl Selection {
             .as_deref()
             .ok_or_else(|| super::invalid("context requires a Session"))?;
         sequence_number(
-            sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT MAX(
+            connection
+                .prepare_cached(
+                    &(format!(
+                        "SELECT MAX(
                     (SELECT COALESCE(MAX(e.sequence),0) FROM runtime_events e WHERE e.sequence <= ?1
                      AND (e.event_header IS NOT NULL AND e.event_session=?2) AND {filter}),
                     (SELECT COALESCE(MAX(h.sequence),0) FROM session_history_members h
                      JOIN runtime_events e ON e.sequence=h.sequence
                      WHERE h.session_id=?2 AND h.sequence <= ?1 AND {filter}))"
-            )))
-            .bind(through as i64)
-            .bind(session)
-            .bind(&self.lineage)
-            .fetch_one(connection)
-            .await?,
+                    )),
+                )?
+                .query_row(
+                    rusqlite::params![through as i64, session, &self.lineage],
+                    |row| row.get(0),
+                )?,
         )
     }
 }

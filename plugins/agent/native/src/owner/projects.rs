@@ -73,10 +73,7 @@ impl Owner {
             .map_err(|_| "agent_projects_unavailable")?
             .filter(|record| record.identity.starts_with(&self.project_prefix())))
     }
-    async fn project_paths(
-        &self,
-        record: &ProjectRecord,
-    ) -> Result<Vec<(String, DirectorySelection)>, String> {
+    async fn project_paths(&self, record: &ProjectRecord) -> Result<Vec<String>, String> {
         let mut locations = record.locations.iter().collect::<Vec<_>>();
         locations.sort_by(|a, b| {
             b.last_used_at
@@ -85,15 +82,17 @@ impl Owner {
         });
         let mut paths = Vec::new();
         for location in locations {
-            let Some(selection) = workspace::selection_at(
+            if workspace::observed(
                 self.workspace_roots.clone(),
-                location.path.clone(),
+                &location.path,
+                self.home.as_deref(),
                 self.managed_worktrees.clone(),
             )
             .await?
-            else {
+            .is_none()
+            {
                 continue;
-            };
+            }
             let Ok(physical) =
                 filesystem::resolve_selected(std::path::Path::new(&location.path)).await
             else {
@@ -103,33 +102,31 @@ impl Owner {
                 .identity()
                 .is_ok_and(|identity| self.project_identity(&identity) == record.identity)
             {
-                paths.push((location.path.clone(), selection));
+                paths.push(location.path.clone());
             }
         }
         Ok(paths)
     }
     async fn project_summary(&self, record: &ProjectRecord) -> Result<Project, String> {
-        let location = self.project_paths(record).await?.into_iter().next();
-        let (path, selection) = match location {
-            Some((path, selection)) => (Some(path), Some(selection)),
-            None => (None, None),
-        };
+        let path = self.project_paths(record).await?.into_iter().next();
         Ok(Project {
             reference: reference(record),
             name: record.name.clone(),
             archived: record.archived_at.is_some(),
             available: path.is_some(),
-            selection,
             path,
         })
     }
+    /// The directory at `path` as a Project registration, with the path as
+    /// the Host captured it.
     async fn project_directory(
         &self,
-        selection: DirectorySelection,
-    ) -> Result<Option<(ProjectRegistration, DirectorySelection)>, String> {
+        path: &str,
+    ) -> Result<Option<(ProjectRegistration, String)>, String> {
         let Some(directory) = workspace::selected(
             self.workspace_roots.clone(),
-            selection.clone(),
+            path,
+            self.home.as_deref(),
             self.managed_worktrees.clone(),
         )
         .await?
@@ -147,7 +144,8 @@ impl Owner {
         // The directory picker observation is still the basis after Git inspection.
         if workspace::selected(
             self.workspace_roots.clone(),
-            selection.clone(),
+            path,
+            self.home.as_deref(),
             self.managed_worktrees.clone(),
         )
         .await?
@@ -159,7 +157,7 @@ impl Owner {
             ProjectRegistration {
                 identity: self.project_identity(&identity),
                 name: physical.name,
-                path: directory.path,
+                path: directory.path.clone(),
                 is_worktree: matches!(
                     physical.kind,
                     filesystem::ProjectKind::Git {
@@ -168,14 +166,14 @@ impl Owner {
                     }
                 ),
             },
-            selection,
+            directory.path,
         )))
     }
     pub async fn projects(&self, input: ProjectsRead) -> Result<ProjectsPage, String> {
         let records = self.project_records().await?;
         let result = match input {
-            ProjectsRead::Directory { selection } => {
-                let Some((location, selection)) = self.project_directory(selection).await? else {
+            ProjectsRead::Directory { path } => {
+                let Some((location, _)) = self.project_directory(&path).await? else {
                     return Ok(ProjectsPage::Unavailable);
                 };
                 let project = match records
@@ -187,7 +185,6 @@ impl Owner {
                 };
                 ProjectsPage::Directory {
                     location: ProjectLocation {
-                        selection,
                         path: location.path,
                         name: location.name,
                         project,
@@ -236,7 +233,7 @@ impl Owner {
 
     pub(crate) async fn select_workspace(
         self: &Arc<Self>,
-        selection: DirectorySelection,
+        input: DirectoryPath,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<Option<Workspace>, String> {
         self.resource_work(scope, move |owner, _scope| {
@@ -247,7 +244,8 @@ impl Owner {
                     .map_err(|error| error.to_string())?;
                 workspace::initialize(
                     &owner.workspace_roots,
-                    selection,
+                    &input.path,
+                    owner.home.as_deref(),
                     &owner.managed_worktrees,
                     root.canonical_path(),
                     root.control_directory(),
@@ -260,9 +258,9 @@ impl Owner {
 
     pub(super) async fn create_project_workspace(
         &self,
-        selection: DirectorySelection,
+        path: &str,
     ) -> Result<Option<Workspace>, String> {
-        let Some((registration, selection)) = self.project_directory(selection).await? else {
+        let Some((registration, path)) = self.project_directory(path).await? else {
             return Ok(None);
         };
         let record = match self
@@ -280,7 +278,8 @@ impl Owner {
             .map_err(|_| "agent_root_unavailable")?;
         let Some(mut workspace) = workspace::initialize(
             &self.workspace_roots,
-            selection,
+            &path,
+            self.home.as_deref(),
             &self.managed_worktrees,
             root.canonical_path(),
             root.control_directory(),
@@ -307,19 +306,18 @@ impl Owner {
         }
     }
 
-    /// The caller holds the same admission gate as create/send/queue/metadata.
-    pub(super) async fn select_project(
+    pub(super) async fn project_selection(
         &self,
-        selected: ProjectRef,
-        selection: DirectorySelection,
-    ) -> Result<Option<Workspace>, String> {
+        selected: &ProjectRef,
+        path: &str,
+    ) -> Result<Option<(ProjectRecord, String)>, String> {
         let Some(record) = self.project_record(selected.id).await? else {
             return Ok(None);
         };
-        if reference(&record) != selected || record.archived_at.is_some() {
+        if reference(&record) != *selected || record.archived_at.is_some() {
             return Ok(None);
         }
-        let Some((registration, selection)) = self.project_directory(selection).await? else {
+        let Some((registration, path)) = self.project_directory(path).await? else {
             return Ok(None);
         };
         if registration.identity != record.identity
@@ -330,9 +328,21 @@ impl Owner {
         {
             return Ok(None);
         }
+        Ok(Some((record, path)))
+    }
+
+    /// The caller holds the same admission gate as create/send/queue/metadata.
+    pub(super) async fn select_project(
+        &self,
+        selected: ProjectRef,
+        path: &str,
+    ) -> Result<Option<Workspace>, String> {
+        let Some((record, path)) = self.project_selection(&selected, path).await? else {
+            return Ok(None);
+        };
         let record = match self
             .store
-            .select_project_if(record, vec![registration.path], now())
+            .select_project_if(record, vec![path.clone()], now())
             .await
         {
             Ok((record, _)) => record,
@@ -345,7 +355,8 @@ impl Owner {
             .map_err(|_| "agent_root_unavailable")?;
         let Some(mut workspace) = workspace::initialize(
             &self.workspace_roots,
-            selection,
+            &path,
+            self.home.as_deref(),
             &self.managed_worktrees,
             root.canonical_path(),
             root.control_directory(),
@@ -366,11 +377,8 @@ impl Owner {
         }
         let archiving = matches!(&input, ProjectChange::Archive { .. });
         let result = match input {
-            ProjectChange::Register {
-                selection,
-                expected,
-            } => {
-                let Some((registration, _)) = self.project_directory(selection).await? else {
+            ProjectChange::Register { path, expected } => {
+                let Some((registration, _)) = self.project_directory(&path).await? else {
                     return Ok(ProjectResult::Unavailable);
                 };
                 let current = self
@@ -415,7 +423,7 @@ impl Owner {
             }
             ProjectChange::Relocate {
                 project,
-                selection,
+                path,
                 destination,
             } => {
                 let Some(current) = self.project_record(project.id).await? else {
@@ -424,8 +432,7 @@ impl Owner {
                 if reference(&current) != project {
                     return Ok(ProjectResult::Changed);
                 }
-                let Some((registration, selection)) = self.project_directory(selection).await?
-                else {
+                let Some((registration, path)) = self.project_directory(&path).await? else {
                     return Ok(ProjectResult::Unavailable);
                 };
                 let other = self
@@ -435,6 +442,18 @@ impl Owner {
                     .find(|record| record.identity == registration.identity);
                 if other.as_ref().map(reference) != destination {
                     return Ok(ProjectResult::Changed);
+                }
+                if current
+                    .locations
+                    .iter()
+                    .chain(other.iter().flat_map(|p| &p.locations))
+                    .any(|location| {
+                        !self
+                            .runs
+                            .workspace_available("", std::path::Path::new(&location.path))
+                    })
+                {
+                    return Ok(ProjectResult::Busy);
                 }
                 let ids = std::iter::once(current.id.clone())
                     .chain(current.aliases.iter().cloned())
@@ -477,7 +496,8 @@ impl Owner {
                     .map_err(|_| "agent_root_unavailable")?;
                 let Some(mut selected) = workspace::initialize(
                     &self.workspace_roots,
-                    selection,
+                    &path,
+                    self.home.as_deref(),
                     &self.managed_worktrees,
                     root.canonical_path(),
                     root.control_directory(),

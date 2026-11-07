@@ -28,6 +28,8 @@ pub struct ChecklistRead {
     pub session_id: String,
     #[serde(default)]
     pub offset: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -35,11 +37,12 @@ pub struct ChecklistRead {
 pub struct Checklist {
     pub enabled: bool,
     pub revision: Option<u64>,
+    pub digest: Option<String>,
     pub total: usize,
     pub completed: usize,
+    pub active_index: Option<usize>,
     pub current: Option<TodoItem>,
     pub offset: usize,
-    #[schemars(length(max = 20))]
     pub items: Vec<TodoItem>,
     pub next_offset: Option<usize>,
 }

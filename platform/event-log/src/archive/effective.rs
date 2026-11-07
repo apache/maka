@@ -22,11 +22,11 @@ use crate::{
     StoreError,
     context::{SourceEvidence, selection::Selection},
 };
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use sqlx::SqliteConnection;
 
-pub(crate) async fn digest_selected(
-    connection: &mut SqliteConnection,
+pub(crate) fn digest_selected(
+    connection: &Connection,
     selection: &Selection,
     source: &SourceEvidence,
     before: u64,
@@ -35,14 +35,14 @@ pub(crate) async fn digest_selected(
     let mut hash = Sha256::new();
     hash.update(b"maka.effective-context.v1\0");
     hash.update(source.digest.as_bytes());
-    let copied: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT hash FROM context_archive_copy_prefixes
+    let copied: Option<Vec<u8>> = connection
+        .query_row(
+            "SELECT hash FROM context_archive_copy_prefixes
         WHERE owner=? AND target_sequence<=? ORDER BY target_sequence DESC LIMIT 1",
-    )
-    .bind(session)
-    .bind(source.high_water as i64)
-    .fetch_optional(&mut *connection)
-    .await?;
+            rusqlite::params![session, source.high_water as i64],
+            |row| row.get(0),
+        )
+        .optional()?;
     match copied {
         Some(copied) => hash.update(copied),
         None => hash.update(Sha256::digest(b"maka.archive.copy.v1\0")),
@@ -61,14 +61,19 @@ pub(crate) async fn digest_selected(
     );
     let mut after = source.high_water as i64;
     loop {
-        let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(query.as_str()))
-            .bind(session)
-            .bind(source.high_water as i64)
-            .bind(before as i64)
-            .bind(&selection.lineage)
-            .bind(after)
-            .fetch_all(&mut *connection)
-            .await?;
+        let rows: Vec<(i64, Vec<u8>)> = connection
+            .prepare_cached(&query)?
+            .query_map(
+                rusqlite::params![
+                    session,
+                    source.high_water as i64,
+                    before as i64,
+                    &selection.lineage,
+                    after
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
         if rows.is_empty() {
             break;
         }
@@ -81,8 +86,8 @@ pub(crate) async fn digest_selected(
     Ok(format!("sha256:{}", hex::encode(hash.finalize())))
 }
 
-pub(crate) async fn affected_after(
-    connection: &mut SqliteConnection,
+pub(crate) fn affected_after(
+    connection: &Connection,
     selection: &Selection,
     coverage: u64,
     after: u64,
@@ -91,34 +96,37 @@ pub(crate) async fn affected_after(
     let target = Selection::predicate("a", "?4")
         .replace("a.sequence", "a.target_sequence")
         .replace("a.invocation_id", "a.target_invocation_id");
-    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT EXISTS(SELECT 1 FROM context_archive_records a WHERE a.session_id=?1
+    Ok(connection.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM context_archive_records a WHERE a.session_id=?1
          AND a.sequence>?2 AND a.target_sequence<=?3 AND {writer} AND {target})"
-    )))
-    .bind(&selection.session)
-    .bind(after as i64)
-    .bind(coverage as i64)
-    .bind(&selection.lineage)
-    .fetch_one(connection)
-    .await?)
+        ),
+        rusqlite::params![
+            &selection.session,
+            after as i64,
+            coverage as i64,
+            &selection.lineage
+        ],
+        |row| row.get(0),
+    )?)
 }
 
-pub(crate) async fn validate_summary(
-    connection: &mut SqliteConnection,
+pub(crate) fn validate_summary(
+    connection: &Connection,
     source: &SourceEvidence,
     expected: &str,
     requested: u64,
 ) -> Result<(), StoreError> {
-    let selection = Selection::resolve(connection, &source.scope).await?;
+    let selection = Selection::resolve(connection, &source.scope)?;
     if selection.session.is_none() {
         return Err(ArchiveError::Corrupt.into());
     }
-    if affected_after(connection, &selection, source.high_water, requested).await? {
+    if affected_after(connection, &selection, source.high_water, requested)? {
         return Err(StoreError::InvalidTransition(
             "summary effective source changed after its request".into(),
         ));
     }
-    if digest_selected(connection, &selection, source, requested).await? == expected {
+    if digest_selected(connection, &selection, source, requested)? == expected {
         Ok(())
     } else {
         Err(StoreError::InvalidTransition(

@@ -88,8 +88,8 @@ fn disk(root: &std::path::Path) -> Value {
             .map(|e| size(&e.unwrap().path()))
             .sum()
     }
-    let partitions = root.join("runtime-partitions");
-    let wal = std::fs::read_dir(&partitions)
+    let directory = root.to_owned();
+    let wal = std::fs::read_dir(&directory)
         .unwrap()
         .filter_map(|e| {
             let e = e.unwrap();
@@ -193,7 +193,7 @@ async fn history_checkpoint_baseline() {
     while let Some(frame) = stream.recv().await {
         first_ms.get_or_insert(time.elapsed().as_secs_f64() * 1000.);
         match frame["kind"].as_str().unwrap() {
-            "native_history_v1" => {}
+            "checkpoint" => {}
             "chunk" => {
                 assert_eq!(frame["offset"], total);
                 let chunk = STANDARD.decode(frame["data"].as_str().unwrap()).unwrap();

@@ -18,7 +18,6 @@
  */
 
 use crate::settings::{Protocol, Repository, Secrets, Settings};
-use maka_agent_ports::preferences::Preferences;
 use maka_capabilities::{call, http};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -315,7 +314,6 @@ fn distribution(p: impl Iterator<Item = f64>) -> bool {
 pub struct DecisionsApi {
     pub settings: Repository,
     pub http: Arc<dyn http::Client>,
-    pub preferences: Arc<dyn Preferences>,
 }
 impl DecisionsApi {
     pub async fn evaluate(
@@ -338,15 +336,7 @@ impl DecisionsApi {
     ) -> Result<EvaluationResult, Error> {
         input.validate()?;
         settings.validate().map_err(|_| Error::Input)?;
-        if !settings.enabled
-            || self
-                .preferences
-                .read()
-                .await
-                .map_err(|_| Error::Unavailable)?
-                .privacy
-                .incognito_active
-        {
+        if !settings.enabled {
             return Err(Error::Unavailable);
         }
         let key = self

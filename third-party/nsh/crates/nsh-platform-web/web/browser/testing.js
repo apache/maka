@@ -2,11 +2,12 @@
 // On a manual clock (`open(..., { clock: {} })`) the browser's timers,
 // frames, `Date` and `performance.now()` would run on the page's time,
 // which the test cannot move, so the engine keeps them (`timers.rs`) and
-// runs them as `app.clock` moves it. In a test session `fetch` goes through
-// the engine's network (`fetch.rs`), where the test's routes answer it and
-// `app.requests()` records it, and a `WebSocket` the engine refuses (off
-// the network unless `network: "live"`) opens nothing. Installed before
-// the entry is imported.
+// runs them as `app.clock` moves it. In every session `fetch` of the app's
+// own files (`asset:/`) goes through the engine's network (`fetch.rs`),
+// which reads them as it does on every platform. In a test session HTTP
+// does too, where the test's routes answer it and `app.requests()` records
+// it, and a `WebSocket` the engine refuses (off the network unless
+// `network: "live"`) opens nothing. Installed before the entry is imported.
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
@@ -65,7 +66,7 @@ function installClock(target, call, active, wake) {
   });
 }
 
-function installFetch(target, call, active, wake) {
+function installFetch(target, call, active, wake, network) {
   const { Request, Response, ReadableStream, TypeError: RealmTypeError } = target;
   const nativeFetch = target.fetch;
   const failure = message => new RealmTypeError(`Network request failed: ${message}`);
@@ -139,11 +140,24 @@ function installFetch(target, call, active, wake) {
     } finally { wake(); }
   }]);
 
+  // The scheme `input` names, read without making a `Request` of it: one
+  // made of a stream or of another request takes its body, which the
+  // browser's own fetch then could not send.
+  const schemeOf = input => {
+    try {
+      return new URL(input instanceof Request ? input.url : String(input), target.location?.href).protocol;
+    } catch {
+      return "";
+    }
+  };
   define(target, "fetch", async function fetch(input, init) {
+    // The app's files are the engine's to read (the browser knows no
+    // `asset:`), HTTP only a test's; `data:` and `blob:` URLs, and what does
+    // not parse, stay the browser's.
+    const protocol = schemeOf(input);
+    const http = protocol === "http:" || protocol === "https:";
+    if (protocol !== "asset:" && !(network && http)) return nativeFetch.call(target, input, init);
     const request = new Request(input, init);
-    const { protocol } = new URL(request.url);
-    // Only HTTP crosses the network; `data:` and `blob:` URLs stay the page's.
-    if (protocol !== "http:" && protocol !== "https:") return nativeFetch.call(target, input, init);
     const { signal } = request;
     if (signal.aborted) throw signal.reason;
     const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined;
@@ -253,16 +267,14 @@ function installWebSocket(target, call, active, wake) {
 /**
  * Puts the engine's clock and network in `target`'s place (the app realm's
  * global object) where the session needs them: the clock when the
- * engine's is manual, `fetch` and `WebSocket` when `network` (a test
- * session). `call` is the host's operation call; callbacks end with `wake`
- * (a pump).
+ * engine's is manual, `fetch` for the app's files always, and for HTTP with
+ * `WebSocket` when `network` (a test session). `call` is the host's
+ * operation call; callbacks end with `wake` (a pump).
  */
 export function installTesting(target, call, { active = () => true, wake = () => {}, network = false } = {}) {
   const clock = call(1000, []) === true;
   if (clock) installClock(target, call, active, wake);
-  if (network) {
-    installFetch(target, call, active, wake);
-    installWebSocket(target, call, active, wake);
-  }
+  installFetch(target, call, active, wake, network);
+  if (network) installWebSocket(target, call, active, wake);
   return { clock, network };
 }

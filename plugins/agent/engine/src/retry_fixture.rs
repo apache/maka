@@ -119,8 +119,7 @@ pub async fn seed_due_model_retry(
             .with_language(input.configuration.code_language),
         engine.0.loaded(&input.invocation.session_id),
     )
-    .with_model(input.provider.tool_context())
-    .with_behavior(input.configuration.orchestration_mode.clone());
+    .with_model(input.provider.tool_context());
     let mut retained_prompt = None;
     let result = async {
         let mut opening = RuntimeEvent::new(
@@ -235,7 +234,7 @@ pub async fn seed_due_model_retry(
         prompt
             .close()
             .await
-            .map_err(crate::cleanup::preparation_failed)?;
+            .map_err(|error| inner.cleanup.preparation_failed(error))?;
         drop(prompt);
         drop(request_tools);
         drop(surface);
@@ -301,22 +300,29 @@ pub async fn seed_due_model_retry(
         Some(prompt) => match prompt.close().await {
             Ok(()) => result,
             Err(error) => {
-                model_attempt::additional_failure(result, crate::cleanup::preparation_failed(error))
+                model_attempt::additional_failure(result, inner.cleanup.preparation_failed(error))
             }
         },
         None => result,
     };
     let result = match tools.shutdown().await {
         Ok(()) => result,
-        Err(error) => model_attempt::additional_failure(result, error.into()),
+        Err(error) => {
+            inner.cleanup.observe_tool(&error);
+            model_attempt::additional_failure(result, error.into())
+        }
     };
     drop(tools);
     let result = match effects.settle().await {
         Ok(()) => result,
-        Err(error) => model_attempt::additional_failure(result, error.into()),
+        Err(error) => {
+            inner.cleanup.observe_tool(&error);
+            model_attempt::additional_failure(result, error.into())
+        }
     };
+    let cleanup_confirmed = inner.cleanup.confirmed();
     drop(inner);
-    if result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
+    if !cleanup_confirmed || result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
         execution.retain_unconfirmed();
     } else {
         execution.finish();

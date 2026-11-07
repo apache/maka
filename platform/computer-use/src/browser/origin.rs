@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{Tab, check_input, failed};
+use super::{Tab, TabConnection, check_input, failed};
 use maka_agent_facts::{language::Language, tools::ToolError};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -141,8 +141,9 @@ impl DocumentOrigin {
 
     pub(super) async fn check_current(&self, tab: &mut Tab) -> Result<(), ToolError> {
         self.check_cdp_current(
-            tab.socket
+            tab.connection
                 .as_ref()
+                .map(TabConnection::socket)
                 .ok_or_else(|| failed("tab connection unavailable"))?,
             &tab.document(),
         )
@@ -289,8 +290,9 @@ impl Tab {
     pub(super) async fn document_origin(&mut self) -> Result<DocumentOrigin, ToolError> {
         let document = self.document();
         let proof = resolve_document_origin(
-            self.socket
+            self.connection
                 .as_ref()
+                .map(TabConnection::socket)
                 .ok_or_else(|| failed("tab connection unavailable"))?,
             document.clone(),
             self.origin_proof.as_ref(),

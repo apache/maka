@@ -101,9 +101,9 @@ pub enum RunError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
-    Model(ModelError),
+    Model(#[from] ModelError),
     #[error(transparent)]
-    Tool(ToolError),
+    Tool(#[from] ToolError),
     /// Physical ownership is uncertain; an enclosing native owner must retain
     /// its Root and capacity rather than infer cleanup from business completion.
     #[error("execution cleanup is unconfirmed")]
@@ -152,27 +152,6 @@ impl RunError {
                         | ToolError::OperationCleanupUnconfirmed { .. }
                 )
         )
-    }
-}
-
-impl From<ModelError> for RunError {
-    fn from(error: ModelError) -> Self {
-        if error.cleanup_unconfirmed() {
-            cleanup::unconfirmed();
-        }
-        Self::Model(error)
-    }
-}
-
-impl From<ToolError> for RunError {
-    fn from(error: ToolError) -> Self {
-        if matches!(
-            error,
-            ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. }
-        ) {
-            cleanup::unconfirmed();
-        }
-        Self::Tool(error)
     }
 }
 
@@ -285,6 +264,7 @@ struct RunContext {
     shared: Arc<Inner>,
     log: Arc<SessionStore>,
     attempts: preview::Attempts,
+    cleanup: cleanup::Evidence,
 }
 
 impl RunContext {
@@ -298,6 +278,7 @@ impl RunContext {
             shared,
             log: Arc::new(store),
             attempts: preview::Attempts::default(),
+            cleanup: cleanup::Evidence::default(),
         }))
     }
 
@@ -340,7 +321,6 @@ impl RunContext {
         let worker_cancellation = cancellation.clone();
         let worker_invocation = invocation.clone();
         let (admitted, ready) = tokio::sync::oneshot::channel();
-        let cleanup = cleanup::Evidence::default();
         let preview = self.attempts.subscribe();
         let context = self.clone();
         let worker = self.shared.workers.spawn(async move {
@@ -360,26 +340,28 @@ impl RunContext {
                     }
                 };
             let effects = Arc::new(effects);
-            let result = cleanup
-                .scope(async {
-                    // Keep the worker future out of the tracking and cleanup wrapper frames.
-                    let result = std::panic::AssertUnwindSafe(Box::pin(async {
-                        run(worker_cancellation.clone(), admitted, effects.clone()).await
-                    }))
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| {
-                        worker_cancellation.cancel();
-                        Err(cleanup::unconfirmed())
-                    });
-                    let result = match effects.settle().await {
-                        Ok(()) => result,
-                        Err(error) => model_attempt::additional_failure(result, error.into()),
-                    };
-                    model_attempt::seal_unfinished_attempts(&context, result).await
-                })
-                .await;
-            let physical = if cleanup.confirmed()
+            // Keep the worker future out of the tracking and cleanup wrapper frames.
+            let result = std::panic::AssertUnwindSafe(Box::pin(async {
+                run(worker_cancellation.clone(), admitted, effects.clone()).await
+            }))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                worker_cancellation.cancel();
+                Err(context.cleanup.unconfirmed())
+            });
+            if let Err(error) = &result {
+                context.cleanup.observe(error);
+            }
+            let result = match effects.settle().await {
+                Ok(()) => result,
+                Err(error) => {
+                    context.cleanup.observe_tool(&error);
+                    model_attempt::additional_failure(result, error.into())
+                }
+            };
+            let result = model_attempt::seal_unfinished_attempts(&context, result).await;
+            let physical = if context.cleanup.confirmed()
                 && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
             {
                 Ok(())
@@ -538,8 +520,7 @@ impl Engine {
         let input = input.clone();
         let cancellation = cancellation.child_token();
         let observer = cancellation.clone().drop_guard();
-        let evidence = cleanup::current();
-        let worker = self.0.workers.spawn(evidence.scope(async move {
+        let worker = self.0.workers.spawn(async move {
             let (RunWork::Continuation { source, tools, .. }
             | RunWork::Handoff { source, tools, .. }) = &input.work
             else {
@@ -560,10 +541,10 @@ impl Engine {
             )
             .await
             .map(|_| ())
-        }));
+        });
         let result = worker
             .await
-            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+            .map_err(|error| RunError::PreparationCleanup(std::io::Error::other(error)))?;
         observer.disarm();
         result
     }
@@ -587,8 +568,7 @@ impl Engine {
         let engine = Arc::downgrade(&self.0);
         let cancellation = cancellation.child_token();
         let observer = cancellation.clone().drop_guard();
-        let evidence = cleanup::current();
-        let worker = self.0.workers.spawn(evidence.scope(async move {
+        let worker = self.0.workers.spawn(async move {
             let (RunWork::Continuation { source, tools, .. }
             | RunWork::Handoff { source, tools, .. }) = &input.work
             else {
@@ -607,10 +587,10 @@ impl Engine {
                 input,
                 claim,
             })
-        }));
+        });
         let result = worker
             .await
-            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+            .map_err(|error| RunError::PreparationCleanup(std::io::Error::other(error)))?;
         observer.disarm();
         result
     }

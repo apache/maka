@@ -23,7 +23,7 @@ use maka_agent_facts::{
     event::{
         CommitError, EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
     },
-    execution::{BehaviorId, CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode},
+    execution::{CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode},
     executor::{Binding, Output},
     input::DeliveredMessage,
     message::{MessageDisposition, Placement, RootSourceMessage},
@@ -73,7 +73,6 @@ fn opening(cwd: &std::path::Path, external: bool) -> Fact {
                 thinking_level: None,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
             })
@@ -111,7 +110,7 @@ fn events(db: &Connection) -> Vec<(i64, Vec<u8>)> {
         .unwrap()
 }
 fn raw(db: &Connection) -> Vec<(String, Vec<u8>)> {
-    db.prepare("SELECT event_id,payload FROM tool_result_payloads ORDER BY event_id")
+    db.prepare("SELECT event_id,c.payload FROM tool_result_payloads p JOIN contents c ON c.id=p.content_id ORDER BY event_id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -119,7 +118,7 @@ fn raw(db: &Connection) -> Vec<(String, Vec<u8>)> {
         .unwrap()
 }
 fn cached_rows(db: &Connection) -> Vec<(i64, i64, String, Vec<u8>)> {
-    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM temp.transcript_rows WHERE session_id='session' ORDER BY source_sequence,item_index")
+    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM temp.transcript_rows WHERE owner_key='session' ORDER BY source_sequence,item_index")
         .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
         .unwrap().collect::<Result<_, _>>().unwrap()
 }
@@ -128,7 +127,7 @@ fn closing(invocation: &Invocation) -> EventWrite {
     write(
         invocation,
         Fact::ExecutorCompleted {
-            text: "final executor answer".into(),
+            message_id: Some("answer".into()),
         },
     )
 }
@@ -157,8 +156,29 @@ async fn start_executor(
     log.append(&write(
         owner,
         Fact::ExecutorObserved {
+            output: Output::MessageStart {
+                message_id: "answer".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&write(
+        owner,
+        Fact::ExecutorObserved {
             output: Output::OutputDelta {
+                message_id: "answer".into(),
                 text: "partial executor answer".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&write(
+        owner,
+        Fact::ExecutorObserved {
+            output: Output::MessageEnd {
+                message_id: "answer".into(),
             },
         },
     ))
@@ -321,8 +341,8 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                 write(
                     &executor,
                     Fact::ExecutorObserved {
-                        output: Output::OutputDelta {
-                            text: "must roll back".into(),
+                        output: Output::MessageStart {
+                            message_id: "must-roll-back".into(),
                         },
                     },
                 ),

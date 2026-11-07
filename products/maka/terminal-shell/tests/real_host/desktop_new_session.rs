@@ -193,6 +193,8 @@ impl Desktop {
         if let Some(label) = preview_ready {
             desktop.control(label).await;
         } else {
+            // The native input sink can focus before the saved draft is editable.
+            desktop.control("Focus message composer").await;
             desktop.target_after(None).await;
         }
         desktop
@@ -306,13 +308,20 @@ impl Desktop {
     }
 
     fn key(&self, name: &str, control: bool) {
-        let keystroke = Keystroke {
-            key: name.into(),
-            key_char: None,
-            modifiers: Modifiers {
+        self.key_with(
+            name,
+            Modifiers {
                 control,
                 ..Default::default()
             },
+        );
+    }
+
+    fn key_with(&self, name: &str, modifiers: Modifiers) {
+        let keystroke = Keystroke {
+            key: name.into(),
+            key_char: None,
+            modifiers,
         };
         self.platform
             .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
@@ -343,26 +352,24 @@ impl Desktop {
         .await;
     }
 
-    fn copy_input(&self) -> Option<String> {
-        // Outside an editor Ctrl+C interrupts, and its dialog refuses the focus
-        // being waited for.
-        self.platform.text_input_target()?;
+    async fn copy_input(&self) -> String {
+        self.target_after(None).await;
+        let _ = self.platform.take_clipboard_write();
         self.key("a", true);
         self.key("c", true);
-        self.platform
-            .take_clipboard_write()
-            .and_then(|item| item.text())
+        self.until("the selected draft was not copied", || {
+            self.platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await
     }
 
     async fn type_text(&self, text: &str) {
-        let _ = self.platform.take_clipboard_write();
-        self.until("the editor did not accept the draft", || {
-            self.platform.text_input_target()?;
-            self.key("a", true);
-            self.platform.paste(text).unwrap();
-            self.copy_input().filter(|copied| copied == text)
-        })
-        .await;
+        self.target_after(None).await;
+        self.key("a", true);
+        self.platform.paste(text).unwrap();
+        self.expect_text(text).await;
     }
 
     /// Enter does nothing until the typed draft can be sent.
@@ -372,25 +379,15 @@ impl Desktop {
     }
 
     async fn expect_text(&self, text: &str) {
-        let _ = self.platform.take_clipboard_write();
-        self.until("the expected draft did not appear in the editor", || {
-            self.copy_input().filter(|copied| copied == text)
-        })
-        .await;
-    }
-
-    async fn expect_editor_text(&self, expected: &str) {
-        self.until(
-            &format!("the native editor did not contain {expected:?}"),
-            || {
-                self.app
-                    .update(|cx| {
-                        self.window.update(cx, |view, window, cx| {
-                            view.text_for_range(0..u32::MAX as usize, &mut None, window, cx)
-                        })
-                    })
-                    .unwrap()
-                    .filter(|text| text == expected)
+        self.wait(
+            &format!("the expected draft {text:?} did not appear in the editor"),
+            async {
+                loop {
+                    let copied = self.copy_input().await;
+                    if copied == text {
+                        break;
+                    }
+                }
             },
         )
         .await;
@@ -435,6 +432,7 @@ impl Desktop {
         let previous = self.platform.text_input_target();
         self.key("n", true);
         self.target_after(previous).await;
+        self.control("Focus message composer").await;
     }
 
     async fn attach(&self, path: &Path) {
@@ -454,6 +452,21 @@ impl Desktop {
                 .update(cx, |view, _, _| view.pressable_bounds(label))
                 .unwrap()
         })
+    }
+
+    async fn composer_height(
+        &self,
+        stage: &str,
+        ready: impl Fn(gpui::Pixels) -> bool,
+    ) -> gpui::Pixels {
+        self.until(stage, || {
+            let fields = self.controls("Focus message composer");
+            let [field] = fields.as_slice() else {
+                return None;
+            };
+            (field.size.height > px(0.) && ready(field.size.height)).then_some(field.size.height)
+        })
+        .await
     }
 
     /// Where the window shows the one control labelled `label`, once it does.
@@ -677,7 +690,7 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
         .unwrap();
     desktop.target_after(None).await;
     let _ = desktop.platform.take_clipboard_write();
-    assert_eq!(desktop.copy_input().unwrap_or_default(), "");
+    assert!(desktop.controls("Send message").is_empty());
     assert!(
         desktop
             .controls(&format!(
@@ -778,7 +791,7 @@ async fn desktop_new_conversation_preserves_an_owned_worktree() {
         "create",
         json!({
             "title":"Isolated", "labels":[],
-            "workspace":{"kind":"isolated_git", "selection":roots["roots"][0]["selection"]}
+            "workspace":{"kind":"isolated_git", "path":roots["roots"][0]["path"]}
         }),
     )
     .await;
@@ -916,6 +929,64 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_completes_commands_skills_and_files_without_creating_a_session() {
+    let fixture = Fixture::open_with_configuration(Options::default(), |_, directory| {
+        let skill = directory.join("assistant-home/.maka/skills/draft-guide");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: draft-guide\ndescription: Guide for a new draft\n---\nReview the workspace.",
+        )
+        .unwrap();
+        std::fs::write(directory.join("workspace/draft-reference.md"), "Reference").unwrap();
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.platform.paste("/set").unwrap();
+    desktop.control("/settings").await;
+    desktop.control("Send message").await;
+    desktop.artifact("new-draft-slash-menu");
+    desktop.press("/settings").await;
+    desktop.control("Close settings").await;
+    desktop.artifact("new-draft-slash-settings");
+    desktop.press("Close settings").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .until("the command did not leave an empty new draft", || {
+            desktop.controls("Send message").is_empty().then_some(())
+        })
+        .await;
+    desktop.artifact("new-draft-slash-consumed");
+    desktop.platform.paste("AFTER_SLASH_COMMAND").unwrap();
+    desktop.expect_text("AFTER_SLASH_COMMAND").await;
+    desktop.type_text("/draft").await;
+    desktop.key("right", false);
+    desktop.control("draft-guide").await;
+    desktop.artifact("new-draft-skill-menu");
+    desktop.press("draft-guide").await;
+    desktop.expect_text("/skill:draft-guide ").await;
+    desktop.key("right", false);
+    desktop.platform.paste("@draft-ref").unwrap();
+    desktop.control("draft-reference.md").await;
+    desktop.artifact("new-draft-file-menu");
+    desktop.press("draft-reference.md").await;
+    desktop
+        .expect_text("/skill:draft-guide @draft-reference.md ")
+        .await;
+    desktop.press("Add to message").await;
+    desktop.press("Use a skill").await;
+    desktop.control("draft-guide").await;
+    desktop.artifact("new-draft-add-skill-menu");
+    desktop.press("draft-guide").await;
+    desktop.expect_text("/skill:draft-guide ").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot() {
     let mut fixture = images_fixture().await;
     let (path, bytes) = image_file(&fixture);
@@ -1041,8 +1112,27 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.press("Process group").await;
     let group = desktop.control("Process group").await;
     let nested = desktop.control("Toggle tool GetGoal").await;
-    assert_eq!(nested.left() - group.left(), px(32.));
+    // A turn has two lanes and no indent: each step's icon sits under the
+    // group's chevron, and an open tool card starts on that same lane.
+    assert_eq!(nested.left(), group.left());
     assert!(desktop.controls("Toggle tool exec").is_empty());
+    desktop.press("Toggle tool GetGoal").await;
+    let lane = nested.left() + px(8.);
+    let below = nested.bottom() + px(24.);
+    desktop
+        .until("the tool card did not start on the icon lane", || {
+            desktop.app.update(|cx| cx.refresh_windows());
+            desktop.pump();
+            let strip = desktop.pixels(Bounds::new(
+                point(lane - px(2.), below),
+                size(px(4.), px(1.)),
+            ))?;
+            let [outside, before, edge, inside] = strip.as_chunks::<4>().0 else {
+                return None;
+            };
+            (outside == before && before != edge && edge == inside).then_some(())
+        })
+        .await;
     desktop.artifact("script-tools");
     answer.finish().await;
     let sessions = desktop.sessions().await;
@@ -1078,7 +1168,7 @@ async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
         "create",
         json!({
             "title":"Side conversation","labels":[],
-            "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
+            "workspace":{"kind":"directory","path":roots["roots"][0]["path"]}
         }),
     )
     .await;
@@ -1313,13 +1403,21 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
 async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let directory = fixture.directory.path().join("未命名文件夹 2");
+    // Observe the wrapped path before copying: Select All would cancel an
+    // insertion whose file intake is still pending.
+    let directory = fixture
+        .directory
+        .path()
+        .join(format!("{}未命名文件夹 2", "x".repeat(220)));
     std::fs::create_dir(&directory).unwrap();
     for (pending, blur) in [(false, false), (false, true), (true, true)] {
-        if pending {
+        let pending_height = if pending {
             desktop.new_draft().await;
             desktop.type_text("查看 ").await;
             desktop.key("right", false);
+            let before = desktop
+                .composer_height("the pending composer did not lay out", |_| true)
+                .await;
             assert!(desktop.app.update(|cx| {
                 desktop
                     .window
@@ -1331,20 +1429,49 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
                     })
                     .unwrap()
             }));
-            desktop
-                .expect_editor_text(&format!("查看 {}", directory.display()))
+            let height = desktop
+                .composer_height("the pasted directory did not wrap", |height| {
+                    height > before
+                })
                 .await;
-        }
+            desktop
+                .expect_text(&format!("查看 {}", directory.display()))
+                .await;
+            Some(height)
+        } else {
+            None
+        };
         let original = "前😀待替换 后";
         desktop.type_text(original).await;
-        desktop.app.update(|cx| {
-            desktop
-                .window
-                .update(cx, |view, window, cx| {
-                    view.set_selected_text_range(3..6, window, cx);
-                })
-                .unwrap();
-        });
+        let before = desktop
+            .composer_height("the short draft did not lay out", |height| {
+                pending_height.is_none_or(|pending| height < pending)
+            })
+            .await;
+        desktop.key("home", false);
+        for _ in 0..2 {
+            desktop.key("right", false);
+        }
+        for _ in 0..3 {
+            desktop.key_with(
+                "right",
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            );
+        }
+        let _ = desktop.platform.take_clipboard_write();
+        desktop
+            .until("the replacement range was not selected", || {
+                desktop.key("c", true);
+                desktop
+                    .platform
+                    .take_clipboard_write()
+                    .and_then(|item| item.text())
+                    .filter(|text| text == "待替换")
+            })
+            .await;
         if blur {
             desktop.key("tab", false);
             desktop
@@ -1376,11 +1503,21 @@ async fn desktop_file_gestures_preserve_drafts_and_stage_an_image() {
             })
             .await;
         desktop.drop_paths(vec![directory.clone()], position);
+        let expanded = desktop
+            .composer_height("the dropped directory did not wrap", |height| {
+                height > before
+            })
+            .await;
         let expected = format!("前😀{} 后", directory.display());
-        desktop.expect_editor_text(&expected).await;
+        desktop.expect_text(&expected).await;
         assert_eq!(desktop.sessions().await.len(), 1);
         desktop.key("z", true);
-        desktop.expect_editor_text(original).await;
+        desktop.expect_text(original).await;
+        desktop
+            .composer_height("the restored draft did not shrink", |height| {
+                height < expanded
+            })
+            .await;
     }
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
     let (path, _) = image_file(&fixture);
@@ -1433,6 +1570,46 @@ async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
     fixture.finish().await;
 }
 
+/// The window's shell lines its parts up (DESIGN.md "Alignment"): the panel's
+/// one header row is centered on the window controls' line with the sidebar's
+/// toggle, and the sidebar's icons, workspace names and conversation titles
+/// start at one left edge.
+async fn shell_shares_its_lines(desktop: &Desktop, docked: bool) {
+    // The panel's 8-point top inset plus half its 32-point header: the middle
+    // of the 48-point title bar the window controls are centered in.
+    let center = px(24.0);
+    let toggle = if docked {
+        if !desktop.controls("Expand session browser").is_empty() {
+            desktop.press("Expand session browser").await;
+        }
+        desktop.control("Collapse session browser").await
+    } else {
+        desktop.control("Expand session browser").await
+    };
+    for (name, bounds) in [
+        ("sidebar toggle", toggle),
+        ("Chat view", desktop.control("Chat").await),
+        ("Trajectory view", desktop.control("Trajectory").await),
+        ("workspace", desktop.control("Browse workspace files").await),
+    ] {
+        assert_eq!(
+            bounds.center().y,
+            center,
+            "the {name} must sit on the window controls' center line: {bounds:?}"
+        );
+    }
+    if docked {
+        let new = desktop.control("New conversation").await;
+        let group = desktop.control("Collapse workspace").await;
+        let row = desktop.control("Open conversation NSH real Agent").await;
+        assert_eq!(
+            (group.left(), row.left()),
+            (new.left(), new.left()),
+            "sidebar rows must share one left edge: new={new:?}, group={group:?}, row={row:?}"
+        );
+    }
+}
+
 async fn disconnected_desktop(
     theme: &str,
     appearance: nsh_core::platform::Appearance,
@@ -1448,6 +1625,7 @@ async fn disconnected_desktop(
     desktop.submit().await;
     let mut reply = desktop.request(&mut fixture).await;
     desktop.control("Stop response").await;
+    shell_shares_its_lines(&desktop, layout == "wide").await;
     let closing = tokio::spawn({
         let store = fixture.store.clone();
         async move { store.shutdown().await }
@@ -1582,8 +1760,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     )
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
-    let reload = desktop.control("Reload connection").await;
-    assert!(reload.bottom() <= px(height as f32));
+    desktop.control("Sign in with ChatGPT").await;
     desktop.artifact(&format!("connection-before-login-{theme}-{layout}"));
     desktop.press("Sign in with ChatGPT").await;
     desktop.control("Copy sign-in code").await;
@@ -1608,7 +1785,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     );
     desktop.artifact(&format!("connection-model-retry-{theme}-{layout}"));
     desktop.press("Fetch models").await;
-    desktop.control("Manage models").await;
+    desktop.control("Edit model gpt-4.1").await;
     {
         let outcome = desktop.outcome.lock().unwrap();
         assert_eq!(
@@ -1618,17 +1795,14 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
         assert_eq!(outcome["discoveries"], 2);
     }
     desktop.artifact(&format!("connection-ready-{theme}-{layout}"));
-    desktop.press("Manage models").await;
-    desktop.control("Edit model gpt-4.1").await;
-    desktop.press("Set default gpt-4.1").await;
+    desktop.press("Edit model gpt-4.1").await;
+    desktop.press("Default for new conversations: Off").await;
     desktop
         .until("the selected default was not saved", || {
             (desktop.outcome.lock().unwrap()["defaultTarget"]["modelId"] == "gpt-4.1").then_some(())
         })
         .await;
-    desktop.control("Set default gpt-4.1").await;
-    desktop.artifact(&format!("connection-models-{theme}-{layout}"));
-    desktop.press("Edit model gpt-4.1").await;
+    desktop.control("Default for new conversations: On").await;
     desktop.control("Associate catalog model").await;
     desktop.artifact(&format!("connection-model-editor-{theme}-{layout}"));
     desktop.press("Associate catalog model").await;
@@ -2008,6 +2182,167 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_changes() {
+    let mut fixture = Fixture::open().await;
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    let toggle = "Toggle conversation todo";
+    let release = |statuses: [&str; 4]| {
+        let items = [
+            "Read the release notes",
+            "Update the changelog",
+            "Build the release candidate",
+            "Tag the release",
+        ];
+        json!({"todos": items.iter().zip(statuses).map(|(content, status)| {
+            json!({"content": content, "status": status})
+        }).collect::<Vec<_>>()})
+    };
+    desktop.new_draft().await;
+    desktop.type_text("Prepare the release").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("tool_search", json!({"query":"todo_write"}))
+        .await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call(
+            "todo_write",
+            release(["completed", "completed", "in_progress", "pending"]),
+        )
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    let row = desktop.control(toggle).await;
+    desktop.artifact(&format!("todo-strip-collapsed-{theme}-{layout}"));
+
+    // The list opens above the row, so the row can be pressed again where it was.
+    // One point lies in the strip's padding beside the row, the other above the row:
+    // the strip's surface reaches it only once the list is open.
+    let sample = |at: gpui::Point<gpui::Pixels>| {
+        desktop.app.update(|cx| cx.refresh_windows());
+        desktop.pump();
+        desktop.pixels(Bounds::new(at, size(px(1.), px(1.))))
+    };
+    let beside = point(row.left() - px(2.), row.center().y);
+    let above = point(row.left() - px(2.), row.top() - px(20.));
+    let surface = sample(beside).unwrap();
+    assert_ne!(
+        sample(above).unwrap(),
+        surface,
+        "the closed strip reached above its row"
+    );
+    desktop.press(toggle).await;
+    desktop
+        .until("the todo list did not open above its row", || {
+            (sample(above)? == surface).then_some(())
+        })
+        .await;
+    desktop.artifact(&format!("todo-strip-expanded-{theme}-{layout}"));
+    assert_eq!(desktop.control(toggle).await, row);
+    desktop.press(toggle).await;
+    desktop
+        .until("the todo list did not close above its row", || {
+            (sample(above)? != surface).then_some(())
+        })
+        .await;
+
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the closed todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    desktop.press("Process group").await;
+    desktop.control("Toggle tool todo_write").await;
+    // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
+    running
+        .tool_call(
+            "todo_write",
+            release(["completed", "completed", "completed", "in_progress"]),
+        )
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    desktop
+        .until(
+            "the progress todo_write did not render in the transcript",
+            || (desktop.controls("Toggle tool todo_write").len() == 2).then_some(()),
+        )
+        .await;
+    assert!(
+        desktop.controls(toggle).is_empty(),
+        "a progress update reopened the closed todo"
+    );
+    // A >20-item checklist opens above the row, hides cleanly, and re-shows when an item past page 1 changes.
+    let long_list = |step_25: &str, all_done: bool| {
+        json!({"todos": (1..=25).map(|index| {
+            let content = if index == 25 {
+                step_25.to_owned()
+            } else {
+                format!("Release step {index}")
+            };
+            let status = if all_done || index < 23 {
+                "completed"
+            } else if index == 23 {
+                "in_progress"
+            } else {
+                "pending"
+            };
+            json!({"content": content, "status": status})
+        }).collect::<Vec<_>>()})
+    };
+    running
+        .tool_call("todo_write", long_list("Verify checksums", false))
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    desktop.press(toggle).await;
+    desktop
+        .until(
+            "the multi-page todo list did not open above its row",
+            || (sample(above)? == surface).then_some(()),
+        )
+        .await;
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the hidden multi-page todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    running
+        .tool_call("todo_write", long_list("Publish signed checksums", true))
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    desktop.control(toggle).await;
+    desktop.artifact(&format!("todo-strip-complete-{theme}-{layout}"));
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the completed todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    // Writing the earlier 4-item list again is fresh work (ABA) and must show again.
+    running
+        .tool_call(
+            "todo_write",
+            release(["in_progress", "pending", "pending", "pending"]),
+        )
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.control(toggle).await;
+    answer.finish().await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
     use super::support::mutate;
     use maka_agent_api::session::StoredSessionConfiguration;
@@ -2019,11 +2354,12 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     })
     .await;
     let parent = fixture.session.clone();
+    let (_, appearance, _, width, height) = visual_case();
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
         size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
-        nsh_core::platform::Appearance::Dark,
+        appearance,
     )
     .await;
     let backend = json!({
@@ -2203,8 +2539,40 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     desktop.press("Actions for NSH real Agent").await;
     desktop.press("Child conversations").await;
     desktop.press("Open Verify sandbox delegation").await;
-    desktop.control("From NSH real Agent").await;
-    desktop.press("From NSH real Agent").await;
+    assert!(
+        desktop
+            .controls("Open source conversation beside this one")
+            .is_empty()
+    );
+    desktop
+        .retry(
+            "the completed child work details did not open",
+            || !desktop.controls("Agent message").is_empty(),
+            || {
+                let controls = desktop.controls("Turn work details");
+                if controls.len() == 1 {
+                    desktop.press_at(controls[0].center());
+                }
+            },
+        )
+        .await;
+    // The finished turn's summary is its only disclosure; its steps share its icon lane.
+    assert!(desktop.controls("Process group").is_empty());
+    let summary = desktop.control("Turn work details").await;
+    let message = desktop.control("Agent message").await;
+    assert_eq!(message.left(), summary.left());
+    assert!(
+        desktop
+            .controls("Open source conversation beside this one")
+            .is_empty()
+    );
+    desktop.press("Agent message").await;
+    desktop
+        .control("Open source conversation beside this one")
+        .await;
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
     desktop.control("Close side pane").await;
     desktop
         .until(
@@ -2213,12 +2581,35 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         )
         .await;
     desktop.artifact("source-conversation-beside");
+    desktop.press("Close side pane").await;
+    desktop
+        .platform
+        .set_viewport(
+            size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+            1.0,
+        )
+        .unwrap();
+    desktop
+        .until("activity lanes did not settle after resize", || {
+            let summaries = desktop.controls("Turn work details");
+            let messages = desktop.controls("Agent message");
+            let ([summary], [message]) = (summaries.as_slice(), messages.as_slice()) else {
+                return None;
+            };
+            (message.right() <= px(width as f32) && message.left() == summary.left()).then_some(())
+        })
+        .await;
+    desktop.artifact("agent-message-expanded");
+    desktop.press("Agent message").await;
+    desktop.artifact("agent-message-collapsed");
+    desktop.press("Turn work details").await;
+    desktop.artifact("agent-message-default");
     desktop.close().await;
     fixture.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandchild() {
+async fn desktop_child_conversations_manage_nested_and_archived_workers() {
     use maka_agent_api::session::StoredSessionConfiguration;
     let fixture = Fixture::open().await;
     let original = fixture
@@ -2234,9 +2625,11 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     let prefix = fixture.session.rsplit_once('_').unwrap().0;
     let child = format!("{prefix}_{}", Uuid::new_v4().simple());
     let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
+    let disposable = format!("{prefix}_{}", Uuid::new_v4().simple());
     for (id, parent, title) in [
         (&child, &fixture.session, "Archived worker"),
         (&grandchild, &child, "Verification worker"),
+        (&disposable, &fixture.session, "Disposable worker"),
     ] {
         let mut configuration = original.clone();
         configuration.parent_session_id = Some(parent.clone());
@@ -2288,6 +2681,87 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
         "deep rows stay inside the dialog's viewport"
     );
     desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
+    for (id, title, action, archived) in [
+        (
+            &grandchild,
+            "Verification worker",
+            "Archive conversation",
+            true,
+        ),
+        (
+            &grandchild,
+            "Verification worker",
+            "Restore conversation",
+            false,
+        ),
+        (&child, "Archived worker", "Restore conversation", false),
+        (
+            &disposable,
+            "Disposable worker",
+            "Archive conversation",
+            true,
+        ),
+    ] {
+        desktop.right_click(&format!("Open {title}")).await;
+        desktop.control(action).await;
+        desktop.artifact(&format!(
+            "child-menu-{}-{theme}-{layout}",
+            if archived { "archive" } else { "restore" }
+        ));
+        desktop.press(action).await;
+        desktop
+            .wait("tree action did not change the targeted worker", async {
+                loop {
+                    let observed = desktop
+                        .client
+                        .query("agent", "observe", json!({"sessionId":id}))
+                        .await
+                        .unwrap();
+                    if observed["session"]["archived"] == archived {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+        desktop
+            .until("tree action menu did not settle", || {
+                (desktop.controls(action).is_empty()
+                    && desktop.controls("Close child conversations").len() == 1)
+                    .then_some(())
+            })
+            .await;
+        desktop.control("Open Verification worker").await;
+    }
+    desktop.press("Actions for Disposable worker").await;
+    desktop.press("Delete conversation").await;
+    desktop.control("Confirm delete conversation").await;
+    assert!(
+        fixture
+            .store
+            .get_session::<StoredSessionConfiguration>(&disposable)
+            .await
+            .unwrap()
+            .is_some(),
+        "opening delete confirmation must not delete the worker"
+    );
+    desktop.artifact(&format!("child-delete-confirmation-{theme}-{layout}"));
+    desktop.press("Confirm delete conversation").await;
+    desktop
+        .until("deleted worker remained in the tree", || {
+            (desktop.controls("Open Disposable worker").is_empty()
+                && desktop.controls("Close child conversations").len() == 1)
+                .then_some(())
+        })
+        .await;
+    assert!(
+        fixture
+            .store
+            .get_session::<StoredSessionConfiguration>(&disposable)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let previous = desktop.platform.text_input_target();
     desktop.press("Open Verification worker").await;
     desktop.target_after(previous).await;
@@ -2313,9 +2787,10 @@ async fn desktop_composer_large_paste_keeps_controls_on_screen() {
     )
     .await;
     let before = desktop.control("Focus message composer").await;
-    let draft = (0..200)
+    let mut draft = (0..200)
         .map(|i| format!("Traceback line {i}: a long pasted diagnostic with paths and details\n"))
         .collect::<String>();
+    draft.push_str("请检查 /skill:review 这个问题");
     // TerminalPlatform::paste injects IME text, which strips control characters.
     // Native clipboard paste keeps the diagnostic's line breaks.
     desktop
@@ -2390,32 +2865,40 @@ async fn desktop_system_permission_guidance_uses_native_actions_without_paths() 
         Some((source, "en", "Local Host")),
     )
     .await;
-    desktop.control("Open Accessibility settings").await;
-    desktop
-        .control("Open Screen & System Audio Recording settings")
-        .await;
-    desktop.press("Show permission application in Finder").await;
+    desktop.control("Ready local").await;
+    desktop.press("Enable Accessibility…").await;
+    desktop.control("Requested accessibility").await;
+    desktop.press("Permission still not enabled?").await;
+    desktop.press("Show in Finder").await;
     desktop.control("Requested reveal_application").await;
     desktop.artifact("system-permission-native-guidance");
-    desktop.press("Open Accessibility settings").await;
+    desktop.press("Permission still not enabled?").await;
+    desktop.press("Open Accessibility settings…").await;
     desktop.control("Requested accessibility").await;
-    desktop.press("Cancel request").await;
+    desktop.press("Cancel setup").await;
     desktop
         .control("Request cancelled without granting access")
         .await;
-    for mode in ["Remote Host", "Older request"] {
-        desktop.press(mode).await;
-        desktop
-            .until("remote or old request retained local actions", || {
-                (desktop
-                    .controls("Show permission application in Finder")
-                    .is_empty()
-                    && desktop.controls("Open Accessibility settings").is_empty())
-                .then_some(())
-            })
-            .await;
-        desktop.control("Cancel request").await;
-    }
+    assert!(desktop.controls("Cancel setup").is_empty());
+
+    desktop.press("Remote Host").await;
+    desktop.control("Ready remote").await;
+    desktop.press("Enable Accessibility…").await;
+    desktop.control("Prompted accessibility").await;
+    desktop.press("Permission still not enabled?").await;
+    assert!(desktop.controls("Show in Finder").is_empty());
+    assert!(desktop.controls("Open Accessibility settings…").is_empty());
+    desktop.control("Cancel setup").await;
+
+    desktop.press("Older request").await;
+    desktop.control("Ready old").await;
+    assert!(desktop.controls("Enable Accessibility…").is_empty());
+    assert!(desktop.controls("Open Accessibility settings…").is_empty());
+    assert!(desktop.controls("Show in Finder").is_empty());
+    desktop.press("Cancel setup").await;
+    desktop
+        .control("Request cancelled without granting access")
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }

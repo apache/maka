@@ -83,6 +83,42 @@ pub use limits::{HostLimits, Limits};
 #[cfg(test)]
 mod tests {
     #[test]
+    fn renderers_decode_state_styles_and_part_classes_by_one_table() {
+        use super::host::{part_class_prop, style_patch_prop};
+        use crate::{Prop, Tag};
+        for (name, expected) in [
+            ("activeStyle", Prop::ActiveStyle(None)),
+            ("hoverStyle", Prop::HoverStyle(None)),
+            ("focusStyle", Prop::FocusStyle(None)),
+            ("disabledStyle", Prop::DisabledStyle(None)),
+            ("selectedStyle", Prop::SelectedStyle(None)),
+            ("checkedStyle", Prop::CheckedStyle(None)),
+            ("indeterminateStyle", Prop::IndeterminateStyle(None)),
+            ("expandedStyle", Prop::ExpandedStyle(None)),
+            ("pressedStyle", Prop::PressedStyle(None)),
+            ("focusWithinStyle", Prop::FocusWithinStyle(None)),
+            ("headerStyle", Prop::HeaderStyle(None)),
+        ] {
+            assert_eq!(
+                style_patch_prop(name).map(|prop| prop(None)),
+                Some(expected),
+                "{name}"
+            );
+        }
+        assert!(style_patch_prop("style").is_none());
+        assert_eq!(
+            part_class_prop("headerClass", Some(Tag::Screen)).map(|prop| prop("bg-red-500".into())),
+            Some(Prop::HeaderClass("bg-red-500".into()))
+        );
+        assert_eq!(
+            part_class_prop("contentClass", Some(Tag::List)).map(|prop| prop("p-1".into())),
+            Some(Prop::ListContentClass("p-1".into()))
+        );
+        assert!(part_class_prop("contentClass", Some(Tag::Scroll)).is_none());
+        assert!(part_class_prop("class", Some(Tag::View)).is_none());
+    }
+
+    #[test]
     fn the_declarations_match_the_tables() {
         let canvas = super::canvas::declarations();
         assert!(

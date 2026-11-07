@@ -22,7 +22,6 @@ use maka_event_log::{
     projects::{ProjectError, ProjectMutation, ProjectRegistration, ProjectRelinkGuard},
 };
 use serde_json::{Value, json};
-use sqlx::Connection;
 
 fn registration(identity: &str, path: &str, worktree: bool) -> ProjectRegistration {
     ProjectRegistration {
@@ -98,12 +97,8 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
     let projects_before = log.list_projects().await.unwrap();
     let before = log.list_sessions::<Value>(None, None, 32).await.unwrap();
     let selected = json!({"path":"/new","projectId":first.id,"worktree":{"replacement":"new"}});
-    let mut fault = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
-    )
-    .await
-    .unwrap();
-    sqlx::query("CREATE TRIGGER fail_project_relink BEFORE UPDATE OF identity ON projects BEGIN SELECT RAISE(ABORT,'project-relink-fault'); END").execute(&mut fault).await.unwrap();
+    let fault = rusqlite::Connection::open(&path).unwrap();
+    fault.execute("CREATE TRIGGER fail_project_relink BEFORE UPDATE OF identity ON projects BEGIN SELECT RAISE(ABORT,'project-relink-fault'); END", rusqlite::params![]).unwrap();
     let failure = log
         .relink_project(
             &first.id,
@@ -119,11 +114,10 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
     let rollback = log.list_sessions::<Value>(None, None, 32).await.unwrap();
     assert_eq!(rollback.revision, before.revision);
     assert_eq!(rollback.sessions, before.sessions);
-    sqlx::query("DROP TRIGGER fail_project_relink")
-        .execute(&mut fault)
-        .await
+    fault
+        .execute("DROP TRIGGER fail_project_relink", rusqlite::params![])
         .unwrap();
-    sqlx::query("CREATE TRIGGER forbid_session_rewrite BEFORE UPDATE ON session_control BEGIN SELECT RAISE(ABORT,'Session rows must not change'); END").execute(&mut fault).await.unwrap();
+    fault.execute("CREATE TRIGGER forbid_session_rewrite BEFORE UPDATE ON session_control BEGIN SELECT RAISE(ABORT,'Session rows must not change'); END", rusqlite::params![]).unwrap();
     let merged = log
         .relink_project(
             &first.id,
@@ -186,11 +180,10 @@ async fn relink_merges_aliases_and_bindings_atomically_without_rewriting_session
     assert!(again.project.aliases.contains(&second.id));
     assert!(again.project.aliases.contains(&third.id));
     let expected = log.list_sessions::<Value>(None, None, 32).await.unwrap();
-    sqlx::query("DROP TRIGGER forbid_session_rewrite")
-        .execute(&mut fault)
-        .await
+    fault
+        .execute("DROP TRIGGER forbid_session_rewrite", rusqlite::params![])
         .unwrap();
-    fault.close().await.unwrap();
+    fault.close().unwrap();
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert_eq!(

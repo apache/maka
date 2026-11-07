@@ -81,6 +81,12 @@ export type PluginEntry = {
 type InstanceIdentity = { instance: UiInstance['instance']; packageId: string };
 type RestoredInstance = InstanceIdentity & { state: unknown };
 type RestoredUi = { instances: RestoredInstance[] };
+type ReconcilePhase =
+  | { kind: 'idle' }
+  | { kind: 'adopting' }
+  | { kind: 'pause_requested' }
+  | { kind: 'preparing_reload'; instances: RestoredInstance[] }
+  | { kind: 'reload_accepted' };
 const targetKey = (target: UiTarget) => JSON.stringify([target.path, target.id]);
 const instanceKey = (identity: InstanceIdentity) =>
   JSON.stringify([identity.instance, identity.packageId]);
@@ -89,7 +95,11 @@ export function createPlugins() {
   const entries = signal<PluginEntry[]>([]);
   const catalog = signal<Catalog | null>(null);
   const ready = signal(false);
-  const reloading = signal(false);
+  const phase = signal<ReconcilePhase>({ kind: 'idle' });
+  const reloading = computed(() => {
+    const kind = phase().kind;
+    return kind === 'pause_requested' || kind === 'preparing_reload' || kind === 'reload_accepted';
+  });
   const updateError = signal<unknown | null>(null);
   const importedPackages = new Set<string>();
   const restored = nativeHost.restored as RestoredUi | null;
@@ -101,8 +111,6 @@ export function createPlugins() {
   let watchGeneration = 0;
   let subscription: UiSubscription | undefined;
   let desired: Catalog | null = null;
-  let processing = false;
-  let acceptedReload = false;
   let panelHandler: ((contribution: UiContributionRef, input?: unknown) => void) | undefined;
   const contributions = computed<Contribution[]>(() =>
     entries().flatMap((entry) =>
@@ -232,33 +240,36 @@ export function createPlugins() {
     packageId: entry.instance.package.id,
   });
   const reconcile = async () => {
-    if (processing || acceptedReload || !alive || !desired) return;
-    processing = true;
-    let paused = false;
+    if (phase().kind !== 'idle' || !alive || !desired) return;
+    const target = desired;
+    phase.set({ kind: 'adopting' });
     try {
-      validate(desired);
-      if (needsReload(desired)) {
-        reloading.set(true);
-        paused = true;
+      validate(target);
+      if (needsReload(target)) {
+        phase.set({ kind: 'pause_requested' });
         await nativeHost.beginUiReload();
+        const held: Extract<ReconcilePhase, { kind: 'preparing_reload' }> = {
+          kind: 'preparing_reload',
+          instances: [],
+        };
+        phase.set(held);
         if (!alive) return;
-        const instances: RestoredInstance[] = [];
         for (const entry of entries()) {
           const state = entry.state();
           if (state.kind !== 'active') continue;
           const snapshot = (await state.activation.prepareReload?.()) ?? null;
           if (!alive) return;
-          instances.push({ ...identityFor(entry), state: snapshot });
+          held.instances.push({ ...identityFor(entry), state: snapshot });
         }
         if (!alive) return;
         validate(desired!);
         if (needsReload(desired!)) {
-          nativeHost.reloadUi({ instances });
-          acceptedReload = true;
+          nativeHost.reloadUi({ instances: held.instances });
+          phase.set({ kind: 'reload_accepted' });
           return;
         }
         nativeHost.cancelUiReload();
-        paused = false;
+        phase.set({ kind: 'adopting' });
       }
       const next = desired!;
       desired = null;
@@ -266,16 +277,17 @@ export function createPlugins() {
     } catch (reason) {
       if (alive) updateError.set(reason);
     } finally {
-      processing = false;
-      if (!acceptedReload && alive) {
-        if (paused) {
+      if (phase().kind !== 'reload_accepted') {
+        if (phase().kind === 'preparing_reload') {
           try {
             nativeHost.cancelUiReload();
           } catch (reason) {
-            updateError.set(reason);
+            if (alive) updateError.set(reason);
+            else console.error(reason);
           }
         }
-        reloading.set(false);
+        phase.set({ kind: 'idle' });
+        if (desired && desired !== target) void reconcile();
       }
     }
   };
@@ -528,8 +540,8 @@ export function createPlugins() {
     settings,
     renderer: (presentation) => (presentation == null ? undefined : renderers().get(presentation)),
     view,
-    renderView(target, contract, input) {
-      return renderEmbeddedView(manager, target, contract.id, input);
+    renderView(target, contract, input, options) {
+      return renderEmbeddedView(manager, target, contract.id, input, options);
     },
     render(reference: UiContributionRef, props: UiContributionProps) {
       return renderContribution(manager, reference, props);

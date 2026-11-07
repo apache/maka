@@ -17,12 +17,19 @@
  * under the License.
  */
 
-//! Immutable history-only checkpoints. These are not workspace snapshots or
-//! execution grants, and their revisions are independent of live Session revisions.
+//! Immutable history and Workspace checkpoints. Conditional consistency is not an
+//! execution grant; checkpoint revisions are independent of live Session revisions.
+mod load;
+mod restore;
+mod workspace;
 use crate::{StoreError, bundle::Inventory};
+pub use load::{LoadOperation, LoadState, LoadedCheckpoint};
+pub(crate) use load::{LoadRequest, load_key};
 use maka_plugin_core::composition::InstanceId;
+pub use restore::{PreparedRestore, RestoreOperation, RestoredSession};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub use workspace::{WorkspaceCapture, WorkspaceConsistency, WorkspaceEntry, WorkspaceSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +52,8 @@ pub struct PublicationRequest {
     pub expected_revision: Option<Revision>,
     /// Confirmation of catalog membership, not a live revision precondition.
     pub confirmed_subtree_digest: String,
+    /// Trusted assembly supplies the source; never a model-authored path.
+    pub workspace: Option<WorkspaceCapture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,24 +65,23 @@ pub struct ObjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum Manifest {
-    #[serde(rename = "native_history_v1")]
-    NativeHistory {
-        root_id: String,
-        scope: Scope,
-        inventory: Inventory,
-        /// MAKA-SESSION version 2; no TS tar.zst compatibility is implied.
-        bundle: ObjectRef,
-        /// The native format's own framed-stream checksum.
-        transfer_digest: String,
-    },
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub root_id: String,
+    pub scope: Scope,
+    pub inventory: Inventory,
+    /// Commitment to the MAKA-SESSION stream reconstructed from this snapshot.
+    pub bundle: ObjectRef,
+    pub transfer_digest: String,
+    pub history_cut: String,
+    pub workspace: Option<WorkspaceSnapshot>,
 }
 impl Manifest {
     pub fn bundle(&self) -> &ObjectRef {
-        match self {
-            Self::NativeHistory { bundle, .. } => bundle,
-        }
+        &self.bundle
+    }
+    pub fn workspace(&self) -> Option<&WorkspaceSnapshot> {
+        self.workspace.as_ref()
     }
 }
 

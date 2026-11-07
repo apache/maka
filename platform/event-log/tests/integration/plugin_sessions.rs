@@ -30,7 +30,6 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
         session_id: "example-inbox".into(),
         creator: Namespace::new("example.workflow", Scope::Profile).unwrap(),
         fingerprint: "owned-creation".into(),
-        managed: true,
         authority_session_id: None,
     };
     let log = EventLog::open(&path).await.unwrap();
@@ -75,11 +74,9 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
             .await,
         Err(StoreError::SessionConflict)
     ));
-    assert_eq!(log.session_manager("ordinary").await.unwrap(), None);
     assert_eq!(log.session_creator("ordinary").await.unwrap(), None);
     let delegated = PluginSession {
         session_id: "delegated".into(),
-        managed: false,
         ..claim.clone()
     };
     log.create_plugin_session(&delegated, &configuration, 2)
@@ -87,15 +84,15 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
         .unwrap();
     for conflicting in [
         PluginSession {
-            managed: true,
-            ..delegated.clone()
-        },
-        PluginSession {
             fingerprint: "changed".into(),
             ..delegated.clone()
         },
         PluginSession {
             creator: Namespace::new("other", Scope::Profile).unwrap(),
+            ..delegated.clone()
+        },
+        PluginSession {
+            authority_session_id: Some("ordinary".into()),
             ..delegated.clone()
         },
     ] {
@@ -117,16 +114,6 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
         authority_session_id: Some(claim.session_id.clone()),
         ..claim.clone()
     };
-    let other = PluginSession {
-        creator: Namespace::new("another.workflow", Scope::Profile).unwrap(),
-        ..owner.clone()
-    };
-    assert!(
-        log.copy_plugin_session(request.clone(), &configuration, 4, other)
-            .await
-            .is_err(),
-        "reading a managed Session does not authorize escaping its owner lifecycle"
-    );
     assert!(log.session_creator("owned-copy").await.unwrap().is_none());
     let maka_event_log::sessions::SessionCopyResult::Committed(copied) = log
         .copy_plugin_session(request.clone(), &configuration, 4, owner.clone())
@@ -171,14 +158,13 @@ async fn plugin_creation_is_atomic_and_cannot_adopt_or_reassign_existing_session
     };
     assert_eq!(replayed, copied);
     assert_eq!(
-        log.session_manager("owned-copy").await.unwrap(),
+        log.session_creator("owned-copy").await.unwrap(),
         Some(owner.creator)
     );
     assert_eq!(
-        log.session_manager(&claim.session_id).await.unwrap(),
+        log.session_creator(&claim.session_id).await.unwrap(),
         Some(claim.creator.clone())
     );
-    assert_eq!(log.session_manager("delegated").await.unwrap(), None);
     assert_eq!(
         log.session_creator("delegated").await.unwrap(),
         Some(claim.creator)

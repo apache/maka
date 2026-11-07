@@ -47,7 +47,7 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 
 This runs a real Host test; it is not a standalone type generator or a TypeScript check of the application.
 
-The composer shares one collapsible detail area for Goal, Todo, computer access and queued messages. Goal details and controls open inline; `/goal` still opens the creation and management dialog. Their summaries remain visible while details are closed; updates do not open a panel or switch the selected one. Switching details preserves queued-message edits. Pending approvals and unresolved-operation recovery remain separate. Completed action feedback disappears after four seconds. Checking an original action only reads its receipt; if no result can be confirmed, dismissing its notice preserves the original record without cancelling or retrying it.
+The composer shares one collapsible detail area for Goal, Todo, computer access and queued messages, attached to the top edge of the desktop composer card so opening details above the row keeps the toggle in place. Goal details and controls open inline; `/goal` still opens the creation and management dialog. Summaries remain visible while details are closed, and Todo can be hidden for the current checklist until the agent writes a different list; updates do not open a panel or switch the selected one. Switching details preserves queued-message edits. Pending approvals and unresolved-operation recovery remain separate. Completed action feedback disappears after four seconds. Checking an original action only reads its receipt; if no result can be confirmed, dismissing its notice preserves the original record without cancelling or retrying it.
 
 Use **Pin conversation** in a conversation’s action menu to keep it in the **Pinned** group at the top of the browser. **Unpin conversation** returns it to the ordinary list. The Host stores the choice and orders pages consistently across interfaces and restarts.
 
@@ -70,8 +70,8 @@ Built-in subscription, compatible-endpoint and region labels follow the interfac
 `app/Icon.tsx` keeps the Workbench name API and terminal glyphs. Desktop/Web
 uses the selected Lucide data in `app/lucide.ts`, on a 24-point grid with a
 two-point round stroke. Play, pause and stop stay filled; unread keeps its
-small filled dot. The context gauge, turn rail and choice indicators remain
-purpose-built data/control drawings.
+small filled dot. The context gauge, checklist progress pie, turn rail and
+choice indicators remain purpose-built data/control drawings.
 
 To regenerate, install the repository's npm tools, extract `lucide-static`
 1.61.0 from npm outside the checkout, then run:
@@ -111,7 +111,7 @@ equivalent.
 
 ## External agents
 
-Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and atomically updates the conversation Agent and WorkHub coordinator. Cancellation changes nothing; disabling preserves native launch settings and does not uninstall or sign out.
+Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and updates the conversation Agent. Cancellation changes nothing; disabling preserves native launch settings and does not uninstall or sign out.
 
 These CLIs retain native tools, accounts and full-access permissions outside Maka’s sandbox. Maka Host tools still use their existing authorization and receipts. Install, initialize and sign in using each native CLI, then **Refresh**. There is no SDK installer or automatic update. Claude runs in an interactive PTY, never print mode.
 

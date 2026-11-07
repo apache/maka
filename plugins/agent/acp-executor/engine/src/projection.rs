@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use agent_client_protocol::schema::v1 as acp;
+use agent_client_protocol::v1::schema as acp;
 use maka_agent_facts::executor::Output;
 use maka_agent_ports::executor::Error;
 use maka_agent_ports::executor::OutputSink;
@@ -35,12 +35,19 @@ struct Tool {
     closure_error: Option<&'static str>,
 }
 
+struct TextSpan {
+    id: String,
+    has_body: bool,
+}
+
 /// Projects one ACP prompt turn into committed public executor observations.
 pub(crate) struct Projection {
     session_id: String,
     invocation_id: String,
     tools: BTreeMap<String, Tool>,
-    text: String,
+    span: Option<TextSpan>,
+    next_span: u64,
+    last_body: Option<String>,
     config_options: Option<Vec<acp::SessionConfigOption>>,
     finished: bool,
 }
@@ -54,14 +61,81 @@ impl Projection {
             session_id,
             invocation_id,
             tools: BTreeMap::new(),
-            text: String::new(),
+            span: None,
+            next_span: 0,
+            last_body: None,
             config_options: None,
             finished: false,
         }
     }
 
-    pub(crate) fn text(&self) -> String {
-        self.text.clone()
+    pub(crate) fn last_body_message_id(&self) -> Option<String> {
+        self.last_body.clone()
+    }
+
+    async fn text(
+        &mut self,
+        text: &str,
+        thought: bool,
+        sink: &dyn OutputSink,
+    ) -> Result<(), Error> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        if self.span.is_none() {
+            let id = format!(
+                "{}:{}:message:{}",
+                self.invocation_id.len(),
+                self.invocation_id,
+                self.next_span
+            );
+            emit(
+                sink,
+                Output::MessageStart {
+                    message_id: id.clone(),
+                },
+            )
+            .await?;
+            self.next_span += 1;
+            self.span = Some(TextSpan {
+                id,
+                has_body: false,
+            });
+        }
+        let span = self.span.as_mut().expect("message start was committed");
+        emit_text(text, sink, |text| {
+            if thought {
+                Output::ThinkingDelta {
+                    message_id: span.id.clone(),
+                    text,
+                }
+            } else {
+                Output::OutputDelta {
+                    message_id: span.id.clone(),
+                    text,
+                }
+            }
+        })
+        .await?;
+        span.has_body |= !thought;
+        Ok(())
+    }
+
+    async fn close_message(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
+        if let Some(span) = &self.span {
+            emit(
+                sink,
+                Output::MessageEnd {
+                    message_id: span.id.clone(),
+                },
+            )
+            .await?;
+            if span.has_body {
+                self.last_body = Some(span.id.clone());
+            }
+            self.span = None;
+        }
+        Ok(())
     }
 
     pub(crate) fn take_config_options(&mut self) -> Option<Vec<acp::SessionConfigOption>> {
@@ -79,14 +153,10 @@ impl Projection {
         match notification.update {
             acp::SessionUpdate::AgentMessageChunk(chunk) => {
                 let text = content_text(chunk.content)?;
-                emit_text(&text, sink, |text| Output::OutputDelta { text }).await?;
-                self.text.push_str(&text);
+                self.text(&text, false, sink).await?;
             }
             acp::SessionUpdate::AgentThoughtChunk(chunk) => {
-                emit_text(&content_text(chunk.content)?, sink, |text| {
-                    Output::ThinkingDelta { text }
-                })
-                .await?;
+                self.text(&content_text(chunk.content)?, true, sink).await?;
             }
             acp::SessionUpdate::ToolCall(call) => {
                 let fields = acp::ToolCallUpdateFields::new()
@@ -104,7 +174,7 @@ impl Projection {
                     .await?;
             }
             acp::SessionUpdate::Plan(plan) => {
-                emit_text(&json(&plan)?, sink, |text| Output::ThinkingDelta { text }).await?;
+                self.text(&json(&plan)?, true, sink).await?;
             }
             acp::SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = Some(update.config_options);
@@ -155,6 +225,7 @@ impl Projection {
             ),
             None => fields.raw_output.as_ref().map(json).transpose()?,
         };
+        self.close_message(sink).await?;
         let tool_call_id = self.tool_id(&id);
         if !self.tools.contains_key(&id) {
             emit(
@@ -208,9 +279,16 @@ impl Projection {
         Ok(())
     }
 
-    /// Close every unfinished observation when the prompt settles or transport ends.
-    pub(crate) async fn finish(&mut self, sink: &dyn OutputSink) -> Result<(), Error> {
+    /// Only a confirmed normal finish completes the open text span.
+    pub(crate) async fn finish(
+        &mut self,
+        sink: &dyn OutputSink,
+        completed: bool,
+    ) -> Result<(), Error> {
         self.finished = true;
+        if completed {
+            self.close_message(sink).await?;
+        }
         let invocation_id = &self.invocation_id;
         for (id, tool) in &mut self.tools {
             if !tool.done {
@@ -332,6 +410,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_spans_close_at_tools_and_final_pointer_skips_thought_only_spans() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        for value in [
+            serde_json::json!({"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"checking"}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update", "toolCallId":"a", "status":"completed"}),
+            serde_json::json!({"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"answer"}}),
+            serde_json::json!({"sessionUpdate":"tool_call_update", "toolCallId":"b", "status":"completed"}),
+            serde_json::json!({"sessionUpdate":"agent_thought_chunk", "content":{"type":"text","text":"done"}}),
+        ] {
+            projection.update(update(value), &sink).await.unwrap();
+        }
+        projection.finish(&sink, true).await.unwrap();
+        assert_eq!(
+            projection.last_body_message_id().as_deref(),
+            Some("4:turn:message:1")
+        );
+        let events = sink.0.lock().unwrap();
+        let messages: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    event,
+                    Output::ToolStart { .. }
+                        | Output::ToolProgress { .. }
+                        | Output::ToolResult { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            serde_json::to_value(messages).unwrap(),
+            serde_json::json!([
+                {"type":"message_start", "messageId":"4:turn:message:0"},
+                {"type":"output_delta", "messageId":"4:turn:message:0", "text":"checking"},
+                {"type":"message_end", "messageId":"4:turn:message:0"},
+                {"type":"message_start", "messageId":"4:turn:message:1"},
+                {"type":"output_delta", "messageId":"4:turn:message:1", "text":"answer"},
+                {"type":"message_end", "messageId":"4:turn:message:1"},
+                {"type":"message_start", "messageId":"4:turn:message:2"},
+                {"type":"thinking_delta", "messageId":"4:turn:message:2", "text":"done"},
+                {"type":"message_end", "messageId":"4:turn:message:2"}
+            ])
+        );
+        assert!(matches!(&events[3], Output::ToolStart { .. }));
+        assert!(matches!(&events[8], Output::ToolStart { .. }));
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_text_remains_open_and_empty_or_thought_only_output_has_no_final_body() {
+        for completed in [false, true] {
+            let sink = Sink::default();
+            let mut projection = Projection::new("s".into(), "turn".into());
+            projection.finish(&sink, completed).await.unwrap();
+            assert_eq!(projection.last_body_message_id(), None);
+            assert!(sink.0.lock().unwrap().is_empty());
+
+            let sink = Sink::default();
+            let mut projection = Projection::new("s".into(), "turn".into());
+            projection.update(update(serde_json::json!({"sessionUpdate":"agent_thought_chunk", "content":{"type":"text","text":"thinking"}})), &sink).await.unwrap();
+            projection.finish(&sink, completed).await.unwrap();
+            assert_eq!(projection.last_body_message_id(), None);
+            let events = sink.0.lock().unwrap();
+            assert!(
+                matches!(&events[0], Output::MessageStart { message_id } if message_id == "4:turn:message:0")
+            );
+            assert!(
+                matches!(&events[1], Output::ThinkingDelta { message_id, text } if message_id == "4:turn:message:0" && text == "thinking")
+            );
+            assert_eq!(events.len(), if completed { 3 } else { 2 });
+            if completed {
+                assert!(
+                    matches!(&events[2], Output::MessageEnd { message_id } if message_id == "4:turn:message:0")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_body_span_is_not_a_completed_answer() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        projection.update(update(serde_json::json!({"sessionUpdate":"agent_message_chunk", "content":{"type":"text","text":"partial"}})), &sink).await.unwrap();
+        projection.finish(&sink, false).await.unwrap();
+        assert_eq!(projection.last_body_message_id(), None);
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start", "messageId":"4:turn:message:0"},
+                {"type":"output_delta", "messageId":"4:turn:message:0", "text":"partial"}
+            ])
+        );
+    }
+
+    #[tokio::test]
     async fn update_before_start_and_eof_close_only_unfinished_tools() {
         let sink = Sink::default();
         let mut projection = Projection::new("s".into(), "turn".into());
@@ -341,8 +513,8 @@ mod tests {
         ] {
             projection.update(update(value), &sink).await.unwrap();
         }
-        projection.finish(&sink).await.unwrap();
-        projection.finish(&sink).await.unwrap();
+        projection.finish(&sink, true).await.unwrap();
+        projection.finish(&sink, true).await.unwrap();
         let events = sink.0.lock().unwrap();
         assert_eq!(events.len(), 4);
         assert!(
@@ -374,13 +546,13 @@ mod tests {
             .update(notification.clone(), &sink)
             .await
             .unwrap();
-        assert_eq!(projection.text(), text);
+        assert_eq!(projection.last_body_message_id(), None);
         let mut actual = String::new();
         {
             let events = sink.0.lock().unwrap();
             for event in events.iter() {
                 assert!(json(event).unwrap().len() <= 64 * 1024);
-                if let Output::OutputDelta { text } = event {
+                if let Output::OutputDelta { text, .. } = event {
                     actual.push_str(text);
                 }
             }
@@ -400,15 +572,15 @@ mod tests {
             "content":{"type":"text","text":"\n".repeat(1024 * 1024 / 2)}
         }));
         projection.update(oversized, &sink).await.unwrap();
-        assert_eq!(projection.text(), "\n".repeat(1024 * 1024 / 2));
+
         let emitted = sink.0.lock().unwrap().len();
         let terminal = update(serde_json::json!({
             "sessionUpdate":"tool_call_update","toolCallId":"a","status":"completed"
         }));
         projection.update(terminal.clone(), &sink).await.unwrap();
         assert!(projection.update(terminal, &sink).await.is_err());
-        projection.finish(&sink).await.unwrap();
-        assert_eq!(sink.0.lock().unwrap().len(), emitted + 2);
+        projection.finish(&sink, true).await.unwrap();
+        assert_eq!(sink.0.lock().unwrap().len(), emitted + 3);
     }
 
     #[tokio::test]
@@ -428,7 +600,7 @@ mod tests {
             .unwrap();
         let oversized = terminal("b", "x".repeat(64 * 1024));
         projection.update(oversized, &sink).await.unwrap();
-        projection.finish(&sink).await.unwrap();
+        projection.finish(&sink, true).await.unwrap();
         let events = sink.0.lock().unwrap();
         assert_eq!(events.len(), 4);
         assert!(

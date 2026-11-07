@@ -22,12 +22,12 @@ use crate::{
     StoreError,
     bundle::{Inventory, closure::Closure, format::Record},
 };
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub(super) async fn validate(
-    staged: &mut SqliteConnection,
-    original: &mut SqliteConnection,
+pub(super) fn validate(
+    staged: &Connection,
+    original: &Connection,
     inventory: &Inventory,
     fence: u64,
 ) -> Result<(), StoreError> {
@@ -39,9 +39,7 @@ pub(super) async fn validate(
     let mut seen = BTreeSet::new();
     let mut after = 0i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT number,record_json FROM frames WHERE kind='session' AND number>? ORDER BY number LIMIT 1"
-        ).bind(after).fetch_optional(&mut *staged).await?;
+        let row: Option<(i64, String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE kind='session' AND number>? ORDER BY number LIMIT 1")?.query_row(params![after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         let Some((number, json)) = row else { break };
         let Record::Session {
             id,
@@ -72,34 +70,32 @@ pub(super) async fn validate(
     for (id, edges) in &mut parents {
         // Proof-only owners may end at a frozen prefix. Selected Sessions must
         // remain usable: foreign work cannot later be sealed by local recovery.
-        let unfinished: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE o.event_session=?
+        let unfinished: bool = original
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM runtime_events o WHERE o.event_session=?
              AND o.kind='invocation_opened' AND NOT EXISTS(SELECT 1 FROM runtime_events t
                WHERE t.invocation_id=o.invocation_id AND t.kind='invocation_ended'))",
-        )
-        .bind(id)
-        .fetch_one(&mut *original)
-        .await?;
+            )?
+            .query_row(params![id], |row| row.get(0))?;
         if unfinished {
             return Err(invalid("bundle selected Session contains unfinished work"));
         }
-        let missing_input: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?1
+        let missing_input: bool = original
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM session_history_copies WHERE session_id=?1
              AND json_extract(request_json,'$.purpose.kind')='revision'
              AND NOT EXISTS(SELECT 1 FROM session_revision_sources WHERE session_id=?1))",
-        )
-        .bind(id)
-        .fetch_one(&mut *original)
-        .await?;
+            )?
+            .query_row(params![id], |row| row.get(0))?;
         if missing_input {
             return Err(invalid("bundle Revision lacks its editable source input"));
         }
-        let parent: Option<String> = sqlx::query_scalar(
-            "SELECT source_session_id FROM session_history_copies WHERE session_id=?",
-        )
-        .bind(id)
-        .fetch_optional(&mut *original)
-        .await?;
+        let parent: Option<String> = original
+            .prepare_cached(
+                "SELECT source_session_id FROM session_history_copies WHERE session_id=?",
+            )?
+            .query_row(params![id], |row| row.get(0))
+            .optional()?;
         if let Some(parent) = parent.filter(|p| seen.contains(p)) {
             edges.insert(parent);
         }
@@ -143,15 +139,17 @@ pub(super) async fn validate(
 
     // Reuse the export dependency definition. Closure only visits staged rows,
     // so matching counts proves no unrelated original facts or copy links remain.
-    let closure = Closure::capture(original, inventory, fence).await?;
-    let actual: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT COUNT(*) FROM runtime_events),
+    let closure = Closure::capture(original, inventory, fence)?;
+    let actual: (i64, i64, i64, i64) = original
+        .prepare_cached(
+            "SELECT (SELECT COUNT(*) FROM runtime_events),
                 (SELECT COUNT(*) FROM session_history_copies),
                 (SELECT COUNT(*) FROM session_history_members),
                 (SELECT COUNT(*) FROM session_revision_sources)",
-    )
-    .fetch_one(original)
-    .await?;
+        )?
+        .query_row(params![], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
     if actual
         != (
             closure.events.len() as i64,

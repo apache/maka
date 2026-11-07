@@ -133,6 +133,7 @@ async fn capture(
 ) -> PreparedPrompt {
     let history = crate::history::prepare_view(
         log,
+        &crate::cleanup::Evidence::default(),
         selection,
         Language::En,
         false,

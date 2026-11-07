@@ -422,10 +422,13 @@ pub(crate) fn drag_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32) 
 /// indicator, faded out or not: on the desktop it is a scroll bar.
 pub(crate) fn grabs_thumb(view: &NshView, x: f32, y: f32) -> bool {
     let state = view.state();
-    state
-        .scroll
-        .as_ref()
-        .is_some_and(|s| s.grabs_thumb(state.frame.size, point(Points(x), Points(y))))
+    state.scroll.as_ref().is_some_and(|s| {
+        s.grabs_thumb_within(
+            state.frame.size,
+            view.visible_bounds(),
+            point(Points(x), Points(y)),
+        )
+    })
 }
 
 /// The mouse moved over `view`: its indicator brightens, then fades back
@@ -470,8 +473,10 @@ pub(crate) fn retire_motion(surface: &Rc<Surface>, root: &NshView) {
 }
 
 /// Draws a scroll view's indicator, over its content (inside its clip),
-/// and the refresh spinner; the context is in the view's coordinates.
-pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState, nested: bool) {
+/// and the refresh spinner; the context is in the view's coordinates. The
+/// indicator runs along what the views around `view` leave in sight of it
+/// ([`NshView::visible_bounds`]).
+pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, view: &NshView, state: &ViewState) {
     let Some(s) = &state.scroll else { return };
     let size = state.frame.size;
     if let Some((center, progress)) =
@@ -482,7 +487,7 @@ pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState, nested: boo
     if !s.indicator {
         return;
     }
-    let Some((rect, _)) = s.thumb(size) else {
+    let Some((rect, _)) = s.thumb_within(size, view.visible_bounds()) else {
         return;
     };
     let (x, y, rw, rh) = (
@@ -499,7 +504,7 @@ pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState, nested: boo
     // A view inside another scroll view fades out at rest, as macOS's
     // overlay scrollers do, so only the one being used shows beside the
     // outer view's.
-    let a = if nested {
+    let a = if nested(view) {
         s.live.alpha
     } else {
         s.live.alpha.max(0.3)

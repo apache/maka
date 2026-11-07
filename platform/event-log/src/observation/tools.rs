@@ -21,7 +21,6 @@ use crate::{
     StoreError,
     turns::{InvocationState, TurnBoundary},
 };
-use sqlx::Row;
 use std::collections::{BTreeMap, HashSet};
 
 /// Original replay starts for active tool display, never effect authority.
@@ -31,8 +30,8 @@ pub struct ToolStreamSeed {
     pub start_sequence: u64,
 }
 
-pub(super) async fn read(
-    connection: &mut sqlx::SqliteConnection,
+pub(super) fn read(
+    connection: &rusqlite::Connection,
     root: Option<&TurnBoundary>,
 ) -> Result<Vec<ToolStreamSeed>, StoreError> {
     let Some(root) = root else {
@@ -47,32 +46,28 @@ pub(super) async fn read(
         return Ok(Vec::new());
     }
     let invocation = &root.invocation.invocation_id;
-    let rows = sqlx::query(SEEDS)
-        .bind(invocation)
-        .fetch_all(&mut *connection)
-        .await?;
+    let mut rows_statement = connection.prepare_cached(SEEDS)?;
+    let mut rows = rows_statement.query(rusqlite::params![invocation])?;
     let mut starts = BTreeMap::<String, i64>::new();
-    for row in rows {
-        let sequence = row.try_get(0)?;
+    while let Some(row) = rows.next()? {
+        let sequence = row.get(0)?;
         starts
-            .entry(row.try_get(1)?)
+            .entry(row.get(1)?)
             .and_modify(|start| *start = (*start).min(sequence))
             .or_insert(sequence);
     }
-    let parts = sqlx::query(PROVIDER_PARTS)
-        .bind(invocation)
-        .fetch_all(connection)
-        .await?;
+    let mut parts_statement = connection.prepare_cached(PROVIDER_PARTS)?;
+    let mut parts = parts_statement.query(rusqlite::params![invocation])?;
     let mut provider_calls = BTreeMap::<String, i64>::new();
     let mut provider_results = HashSet::new();
-    for part in parts {
-        let step: String = part.try_get("step_id")?;
-        let call: String = part.try_get("call_id")?;
+    while let Some(part) = parts.next()? {
+        let step: String = part.get("step_id")?;
+        let call: String = part.get("call_id")?;
         let operation = format!("{step}:{call}");
-        if part.try_get::<bool, _>("settled")? {
+        if part.get::<_, bool>("settled")? {
             provider_results.insert(operation);
         } else {
-            let sequence = part.try_get("source_sequence")?;
+            let sequence = part.get("source_sequence")?;
             provider_calls
                 .entry(operation)
                 .and_modify(|start| *start = (*start).min(sequence))

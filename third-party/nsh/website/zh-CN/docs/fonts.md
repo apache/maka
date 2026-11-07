@@ -1,6 +1,6 @@
 ---
 title: 字体
-description: 系统字体与通用字体族、从 Rust crate 的资源或 TSX 导入发布 .ttf 和 .otf 文件、含多个字重和斜体的字体族，以及在类型化样式和 Tailwind 类中使用字体。
+description: 系统字体与通用字体族、回退列表、从 Rust crate 的资源或 TSX 导入发布 .ttf、.otf、.woff 和 .woff2 文件、含多个字重和斜体的字体族，以及在类型化样式和 Tailwind 类中使用字体。
 order: 37
 group: ui
 ---
@@ -20,11 +20,11 @@ group: ui
 
 系统字体支持 100 到 900 的所有字重。Tailwind 的 `font-sans`、`font-serif` 和 `font-mono` 分别对应前三行；主题设置了字体时，`font-sans` 和 `font-mono` 对应主题的字体（[应用的默认字体](#应用的默认字体)）。
 
-设备上已安装的字体族可以直接用名称指定（iOS 上的 `"Georgia"`、`"Avenir Next"`）。不同平台和系统版本安装的字体各不相同，所以设计依赖的字体请随应用发布。在 iOS 上，不存在的字体族会回退到系统字体，并在日志中输出警告（`font family 'X' is not available`）。
+设备上已安装的字体族可以直接用名称指定（iOS 上的 `"Georgia"`、`"Avenir Next"`）。不同平台和系统版本安装的字体各不相同，所以设计依赖的字体请随应用发布。在 iOS 上，不存在的字体族会回退到系统字体，并在日志中输出警告（`font family 'X' is not available`）；指定一个列表可以选择用什么代替（[回退列表](#回退列表)）。
 
 ## 发布字体
 
-Rust crate 发布其 `assets/` 目录中的文件：在 `#[native_module]` 函数中调用 `registry.assets(assets!())` 会发布全部文件，`asset!("fonts/Pacifico-Regular.ttf")` 是一个 `FontAsset`，它的 `family` 是字体的字体族名，在 crate 编译时从文件中读取。在 TSX 中，导入一个 `.ttf` 或 `.otf` 文件，导入的值就是字体的字体族名。两种方式下字体都会在第一帧之前注册，文字首次渲染时即可使用：
+Rust crate 发布其 `assets/` 目录中的文件：在 `#[native_module]` 函数中调用 `registry.assets(assets!())` 会发布全部文件，`asset!("fonts/Pacifico-Regular.ttf")` 是一个 `FontAsset`，它的 `family` 是字体的字体族名，在 crate 编译时从文件中读取。在 TSX 中，导入一个 `.ttf`、`.otf`、`.woff` 或 `.woff2` 文件，导入的值就是字体的字体族名。两种方式下字体都会在第一帧之前注册，文字首次渲染时即可使用。WOFF 和 WOFF2 文件是压缩过的 TrueType 或 OpenType 字体（WOFF2 文件通常只有其 TrueType 的一半大小，应用的安装包和 Web 的下载都因此更小）：NSH 在所有平台上都把它们当作其中的字体读取：
 
 ```rust tabs
 use nsh_core::{element::FontAsset, prelude::*};
@@ -52,6 +52,20 @@ import Pacifico from "./fonts/Pacifico-Regular.ttf";
 
 > [!WARNING]
 > 在 TSX 中，值从未被使用的导入会被 TypeScript 的导入消除（import elision）移除，字体也随之丢失。如果你只通过名称引用某个字体族（例如在 Tailwind 主题中），请以副作用方式导入文件：`import "./fonts/Inter-Bold.ttf";`。Rust crate 通过 `assets!()` 发布 `assets/` 中的每一个文件。
+
+## 回退列表
+
+`fontFamily` 和 CSS 一样接受列表：用逗号分隔的字体族，按偏好从高到低排列，含空格的名称可加引号也可不加（`"Brand, 'Noto Sans SC', sans-serif"`），加引号的名称保留其中的逗号（`'ACME, Inc'`）。文字用平台拥有的第一个字体族排版，该字体族缺少的字符（其他文字、符号）取自列表中下一个拥有它的字体族，再取自系统的回退字体。借助列表，只覆盖拉丁字母的品牌字体可以用相配的字体显示中文，应用下载的字体在到达之前也可以先用系统字体显示：
+
+```rust tabs
+text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
+```
+
+```tsx tabs
+<Text style={{ fontFamily: "Brand, 'Noto Sans SC', sans-serif" }}>Brand 品牌</Text>
+```
+
+各平台都用自己的字体机制保持列表的顺序：iOS 和 macOS 上的级联列表、Windows 上的字体回退（每段一个：取段落第一个样式的列表）、Linux 上的 Pango 字体族列表、Web 上浏览器的列表、GPUI 的回退字体。在 Android 上，文字用它拥有的第一个字体族排版；该字体族是应用注册的字体时，列表中排在它之后的已注册字体是它的回退字体（Android 10 及更高版本）。
 
 ## 字重与斜体
 

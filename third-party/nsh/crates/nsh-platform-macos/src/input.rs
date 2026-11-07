@@ -67,7 +67,10 @@ use nsh_core::{
     tailwind::state::{HOVERED, PRESSED},
 };
 use objc2::{AnyThread, ClassType, rc::Retained, sel};
-use objc2_app_kit::{NSCursor, NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType, NSImage};
+use objc2_app_kit::{
+    NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent,
+    NSEventModifierFlags, NSEventPhase, NSEventType, NSImage,
+};
 use objc2_foundation::NSSize;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -257,11 +260,12 @@ pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u16) {
     {
         let mut s = view.state_mut();
         s.tracked = states;
-        // The core keeps the states still tracked and forgets the rest
+        // The core keeps the states still reported and forgets the rest
         // (`Core::update_tracking`): so do we, or a change it was not told
         // about (the pointer leaving a view whose hover was tracked
-        // throughout) would never reach it.
-        s.states &= states;
+        // throughout) would never reach it. The focus is reported
+        // whatever is tracked, so it stays.
+        s.states &= input::reported_states(states);
     }
     update_hover_tracking(surface, view);
 }
@@ -392,8 +396,10 @@ fn cursor_of(cursor: Cursor) -> Option<Cursor> {
 /// The AppKit cursor of `cursor` (AppKit has no public wait, progress or
 /// help cursors: those show the arrow).
 fn ns_cursor(cursor: Cursor) -> Retained<NSCursor> {
-    // Zoom cursors are newer than the rest (macOS 15).
-    let zoom = |sel| NSCursor::class().responds_to(sel);
+    // Zoom and diagonal resize cursors need macOS 15. They are class
+    // methods: the metaclass answers for them (the class itself answers
+    // for its instances' methods).
+    let supported = |sel| NSCursor::class().metaclass().responds_to(sel);
     match cursor {
         Cursor::Pointer => NSCursor::pointingHandCursor(),
         Cursor::Text => NSCursor::IBeamCursor(),
@@ -401,13 +407,28 @@ fn ns_cursor(cursor: Cursor) -> Retained<NSCursor> {
         Cursor::Move | Cursor::Grab => NSCursor::openHandCursor(),
         Cursor::Grabbing => NSCursor::closedHandCursor(),
         Cursor::NotAllowed => NSCursor::operationNotAllowedCursor(),
-        Cursor::ZoomIn if zoom(sel!(zoomInCursor)) => NSCursor::zoomInCursor(),
-        Cursor::ZoomOut if zoom(sel!(zoomOutCursor)) => NSCursor::zoomOutCursor(),
+        Cursor::ZoomIn if supported(sel!(zoomInCursor)) => NSCursor::zoomInCursor(),
+        Cursor::ZoomOut if supported(sel!(zoomOutCursor)) => NSCursor::zoomOutCursor(),
         // Their replacements are macOS 15's.
         #[allow(deprecated)]
         Cursor::ColResize => NSCursor::resizeLeftRightCursor(),
         #[allow(deprecated)]
         Cursor::RowResize => NSCursor::resizeUpDownCursor(),
+        Cursor::NwseResize | Cursor::NeswResize
+            if supported(sel!(frameResizeCursorFromPosition:inDirections:)) =>
+        {
+            let position = if cursor == Cursor::NwseResize {
+                NSCursorFrameResizePosition::TopLeft
+            } else {
+                NSCursorFrameResizePosition::TopRight
+            };
+            NSCursor::frameResizeCursorFromPosition_inDirections(
+                position,
+                NSCursorFrameResizeDirections::All,
+            )
+        }
+        // macOS 14 keeps the move cursor used before diagonal axes were distinct.
+        Cursor::NwseResize | Cursor::NeswResize => NSCursor::openHandCursor(),
         Cursor::None => invisible_cursor(),
         _ => NSCursor::arrowCursor(),
     }
@@ -445,6 +466,22 @@ fn cursor_at(hit: &Hit) -> Cursor {
         .unwrap_or(Cursor::Default)
 }
 
+/// Whether `(x, y)` (root coordinates) is on a pressable link span of text
+/// view `view` that sets no cursor of its own: the pointer there wins over
+/// the I-beam of selectable text, as on the other desktops.
+fn over_link(surface: &Surface, view: &NshView, x: f32, y: f32) -> bool {
+    {
+        let s = view.state();
+        if cursor_of(s.style.cursor).is_some()
+            || s.text.as_ref().is_none_or(|t| t.text.links.is_empty())
+        {
+            return false;
+        }
+    }
+    let (lx, ly) = local(surface, view, x, y);
+    crate::text::link_at(&view.state(), lx, ly).is_some_and(|link| has_press(link.events))
+}
+
 /// Sets the cursor for the mouse at `(x, y)` (hosted views set their own).
 fn update_cursor(surface: &Surface, x: f32, y: f32) {
     set_cursor_at(surface, x, y, true);
@@ -463,7 +500,13 @@ fn set_cursor_at(surface: &Surface, x: f32, y: f32, always: bool) {
     }
     let cursor = match pick(&surface.root, x, y) {
         Some(hit) if hit.native => return,
-        Some(hit) => cursor_at(&hit),
+        Some(hit) => {
+            if over_link(surface, &hit.view, x, y) {
+                Cursor::Pointer
+            } else {
+                cursor_at(&hit)
+            }
+        }
         None => Cursor::Default,
     };
     let cursor = ns_cursor(cursor);
@@ -644,9 +687,9 @@ pub(crate) fn event(surface: &Rc<Surface>, event: &NSEvent) {
 }
 
 /// A secondary click at `(x, y)` (root coordinates): the nearest view
-/// around the one under it that listens to `onContextMenu` hears it. Text
-/// fields are AppKit's views, which show their own menu.
-fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) {
+/// around the one under it that listens to `onContextMenu` hears it. Otherwise
+/// a text selection offers Copy. Text fields show AppKit's own menu.
+fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, flags: NSEventModifierFlags) {
     let Some(hit) = pick(&surface.root, x, y) else {
         return;
     };
@@ -673,6 +716,9 @@ fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) 
             return;
         }
     }
+    if !hit.native {
+        crate::text::context_menu(surface, &hit.view, x, y);
+    }
 }
 
 /// A key went down (`down`) or up; true if it was handled: the text
@@ -687,7 +733,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
     surface.control(|control| control.set_focus_path(focus_path(surface)));
     if let Some(view) = control_activation_target(surface, event) {
         if down && !event.isARepeat() {
-            activate(surface, &view);
+            activate(surface, &view, "keyboard");
         }
         return true;
     }
@@ -755,17 +801,6 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
     crate::scroll::key_scroll(surface, &hit.view, horizontal, m)
 }
 
-/// Presses `view` from the keyboard or accessibility: no pointer to report.
-pub(crate) fn activate(surface: &Surface, view: &NshView) {
-    let events = view.state().events;
-    for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
-        if events.contains(kind) {
-            log::debug!(target: "nsh::input", "{} on {} (keyboard)", kind.prop_name(), view.id());
-            surface.event(view.id(), kind, EventPayload::None);
-        }
-    }
-}
-
 /// A mounted ordinary view the keyboard focus stops at (Tab): one that
 /// takes presses, or any `focusable` one ([`nsh_core::ViewProps::focus_stop`]),
 /// shown and reachable by the pointer.
@@ -787,21 +822,6 @@ pub(crate) fn is_key_stop(view: &NshView) -> bool {
 /// stop that takes none hears its keys through the app's keymap.
 pub(crate) fn is_key_control(view: &NshView) -> bool {
     is_key_stop(view) && view.state().events.contains(EventKind::Press)
-}
-
-/// What an accessibility press presses: `focusable={false}` only leaves a
-/// view out of the keyboard's stops.
-pub(crate) fn takes_accessibility_press(view: &NshView) -> bool {
-    {
-        let state = view.state();
-        if state.kind == ViewKind::Input
-            || !state.events.contains(EventKind::Press)
-            || state.props.accessibility.state.disabled
-        {
-            return false;
-        }
-    }
-    view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor()
 }
 
 /// Current AppKit keyboard focus, from the responder through its native
@@ -896,6 +916,47 @@ pub(crate) fn control_activation_target(surface: &Surface, event: &NSEvent) -> O
     NshView::from_ns(native).filter(is_key_control)
 }
 
+/// Presses `view` with no pointer to report, as Return and Space press a
+/// focused control and `AXPress` presses any: its `onPressDown`,
+/// `onPressUp` and `onPress`. `from` names the source in the log.
+fn activate(surface: &Surface, view: &NshView, from: &str) {
+    let events = view.state().events;
+    for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
+        if events.contains(kind) {
+            log::debug!(target: "nsh::input", "{} on {} ({from})", kind.prop_name(), view.id());
+            surface.event(view.id(), kind, EventPayload::None);
+        }
+    }
+}
+
+/// Whether `AXPress` presses `view`: it takes presses, is not disabled, the
+/// pointer could reach it and it is inside the newest modal, as Return and
+/// Space need ([`control_activation_target`]). Other views do not offer
+/// the action.
+pub(crate) fn takes_accessibility_press(surface: &Surface, view: &NshView) -> bool {
+    {
+        let s = view.state();
+        if !s.events.contains(EventKind::Press) || s.props.accessibility.state.disabled {
+            return false;
+        }
+    }
+    view.can_target()
+        && view
+            .ns()
+            .isDescendantOf(&crate::navigation::focus_scope(surface))
+}
+
+/// `AXPress` from an accessibility client (VoiceOver's VO-Space, UI
+/// automation): presses a view [`takes_accessibility_press`] allows, as
+/// Return does when it has the keyboard focus. Returns whether it did.
+pub(crate) fn accessibility_press(surface: &Surface, view: &NshView) -> bool {
+    if !takes_accessibility_press(surface, view) {
+        return false;
+    }
+    activate(surface, view, "accessibility");
+    true
+}
+
 /// Tab / Shift+Tab (or with Control) with the root focused: moves into
 /// AppKit's key view loop (fields and the views [`is_key_stop`] takes), from
 /// the first or last, so focus never gets stuck on the root.
@@ -952,12 +1013,34 @@ pub(crate) fn us_key(code: u16) -> Option<char> {
 
 /// The virtual key code of the key typing `c` on the US layout (without
 /// Shift), for synthesized key events.
-#[cfg(feature = "dev")]
 pub(crate) fn us_key_code(c: char) -> Option<u16> {
     let c = u8::try_from(c.to_ascii_lowercase())
         .ok()
         .filter(|&c| c != 0)?;
     US_KEYS.iter().position(|&k| k == c).map(|i| i as u16)
+}
+
+/// A virtual key code no key has, for what no US key types: WebKit names
+/// it no key (`code` "Unidentified"), where 0 would be A.
+pub(crate) const NO_KEY: u16 = 0xffff;
+
+/// The key, and whether Shift is down, that type `c` on the US layout:
+/// letters, digits, space, Return (`\r`), Tab and punctuation, shifted ones
+/// (`A`, `!`, `?`) on their unshifted key. `None` for what no US key types.
+pub(crate) fn us_typing_key(c: char) -> Option<(u16, bool)> {
+    match c {
+        ' ' => return Some((49, false)),
+        '\r' => return Some((36, false)),
+        '\t' => return Some((48, false)),
+        _ => {}
+    }
+    if let Some(code) = us_key_code(c) {
+        return Some((code, c.is_ascii_uppercase()));
+    }
+    US_KEYS
+        .iter()
+        .position(|&k| k != 0 && nsh_core::keymap::shifted(k as char) == c)
+        .map(|i| (i as u16, true))
 }
 
 /// Where keys look for a scroll view: the mouse, or the middle.
@@ -1289,6 +1372,14 @@ fn down(
         find_press(surface, &hit.view, &views, x, y)
             .map(|p| p.clicked(modifiers(flags), clicks as u32))
     };
+    if selecting.is_some()
+        && !caught
+        && let Some(window) = surface.root.ns().window()
+    {
+        // Selecting output owns Copy and Select All instead of the field
+        // that was editing before the mouse press.
+        crate::text_input::to_root(&window, surface);
+    }
     match &selecting {
         Some(area) if crate::selectable_view::is_area(area) => {
             crate::selectable_view::down(surface, area, x, y, clicks, shift, press.is_some());
@@ -2545,6 +2636,27 @@ pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshV
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typing_keys_follow_the_us_layout() {
+        // a, space, b and a shifted 1: each its own key, Shift only for "!".
+        let keys: Vec<_> = "a b!".chars().map(us_typing_key).collect();
+        assert_eq!(
+            keys,
+            [
+                Some((0, false)),
+                Some((49, false)),
+                Some((11, false)),
+                Some((18, true))
+            ]
+        );
+        assert_eq!(us_typing_key('N'), Some((45, true)));
+        assert_eq!(us_typing_key('?'), Some((44, true)));
+        assert_eq!(us_typing_key('\r'), Some((36, false)));
+        assert_eq!(us_typing_key('é'), None);
+        // Without Shift, a shifted character's key types its own.
+        assert_eq!(us_key(18), Some('1'));
+    }
 
     #[test]
     fn batches_do_not_push_the_repick_on() {

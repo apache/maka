@@ -216,7 +216,6 @@ async fn structured_sources_select_original_values_without_aliasing_keys_or_auth
         session_id: "structured".into(),
         creator: Namespace::new("source.fixture", Scope::Profile).unwrap(),
         fingerprint: "structured-import".into(),
-        managed: false,
         authority_session_id: None,
     };
 
@@ -268,7 +267,7 @@ async fn structured_sources_select_original_values_without_aliasing_keys_or_auth
     )
     .await
     .unwrap();
-    let sequences = crate::test_store::inspect_cache(&log, |db| db.prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE session_id='structured' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index").unwrap().query_map([], |row| Ok(RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 })).unwrap().collect::<Result<Vec<_>,_>>().unwrap()).await;
+    let sequences = crate::test_store::inspect_cache(&log, |db| db.prepare("SELECT source_sequence, item_index FROM transcript_directory WHERE owner_key='structured' AND role IN ('tool_call','tool_result') ORDER BY source_sequence, item_index").unwrap().query_map([], |row| Ok(RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 })).unwrap().collect::<Result<Vec<_>,_>>().unwrap()).await;
     assert_eq!(sequences.len(), 2);
     let (sequence, field) = (sequences[1], SourceField::Result);
     let source = log

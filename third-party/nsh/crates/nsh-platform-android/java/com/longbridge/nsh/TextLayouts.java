@@ -38,11 +38,14 @@ final class TextLayouts {
         final int weight;
         final boolean italic;
         final Typeface typeface;
+        /** The font's file, for fallback chains of registered fonts. */
+        final File file;
 
-        Face(int weight, boolean italic, Typeface typeface) {
+        Face(int weight, boolean italic, Typeface typeface, File file) {
             this.weight = weight;
             this.italic = italic;
             this.typeface = typeface;
+            this.file = file;
         }
     }
 
@@ -62,7 +65,7 @@ final class TextLayouts {
             Typeface typeface = Typeface.createFromFile(file);
             synchronized (FAMILIES) {
                 List<Face> faces = FAMILIES.computeIfAbsent(family, k -> new ArrayList<>());
-                faces.add(new Face(weight, italic, typeface));
+                faces.add(new Face(weight, italic, typeface, file));
             }
             // Resolutions made before this font existed are stale.
             synchronized (RESOLVED) {
@@ -91,47 +94,165 @@ final class TextLayouts {
         return resolved;
     }
 
+    /**
+     * The typeface of a `fontFamily` list (`"Brand, 'Noto Sans SC', sans-serif"`):
+     * the first family Android has, registered, generic or installed. When
+     * that one is registered, the list's registered families after it are
+     * its fallbacks for the characters it lacks (Android 10+), before the
+     * system's.
+     */
     private static Typeface resolve(String family, int weight, boolean italic) {
-        Typeface base = null;
-        if (family != null) {
-            synchronized (FAMILIES) {
-                List<Face> faces = FAMILIES.get(family);
-                if (faces != null) {
-                    Face best = null;
-                    int bestScore = Integer.MAX_VALUE;
-                    for (Face f : faces) {
-                        int score = Math.abs(f.weight - weight) + (f.italic == italic ? 0 : 1000);
-                        if (score < bestScore) {
-                            best = f;
-                            bestScore = score;
-                        }
-                    }
-                    if (best != null) {
-                        // Exact faces are used as is; others are synthesized.
-                        if (best.weight == weight && best.italic == italic) return best.typeface;
-                        base = best.typeface;
-                    }
+        List<Family> names = families(family);
+        for (int i = 0; i < names.size(); i++) {
+            Face face = registered(names.get(i).name, weight, italic);
+            if (face != null) {
+                Typeface chained = chained(face, names.subList(i + 1, names.size()), weight, italic);
+                if (chained != null) return chained;
+                // Exact faces are used as is; others are synthesized.
+                if (face.weight == weight && face.italic == italic) return face.typeface;
+                return Typeface.create(face.typeface, clamp(weight), italic);
+            }
+            Typeface base = installed(names.get(i));
+            if (base != null) return Typeface.create(base, clamp(weight), italic);
+        }
+        return Typeface.create(Typeface.DEFAULT, clamp(weight), italic);
+    }
+
+    /**
+     * The families of a `fontFamily` list, trimmed and unquoted, in order: a
+     * quoted name runs to its closing quote, commas and all (`'ACME, Inc'`),
+     * as `nsh_core::font_families` reads it. A quoted name is always a
+     * family's name, never a generic family (`"serif"`), as in CSS.
+     */
+    private static List<Family> families(String list) {
+        List<Family> out = new ArrayList<>();
+        if (list == null) return out;
+        int i = 0, n = list.length();
+        while (i < n) {
+            while (i < n && Character.isWhitespace(list.charAt(i))) i++;
+            if (i >= n) break;
+            char c = list.charAt(i);
+            String name;
+            int comma;
+            boolean quoted = c == '"' || c == '\'';
+            if (quoted) {
+                // To the closing quote (or the end, unclosed); what follows it
+                // up to the next comma is not part of the name.
+                int end = list.indexOf(c, i + 1);
+                if (end < 0) end = n;
+                name = list.substring(i + 1, end).trim();
+                comma = list.indexOf(',', Math.min(end + 1, n));
+            } else {
+                comma = list.indexOf(',', i);
+                name = list.substring(i, comma < 0 ? n : comma).trim();
+            }
+            i = comma < 0 ? n : comma + 1;
+            if (!name.isEmpty()) out.add(new Family(name, quoted));
+        }
+        return out;
+    }
+
+    /** A family of a `fontFamily` list; `quoted` names are never generic. */
+    private static final class Family {
+        final String name;
+        final boolean quoted;
+
+        Family(String name, boolean quoted) {
+            this.name = name;
+            this.quoted = quoted;
+        }
+    }
+
+    /** The registered face of `family` nearest to the weight and style, or null. */
+    private static Face registered(String family, int weight, boolean italic) {
+        synchronized (FAMILIES) {
+            List<Face> faces = FAMILIES.get(family);
+            if (faces == null) return null;
+            Face best = null;
+            int bestScore = Integer.MAX_VALUE;
+            for (Face f : faces) {
+                int score = Math.abs(f.weight - weight) + (f.italic == italic ? 0 : 1000);
+                if (score < bestScore) {
+                    best = f;
+                    bestScore = score;
                 }
             }
-            if (base == null) {
-                // CSS generic families (`font-mono`, `font-serif`).
-                switch (family) {
-                    case "system-ui": case "sans-serif": case "ui-sans-serif": case "-apple-system":
-                        base = Typeface.DEFAULT;
-                        break;
-                    case "monospace": case "ui-monospace":
-                        base = Typeface.MONOSPACE;
-                        break;
-                    case "serif": case "ui-serif":
-                        base = Typeface.SERIF;
-                        break;
-                    default:
-                        base = Typeface.create(family, Typeface.NORMAL);
+            return best;
+        }
+    }
+
+    /** A generic or installed family's typeface, or null when Android has none. */
+    private static Typeface installed(Family name) {
+        String family = name.name;
+        // CSS generic families (`font-mono`, `font-serif`), unquoted.
+        switch (name.quoted ? "" : family) {
+            case "system-ui": case "sans-serif": case "ui-sans-serif": case "-apple-system":
+            case "BlinkMacSystemFont":
+                return Typeface.DEFAULT;
+            case "monospace": case "ui-monospace":
+                return Typeface.MONOSPACE;
+            case "serif": case "ui-serif":
+                return Typeface.SERIF;
+            default:
+                if (family.isEmpty()) return null;
+                Typeface typeface = Typeface.create(family, Typeface.NORMAL);
+                // A family Android does not have is its default typeface.
+                return typeface == null || typeface.equals(Typeface.DEFAULT) ? null : typeface;
+        }
+    }
+
+    /**
+     * `primary` with the registered families of `rest` as its fallbacks,
+     * then the system's (the first generic family of `rest`, else
+     * sans-serif); null before Android 10, when there is nothing to chain
+     * (no such families and a sans-serif system fallback), or when a font
+     * file does not load.
+     */
+    private static Typeface chained(Face primary, List<Family> rest, int weight, boolean italic) {
+        if (android.os.Build.VERSION.SDK_INT < 29 || primary.file == null) return null;
+        List<Face> others = new ArrayList<>();
+        String system = "sans-serif";
+        boolean generic = false;
+        for (Family family : rest) {
+            Face face = registered(family.name, weight, italic);
+            if (face != null && face.file != null && face != primary) {
+                others.add(face);
+            } else if (!generic && !family.quoted) {
+                switch (family.name) {
+                    case "monospace": case "ui-monospace": system = "monospace"; generic = true; break;
+                    case "serif": case "ui-serif": system = "serif"; generic = true; break;
+                    case "system-ui": case "sans-serif": case "ui-sans-serif": generic = true; break;
+                    default: break;
                 }
             }
         }
-        if (base == null) base = Typeface.DEFAULT;
-        return Typeface.create(base, Math.max(1, Math.min(1000, weight)), italic);
+        // A trailing generic family still sets the system fallback.
+        if (others.isEmpty() && system.equals("sans-serif")) return null;
+        try {
+            Typeface.CustomFallbackBuilder builder = new Typeface.CustomFallbackBuilder(fontFamily(primary));
+            for (Face face : others) builder.addCustomFallback(fontFamily(face));
+            builder.setSystemFallback(system);
+            builder.setStyle(new android.graphics.fonts.FontStyle(clamp(weight),
+                    italic ? android.graphics.fonts.FontStyle.FONT_SLANT_ITALIC
+                            : android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT));
+            return builder.build();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** A registered face as a font family of one font (Android 10+). */
+    private static android.graphics.fonts.FontFamily fontFamily(Face face) throws java.io.IOException {
+        android.graphics.fonts.Font font = new android.graphics.fonts.Font.Builder(face.file)
+                .setWeight(clamp(face.weight))
+                .setSlant(face.italic ? android.graphics.fonts.FontStyle.FONT_SLANT_ITALIC
+                        : android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT)
+                .build();
+        return new android.graphics.fonts.FontFamily.Builder(font).build();
+    }
+
+    private static int clamp(int weight) {
+        return Math.max(1, Math.min(1000, weight));
     }
 
     // Span ints: start, end, weight, flags, color, decoration color, family,
@@ -738,6 +859,8 @@ final class TextLayouts {
         final int width, height, align;
         /** How far its top is above the baseline (px; negative: below), set by {@link #getSize}. */
         int ascent;
+        /** The ascent and descent of the font around it (px, as {@link Paint.FontMetricsInt}), set by {@link #getSize}. */
+        int fontAscent, fontDescent;
 
         Attachment(int width, int height, int align) {
             this.width = width;
@@ -766,8 +889,10 @@ final class TextLayouts {
                     }
                 }
             }
+            Paint.FontMetricsInt own = paint.getFontMetricsInt();
+            fontAscent = own.ascent;
+            fontDescent = own.descent;
             if (fm != null) {
-                Paint.FontMetricsInt own = paint.getFontMetricsInt();
                 fm.ascent = Math.min(own.ascent, -Math.max(0, ascent));
                 fm.top = Math.min(own.top, fm.ascent);
                 fm.descent = Math.max(own.descent, height - ascent);
@@ -887,6 +1012,28 @@ final class TextLayouts {
                                  Paint.FontMetricsInt fm) {
             int current = fm.descent - fm.ascent;
             if (current <= 0) return;
+            Attachment[] attachments = text instanceof Spanned
+                    ? ((Spanned) text).getSpans(start, end, Attachment.class)
+                    : null;
+            if (attachments != null && attachments.length > 0) {
+                // A line holding attachments: the text's box (its font with
+                // the line height spread around it) joined with what each
+                // attachment reaches above and below the baseline, so the
+                // line grows only where one is taller (a replaced inline box
+                // in CSS) instead of being cut to the line height.
+                int ascent = 0, descent = 0;
+                for (Attachment a : attachments) {
+                    int extra = height - (a.fontDescent - a.fontAscent);
+                    int top = extra / 2;
+                    ascent = Math.min(ascent, Math.min(a.fontAscent - top, -Math.max(0, a.ascent)));
+                    descent = Math.max(descent, Math.max(a.fontDescent + extra - top, a.height - a.ascent));
+                }
+                fm.ascent = ascent;
+                fm.top = ascent;
+                fm.descent = descent;
+                fm.bottom = descent;
+                return;
+            }
             int extra = height - current;
             int top = extra / 2;
             fm.ascent -= top;

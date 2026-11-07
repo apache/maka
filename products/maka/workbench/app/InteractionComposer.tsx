@@ -53,8 +53,7 @@ import {
   codeTextStyle,
   compact,
   controlDisabledStyle,
-  controlFocusStyle,
-  controlHoverStyle,
+  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
@@ -66,7 +65,7 @@ import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { SessionApprovalRequest, interactionPermissions } from './SessionApprovalRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
-import { SystemPermissionRequest, systemPermissionName } from './SystemPermissionRequest';
+import { SystemPermissionRequest } from './SystemPermissionRequest';
 import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
@@ -110,10 +109,10 @@ export function InteractionAction(props: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        backgroundColor: props.primary ? C.accent : props.selected ? C.raised : C.surface,
+        backgroundColor: props.primary ? C.accent : props.selected ? C.cardRaised : C.card,
       }}
-      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle()}
-      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle()}
+      hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.cardRaised }}
+      focusStyle={props.primary ? { backgroundColor: C.accentHover } : cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -189,41 +188,6 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
   return uiMessage('Request closed · {reason}', { reason: outcome.reason.replaceAll('_', ' ') });
 }
 
-export function SystemPermissionActions(props: {
-  request: SystemPermissionRequest;
-  actions: string[];
-  disabled?: boolean;
-  onCancel: () => void;
-  onAction: (action: string) => void;
-}) {
-  return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
-      <InteractionAction
-        label={tr('Cancel request')}
-        disabled={props.disabled}
-        onPress={props.onCancel}
-      />
-      <Each of={props.request.grants.filter((grant) => props.actions.includes(grant))}>
-        {(grant) => (
-          <InteractionAction
-            label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
-            primary={grant() === props.request.grants[0]}
-            disabled={props.disabled}
-            onPress={() => props.onAction(grant())}
-          />
-        )}
-      </Each>
-      <If when={props.actions.includes('reveal_application')}>
-        <InteractionAction
-          label={tr('Show permission application in Finder')}
-          disabled={props.disabled}
-          onPress={() => props.onAction('reveal_application')}
-        />
-      </If>
-    </View>
-  );
-}
-
 export function InteractionComposer({
   sessionId,
   requestId,
@@ -243,9 +207,10 @@ export function InteractionComposer({
   const record = signal<InteractionRecord | null>(null);
   const child = signal<InteractionRecord | null>(null);
   const childTitle = signal('');
-  const loading = signal(false),
-    busy = signal(false),
-    uncertain = signal(false);
+  const phase = signal<'idle' | 'refreshing' | 'responding'>('idle');
+  const loading = () => phase() === 'refreshing';
+  const busy = () => phase() === 'responding';
+  const uncertain = signal(false);
   const pending = signal(false),
     error = createText();
   const scope = signal<InteractionScope>('once');
@@ -257,7 +222,6 @@ export function InteractionComposer({
   const argumentBusy = signal(false),
     argumentError = createText();
   let argumentPosition: HistoryRowPosition | null = null;
-  const systemActions = signal<string[]>([]);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -387,8 +351,7 @@ export function InteractionComposer({
   const blocked = () =>
     !alive ||
     confirming() ||
-    loading() ||
-    busy() ||
+    phase() !== 'idle' ||
     uncertain() ||
     !pending() ||
     !!record()?.outcome;
@@ -498,8 +461,8 @@ export function InteractionComposer({
     void readArguments(JSON.parse(owner.sourceJSON));
   };
   const refresh = async () => {
-    if (!alive || loading() || busy()) return;
-    loading.set(true);
+    if (!alive || phase() !== 'idle') return;
+    phase.set('refreshing');
     error.set('');
     try {
       const unresolved = await originalPending();
@@ -509,11 +472,6 @@ export function InteractionComposer({
       ]);
       if (!alive) return;
       if (!sameRecord(canonical)) throw new UiError('The Host returned a different request.');
-      const actions =
-        canonical.request.kind === 'system_permission' && !canonical.outcome
-          ? await host.systemPermissionActions(sessionId, requestId)
-          : [];
-      if (!alive) return;
       child.set(null);
       childTitle.set('');
       if (canonical.request.kind === 'session_approval' && !canonical.outcome) {
@@ -536,7 +494,6 @@ export function InteractionComposer({
         child.set(original);
         childTitle.set(observed.session.title || tr('Untitled conversation'));
       }
-      systemActions.set(actions);
       record.set(canonical);
       uncertain.set(unresolved);
       pending.set(list.entries.some((entry) => entry.requestId === requestId));
@@ -565,12 +522,12 @@ export function InteractionComposer({
         error.set(errorText(reason));
       }
     } finally {
-      if (alive) loading.set(false);
+      if (alive) phase.set('idle');
     }
   };
   createPendingRecovery({
     pending: () => uncertain(),
-    blocked: () => loading() || busy() || confirming(),
+    blocked: () => phase() !== 'idle' || confirming(),
     recover: refresh,
   });
   const refreshRendered = (owner: InteractionOwner) => {
@@ -578,7 +535,7 @@ export function InteractionComposer({
   };
   const respond = async (answer: InteractionAnswer) => {
     if (blocked() || (answer.kind !== request()?.kind && !cancels(answer))) return;
-    busy.set(true);
+    phase.set('responding');
     error.set('');
     try {
       const result = await control('respond', { sessionId, requestId, answer });
@@ -611,7 +568,7 @@ export function InteractionComposer({
         error.set(unresolved ? uiMessage('Syncing changes…') : errorText(reason));
       }
     } finally {
-      if (alive) busy.set(false);
+      if (alive) phase.set('idle');
     }
   };
   const submissionAnswer = (): InteractionAnswer | null => {
@@ -636,7 +593,7 @@ export function InteractionComposer({
     } else if (current.kind === 'client_capability' && computerCapability(current)) {
       return { kind: 'client_capability', decision: 'allow' };
     } else if (current.kind === 'computer_app') {
-      return { kind: 'computer_app', decision: 'once' };
+      return { kind: 'computer_app', decision: 'session' };
     }
     return null;
   };
@@ -664,15 +621,6 @@ export function InteractionComposer({
     if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
-  const openSystemPermissionAction = async (action: string) => {
-    error.set('');
-    try {
-      await host.systemPermissionAction(sessionId, requestId, action);
-    } catch (reason) {
-      if (alive) error.set(String(reason));
-    }
-  };
-
   const deny = () => {
     const answer = denialAnswer();
     if (answer) void respond(answer);
@@ -785,7 +733,7 @@ export function InteractionComposer({
         style={{
           minHeight: 0,
           flexShrink: 1,
-          backgroundColor: C.surface,
+          backgroundColor: C.card,
           borderRadius: 16,
           borderWidth: 1,
           borderColor: C.line,
@@ -872,9 +820,7 @@ export function InteractionComposer({
                       'Approve this original call only. This does not grant access to future calls.',
                     )}
                   </Text>
-                  <View
-                    style={{ gap: 8, padding: 12, backgroundColor: C.background, borderRadius: 8 }}
-                  >
+                  <View style={{ gap: 8, padding: 12, backgroundColor: C.panel, borderRadius: 8 }}>
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Original arguments')}
                     </Text>
@@ -913,7 +859,7 @@ export function InteractionComposer({
                       style={{
                         gap: 8,
                         padding: 12,
-                        backgroundColor: C.background,
+                        backgroundColor: C.panel,
                         borderRadius: 8,
                       }}
                     >
@@ -1008,11 +954,11 @@ export function InteractionComposer({
                                 gap: 12,
                                 backgroundColor:
                                   answers()[index()]?.value === option().label
-                                    ? C.raised
-                                    : C.surface,
+                                    ? C.cardRaised
+                                    : C.card,
                               }}
-                              hoverStyle={controlHoverStyle()}
-                              focusStyle={controlFocusStyle()}
+                              hoverStyle={{ backgroundColor: C.cardRaised }}
+                              focusStyle={cardFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
                               {/* As tall as the label's line, so the mark centres on it. */}
@@ -1096,7 +1042,7 @@ export function InteractionComposer({
                               paddingHorizontal: 12,
                               paddingVertical: compact() ? 4 : 8,
                               color: C.text,
-                              backgroundColor: C.background,
+                              backgroundColor: C.panel,
                               borderRadius: inputBorderRadius,
                               borderWidth: 1,
                               borderColor: C.line,
@@ -1127,7 +1073,17 @@ export function InteractionComposer({
                 <If when={systemPermissionRequest()}>
                   <SystemPermissionRequest
                     request={systemPermissionRequest()!}
-                    canLocate={systemActions().includes('reveal_application')}
+                    sessionId={sessionId}
+                    requestId={requestId}
+                    disabled={blocked()}
+                    onCancel={answerBinding({ kind: 'system_permission_cancel' })}
+                    onOutcome={(outcome) => {
+                      const current = record();
+                      if (alive && sameRecord(current)) {
+                        record.set({ ...current!, outcome });
+                        pending.set(false);
+                      }
+                    }}
                   />
                 </If>
               </View>
@@ -1204,15 +1160,6 @@ export function InteractionComposer({
               gap: 8,
             }}
           >
-            <If when={systemPermissionRequest() && !record()?.outcome}>
-              <SystemPermissionActions
-                request={systemPermissionRequest()!}
-                actions={systemActions()}
-                disabled={blocked()}
-                onCancel={answerBinding({ kind: 'system_permission_cancel' })}
-                onAction={(action) => void openSystemPermissionAction(action)}
-              />
-            </If>
             <If when={computerAppRequest() && !record()?.outcome}>
               <InteractionAction
                 label={tr('Cancel request')}
@@ -1223,7 +1170,7 @@ export function InteractionComposer({
                 {(option) => (
                   <InteractionAction
                     label={renderText(option().label)}
-                    primary={option().answer.decision === 'once'}
+                    primary={option().answer.decision === 'session'}
                     disabled={blocked()}
                     onPress={answerBinding(option().answer)}
                   />

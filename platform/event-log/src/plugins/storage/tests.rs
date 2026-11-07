@@ -21,7 +21,6 @@ use crate::EventLog;
 use maka_capabilities::storage::{Data, Mutation, Namespace, Scan};
 use maka_plugin_core::scope::Scope;
 use serde_json::json;
-use sqlx::Connection;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::oneshot;
 
@@ -53,20 +52,29 @@ async fn reads_observe_committed_batches_without_waiting_for_the_writer() {
     let (started, waiting) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = log.clone();
-    let writer =
-        tokio::spawn(async move {
-            owner.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            sqlx::query("UPDATE plugin_data SET revision = 2, value_json = ? WHERE key = 'first'")
-                .bind(json!("after").to_string()).execute(&mut *tx).await?;
-            started.send(()).unwrap();
-            released.await.unwrap();
-            sqlx::query("UPDATE plugin_data SET revision = 2, value_json = ? WHERE key = 'second'")
-                .bind(json!("after").to_string()).execute(&mut *tx).await?;
-            tx.commit().await?;
-            Ok(())
-        })).await
-        });
+    let writer = tokio::spawn(async move {
+        owner
+            .connection
+            .run(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                tx.execute(
+                    "UPDATE plugin_data SET revision = 2, value_json = ? WHERE key = 'first'",
+                    rusqlite::params![json!("after").to_string()],
+                )?;
+                started.send(()).unwrap();
+                released.blocking_recv().unwrap();
+                tx.execute(
+                    "UPDATE plugin_data SET revision = 2, value_json = ? WHERE key = 'second'",
+                    rusqlite::params![json!("after").to_string()],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+    });
     waiting.await.unwrap();
     let during = tokio::time::timeout(Duration::from_secs(5), async {
         let first = log.plugin_data(&namespace, "first").await.unwrap().unwrap();

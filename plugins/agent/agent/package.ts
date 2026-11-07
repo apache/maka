@@ -19,7 +19,7 @@
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
 import { native } from '../../shared/package.js';
-import { agentImports } from '../../shared/agent-imports.js';
+
 export default {
   schemaVersion: 1,
   id: 'maka.agent.agent',
@@ -31,7 +31,28 @@ export default {
   application: {
     host: {
       ...native(sdk.nativeImplementations.agent),
-      imports: agentImports,
+      imports: {
+        settings: { contract: sdk.contracts.settings, cardinality: { kind: 'optional' } },
+        ui: { contract: sdk.contracts.deploymentManager, cardinality: { kind: 'optional' } },
+        executorSetups: {
+          contract: sdk.contracts.executorSetup,
+          cardinality: { kind: 'many', min: 0, max: 8 },
+        },
+        executors: {
+          contract: sdk.contracts.executor,
+          cardinality: { kind: 'many', min: 0, max: 8 },
+        },
+        computer: { contract: sdk.contracts.workspaceComputer, cardinality: { kind: 'optional' } },
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
+        skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        forms: { contract: sdk.contracts.forms, cardinality: { kind: 'optional' } },
+        questions: { contract: sdk.contracts.questions, cardinality: { kind: 'optional' } },
+        files: { contract: sdk.contracts.workspaceFiles, cardinality: { kind: 'optional' } },
+        processes: {
+          contract: sdk.contracts.workspaceProcesses,
+          cardinality: { kind: 'optional' },
+        },
+      },
     },
   },
 };

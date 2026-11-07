@@ -454,8 +454,9 @@ impl Tab {
             let endpoint = CursorEndpoint {
                 transport: CursorTransport::Cdp {
                     socket: self
-                        .socket
+                        .connection
                         .as_ref()
+                        .map(TabConnection::socket)
                         .ok_or_else(|| failed("cursor connection unavailable"))?
                         .clone(),
                     frame: identity,

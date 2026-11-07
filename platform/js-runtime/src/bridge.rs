@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::json::Json;
+use crate::json::{Json, decode_str};
 use crate::{CellContext, CellDiagnostic, CellDiagnosticKind, CellOutput};
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
@@ -31,11 +31,12 @@ use tokio_util::sync::CancellationToken;
 fn op_maka_tool(
     state: Rc<RefCell<OpState>>,
     #[string] name: String,
-    #[serde] input: serde_json::Value,
-) -> impl Future<Output = Result<Json, JsErrorBox>> {
+    #[string] json: String,
+) -> Result<impl Future<Output = Result<Json, JsErrorBox>>, JsErrorBox> {
+    let input = decode_str(&json).map_err(|e| JsErrorBox::generic(e.to_string()))?;
     let scope = state.borrow().borrow::<Arc<ToolScope>>().clone();
     let receiver = scope.start(name, input);
-    async move {
+    Ok(async move {
         let result = match receiver {
             Ok(receiver) => receiver.await.unwrap_or_else(|_| {
                 Err(CellDiagnostic::new(
@@ -50,7 +51,7 @@ fn op_maka_tool(
             Err(error) => serde_json::json!({"ok": false, "error": error}),
         };
         Json::encode(&outcome)
-    }
+    })
 }
 
 #[op2]
@@ -75,9 +76,10 @@ fn op_maka_yield(state: &mut OpState) {
 fn op_maka_store(
     state: &mut OpState,
     #[string] key: String,
-    #[serde] value: serde_json::Value,
-) -> Option<CellDiagnostic> {
-    state.borrow::<CellContext>().store(key, value).err()
+    #[string] json: String,
+) -> Result<Option<CellDiagnostic>, JsErrorBox> {
+    let value = decode_str(&json).map_err(|e| JsErrorBox::generic(e.to_string()))?;
+    Ok(state.borrow::<CellContext>().store(key, value).err())
 }
 
 #[op2]

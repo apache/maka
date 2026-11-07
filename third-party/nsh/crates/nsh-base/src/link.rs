@@ -44,6 +44,12 @@ pub struct LinkProps {
     pub current: Prop<bool>,
     /// What screen readers say, when its content is not enough (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A small link (an icon, a short word) takes presses a finger
+    /// lands near it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The content: a label, an icon, anything the app shows.
     pub children: Prop<Children>,
 }
@@ -69,7 +75,8 @@ pub enum LinkEvent {
 /// app's `onOpen`). The app's `class` and `style` style it, its states with
 /// `hover:`, `active:`, `focus:` and `disabled:` classes or `hoverStyle`,
 /// `activeStyle`, `focusStyle` and `disabledStyle`, and its children are
-/// its content. Inside a `<Text>` it is an inline box of the paragraph, as
+/// its content. `hitSlop` widens where presses count past its bounds, as a
+/// view's does. Inside a `<Text>` it is an inline box of the paragraph, as
 /// every view there is: it stays on one line (`align-text-bottom` sits its
 /// text on the paragraph's baseline). In a `Toolbar`, it is one of the
 /// toolbar's items, as a `Button` there is.
@@ -83,6 +90,7 @@ pub fn Link(props: LinkProps, cx: Scope<LinkEvent>) -> impl IntoElement {
             current: props.current.get().then_some(AccessibilityCurrent::Page),
             ..AccessibilityState::default()
         })
+        .hit_slop(props.hit_slop)
         .on_press(move |_: &()| {
             if let Some(href) = props.href.get_untracked() {
                 cx.emit(LinkEvent::Open(href.clone()));

@@ -966,7 +966,6 @@ pub(crate) mod tests {
                                         maka_agent_facts::execution::ApprovalPolicy::OnRequest,
                                     boundary_revision: 0,
                                     collaboration_mode: Default::default(),
-                                    orchestration_mode: Default::default(),
                                     tool_mode: Default::default(),
                                     code_language: Default::default(),
                                     model: None,

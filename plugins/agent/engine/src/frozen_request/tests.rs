@@ -81,7 +81,6 @@ pub(crate) fn settings(invocation: Invocation) -> RunSettings {
             approval_policy: ApprovalPolicy::OnRequest,
             boundary_revision: 0,
             collaboration_mode: CollaborationMode::Agent,
-            orchestration_mode: BehaviorId::default(),
             tool_mode: ToolMode::Direct,
             code_language: Default::default(),
             model: None,

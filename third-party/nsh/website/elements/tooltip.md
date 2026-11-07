@@ -87,7 +87,7 @@ once hidden, which it keeps while the `transition-*` classes of its `class` run;
 | `endingClass`, `endingStyle` | `.ending_class(..)`, `.ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Its look once hidden: it stays while its transitions run. |
 | `open` | `.open(..)` | `boolean` | none | Shown, controlled by the app. |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | Shown at first, without `open`. |
-| `delay` | `.delay(..)` | `number` | `500` | Milliseconds the pointer rests on the trigger before it shows. |
+| `delay` | `.delay(..)` | `number` | `500` | Milliseconds the pointer rests on the trigger before it shows; `Infinity`: never by itself, only when the app opens it. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It never shows. |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"top"` | The side of the trigger it goes on. |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | How it lines up with the trigger along that side. |

@@ -21,10 +21,9 @@ use crate::StoreError;
 use maka_agent_facts::interaction::GrantTarget;
 use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
-use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::entity_id;
+use rusqlite::OptionalExtension;
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::Row;
 
 pub(crate) fn invalid(message: &str) -> StoreError {
     StoreError::InvalidTransition(message.into())
@@ -104,68 +103,51 @@ pub(crate) fn equivalent(left: &InteractionOutcome, right: &InteractionOutcome) 
     }
 }
 
-pub(crate) async fn read_scoped(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_scoped(
+    connection: &rusqlite::Connection,
     request_id: &str,
     expected_session: Option<&str>,
 ) -> Result<Option<InteractionRecord>, StoreError> {
-    let local = read_from(connection, request_id, expected_session, false).await?;
-    let root = read_from(connection, request_id, expected_session, true).await?;
-    match (local, root) {
-        (Some(_), Some(_)) => Err(invalid(
-            "interaction identity exists in multiple authorities",
-        )),
-        (Some(record), None) | (None, Some(record)) => Ok(Some(record)),
-        (None, None) => Ok(None),
-    }
+    read_from(connection, request_id, expected_session)
 }
 
-pub(crate) async fn read_local(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_local(
+    connection: &rusqlite::Connection,
     request_id: &str,
 ) -> Result<Option<InteractionRecord>, StoreError> {
-    read_from(connection, request_id, None, false).await
+    read_from(connection, request_id, None)
 }
 
-async fn read_from(
-    connection: &mut sqlx::SqliteConnection,
+fn read_from(
+    connection: &rusqlite::Connection,
     request_id: &str,
     expected_session: Option<&str>,
-    root: bool,
 ) -> Result<Option<InteractionRecord>, StoreError> {
-    let sql = if root {
-        "SELECT request.session_id, request.created_at, request.record_json, outcome.outcome_json
-         FROM root_app_requests AS request LEFT JOIN root_app_outcomes AS outcome
-         ON outcome.request_id = request.request_id WHERE request.request_id = ?
-         AND (? IS NULL OR request.session_id = ?)"
-    } else {
-        "SELECT request.session_id, request.created_at, request.record_json, outcome.outcome_json
-         FROM interaction_requests AS request LEFT JOIN interaction_outcomes AS outcome
-         ON outcome.request_id = request.request_id WHERE request.request_id = ?
-         AND (? IS NULL OR request.session_id = ?)"
+    let sql =
+        "SELECT request.session_id,request.created_at,request.record_json,outcome.outcome_json
+        FROM interaction_requests AS request LEFT JOIN interaction_outcomes AS outcome
+        ON outcome.request_id=request.request_id WHERE request.request_id=?
+        AND (? IS NULL OR request.session_id=?)";
+    let row: Option<(String, i64, String, Option<String>)> = connection
+        .query_row(
+            sql,
+            rusqlite::params![request_id, expected_session, expected_session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((session, created, json, outcome)) = row else {
+        return Ok(None);
     };
-    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(request_id)
-        .bind(expected_session)
-        .bind(expected_session)
-        .fetch_optional(connection)
-        .await?;
-    let Some(row) = row else { return Ok(None) };
-    let mut record: InteractionRecord = decode(row.try_get(2)?)?;
+    let mut record: InteractionRecord = decode(&json)?;
     if record.outcome.is_some()
         || record.request_id != request_id
-        || record.session_id != row.try_get::<&str, _>(0)?
-        || i64::try_from(record.created_at).ok() != Some(row.try_get(1)?)
+        || record.session_id != session
+        || i64::try_from(record.created_at).ok() != Some(created)
     {
         return Err(invalid("stored interaction identity changed"));
     }
-    record.outcome = row.try_get::<Option<&str>, _>(3)?.map(decode).transpose()?;
+    record.outcome = outcome.as_deref().map(decode).transpose()?;
     record.validate().map_err(invalid)?;
-    if root && !matches!(record.request, InteractionRequest::ComputerApp { .. }) {
-        return Err(invalid(
-            "Root interaction is not computer application consent",
-        ));
-    }
     Ok(Some(record))
 }
 
@@ -173,15 +155,12 @@ async fn read_from(
 mod tests {
     use super::*;
     use maka_agent_facts::{
-        event::Invocation,
         interaction::{
-            ClosureReason, ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform,
-            GrantCapability, GrantScope,
+            ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform, GrantCapability,
+            GrantScope, InteractionRequest,
         },
         workspace::{BindingStamp, PermissionBasis},
     };
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{Connection, SqliteConnection};
 
     fn app(id: &str, turn: &str, run: &str) -> InteractionRecord {
         InteractionRecord {
@@ -222,189 +201,6 @@ mod tests {
             },
             outcome: None,
         }
-    }
-
-    fn local(id: &str, turn: &str, run: &str) -> InteractionRecord {
-        let mut record = app(id, turn, run);
-        record.request = InteractionRequest::ServiceApproval {
-            tool_use_id: "tool_service".into(),
-            tool_name: "service_tool".into(),
-            service: "fixture".into(),
-            method: "run".into(),
-            binding: "binding".into(),
-            through: 1,
-        };
-        record
-    }
-
-    async fn fixture() -> (tempfile::TempDir, SqliteConnection, SqliteConnection) {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("control.sqlite");
-        let mut root = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-        crate::schema::initialize_connection(&mut root)
-            .await
-            .unwrap();
-        let control = crate::connection::control::ReadOnlyControl::new(&path).unwrap();
-        let mut source = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        crate::schema::initialize_connection_with_control(&mut source, Some(&control))
-            .await
-            .unwrap();
-        (directory, root, source)
-    }
-
-    async fn insert(connection: &mut SqliteConnection, record: &InteractionRecord) {
-        sqlx::query("INSERT INTO interaction_requests VALUES(?,?,?,?)")
-            .bind(&record.request_id)
-            .bind(&record.session_id)
-            .bind(record.created_at as i64)
-            .bind(encode(record).unwrap())
-            .execute(connection)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn merged_read_preserves_source_outcomes_scope_and_refuses_ambiguous_identity() {
-        let (_directory, mut root, mut source) = fixture().await;
-        let mut application = app("application", "turn", "run");
-        let mut service = local("service", "turn", "run");
-        service.created_at = 3;
-        insert(&mut root, &application).await;
-        insert(&mut source, &service).await;
-        assert_eq!(
-            super::super::pending(&mut source, "session").await.unwrap(),
-            [service.clone(), application.clone()]
-        );
-        assert_eq!(
-            read_scoped(&mut source, "application", Some("other_session"))
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(read_local(&mut source, "application").await.unwrap(), None);
-        let once = InteractionOutcome::ComputerAppDecision {
-            decision: ComputerAppDecision::Once,
-            committed_at: 42,
-        };
-        sqlx::query("INSERT INTO interaction_outcomes VALUES(?,?)")
-            .bind("application")
-            .bind(encode(&once).unwrap())
-            .execute(&mut root)
-            .await
-            .unwrap();
-        application.outcome = Some(once.clone());
-        assert_eq!(
-            read_scoped(&mut source, "application", Some("session"))
-                .await
-                .unwrap(),
-            Some(application)
-        );
-        assert_eq!(
-            super::super::pending(&mut source, "session").await.unwrap(),
-            [service]
-        );
-        let conflicting = local("application", "turn", "run");
-        insert(&mut source, &conflicting).await;
-        assert_eq!(
-            read_local(&mut source, "application").await.unwrap(),
-            Some(conflicting)
-        );
-        assert!(matches!(
-            read_scoped(&mut source, "application", Some("session")).await,
-            Err(StoreError::InvalidTransition(message))
-                if message == "interaction identity exists in multiple authorities"
-        ));
-        assert!(equivalent(
-            &once,
-            &InteractionOutcome::ComputerAppDecision {
-                decision: ComputerAppDecision::Once,
-                committed_at: 43,
-            }
-        ));
-        assert!(!equivalent(
-            &once,
-            &InteractionOutcome::ComputerAppDecision {
-                decision: ComputerAppDecision::Session,
-                committed_at: 42,
-            }
-        ));
-        source.close().await.unwrap();
-        root.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn source_closure_stays_local_and_root_pending_blocks_only_the_exact_run() {
-        let (_directory, mut root, mut source) = fixture().await;
-        let invocation = Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        insert(&mut source, &local("service", "turn", "run")).await;
-        insert(&mut root, &app("application", "turn", "run")).await;
-        insert(&mut root, &app("other_run", "turn", "other_run")).await;
-        insert(&mut root, &app("other_turn", "other_turn", "run")).await;
-        let closure = InteractionOutcome::Closure {
-            reason: ClosureReason::TurnTerminal,
-            committed_at: 42,
-        };
-        let lifecycle = super::super::lifecycle::close_in_transaction;
-        assert_eq!(
-            lifecycle(&mut source, Some(&invocation), &closure)
-                .await
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            read_local(&mut source, "service")
-                .await
-                .unwrap()
-                .unwrap()
-                .outcome,
-            Some(closure.clone())
-        );
-        assert_eq!(
-            read_local(&mut root, "application")
-                .await
-                .unwrap()
-                .unwrap()
-                .outcome,
-            None
-        );
-        assert!(matches!(
-            super::super::lifecycle::require_closed(&mut source, &invocation).await,
-            Err(StoreError::InvalidTransition(message))
-                if message == "cannot seal a Run with pending interactions"
-        ));
-        assert_eq!(
-            lifecycle(&mut root, Some(&invocation), &closure)
-                .await
-                .unwrap(),
-            1
-        );
-        super::super::lifecycle::require_closed(&mut source, &invocation)
-            .await
-            .unwrap();
-        assert_eq!(lifecycle(&mut source, None, &closure).await.unwrap(), 0);
-        for id in ["other_run", "other_turn"] {
-            assert_eq!(
-                read_scoped(&mut source, id, None)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .outcome,
-                None
-            );
-        }
-        source.close().await.unwrap();
-        root.close().await.unwrap();
     }
 
     #[tokio::test]

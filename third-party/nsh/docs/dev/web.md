@@ -41,7 +41,9 @@ and read by `values.rs` `unpack`), and an object's keys in one (op 48).
 Callbacks escaping a stopped run become inert; pending module and host calls reject on disposal.
 
 Browser fetch, streams, WebCrypto, URL, timers and promises use browser implementations, including their
-CORS, secure-context and permission rules. Synchronous hash/compression APIs retain Rust implementations;
+CORS, secure-context and permission rules; the browser knows no `asset:` scheme, so `fetch` of the app's files
+(`asset:/`) goes through the engine's network in every session, which reads them as on the other platforms
+(`web/browser/testing.js`, `src/browser/fetch.rs`). Synchronous hash/compression APIs retain Rust implementations;
 Buffer and POSIX path use pinned vendored implementations with licenses in `third_party/`. Mobile-only APIs
 retain their off-platform behavior. In a test session on a manual clock (`nsh test --target web`), timers,
 `Date`, `performance.now()`, animation frames and `fetch` go through the engine instead, so the test's clock and
@@ -68,9 +70,16 @@ python3 crates/nsh-platform-web/web/browser/browser-check.py --wasm target/wasm3
 ```
 
 The second command requires Python Playwright and Chromium (`--chrome` selects its executable). It checks
-real module realms, host events queued before startup, repeated replacement/disposal and rejected startup.
+real module realms, host events queued before startup, repeated replacement/disposal, rejected startup, every
+state style (`hoverStyle` / `activeStyle` under real mouse input, `focusStyle` / `focusWithinStyle` under Tab), a
+list's `contentClass` and a scroll view's `contentStyle` / `contentClass` (where its children land, inserted before
+and after the content container is made).
 `browser-tests` contains ownership fixtures: never measure or publish that artifact. Rebuild with `browser`
 and use the supported `nsh package --target web` flow for shipping and size measurements.
+
+`browser-check.py` also mounts a view with all four platform props and checks that only the web's and, in the
+desktop idiom (Playwright's Chromium has a fine, hovering pointer, and the check's page is 1280 wide), the desktop's
+apply.
 
 Measure the supported CLI package with `node crates/nsh-platform-web/web/browser/package-size.mjs SITE
 --require-browser`. It reports raw bytes, gzip level 9 and Brotli quality 11 independently for every Wasm,
@@ -79,6 +88,9 @@ observed during a cold navigation and separates initial code from optional code.
 are excluded and must be accounted for separately when discussing total page transfer. The website CI guards
 Gallery's total compressed code at 4,000,000 Brotli bytes; this is a regression ceiling, not the original
 1,000,000-byte product goal.
+
+`browser-check.py` also gives a view a `tooltip` by a function, as a development bundle gives an app's component, and
+checks under real hover that the element the function gives shows and follows it.
 
 Run `python3 crates/nsh-platform-web/web/browser/packaged-check.py URL` against a served, freshly packaged
 Gallery to exercise standard utilities/files/environment, lists, dialogs, form input, table virtualization,
@@ -159,72 +171,22 @@ build to the same file) and takes `nsh.js` from the crate.
 
 ### Runtimes linked for each app
 
-A published app's runtime holds only what the app uses: `nsh package --target web` links it from
-`nsh-browser.wasm` without a Rust toolchain or a linker. What is optional is reached only through an exported
-gate, a function that registers it: one per part of `nsh/base` (`nsh_part_core`, `nsh_part_editor`, ...,
-`base_parts!` in `src/lib.rs`) and one per standard module whose operations are Rust (`nsh_std_zlib`,
-`src/browser/standard.rs`). `nsh.js` calls every gate the module exports before anything starts, so a runtime
-with all of them (the website's, the development host's) serves every app.
-
-`nsh-browser.wasm` is built with the feature `linkable`: `build.rs` passes `--emit-relocs`, so the module keeps
-its symbol table and relocations. The CLI's `web::linked_gates` reads which gates an app needs from the bundle
-(`NativeUse`: the names it imports from `nsh/base`, each mapped to the part that exports it, `nsh/base/plot`,
-`zlib`; `import * as`, a computed `import()` or no analysis keep every gate), and `web/prune.rs` keeps what the
-other exports and those gates reach, as `wasm-ld --gc-sections` would have: functions, table entries, data and
-globals reachable through the relocations, then renumbers functions and table slots, moves the kept data
-together and patches every relocated site. The output carries no symbols or relocations.
-
-Measured with `nsh package --target web` (2026-10-28, MB of 10^6 bytes, gzip -9):
-
-| The app | Uses | Runtime | gzip |
-|---|---|---|---|
-| `examples/counter` | `nsh/base`'s core | 3.40 | 1.12 |
-| a `Shader` view | the core, shaders | 4.34 | 1.42 |
-| `Editor`, `Plot`, `zlib` | the core, two parts, `zlib` | 7.02 | 2.32 |
-| `examples/gallery` | every part, `zlib`, shaders | 11.22 | 3.56 |
-
-Shaders are a gate too (`nsh_feature_shader`, `src/shader.rs`): it sets the core's compiler of shader sources
-(`nsh_core::shader::set_compile`, naga's WGSL front end) and the translation to GLSL ES, about 0.9 MB of naga. The
-compiled `<Shader>` tag leaves no import of `Shader` (it calls `nsh:rt`'s `element("shader")`), so the bundler
-counts a string `shader` anywhere in the bundle as a shader view (`NativeUse::shader`).
-
-Apps with Rust components of their own get a runtime built for them, with every part.
-The QuickJS measurements below are historical (the web ran QuickJS in WebAssembly until 2026-10) and do not
-measure these runtimes.
+A published app's runtime holds only what the app uses, and what only later screens use is downloaded apart
+from it. `nsh package --target web` makes these modules from `nsh-browser.wasm` (feature `linkable`) without a
+Rust toolchain or a linker; how is in the module docs of `crates/nsh-cli/src/web/`. A runtime wasm-bindgen ran on
+(`crates/nsh-cli/src/bindgen.rs`) is published whole (`web::link`): wasm-bindgen rewrites the module and keeps the
+`linking` and `reloc.*` sections of the one it read, which no longer describe it. A runtime with every
+component (the website's, the development host's) serves every app.
 
 ### Historical QuickJS package sizes
 
-Historical measurement at `f94e17a` (#58, 2026-10-18), before the standard modules and TextView:
-`examples/gallery` as `nsh package --target web` published it (`gzip -9`, `brotli -q 11`). Each demo is a
-module the index loads with `import()` (the gallery's `lazy`), so it is a chunk of its own: the first load is the page,
-the runtime, the app's shell and the demo shown first (Stocks, in the desktop layout; none in the phone layout's
-index). The other demos, 18 chunks of 265 KB (72 KB gzipped) in all, and the fonts they register (Pacifico, with
-the Text demo: `web::font_loads`, the page's `prepareChunk`) come when opened; images when shown, icons when the
-browser wants them.
+The web ran QuickJS in WebAssembly until 2026-10; those measurements do not apply to the current runtimes.
 
-| File | Raw | gzip | brotli |
-|---|---:|---:|---:|
-| `index.html` (with the chunk map) | 6.0 KB | 2.6 KB | 2.1 KB |
-| `nsh.<digest>.js` (minified) | 79.2 KB | 25.2 KB | 22.5 KB |
-| `nsh.<digest>.wasm` (without the parser; with it, before the size work: 3779 / 1311 / 1001 KB) | 3504 KB | 1217 KB | 928 KB |
-| `app.<digest>.nshc`: the shell's bytecode (as minified JS: 34.9 / 9.7 / 8.5 KB) | 45.2 KB | 16.5 KB | 14.0 KB |
-| `harden.<digest>.nshc` | 1.4 KB | 0.9 KB | 0.7 KB |
-| `chunks/Stocks.<digest>.nshc` (as minified JS: 55.9 / 17.3 / 15.4 KB) | 78.0 KB | 33.2 KB | 28.1 KB |
-| **first load** (with the 32 px favicon) | **3715 KB** | **1296 KB** | **997 KB** |
-| before the demos were split: `app.<digest>.js` 347 / 92.5 / 74.9 KB and the preloaded font 329 / 145 / 121 KB | 4518 KB | 1571 KB | 1217 KB |
-| `manifest.webmanifest` | 0.4 KB | 0.3 KB | 0.2 KB |
-| images (`bounce.gif`, `logo@2x.png`, `spinner.webp`) | 16.1 KB | 6.0 KB | 5.6 KB |
-| icons 180 / 192 / 512 px | 114 KB | 89.4 KB | 86.9 KB |
-
-The syntaxes code is highlighted with are a file of their own, `nsh-syntaxes.<digest>.bin` (0.92 MB, 0.83 MB
-gzipped, 0.80 MB with brotli: two-face's dump compresses each syntax already), fetched the first time a `TextView`
-code block, an `Editor` or a `DiffView` highlights a language (`nsh_core::runtime_data`, the page's `data`; Text View
-and Editor in the gallery). Kept in the module, they made every first load 0.83 MB larger gzipped: on 2026-10-27 the
-gallery's `nsh.wasm` went from 16.02 MB (5.46 MB gzipped, 4.18 MB with brotli) to 15.10 MB (4.63 MB, 3.38 MB).
-
-The app's own share of the first load went from 676 KB (195 KB with brotli) to 91 KB (24 KB). The wasm is now nearly all of the first load. `nsh.js` is minified at package time
-(`nsh_bundler::minify_module`: oxc's minifier, local names mangled, property names kept, since the mounter looks its
-`op_<name>` methods up by name); the dev host serves it as it is. Published sites carry no source maps.
+The syntaxes code is highlighted with are a file of their own, `nsh-syntaxes.<digest>.bin`, fetched the first time a
+`TextView` code block, an `Editor` or a `DiffView` highlights a language (`nsh_core::runtime_data`, the page's
+`data`). `nsh.js` is minified at package time (`nsh_bundler::minify_module`: local names mangled, property names
+kept, since the mounter looks its `op_<name>` methods up by name); the dev host serves it as it is. Published sites
+carry no source maps.
 
 The website's demos are browser ES modules (`demos/<name>.js`, run with `runModule`; `astro dev` compiles one on
 request, `website/src/lib/play-dev.js`) on `play/nsh.wasm`, the `browser` runtime. Only the playground has a second
@@ -241,87 +203,11 @@ declaration text (the documentation and TypeScript of the specs, which only make
 
 ### Current release size and attribution
 
-The figures above describe #58, not the current feature set. At `0d385b2a` (2026-10-27, still QuickJS in
-WebAssembly), release packages of both
-`examples/counter` and `examples/gallery` contain the same `nsh.<digest>.wasm`: the default runtime registers all
-of `nsh/base`, syntax highlighting and the portable standard modules. Splitting the app's JS does not remove Rust
-from that runtime. `nsh-dev.wasm` additionally supports development/testing; `nsh-playground.wasm` also compiles TSX.
-Neither is the artifact measured here.
-
-Measured on Linux x86_64 with Rust 1.99.1, clang/LLVM 19.1.7, the unchanged `web` profile and `bytecode-only` feature.
-Values are decimal **bytes**; gzip is level 9 without a timestamp, Brotli is CLI 1.1.0 quality 11.
-
-| Release Wasm, counter and gallery | Raw | gzip | Brotli |
-|---|---:|---:|---:|
-| `0d385b2a` | 15,062,914 | 5,149,366 | 3,906,836 |
-| Shared `JsObject` field decoder | 14,913,415 | 5,131,112 | 3,904,677 |
-| Reduction | 149,499 | 18,254 | 2,159 |
-
-The decoder shares field lookup, null/undefined checks and error formatting between fields of the same type.
-On Wasm it stays out of line: otherwise LTO repeats those operations in every generated style part decoder.
-Required fields, defaults, nullable fields, errors and supported APIs retain their behavior. The smaller transfer
-saving is expected: repeated machine code already compresses well.
-
-The baseline has **11,599,694 bytes of code**, **3,374,329 bytes of data**, and 88,891 bytes of other sections and
-headers. It contains no custom/debug sections. The 8 MiB stack is reserved linear memory, not downloaded data.
-A named build with a linker map gives this attribution (aliases counted once per code offset):
-
-| Code, by leading crate of the demangled symbol | Bytes |
-|---|---:|
-| `nsh_core` | 2,069,299 |
-| `nsh_base` | 1,811,942 |
-| `core`, `alloc`, `hashbrown` | 2,055,243 |
-| `nsh_js` | 681,672 |
-| `quickjs_jit_stdlib` | 623,188 |
-| `rquickjs_core` | 497,443 |
-| `regex_automata` | 280,050 |
-| `brotli` | 260,787 |
-| `taffy` | 242,633 |
-
-This is approximate ownership under fat LTO, not additive savings from disabling features: generic code can
-refer to several crates. The largest functions include regex strategy construction (53,978 bytes), QuickJS's
-`JS_CallInternal` (50,150), `TextViewStyles::from_js` (34,082), `TextViewClasses::from_js` (29,477), HTML tree
-builder `step` (28,730) and crypto `KeyAlgorithm::from_js` (28,257).
-
-Data attributed to input archives includes `two_face` 922,018 bytes (921,717 in its syntax blob), `brotli` 550,833
-(262,144 in its logarithm table), `regex_syntax` 313,620, `markup5ever` 255,431, `nsh_base` 219,078,
-`brotli_decompressor` 134,824, `markdown` 110,798, QuickJS 84,829, `icu_normalizer` 70,363 and `crypto_primes` 49,135.
-The syntax definitions, Unicode/HTML tables and compression/crypto code implement existing behavior.
-
-As a ranking aid, compressing each category independently with Brotli 11 gives: syntax data 801,381 bytes;
-core code 390,130; base code 385,464; C code (QuickJS, libc and compression) 250,204; Brotli tables 210,574;
-JS host code 187,541; Rust `core` code 157,527; standard-library wrapper code 129,344; Rust `alloc` code 111,287.
-These concatenate function bodies or data ranges in module order and compress them separately. They are **not
-additive shares of the whole-file transfer or measured savings from removing a feature**: dictionaries are shared
-when the complete module is compressed. A byte comparison using parsed data-segment addresses finds two duplicate ranges of at least 1 KiB:
-3,016 bytes shared by base/Unicode segmentation and 2,048 by Brotli encode/decode. These total only 5,064 raw
-bytes; the largest tables occur once. Linker-map file offsets alone are unsuitable for this comparison.
-
-The release symbol table contains no `JS_EvalInternal`, TSX compiler or rolldown; remaining `js_parse*` / `JS_Parse*`
-functions parse JSON and numbers. `oxc_sourcemap` supports error locations, not source compilation. Compression
-encoders are reachable through the standard `zlib` APIs, so deleting them would change the supported API.
-
-History explains why the old transfer estimate is no longer a budget for the full runtime: #145 (`3b19b22`)
-added portable buffer/crypto/compression APIs, #227 (`5a20cee`) added TextView and recorded +0.86 MB Brotli,
-and #452, #458 and #494 added Editor/DiffView, DataTable and RichEditor. These are historical reports and source
-changes, not historical binaries rebuilt with the current toolchain.
-
-Binaryen 120 `wasm-opt -Oz --all-features` on the baseline produces 12,221,585 raw / 5,253,410 gzip / 4,076,402
-Brotli bytes: it shrinks raw bytes but increases transfer, so it is not part of packaging. With the shared decoder,
-Rust `opt-level = "s"` also regresses all sizes: 16,754,854 / 5,621,073 / 4,192,241 bytes. QuickJS remains at `-O3`;
-a current `-Os` build saves another 49,426 Brotli bytes but slows the measured interpreter workload. An interleaved,
-otherwise idle Chromium comparison (five fresh pages per runtime, eight batches of 160,000 object allocations,
-sorts and numeric iterations; first batch omitted) gives median 158 ms baseline, 159 ms shared decoder,
-189 ms QuickJS `-Os`, 165 ms QuickJS `-O2`, and 162 ms C `-flto`. Every checksum agrees. This is one workload,
-not a comprehensive performance guarantee. C LTO saves only 4,346 Brotli bytes over the decoder and slightly
-grows gzip, while adding toolchain coupling; it is not selected. IDNA, syntax languages and standard modules remain
-available. A sub-1 MB raw or compressed default runtime needs a separate design decision, such as loading native
-modules/data on demand or an explicit app-specific runtime contract; removing defaults is not a size optimization.
-The present Rust-app generation still registers all of `nsh/base`; JS chunks do not split native code. Moving syntax
-data out first could defer roughly 0.8 MB, but alone would still leave several MB. Lazy native modules need an
-ABI/ownership boundary and loading rules for synchronous APIs; an opt-in app-specific build needs a registry
-that conservatively retains dynamic/namespace imports and a Rust build/distribution strategy. These are separate
-architecture decisions, not silent changes to the default runtime.
+Measure the packaged module, not a development build: `nsh-dev.wasm` also supports development and testing and
+`nsh-playground.wasm` also compiles TSX. For attribution, build with names and a linker map (below) and demangle the
+symbols; attribution under fat LTO is approximate, not additive savings from disabling a feature. The syntax data,
+Unicode / HTML tables and compression / crypto code implement existing behavior (the `zlib` APIs reach the encoders),
+so removing them changes the supported API.
 
 ### Reproducing and checking a budget
 
@@ -455,13 +341,8 @@ needs the target, the CLI, the crates and Node.js). It instantiates the developm
 with the processed Wasm and calls both direct numeric imports and string-converting imports.
 
 The browser calls the glue's closures outside any `nsh_*` call (a WebSocket message), so a task they wake must make
-the page pump: `LocalEngine::set_wake` hooks the core's task notify and the posts' notify (each still sends
-`Message::Wake`), and `nsh_platform_web` sets it to the `request_pump` import, which `Player.requestPump` coalesces
-into one `nsh_pump` in a task of its own (`setTimeout` 0; `call` defers it while the engine runs). `pump` sets a flag
-while it runs (`LocalEngine::pumping`): what it wakes itself (spawns, task timers, `Callback::post`, the fetch replies
-it hands to tasks) its bounded loop runs without calling the wake, and only work that loop leaves calls it, once, at
-the end, so tasks woken only there (timers, fetch replies) request no pump of their own. The deadline scheduling
-(`schedule`) is unchanged.
+the page pump: `LocalEngine::set_wake` hooks the engine's notifications to the `request_pump` import, which
+`Player.requestPump` coalesces into one `nsh_pump`.
 
 ## What WebAssembly changes in the shared crates
 
@@ -519,7 +400,8 @@ calls (`nsh_set_dark`, `nsh_resize`). Changes come from media query listeners, `
 The idiom is fixed at start, as `Environment::idiom` is everywhere: `desktop` for a fine, hovering pointer and a
 container at least 600 wide (headless Chromium reports no pointer and measures as a tablet or phone unless launched
 with a fine, hovering one, as `nsh test --target web` does), `pad` for a screen whose short side is at least 600, else
-`phone`; the player's `idiom` option overrides it. `Environment::desktop()`
+`phone`; the player's `idiom` option overrides it, and so does a test's setup (`TestEnvironment::idiom`: `open`'s
+desktop `platform` starts the app in the desktop idiom at any width). `Environment::desktop()`
 (desktop OS, or the web in the desktop idiom) decides `desktop={{…}}` props, `platform.select`'s `desktop` key,
 `platform.desktop` and `platform.idiom` (`Environment::reported_idiom()`; the page's `browser/environment.js`
 gets both from the engine's environment); `Os::is_desktop()` stays the desktop backends' OSes (`nsh/desktop`'s windows and menus). Like the
@@ -531,16 +413,21 @@ there is at its top. The browser's bars are the browser's: the web ignores `Comm
 Exports are `nsh_*` functions (`src/lib.rs`); imports are module `nsh` (`src/ffi.rs`). Every export that reaches
 the engine pumps it and returns the next delay in milliseconds (-1: none), which `nsh.js` turns into a `setTimeout`.
 The engine is not reentrant: `nsh.js` routes every call through `Player.call`, which defers calls made while a
-batch is being applied (a batch arrives inside a wasm call).
+batch is being applied (a batch arrives inside a wasm call). A trap (a panic, `panic = "abort"`) ends the call it
+happened in with the engine's state still borrowed, so after one `Player.call` drops every call, the deferred ones
+too: each would only panic again (`RefCell already borrowed`). The panic hook reports through its own import
+(`report_panic`, not `report_error`), so the page knows before the trap: the overlay keeps that first report, and
+what follows from any entry into the engine (the browser runtime's app code calls it outside `Player.call`) goes to
+the console only (`web/nsh.test.mjs`). The page needs a reload to run again.
 
-A commit becomes one JSON array (`src/encode.rs`): `["c", id, kind]`, `["f", id, x, y, w, h]`, `["s", id, class,
-borderClass, tint]`, `["t", id, ...content, runs, styles, selectable, selectionClass]` (`styles`: a class per run
-style; `selectable` `null` when unset), `["vp", id, props]` (the view props as an object: `pointerEvents`, `hitSlop`,
-the accessibility props, `testID`, `focusable` when set, `selectableView` when true), `["in", id, config, class]`, `["css", class, text]`, and so on; `nsh.js` has one `op_<name>` method per
-item. Views are absolutely positioned at the core's frames; borders are an overlay element (as UIKit draws layer
-borders) so they never move the content the core placed. Native animation items stay in Rust (`src/animation.rs`, a port
-of the Android animator); bound properties go out as `["a", id, prop, value]` after each batch and each
-`requestAnimationFrame` tick.
+A commit becomes one batch (`src/encode.rs`) that `nsh.js` applies item by item, one `op_<name>` method per kind of
+mount item. Views are absolutely positioned at the core's frames; borders are an overlay element so they never move
+the content the core placed. Native animation items stay in Rust (`src/animation.rs`); bound properties are applied
+after each batch and each `requestAnimationFrame` tick.
+
+Shader views (`["sh", id, layer]`) draw with one WebGL 2 context (`docs/dev/shaders.md`, "The web"); effects and
+transitions (`["sht"]`, `["shi"]`, `["shn"]`) take pictures of the DOM with a 2D canvas (`paintTree`), and pages and
+dialogs come and go through their shaders on an overlay (`shaderNav`): `docs/dev/shaders.md`, "On the web".
 
 ## Animation
 
@@ -590,19 +477,12 @@ A split bundle's chunks (`native-pipeline.md`) are ES modules the browser import
 map names each chunk's URL (`runModule(entry, { chunks })`), and `__nsh_import` (`web/browser/loader.js`) prepares a
 chunk's fonts before importing it.
 
-Text (`src/text.rs`) is broken into lines here, with widths and font metrics from the `measure_text`,
-`font_ascent` and `font_descent` imports (canvas `measureText`, cached per font and string); runs are drawn at the
-positions computed here with a line height equal to the font's ascent + descent, so the baseline lands where layout
-put it. Canvas text has no numeric variants (its `font` takes only `small-caps`; there is no `fontVariantNumeric`),
-so text with one (`tabular-nums`, ...) is measured by `measure_numeric_text` instead: a hidden span with the run's
-`font` and `font-variant-numeric`, as the run is drawn. Measuring there lays the page out, so a figure (digits and the
-signs numbers are written with: `css::measured_by_char`) is the sum of its characters' widths, each measured once and
-cached, and a live value that changes every frame lays nothing out; text with letters is measured whole, kerning
-included (`web/text-browser.test.mjs` checks both against what Chrome draws). The CSS of runs (`src/text/css.rs`: the `font` shorthand,
-generic families such as `monospace` left unquoted,
-names the app quoted kept only when their quotes close them) and line breaking (`src/text/wrap.rs`: break opportunities, the
-line start and end rules of CJK punctuation, the filling of lines) depend on nothing of the browser and are tested on
-the host (`tests/text`).
+Text (`src/text.rs`) is broken into lines here, with widths and font metrics from the browser (canvas `measureText`
+through imports, cached), and runs are drawn at the positions computed here so the baseline lands where layout put
+it. Text with numeric variants (`tabular-nums`, ...) and color emoji are measured against what the DOM draws, since
+canvas measures them differently. The CSS of runs (`src/text/css.rs`) and line breaking (`src/text/wrap.rs`, with
+CJK punctuation's line start and end rules) depend on nothing of the browser and are tested on the host
+(`tests/text`); `web/text-browser.test.mjs` checks measurements against what Chrome draws.
 
 ## Styles as classes
 

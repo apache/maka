@@ -89,6 +89,182 @@ fn preview_bytes(parts: &[Value]) -> Vec<u8> {
     bytes
 }
 
+async fn candidate_files(
+    f: &Fixture,
+    target: Value,
+    observed: Scope,
+) -> Result<Vec<Value>, String> {
+    let result = f
+        .app
+        .client()
+        .subscribe(
+            f.binding(2).await,
+            "fileCandidates".into(),
+            json!({"target":target,"query":"draft-note"}),
+            observed.clone(),
+            Attachments::new().into(),
+        )
+        .await;
+    let result = match result {
+        Ok(mut stream) => {
+            let mut entries = Vec::new();
+            while let Some(batch) = stream.recv().await {
+                entries.extend(batch["entries"].as_array().unwrap().iter().cloned());
+            }
+            let completed = stream.completion().await;
+            completed.cleanup.and(completed.result).map(|value| {
+                assert_eq!(value, Value::Null);
+                entries
+            })
+        }
+        Err(error) => Err(error),
+    };
+    observed.finish().await.unwrap();
+    result
+}
+
+#[tokio::test]
+async fn draft_files_observe_selected_workspaces_without_creating_conversations() {
+    let f = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    std::fs::write(f.workspace.join("draft-note.md"), "Draft reference").unwrap();
+    let roots = f
+        .query("directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let directory = roots["roots"][0]["path"].clone();
+    let expected = vec![json!({"path":path("draft-note.md"),"kind":"file"})];
+    let target = json!({"kind":"draft","workspace":{"kind":"directory","path":directory}});
+    assert_eq!(
+        candidate_files(&f, target.clone(), scope(&f.issuer, true))
+            .await
+            .unwrap(),
+        expected
+    );
+    let isolated = json!({"kind":"draft","workspace":{"kind":"isolated_git","path":directory}});
+    assert_eq!(
+        candidate_files(&f, isolated, scope(&f.issuer, true))
+            .await
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        f.query("projects", json!({"kind":"list","cursor":null}))
+            .await
+            .unwrap()["projects"],
+        json!([])
+    );
+    assert!(
+        !f.workspace
+            .join(maka_fs_tools::workspace::MARKER_FILE)
+            .exists()
+    );
+    assert!(
+        candidate_files(
+            &f,
+            json!({"kind":"draft","workspace":null}),
+            scope(&f.issuer, true)
+        )
+        .await
+        .unwrap_err()
+        .contains("agent_completion_workspace_required")
+    );
+    let outside = tempfile::tempdir().unwrap();
+    assert!(
+        candidate_files(
+            &f,
+            json!({"kind":"draft","workspace":{"kind":"directory","path":outside.path()}}),
+            scope(&f.issuer, true)
+        )
+        .await
+        .is_err()
+    );
+    let registered = f
+        .mutation(
+            2,
+            "project",
+            json!({"kind":"register","path":directory,"expected":null}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(registered["kind"], "committed");
+    let project = registered["project"]["reference"].clone();
+    assert_eq!(candidate_files(&f, json!({"kind":"draft","workspace":{"kind":"project","project":project,"path":directory}}), scope(&f.issuer, true)).await.unwrap(), expected);
+    let projects = f
+        .query("projects", json!({"kind":"list","cursor":null}))
+        .await
+        .unwrap();
+    assert_eq!(
+        projects["projects"][0]["reference"], project,
+        "completion must not select or update a Project"
+    );
+    assert!(
+        !f.workspace
+            .join(maka_fs_tools::workspace::MARKER_FILE)
+            .exists()
+    );
+    assert!(
+        f.store
+            .list_sessions::<StoredSessionConfiguration>(None, None, 100)
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
+    let donor = f.create("Workspace donor").await;
+    let archived = f
+        .mutation(
+            2,
+            "changeSession",
+            json!({"sessionId":donor,"expectedRevision":1,"action":"archive"}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(archived["session"]["archived"], true);
+    let borrowed = json!({"kind":"draft","workspace":{"kind":"session","sessionId":donor}});
+    assert_eq!(
+        candidate_files(&f, borrowed.clone(), scope(&f.issuer, true))
+            .await
+            .unwrap(),
+        expected
+    );
+    let identity = Identity::Agent {
+        invocation: Invocation {
+            session_id: donor,
+            turn_id: "t_test".into(),
+            run_id: "r_test".into(),
+            invocation_id: "i_test".into(),
+        },
+        operation_id: Some("model-completion".into()),
+    };
+    let model = f
+        .issuer
+        .issue_with(identity.clone(), true, CancellationToken::new())
+        .unwrap();
+    assert!(
+        candidate_files(&f, borrowed, model)
+            .await
+            .unwrap_err()
+            .contains("agent_completion_user_required")
+    );
+    let model = f
+        .issuer
+        .issue_with(identity, true, CancellationToken::new())
+        .unwrap();
+    let result = f.app.client().start(f.binding(2).await, "skillCandidates".into(), json!({
+        "target":{"kind":"draft","workspace":null},"backend":model_backend(&f.selection().await),"query":""
+    }), model.clone(), Attachments::new().into()).await.unwrap().result().await;
+    assert!(
+        result
+            .unwrap_err()
+            .contains("agent_completion_user_required")
+    );
+    model.finish().await.unwrap();
+    f.app.shutdown().await.unwrap();
+    f.config.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn read_file_keeps_one_capture_across_chunks_and_rejects_replaced_rereads() {
     tokio::time::timeout(Duration::from_secs(45), async {
@@ -147,7 +323,7 @@ async fn read_file_keeps_one_capture_across_chunks_and_rejects_replaced_rereads(
             std::fs::write(directory.join(format!("candidate-{index:04}-{suffix}.txt")), "").unwrap();
         }
         let observed = scope(&f.issuer, true);
-        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"sessionId":session,"directory":path("candidate-scan"),"query":""}), observed.clone(), Attachments::new().into()).await.unwrap();
+        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"target":{"kind":"session","sessionId":session},"directory":path("candidate-scan"),"query":""}), observed.clone(), Attachments::new().into()).await.unwrap();
         let first = item(&mut stream).await;
         assert_eq!(first["entries"][0], json!({"path":path(&first_path),"kind":"file"}));
         stream.cancel();
@@ -158,7 +334,7 @@ async fn read_file_keeps_one_capture_across_chunks_and_rejects_replaced_rereads(
         observed.resources.finish().await.unwrap();
         assert!(observed.resources.is_idle());
         let observed = scope(&f.issuer, true);
-        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"sessionId":session,"directory":path("candidate-scan"),"query":"candidate-0000-"}), observed.clone(), Attachments::new().into()).await.unwrap();
+        let mut stream = f.app.client().subscribe(f.binding(2).await, "fileCandidates".into(), json!({"target":{"kind":"session","sessionId":session},"directory":path("candidate-scan"),"query":"candidate-0000-"}), observed.clone(), Attachments::new().into()).await.unwrap();
         assert_eq!(item(&mut stream).await, json!({"entries":[{"path":path(&first_path),"kind":"file"}]}));
         assert!(stream.recv().await.is_none());
         let completed = stream.completion().await;

@@ -65,6 +65,22 @@ pub enum Tag {
     /// A view whose box a shader draws, under its children (`<shader>`,
     /// TS: `Shader` of `nsh`; [`crate::shader`]).
     Shader,
+    /// A view whose children draw through a shader (`<shadereffect>`, TS:
+    /// `ShaderEffect` of `nsh`): what they draw is its `sample_content`.
+    ShaderEffect,
+    /// A view whose children change through a shader (`<shadertransition>`,
+    /// TS: `ShaderTransition` of `nsh`): when its `value` changes, a picture
+    /// of what they drew is its `sample_from`, what they draw its
+    /// `sample_to`.
+    ShaderTransition,
+    /// The whole surface drawn through a shader (`<screeneffect>`, TS:
+    /// `ScreenEffect` of `nsh`): what the surface draws is its
+    /// `sample_content`. It takes no space and has no children.
+    ScreenEffect,
+    /// The whole surface changing through a shader (`<screentransition>`,
+    /// TS: `ScreenTransition` of `nsh`), as a transition does for its
+    /// children. It takes no space and has no children.
+    ScreenTransition,
 }
 
 impl Tag {
@@ -90,6 +106,10 @@ impl Tag {
             "native" => Tag::Native,
             "overlay" => Tag::Overlay,
             "shader" => Tag::Shader,
+            "shadereffect" => Tag::ShaderEffect,
+            "shadertransition" => Tag::ShaderTransition,
+            "screeneffect" => Tag::ScreenEffect,
+            "screentransition" => Tag::ScreenTransition,
             _ => return None,
         })
     }
@@ -231,6 +251,8 @@ events! {
     Paste = "onPaste": "The user pasted into an input (payload: [`EventPayload::Paste`]: the text, files with their bytes such as a screenshot, local files' URLs), before the `onChangeText` of the text it inserts.",
     ScreenColor = "onScreenColor": "A [`Command::PickScreenColor`] request finished (root only; payload: `id`, `color`: the color picked, packed `0xRRGGBBAA`, absent when cancelled).",
     FileRequest = "onFileRequest": "A [`Command::FileRequest`] finished (root only; payload: [`EventPayload::FileRequest`]).",
+    Speech = "onSpeech": "A speech recognition session reported (root only; payload: [`EventPayload::Speech`]).",
+    Download = "onDownload": "A web view's download started, finished or failed (payload: `state`, `id`, `url`, `filename`, `path`; `bytes` once finished, `message` when it failed).",
 
 }
 
@@ -818,6 +840,14 @@ pub enum EventPayload {
         /// The files, in the order picked; none when cancelled.
         files: Vec<crate::picker::PickedFile>,
     },
+    /// What a speech recognition session reported ([`EventKind::Speech`],
+    /// [`crate::speech`]).
+    Speech {
+        /// The session ([`crate::speech::SpeechCommand::Start`]).
+        id: u32,
+        /// What it reported.
+        event: crate::speech::SpeechEvent,
+    },
     /// The answer to a [`Command::FileRequest`] ([`EventKind::FileRequest`],
     /// [`crate::file_dialog`]).
     FileRequest {
@@ -1163,7 +1193,7 @@ pub enum PasteBehavior {
 }
 
 /// A bar button UIKit draws itself, with the system's look, symbol or
-/// label (`ios={{ headerRightSystemItem }}`).
+/// label (`ios={{ headerLeftSystemItem }}`, `ios={{ headerRightSystemItem }}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum HeaderSystemItem {
     /// A plus (`UIBarButtonSystemItemAdd`).
@@ -1427,6 +1457,17 @@ pub enum HeaderSlot {
     Header,
 }
 
+/// What a shader transition without a `source` runs (`fallback`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+pub enum TransitionFallback {
+    /// A cross-fade ([`crate::shader::crossfade`]).
+    #[default]
+    Fade,
+    /// A cut: the children change at once (`"none"`).
+    #[prop(rename = "none")]
+    Cut,
+}
+
 /// How a screen enters and leaves (`animation`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum ScreenAnimation {
@@ -1474,6 +1515,21 @@ pub enum ScreenProp {
     /// of `headerRight`. Without a `headerRight`, nothing is drawn there.
     #[prop(ios = "headerRightSystemItem", on = SCREEN)]
     HeaderRightSystemItem(Option<HeaderSystemItem>),
+    /// `ios={{ headerLeftSystemItem }}`: as `headerRightSystemItem`, in the
+    /// leading slot, pressing the first pressable view of `headerLeft`.
+    #[prop(ios = "headerLeftSystemItem", on = SCREEN)]
+    HeaderLeftSystemItem(Option<HeaderSystemItem>),
+    /// `ios={{ headerRightSymbol }}`: UIKit's own bar button showing the SF
+    /// Symbol of that name (`"slider.horizontal.3"`) in the trailing slot,
+    /// in place of the view of `headerRight`; a press on it is a press on
+    /// the first pressable view of `headerRight`. `headerRightSystemItem`
+    /// wins over it; an unknown name draws the view of `headerRight`.
+    #[prop(ios = "headerRightSymbol", on = SCREEN)]
+    HeaderRightSymbol(Option<Arc<str>>),
+    /// `ios={{ headerLeftSymbol }}`: as `headerRightSymbol`, in the leading
+    /// slot, pressing the first pressable view of `headerLeft`.
+    #[prop(ios = "headerLeftSymbol", on = SCREEN)]
+    HeaderLeftSymbol(Option<Arc<str>>),
     /// `headerBackVisible`: the system header's back button shows (default
     /// true; iOS and Android).
     #[prop(js = "headerBackVisible", default = true, on = SCREEN)]
@@ -1608,6 +1664,59 @@ pub enum OverlayProp {
     /// ([`crate::overlay::OverlayConfig::open`]); set by components.
     #[prop(reset = OverlayProp::Open(None))]
     Open(Option<bool>),
+    /// A view inside it laid over the anchor
+    /// ([`crate::overlay::OverlayConfig::cover`]); set by components
+    /// (`nsh-base`'s `Select`: the selected item over the trigger).
+    #[prop(reset = OverlayProp::Cover(None))]
+    Cover(Option<NodeId>),
+}
+
+/// Input for a web view's page, delivered as the user's hands give it: the
+/// page's events are trusted (`isTrusted`), which scripts it injects cannot
+/// make (`WebView`'s `sendInput`). Needs `capabilities.webview.input`.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum WebInput {
+    /// A primary click at a point of the page's viewport: CSS pixels, which
+    /// are points at the page's own zoom (what `getBoundingClientRect()`
+    /// reports).
+    Click {
+        /// From the viewport's left edge.
+        x: Points,
+        /// From the viewport's top edge.
+        y: Points,
+    },
+    /// Text typed into what has the page's keyboard focus.
+    Text(String),
+    /// A key pressed and released.
+    Key(WebKey),
+}
+
+/// A key `WebInput::Key` presses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WebKey {
+    /// Return: submits a form, confirms a field.
+    Enter,
+    /// Moves the focus forward.
+    Tab,
+    /// Escape.
+    Escape,
+    /// Deletes backward.
+    Backspace,
+}
+
+impl WebKey {
+    /// The key a DOM `KeyboardEvent.key` names (`"Enter"`, ...).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Enter" => Self::Enter,
+            "Tab" => Self::Tab,
+            "Escape" => Self::Escape,
+            "Backspace" => Self::Backspace,
+            _ => return None,
+        })
+    }
 }
 
 /// An imperative call on a native view (`ref.focus()` and the like).
@@ -1648,6 +1757,8 @@ pub enum Command {
     InjectJavaScript(String),
     /// Send a message to a web view's page (`window.onmessage` data).
     PostMessage(String),
+    /// Give a web view's page input as the user's own (trusted events).
+    SendInput(WebInput),
     /// Seek a video to a time in seconds.
     Seek(f64),
     /// Scroll a list to an item (resolved by the core into `ScrollTo`).
@@ -1685,8 +1796,9 @@ pub enum Command {
     StatusBar(StatusBarConfig),
     /// The design tokens the app is drawn with (on the root), sent when
     /// they change ([`crate::Core::tokens`]): what the platform's own
-    /// controls (menus) take their colors from, by the tokens' names
-    /// (`popover`, `accent`, `border`, ...).
+    /// controls (Linux's menus, Android's and iOS's alerts and action
+    /// sheets) take their colors from, by the tokens' names (`popover`,
+    /// `accent`, `border`, ...).
     Tokens(std::sync::Arc<crate::element::Tokens>),
     /// Change what functions set for the status bar (on the root): the
     /// core merges it under the settings components render and sends
@@ -1821,6 +1933,11 @@ pub enum Command {
         /// What to do.
         request: Box<crate::file_dialog::FileRequest>,
     },
+    /// Start, stop or abort a speech recognition session (on the root;
+    /// `Speech` of `nsh`, [`crate::speech`]) and report it as
+    /// [`EventKind::Speech`] ([`EventPayload::Speech`]). Sent only on
+    /// platforms whose [`crate::platform::Environment::speech`] is set.
+    Speech(crate::speech::SpeechCommand),
     /// A desktop command (on the root; `nsh/desktop`): the window, its
     /// title bar, menus. Mobile platforms ignore it.
     Desktop(Box<crate::desktop::DesktopCommand>),
@@ -2035,7 +2152,10 @@ pub enum Prop {
     /// `source` (shaders): the WGSL defining `fn shade(uv: vec2f) -> vec4f`,
     /// the color of each point of the box (`uv` 0..1 from the top left;
     /// straight sRGB with alpha), which reads `nsh.size`, `nsh.time`,
-    /// `nsh.scale` and its `struct Uniforms` as `uniforms`.
+    /// `nsh.scale` and its `struct Uniforms` as `uniforms`, and an effect's
+    /// or transition's pictures (`sample_content`, `sample_from`, ...).
+    /// An effect without one draws its children as they are; a transition
+    /// without one runs its `fallback`.
     #[prop(js = "source", on = SHADER)]
     ShaderSource(Option<Arc<str>>),
     /// A compiled shader, as Rust sets it (TS sets `source`).
@@ -2055,6 +2175,31 @@ pub enum Prop {
     /// `paused` (shaders): its clock (`nsh.time`) stands still.
     #[prop(js = "paused", on = SHADER, shared)]
     ShaderPaused(bool),
+    /// `progress` (shader effects): `nsh.progress`, a number or an animated
+    /// value, which moves it natively.
+    #[prop(js = "progress", on = EFFECT)]
+    ShaderProgress(crate::shader::ShaderProgress),
+    /// `maxSampleOffset` (shader effects and transitions): how far beyond
+    /// the box, in points, the shader draws and its pictures reach.
+    #[prop(js = "maxSampleOffset", on = EFFECT | TRANSITION)]
+    MaxSampleOffset(Points),
+    /// `value` (shader transitions): a string, number or boolean; when it
+    /// changes, the transition runs (not for the first one).
+    #[prop(js = "value", on = TRANSITION, shared)]
+    TransitionValue(Option<crate::shader::TransitionKey>),
+    /// `duration` (shader transitions): how long one runs, in milliseconds
+    /// (300 by default).
+    #[prop(js = "duration", on = TRANSITION)]
+    TransitionDuration(Option<f32>),
+    /// `fallback` (shader transitions): what runs without a `source`.
+    #[prop(js = "fallback", on = TRANSITION)]
+    TransitionFallback(TransitionFallback),
+    /// `transitionShader` (pages and dialogs): `{ source, uniforms,
+    /// duration }`, a shader the page or dialog comes and goes through
+    /// (the lower side `sample_from`, the upper `sample_to`) instead of its
+    /// `animation`, for `duration` milliseconds (350 by default).
+    #[prop(js = "transitionShader", on = SCREEN | MODAL)]
+    TransitionShader(Option<crate::shader::NavShaderSpec>),
     /// `src`: a URL, `asset:/path`, or an imported asset.
     #[prop(js = "src", on = IMAGE, shared)]
     Source(Option<ImageSource>),
@@ -2160,7 +2305,7 @@ pub enum Prop {
         Option<crate::animation::NodeId>,
     ),
     /// `value`: the text, controlled by JS.
-    #[prop(js = "value", on = INPUT)]
+    #[prop(js = "value", on = INPUT, shared)]
     Value(String),
     /// `defaultValue`: the initial text.
     #[prop(js = "defaultValue", once, on = INPUT)]
@@ -2296,6 +2441,10 @@ pub enum Prop {
     /// not mixed: a toggle button that is on), and not disabled. Not
     /// `activeStyle`, a press in progress.
     PressedStyle(Option<std::rc::Rc<StylePatch>>),
+    /// `focusWithinStyle`: the style while the keyboard focus is on the
+    /// view or a view inside it (an overlay's content counting as inside
+    /// the view it is in), and it is not disabled.
+    FocusWithinStyle(Option<std::rc::Rc<StylePatch>>),
     /// The states a part of a control shows its classes and state styles
     /// as its control has them ([`crate::tailwind::state`] bits: `checked`,
     /// `indeterminate`, `disabled`): a switch's thumb styled `checked:`
@@ -2304,6 +2453,13 @@ pub enum Prop {
     /// components (`Interactive::project_checked`, `project_indeterminate`,
     /// `project_disabled`), never by JS.
     ProjectedStates(u16),
+    /// The boolean `data-*` attributes a part of a component shows, by
+    /// name without `data-` and sorted: its `data-<name>:` classes apply,
+    /// and with `group` the `group-data-<name>:` classes inside it (a
+    /// calendar's day at the start of a range, `data-range-start`). They
+    /// tell screen readers nothing. Set by components
+    /// (`Interactive::project_data`), never by JS.
+    ProjectedData(Box<[&'static str]>),
     /// `headerStyle` of a page: `backgroundColor`, `color` (the title's) and
     /// `tintColor` (the buttons') of its header.
     HeaderStyle(Option<std::rc::Rc<StylePatch>>),

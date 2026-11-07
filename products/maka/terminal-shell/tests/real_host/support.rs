@@ -75,7 +75,7 @@ async fn product_packages() -> BTreeMap<String, Package> {
         static PACKAGES: OnceLock<BTreeMap<String, Package>> = OnceLock::new();
         PACKAGES
             .get_or_init(|| {
-                std::fs::read_dir(PathBuf::from(env!("OUT_DIR")).join("product/packages"))
+                std::fs::read_dir(crate::product_bundle().join("packages"))
                     .unwrap()
                     .map(|entry| {
                         let entry = entry.unwrap();
@@ -97,16 +97,14 @@ pub(super) async fn product_package(name: &'static str) -> Package {
 }
 
 async fn product_installation(workspace: &Path, home: &Path) -> Value {
-    let source = std::fs::read_to_string(
-        PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
-    )
-    .unwrap();
+    let source =
+        std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs")).unwrap();
     let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
     let module = vm.load("real-host-installation".into(), source).unwrap();
     let installation = module
         .call(
             vec!["installation".into()],
-            vec![json!({"workspace":workspace,"home":home,"helper":env!("CARGO_BIN_EXE_maka")})],
+            vec![json!({"workspace":workspace,"home":home,"helper":crate::maka_executable()})],
         )
         .await
         .unwrap();
@@ -227,10 +225,9 @@ impl Fixture {
 
         customize(&mut configuration, directory.path());
 
-        let source = std::fs::read_to_string(
-            PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
-        )
-        .unwrap();
+        let source =
+            std::fs::read_to_string(crate::product_bundle().join("authoring/composition.mjs"))
+                .unwrap();
         let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
         let module = vm.load("test-product-composition".into(), source).unwrap();
         let names: Vec<String> = serde_json::from_value(
@@ -326,7 +323,7 @@ impl Fixture {
             .query("agent", "directories", json!({"kind":"roots"}))
             .await
             .unwrap();
-        let created = mutate(&client,"create",json!({"title":"NSH real Agent","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
+        let created = mutate(&client,"create",json!({"title":"NSH real Agent","labels":[],"workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})).await;
         fixture.session = created["session"]["id"].as_str().unwrap().to_owned();
         client.close().await.unwrap();
         fixture

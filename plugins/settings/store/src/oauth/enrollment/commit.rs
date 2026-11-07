@@ -33,21 +33,19 @@ impl PreparedLogin {
         let ticket = self.clone();
         self.store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    let Some(mut saved) = receipt::read(tx, &ticket.input.attempt_id).await? else {
-                        return Err(ConfigError::Invalid(
-                            "authentication was not claimed".into(),
-                        ));
-                    };
-                    if !saved.matches(&ticket.input) || saved.connection != ticket.identity {
-                        return Err(ConfigError::Invalid("authentication claim changed".into()));
-                    }
-                    if saved.phase == Phase::Exchanging {
-                        saved.phase = phase;
-                        receipt::write(tx, &ticket.input.attempt_id, &saved).await?;
-                    }
-                    Ok(saved.phase)
-                })
+                let Some(mut saved) = receipt::read(tx, &ticket.input.attempt_id)? else {
+                    return Err(ConfigError::Invalid(
+                        "authentication was not claimed".into(),
+                    ));
+                };
+                if !saved.matches(&ticket.input) || saved.connection != ticket.identity {
+                    return Err(ConfigError::Invalid("authentication claim changed".into()));
+                }
+                if saved.phase == Phase::Exchanging {
+                    saved.phase = phase;
+                    receipt::write(tx, &ticket.input.attempt_id, &saved)?;
+                }
+                Ok(saved.phase)
             })
             .await
     }
@@ -58,16 +56,14 @@ impl PreparedLogin {
         let ticket = self.clone();
         self.store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    if receipt::read(tx, &ticket.input.attempt_id).await?.is_some() {
-                        return Ok(false);
-                    }
-                    let attempt = ticket.input.attempt_id.clone();
-                    let mut receipt = LoginReceipt::new(ticket.input, ticket.identity)?;
-                    receipt.phase = Phase::Exchanging;
-                    receipt::write(tx, &attempt, &receipt).await?;
-                    Ok(true)
-                })
+                if receipt::read(tx, &ticket.input.attempt_id)?.is_some() {
+                    return Ok(false);
+                }
+                let attempt = ticket.input.attempt_id.clone();
+                let mut receipt = LoginReceipt::new(ticket.input, ticket.identity)?;
+                receipt.phase = Phase::Exchanging;
+                receipt::write(tx, &attempt, &receipt)?;
+                Ok(true)
             })
             .await
     }
@@ -91,8 +87,8 @@ impl PreparedLogin {
         } = self.clone();
         store
             .transaction(TransactionMode::Immediate, move |tx| {
-                Box::pin(async move {
-                    if let Some(saved) = receipt::read(tx, &input.attempt_id).await? {
+                {
+                    if let Some(saved) = receipt::read(tx, &input.attempt_id)? {
                         if !saved.matches(&input) || saved.connection != identity {
                             return Ok(LoginCompletion::AttemptConflict);
                         }
@@ -113,7 +109,7 @@ impl PreparedLogin {
                             _ => return Ok(LoginCompletion::AttemptConflict),
                         }
                     }
-                    let catalog = catalog::read(tx).await?;
+                    let catalog = catalog::read(tx)?;
                     if matches!(&input.target, Target::Create { .. })
                         && catalog.connections.iter().any(|row| {
                             row.slug == after.slug && row.connection_id != after.connection_id
@@ -124,8 +120,7 @@ impl PreparedLogin {
                             input,
                             identity,
                             maka_agent_facts::oauth::Failure::SlugTaken,
-                        )
-                        .await;
+                        );
                     }
                     let actual = catalog
                         .connections
@@ -140,7 +135,7 @@ impl PreparedLogin {
                     };
                     let locator = locator(&after);
                     let credential_changed =
-                        vault::status_basis(&vault::status(tx, &locator).await?) != credential;
+                        vault::status_basis(&vault::status(tx, &locator)?) != credential;
                     if connection_changed || credential_changed {
                         return reject(
                             tx,
@@ -151,8 +146,7 @@ impl PreparedLogin {
                             } else {
                                 maka_agent_facts::oauth::Failure::CredentialChanged
                             },
-                        )
-                        .await;
+                        );
                     }
                     if before.as_ref() != Some(&after) {
                         // Only initialize a new connection. A re-login, another
@@ -173,23 +167,23 @@ impl PreparedLogin {
                                     model_id: model.id,
                                 });
                         }
-                        catalog::write_entry(tx, &after).await?;
-                        catalog::advance(tx, catalog.revision, default.as_ref()).await?;
+                        catalog::write_entry(tx, &after)?;
+                        catalog::advance(tx, catalog.revision, default.as_ref())?;
                     }
-                    vault::replace_secret(tx, &locator, &secret, now).await?;
-                    vault::advance(tx).await?;
+                    vault::replace_secret(tx, &locator, &secret, now)?;
+                    vault::advance(tx)?;
                     let attempt_id = input.attempt_id.clone();
                     let saved = LoginReceipt::new(input, identity)?;
-                    receipt::write(tx, &attempt_id, &saved).await?;
+                    receipt::write(tx, &attempt_id, &saved)?;
                     Ok(LoginCompletion::Committed(Box::new(saved)))
-                })
+                }
             })
             .await
     }
 }
 
-async fn reject(
-    tx: &mut sqlx::SqliteConnection,
+fn reject(
+    tx: &rusqlite::Connection,
     input: LoginStart,
     identity: ConnectionIdentity,
     failure: maka_agent_facts::oauth::Failure,
@@ -204,6 +198,6 @@ async fn reject(
     let attempt = input.attempt_id.clone();
     let mut receipt = LoginReceipt::new(input, identity)?;
     receipt.phase = Phase::Failed { failure };
-    receipt::write(tx, &attempt, &receipt).await?;
+    receipt::write(tx, &attempt, &receipt)?;
     Ok(completion)
 }

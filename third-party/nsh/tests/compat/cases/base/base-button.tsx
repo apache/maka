@@ -4,7 +4,8 @@
 // them), its role and states as screen readers get them (`role`,
 // `accessibilityLabel`, `selected`, `disabled`), the app's look (`style`,
 // `class`, `selectedStyle` while selected, `disabledStyle` while
-// disabled), all following signals. Its script checks
+// disabled), how far outside it presses count (`hitSlop`, a number for
+// every side or some sides), all following signals. Its script checks
 // each.
 import { Text, View, signal } from "nsh";
 import { Button } from "nsh/base";
@@ -16,6 +17,7 @@ function App() {
   const selected = signal(false);
   const disabled = signal(true);
   const blocked = signal(0);
+  const wide = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Button
@@ -56,6 +58,12 @@ function App() {
       </Button>
       <Button testID="enable" onPress={() => disabled.set(!disabled())}>
         <Text>Toggle blocked</Text>
+      </Button>
+      <Button testID="close" hitSlop={12} accessibilityLabel="Close" onPress={() => presses.set(presses() + 100)}>
+        <Text>×</Text>
+      </Button>
+      <Button testID="sides" hitSlop={wide() ? { top: 4, left: 2 } : 0} onPress={() => wide.set(!wide())}>
+        <Text>Widen</Text>
       </Button>
     </View>
   );

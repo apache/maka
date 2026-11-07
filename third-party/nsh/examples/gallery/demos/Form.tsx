@@ -772,6 +772,7 @@ export function Form() {
             <Inset padding={0} gap={0}>
               <LinkRow first icon="components" title="Inputs in a sheet" note='presentation="pageSheet"' onPress={() => sheet.set(true)} />
               <LinkRow icon="text" title="A message bar at the bottom" note="env(keyboard-inset-height)" onPress={() => nav.push({ name: "page", page: MessageBar })} />
+              <LinkRow icon="text" title="Input outside a scroll view" note="no keyboard handling" onPress={() => nav.push({ name: "page", page: Unscrolled })} />
             </Inset>
           </Card>
         ),
@@ -894,6 +895,7 @@ function MessageBar() {
             onSubmit={send}
             submitBehavior="submit"
             placeholder="Message"
+            testID="message-bar"
             returnKeyType="send"
             style={{
               placeholderColor: colors.faint,
@@ -913,6 +915,27 @@ function MessageBar() {
           />
           <RoundButton icon="arrow-up" label="Send" onPress={send} />
         </View>
+      </View>
+    </NavPage>
+  );
+}
+
+/**
+ * Inputs low on a page with no scroll view, which does nothing about the
+ * keyboard: the platform moves the page up so the focused one stays
+ * above it (as Android's adjustPan), and back down when it hides.
+ */
+function Unscrolled() {
+  return (
+    <NavPage title="Outside a scroll view" {...header} header={<PageHeader title="Outside a scroll view" />}>
+      <View style={{ flex: 1, padding: 16, gap: 12, backgroundColor: colors.background }}>
+        <Text style={{ fontSize: 15, lineHeight: 21, color: colors.muted }}>
+          This page has no scroll view and does nothing about the keyboard. Focus a field below: the page moves up with the keyboard so the field stays
+          above it, and back down when it hides.
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Field label="Nickname" placeholder="Above the keyboard" testID="unscrolled-nickname" />
+        <Field label="Note" placeholder="Last field on the page" testID="unscrolled-note" />
       </View>
     </NavPage>
   );

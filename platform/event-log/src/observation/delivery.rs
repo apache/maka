@@ -19,11 +19,9 @@
 
 use super::{high_water, invalid};
 use crate::{EventLog, StoreError, sessions};
-use futures_util::TryStreamExt;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::model::TextKind;
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, Row};
 
 /// Delivery projection of committed facts, never model replay material.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +39,14 @@ pub struct StoreStreamEvent {
 pub enum StreamFact {
     ContextChanged,
     ExecutorStarted,
+    ExecutorMessageStarted {
+        message_id: String,
+    },
+    ExecutorMessageEnded {
+        message_id: String,
+    },
     ExecutorDelta {
+        message_id: String,
         text_kind: TextKind,
         text: String,
     },
@@ -134,7 +139,6 @@ impl EventLog {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<StreamEventPage, StoreError> {
-        self.validate_root()?;
         sessions::validate_id(session_id)?;
         if after > through || max_events == 0 || max_events > 512 || max_bytes == 0 {
             return Err(invalid("invalid stream page bounds"));
@@ -144,25 +148,29 @@ impl EventLog {
         let session_id = session_id.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut transaction = connection.begin().await?;
-                    if through > high_water(&mut transaction).await? {
+                {
+                    let transaction = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Deferred,
+                    )?;
+                    if through > high_water(&transaction)? {
                         return Err(invalid("stream fence is beyond committed history"));
                     }
                     let mut events: Vec<StoreStreamEvent> = Vec::new();
                     let mut bytes = 0usize;
                     let mut next_after = None;
                     {
-                        let mut rows = sqlx::query(STREAM_EVENTS)
-                            .bind(&session_id)
-                            .bind(after)
-                            .bind(fence)
-                            .bind(max_events as i64 + 1)
-                            .fetch(&mut *transaction);
-                        while let Some(row) = rows.try_next().await? {
+                        let mut rows_statement = (transaction).prepare_cached(STREAM_EVENTS)?;
+                        let mut rows = rows_statement.query(rusqlite::params![
+                            &session_id,
+                            after,
+                            fence,
+                            max_events as i64 + 1
+                        ])?;
+                        while let Some(row) = rows.next()? {
                             // Check projected JSON before decoding identities or delta text.
                             // No complete RuntimeEvent is deserialized.
-                            let json: &str = row.try_get(0)?;
+                            let json: String = row.get(0)?;
                             if events.len() == max_events
                                 || (!events.is_empty()
                                     && json.len() > max_bytes.saturating_sub(bytes))
@@ -170,7 +178,7 @@ impl EventLog {
                                 next_after = events.last().map(|event| event.sequence);
                                 break;
                             }
-                            let event: StoreStreamEvent = serde_json::from_str(json)?;
+                            let event: StoreStreamEvent = serde_json::from_str(&json)?;
                             if event.invocation.session_id != session_id {
                                 return Err(invalid("stored stream scope changed"));
                             }
@@ -194,12 +202,11 @@ impl EventLog {
                         };
                         if let Some(step) = step {
                             let ids = crate::transcript::interrupted_messages(
-                                &mut transaction,
+                                &transaction,
                                 &event.invocation.invocation_id,
                                 step,
                                 event.sequence,
-                            )
-                            .await?;
+                            )?;
                             match &mut event.fact {
                                 StreamFact::StepEnded { interrupted, .. }
                                 | StreamFact::InvocationEnded { interrupted, .. } => {
@@ -218,13 +225,13 @@ impl EventLog {
                         bytes += size;
                         enriched.push(event);
                     }
-                    transaction.commit().await?;
+                    transaction.commit()?;
                     Ok(StreamEventPage {
                         events: enriched,
                         through_sequence: through,
                         next_after,
                     })
-                })
+                }
             })
             .await
     }
@@ -250,8 +257,11 @@ SELECT json_object(
                 AND json_extract(request.event_header, '$.fact.purpose') = 'summary'))
             THEN json_object('kind', 'context_changed')
         WHEN kind IN ('executor_started', 'executor_completed') THEN json_object('kind', kind)
+        WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') IN ('message_start','message_end') THEN
+            json_object('kind', CASE json_extract(event_header, '$.fact.output.type') WHEN 'message_start' THEN 'executor_message_started' ELSE 'executor_message_ended' END,
+                'message_id', json_extract(event_header, '$.fact.output.messageId'))
         WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') IN ('output_delta','thinking_delta') THEN
-            json_object('kind', 'executor_delta',
+            json_object('kind', 'executor_delta', 'message_id', json_extract(event_header, '$.fact.output.messageId'),
                 'text_kind', CASE WHEN json_extract(event_header, '$.fact.output.type') = 'thinking_delta' THEN 'thinking' ELSE 'text' END,
                 'text', json_extract(event_header, '$.fact.output.text'))
         WHEN kind = 'executor_observed' AND json_extract(event_header, '$.fact.output.type') = 'tool_start' THEN

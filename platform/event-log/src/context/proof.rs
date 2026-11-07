@@ -25,25 +25,23 @@ use maka_agent_facts::context::TextSummary;
 use maka_agent_facts::context::resolve_model_purpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::{Row, SqliteConnection};
 
-pub(super) async fn by_id(
-    connection: &mut SqliteConnection,
+pub(super) fn by_id(
+    connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<(u64, RuntimeEvent), StoreError> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+    let sql = format!(
         "SELECT e.sequence,e.event_header,{} FROM runtime_events e {} WHERE e.event_id=?",
         crate::canonical::COLUMNS,
         crate::canonical::JOINS
-    )))
-    .bind(id)
-    .fetch_optional(connection)
-    .await?;
-    decode(row)
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let mut rows = statement.query([id])?;
+    decode(rows.next()?)
 }
 
-pub(super) async fn by_kind(
-    connection: &mut SqliteConnection,
+pub(super) fn by_kind(
+    connection: &rusqlite::Connection,
     invocation: &str,
     kind: &str,
     operation: Option<&str>,
@@ -53,36 +51,34 @@ pub(super) async fn by_kind(
     } else {
         ""
     };
-    let query = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT e.sequence,e.event_header,{} FROM runtime_events e {}
-         WHERE e.invocation_id=?1 AND e.kind=?2{operation_filter}",
+    let sql = format!(
+        "SELECT e.sequence,e.event_header,{} FROM runtime_events e {} WHERE e.invocation_id=?1 AND e.kind=?2{operation_filter}",
         crate::canonical::COLUMNS,
         crate::canonical::JOINS
-    )))
-    .bind(invocation)
-    .bind(kind);
-    let query = if let Some(operation) = operation {
-        query.bind(operation)
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    if let Some(operation) = operation {
+        let mut rows = statement.query(rusqlite::params![invocation, kind, operation])?;
+        decode(rows.next()?)
     } else {
-        query
-    };
-    let row = query.fetch_optional(connection).await?;
-    decode(row)
+        let mut rows = statement.query(rusqlite::params![invocation, kind])?;
+        decode(rows.next()?)
+    }
 }
 
-fn decode(row: Option<sqlx::sqlite::SqliteRow>) -> Result<(u64, RuntimeEvent), StoreError> {
+fn decode(row: Option<&rusqlite::Row<'_>>) -> Result<(u64, RuntimeEvent), StoreError> {
     let row = row.ok_or_else(|| invalid("missing proof event"))?;
-    let json = crate::canonical::json(&row)?;
+    let json = crate::canonical::json(row)?;
     Ok((
-        sequence_number(row.try_get("sequence")?)?,
+        sequence_number(row.get("sequence")?)?,
         serde_json::from_str(&json)?,
     ))
 }
 
 /// Validate the proof and return its exact source selection. The chain reader
 /// must also verify every raw source digest before accepting the chain.
-pub(super) async fn validate(
-    connection: &mut SqliteConnection,
+pub(super) fn validate(
+    connection: &rusqlite::Connection,
     event: &RuntimeEvent,
     sequence: u64,
     checkpoint: &ContextCheckpoint,
@@ -93,8 +89,7 @@ pub(super) async fn validate(
         &event.invocation.invocation_id,
         "invocation_opened",
         None,
-    )
-    .await?;
+    )?;
     let Fact::InvocationOpened {
         input,
         configuration,
@@ -105,7 +100,7 @@ pub(super) async fn validate(
     if opening.invocation != event.invocation {
         return Err(invalid("checkpoint opening identity mismatch"));
     }
-    let selection = Selection::for_opening(connection, &opening).await?;
+    let selection = Selection::for_opening(connection, &opening)?;
     if boundary::source_fence(
         connection,
         &selection,
@@ -115,9 +110,7 @@ pub(super) async fn validate(
             .covered_through
             .checked_add(1)
             .ok_or_else(|| invalid("coverage overflow"))?,
-    )
-    .await?
-        != checkpoint.covered_through
+    )? != checkpoint.covered_through
     {
         return Err(invalid("coverage is not the complete closed source"));
     }
@@ -126,8 +119,7 @@ pub(super) async fn validate(
         &event.invocation.invocation_id,
         "model_requested",
         Some(&checkpoint.summary_step_id),
-    )
-    .await?;
+    )?;
     let Fact::ModelRequested {
         model_id,
         source_scope,
@@ -148,8 +140,7 @@ pub(super) async fn validate(
         source_scope,
         *source_high_water,
         sequence,
-    )
-    .await?
+    )?
     .ok_or_else(|| invalid("missing summary attempt"))?;
     crate::archive::validate_summary(
         connection,
@@ -162,8 +153,7 @@ pub(super) async fn validate(
             .as_deref()
             .ok_or_else(|| invalid("summary requires effective source evidence"))?,
         first_summary,
-    )
-    .await?;
+    )?;
     if resolve_model_purpose(input, *purpose).map_err(invalid)? != ModelPurpose::Summary
         || request.invocation != event.invocation
         || source_scope != &selection.scope
@@ -185,8 +175,7 @@ pub(super) async fn validate(
             "summary request does not prove checkpoint source or model",
         ));
     }
-    let changed_route: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY context_summary_round
+    let changed_route: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_log INDEXED BY context_summary_round
          WHERE invocation_id = ?1 AND event_header IS NOT NULL AND kind = 'model_requested' AND sequence >= ?9 AND sequence < ?2
          AND json_extract(event_header, '$.fact.purpose') = 'summary'
          AND json_extract(event_header, '$.fact.source_high_water') = ?5
@@ -194,10 +183,7 @@ pub(super) async fn validate(
          AND (json_extract(event_header, '$.fact.model_id') != ?3 OR json_extract(event_header, '$.fact.route_identity') != ?4
            OR json_extract(event_header, '$.fact.source_high_water') != ?5 OR json_extract(event_header, '$.fact.source_digest') != ?6
            OR json_extract(event_header, '$.fact.checkpoint_event_id') IS NOT ?7
-           OR json_extract(event_header, '$.fact.effective_source_digest') IS NOT ?8))",
-    ).bind(&event.invocation.invocation_id).bind(sequence as i64)
-        .bind(model_id).bind(route_identity).bind(checkpoint.covered_through as i64).bind(&checkpoint.source_digest)
-        .bind(&checkpoint.previous_checkpoint_id).bind(effective_source_digest).bind(first_summary as i64).bind(serde_json::to_string(source_scope)?).fetch_one(&mut *connection).await?;
+           OR json_extract(event_header, '$.fact.effective_source_digest') IS NOT ?8))")?.query_row(rusqlite::params![&event.invocation.invocation_id,sequence as i64,model_id,route_identity,checkpoint.covered_through as i64,&checkpoint.source_digest,&checkpoint.previous_checkpoint_id,effective_source_digest,first_summary as i64,serde_json::to_string(source_scope)?], |row| row.get(0))?;
     if changed_route {
         return Err(invalid("summary request route changed"));
     }
@@ -206,12 +192,11 @@ pub(super) async fn validate(
         &event.invocation.invocation_id,
         "model_completed",
         Some(&checkpoint.summary_step_id),
-    )
-    .await?;
+    )?;
     let Fact::ModelCompleted { output, .. } = &completion.fact else {
         return Err(invalid("missing summary completion"));
     };
-    let parts = crate::model_items::resolve_parts(connection, &completion).await?;
+    let parts = crate::model_items::resolve_parts(connection, &completion)?;
     if completion.invocation != event.invocation
         || !(opened < requested && requested < completed && completed < sequence)
     {

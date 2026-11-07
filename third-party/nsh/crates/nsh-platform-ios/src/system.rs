@@ -35,6 +35,17 @@ thread_local! {
     static APPEARANCE: Cell<UIUserInterfaceStyle> = const { Cell::new(UIUserInterfaceStyle::Unspecified) };
 }
 
+/// The tint of a surface's alerts and action sheets for its design tokens
+/// ([`nsh_core::Command::Tokens`]): the theme's `primary` when the app has
+/// a theme of its own (tokens other than the default theme's), else `None`
+/// (the system's).
+pub(crate) fn alert_tint(
+    tokens: &nsh_core::element::Tokens,
+) -> Option<nsh_core::element::AdaptiveColor> {
+    let themed = nsh_base::tokens_of(None).is_ok_and(|d| *tokens != d);
+    tokens.color("primary").filter(|_| themed)
+}
+
 /// The appearance the app asked for (`Unspecified`: the system's).
 pub(crate) fn appearance() -> UIUserInterfaceStyle {
     APPEARANCE.get()
@@ -150,8 +161,14 @@ impl DialogAnswer {
     }
 }
 
-/// Shows `dialog` over `view`'s window (a `UIAlertController`).
-pub(crate) fn show_dialog(dialog: &Dialog, view: &UIView, control: &EngineControl) {
+/// Shows `dialog` over `view`'s window (a `UIAlertController`), tinted
+/// with `tint` ([`alert_tint`]).
+pub(crate) fn show_dialog(
+    dialog: &Dialog,
+    tint: Option<nsh_core::element::AdaptiveColor>,
+    view: &UIView,
+    control: &EngineControl,
+) {
     let mtm = view.mtm();
     let answer = Rc::new(DialogAnswer {
         id: dialog.id,
@@ -176,6 +193,22 @@ pub(crate) fn show_dialog(dialog: &Dialog, view: &UIView, control: &EngineContro
         mtm,
     );
     alert.setOverrideUserInterfaceStyle(appearance());
+    if let (Some(tint), Some(shown)) = (tint, alert.view()) {
+        // UIKit draws the regular and cancel actions in the tint and
+        // destructive ones red (iOS 17); iOS 26's alerts keep their own
+        // colors.
+        let dark = match appearance() {
+            UIUserInterfaceStyle::Unspecified => {
+                let traits = objc2_ui_kit::UITraitEnvironment::traitCollection(view);
+                (unsafe { traits.userInterfaceStyle() }) == UIUserInterfaceStyle::Dark
+            }
+            style => style == UIUserInterfaceStyle::Dark,
+        };
+        let (r, g, b, a) =
+            nsh_core::Color::from(if dark { tint.dark } else { tint.light }).to_f64();
+        let color = objc2_ui_kit::UIColor::colorWithRed_green_blue_alpha(r, g, b, a);
+        unsafe { shown.setTintColor(Some(&color)) };
+    }
     for (index, button) in dialog.buttons.iter().enumerate() {
         let style = match button.style {
             DialogButtonStyle::Default => UIAlertActionStyle::Default,
@@ -556,4 +589,26 @@ pub(crate) fn accessibility_focus(view: &UIView) {
             Some(view),
         )
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alert_tint;
+
+    /// A surface's alert tint comes from its own tokens alone (each
+    /// `Mounter` keeps its own): a themed surface tints with its `primary`,
+    /// one without a theme keeps the system's.
+    #[test]
+    fn a_surfaces_alert_tint_comes_from_its_own_tokens() {
+        let plain = nsh_base::tokens_of(None).unwrap();
+        let mut themed = plain.clone();
+        let ink = plain.color("foreground").unwrap();
+        themed.set_color("primary", ink);
+
+        let a = alert_tint(&themed);
+        let b = alert_tint(&plain);
+
+        assert_eq!(a, Some(ink));
+        assert_eq!(b, None);
+    }
 }

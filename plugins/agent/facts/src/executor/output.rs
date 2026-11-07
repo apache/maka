@@ -30,11 +30,19 @@ use serde_json::Value;
     deny_unknown_fields
 )]
 pub enum Output {
+    MessageStart {
+        message_id: String,
+    },
     OutputDelta {
+        message_id: String,
         text: String,
     },
     ThinkingDelta {
+        message_id: String,
         text: String,
+    },
+    MessageEnd {
+        message_id: String,
     },
     ToolStart {
         tool_call_id: String,
@@ -56,7 +64,12 @@ pub enum Output {
 impl Output {
     pub fn validate(&self) -> Result<(), &'static str> {
         let (id, text) = match self {
-            Self::OutputDelta { text } | Self::ThinkingDelta { text } => (None, Some(text)),
+            Self::MessageStart { message_id } | Self::MessageEnd { message_id } => {
+                (Some(message_id), None)
+            }
+            Self::OutputDelta { message_id, text } | Self::ThinkingDelta { message_id, text } => {
+                (Some(message_id), Some(text))
+            }
             Self::ToolStart {
                 tool_call_id,
                 name,

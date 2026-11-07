@@ -196,6 +196,8 @@ pub(crate) struct SwapChain {
     /// What the last frame presented changed (pixels); `None`: all of it
     /// (or the buffers' content is unknown: new, resized).
     last: Option<Vec<RECT>>,
+    /// A frame was presented since the buffers were made or resized.
+    shown: bool,
 }
 
 impl SwapChain {
@@ -233,7 +235,13 @@ impl SwapChain {
             size: (size.0.max(1), size.1.max(1)),
             generation: generation(),
             last: None,
+            shown: false,
         })
+    }
+
+    /// The window shows a frame of these buffers, which stays until the next.
+    pub(crate) fn shows_a_frame(&self) -> bool {
+        self.shown
     }
 
     /// True when it was made on a device that is gone.
@@ -262,6 +270,7 @@ impl SwapChain {
         }
         self.size = size;
         self.last = None;
+        self.shown = false;
         Ok(())
     }
 
@@ -312,6 +321,7 @@ impl SwapChain {
             // SAFETY: a COM call on a live swap chain.
             _ => unsafe { self.swap.Present(1, DXGI_PRESENT(0)).ok() },
         };
+        self.shown = result.is_ok();
         self.last = if result.is_ok() { changed } else { None };
         result
     }

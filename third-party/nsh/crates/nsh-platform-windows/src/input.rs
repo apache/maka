@@ -248,6 +248,10 @@ pub(crate) enum Cursor {
     ResizeEw,
     /// Resize up and down.
     ResizeNs,
+    /// Resize northwest and southeast.
+    ResizeNwse,
+    /// Resize northeast and southwest.
+    ResizeNesw,
     /// Busy.
     Wait,
     /// Working in the background.
@@ -310,6 +314,8 @@ pub(crate) struct Input {
     /// Where the mouse last was (root coordinates): keyboard scrolling
     /// goes to the scroll view under it.
     last: Cell<Option<(f32, f32)>>,
+    /// A view's `cursor` changed in the batch being applied.
+    cursor_changed: Cell<bool>,
     /// A key with Alt was taken: Alt's release must not open the window
     /// menu.
     alt_combo: Cell<bool>,
@@ -691,11 +697,12 @@ pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u16) {
     {
         let mut s = view.state_mut();
         s.tracked = states;
-        // The core keeps the states still tracked and forgets the rest
+        // The core keeps the states still reported and forgets the rest
         // (`Core::update_tracking`): so do we, or a change it was not told
         // about (the pointer leaving a view whose hover was tracked
-        // throughout) would never reach it.
-        s.states &= states;
+        // throughout) would never reach it. The focus is reported
+        // whatever is tracked, so it stays.
+        s.states &= input::reported_states(states);
     }
     update_hover_tracking(surface, view);
 }
@@ -769,7 +776,20 @@ pub(crate) fn props_changed(_surface: &Rc<Surface>, _view: &NshView) {
 
 /// The view's style changed.
 pub(crate) fn style_changed(_view: &NshView) {
-    // The cursor is read when the window asks for it.
+    // Cursor changes are coalesced by the mounter until the batch ends.
+}
+
+/// A view's `cursor` changed: it shows once the batch is applied, without
+/// waiting for the mouse to move.
+pub(crate) fn cursor_changed(surface: &Surface) {
+    surface.input.cursor_changed.set(true);
+}
+
+/// A batch was applied.
+pub(crate) fn batch_applied(surface: &Rc<Surface>) {
+    if surface.input.cursor_changed.take() {
+        crate::window::refresh_cursor(surface);
+    }
 }
 
 /// `SetJsResponder` / `ClearJsResponder`. Runs while the mounter applies a
@@ -826,6 +846,8 @@ fn css_cursor(cursor: nsh_core::Cursor) -> Option<Cursor> {
         C::ZoomIn | C::ZoomOut => Cursor::Crosshair,
         C::ColResize => Cursor::ResizeEw,
         C::RowResize => Cursor::ResizeNs,
+        C::NwseResize => Cursor::ResizeNwse,
+        C::NeswResize => Cursor::ResizeNesw,
         C::None => Cursor::Hidden,
     })
 }
@@ -1090,8 +1112,10 @@ pub(crate) fn raw_at(surface: &Rc<Surface>, x: f32, y: f32) -> bool {
 }
 
 /// Gives a wheel or touchpad scroll to the raw item (a web view) under the
-/// pointer, unless a scroll of nsh's scroll views is going on (one scroll
-/// stays on its view, as in browsers). False when none takes it.
+/// pointer, or to an item the view under the pointer draws that wants it (a
+/// native component that zooms), unless a scroll of nsh's scroll views is
+/// going on (one scroll stays on its view, as in browsers). False when none
+/// takes it.
 fn raw_wheel(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     let input = &surface.input;
     let time = event.time * 1000.0;
@@ -1108,15 +1132,22 @@ fn raw_wheel(surface: &Rc<Surface>, event: &WheelEvent) -> bool {
     let Some(hit) = pick(&surface.root, event.x, event.y, true) else {
         return false;
     };
-    let Some(native) = hit.item.filter(|n| n.item.raw()) else {
-        return false;
-    };
     let (lx, ly) = local(&hit.view, event.x, event.y);
-    native.item.wheel(
-        lx - native.rect.origin.x.0,
-        ly - native.rect.origin.y.0,
-        event,
-    )
+    if let Some(native) = hit.item.filter(|n| n.item.raw()) {
+        return native.item.wheel(
+            lx - native.rect.origin.x.0,
+            ly - native.rect.origin.y.0,
+            event,
+        );
+    }
+    // Items that take no pointer (a native component draws in its view and
+    // leaves presses to it) may still take the wheel; raw ones only under
+    // the pointer, above. Cloned: an item's code may change the view.
+    let natives = hit.view.state().natives.clone();
+    natives.iter().filter(|n| !n.item.raw()).any(|n| {
+        n.item
+            .wheel(lx - n.rect.origin.x.0, ly - n.rect.origin.y.0, event)
+    })
 }
 
 /// A wheel event from the window.
@@ -1551,6 +1582,9 @@ fn down(
     }
     let native = matches!(item, Some(Item::Hosted(..) | Item::Input(_)));
     let selects = matches!(item, Some(Item::Text(_) | Item::Area(..)));
+    if selects {
+        crate::text_input::blur_all(surface);
+    }
     let input = &surface.input;
     if input.pointers.borrow().is_empty() {
         input.js_block.set(false);
@@ -2597,6 +2631,83 @@ mod tests {
     use crate::geom::rect;
 
     #[test]
+    fn selecting_output_releases_the_field_and_routes_selection_keys() {
+        use nsh_core::{AttributedText, InputConfig, TextEngine};
+
+        for area in [false, true] {
+            let surface = Surface::new(Default::default());
+            surface.root.state_mut().frame = rect(0.0, 0.0, 400.0, 400.0);
+            let field = view(
+                &surface.root,
+                2,
+                ViewKind::Input,
+                rect(0.0, 0.0, 200.0, 40.0),
+            );
+            crate::text_input::create(&surface, &field);
+            crate::text_input::config(&surface, &field, &InputConfig::default());
+            let container = view(
+                &surface.root,
+                3,
+                ViewKind::View,
+                rect(0.0, 80.0, 200.0, 40.0),
+            );
+            container.state_mut().props.selectable_view = area;
+            let output = view(&container, 4, ViewKind::Text, rect(0.0, 0.0, 200.0, 40.0));
+            let mut text = AttributedText::default();
+            text.push("Model output", Default::default());
+            text.selectable = Some(true);
+            let engine = crate::text::DWriteTextEngine::new(crate::text::ui_family());
+            let prepared = engine.prepare(&text);
+            let size = engine.measure(&prepared, Some(Points(200.0)));
+            let layout = engine.layout(&prepared, size);
+            crate::text::set(
+                &output,
+                &std::sync::Arc::new(text),
+                &layout,
+                rect(0.0, 0.0, 200.0, 40.0),
+            );
+            crate::text_input::focus_view(&surface, &field);
+            assert_eq!(
+                crate::text_input::focused_view(&surface),
+                Some(field.clone())
+            );
+
+            down(
+                &surface,
+                Key::Mouse,
+                10.0,
+                90.0,
+                0.0,
+                2,
+                Modifiers::default(),
+            );
+            up(&surface, Key::Mouse, Some((10.0, 90.0)), 1.0, false);
+            assert!(crate::text_input::focused_view(&surface).is_none());
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x41,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                }
+            ));
+            assert!(key(
+                &surface,
+                KeyEvent {
+                    vk: 0x1B,
+                    down: true,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn tab_visits_buttons_and_explicit_stops_but_skips_disabled_and_opted_out_controls() {
         let surface = Surface::new(Default::default());
         let first = view(&surface.root, 2, ViewKind::View, rect(0.0, 0.0, 50.0, 20.0));
@@ -2767,6 +2878,30 @@ mod tests {
     }
 
     #[test]
+    fn a_tall_scroll_views_bar_stays_in_view() {
+        // A horizontal scroll view 1000 tall in a vertical one 200 tall
+        // scrolled down by 600: the bar runs along the bottom of what is
+        // visible of it, where the mouse grabs it.
+        let root = root();
+        let outer = view(&root, 2, ViewKind::Scroll, rect(10.0, 10.0, 200.0, 200.0));
+        outer.state_mut().scroll.as_mut().unwrap().y = Points(600.0);
+        let inner = view(&outer, 4, ViewKind::Scroll, rect(0.0, 0.0, 200.0, 1000.0));
+        {
+            let mut s = inner.state_mut();
+            let scroll = s.scroll.as_mut().unwrap();
+            scroll.horizontal = true;
+            scroll.indicator = true;
+            scroll.content = nsh_core::geometry::size(Points(800.0), Points(1000.0));
+        }
+        let visible = inner.visible_bounds();
+        assert!((visible.origin.y.0 - 600.0).abs() < 1e-3, "{visible:?}");
+        assert!((visible.size.height.0 - 200.0).abs() < 1e-3, "{visible:?}");
+        assert!((visible.size.width.0 - 200.0).abs() < 1e-3, "{visible:?}");
+        assert!(crate::scroll::grabs_thumb(&inner, 20.0, 797.0));
+        assert!(!crate::scroll::grabs_thumb(&inner, 20.0, 997.0));
+    }
+
+    #[test]
     fn local_points_go_through_the_chain() {
         let root = root();
         let s = view(&root, 2, ViewKind::Scroll, rect(10.0, 10.0, 200.0, 200.0));
@@ -2817,6 +2952,8 @@ mod tests {
         assert_eq!(css_cursor(C::Pointer), Some(Cursor::Hand));
         assert_eq!(css_cursor(C::NotAllowed), Some(Cursor::NotAllowed));
         assert_eq!(css_cursor(C::None), Some(Cursor::Hidden));
+        assert_eq!(css_cursor(C::NwseResize), Some(Cursor::ResizeNwse));
+        assert_eq!(css_cursor(C::NeswResize), Some(Cursor::ResizeNesw));
     }
 
     #[test]

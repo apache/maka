@@ -20,7 +20,7 @@
 //! Deployment-head observations from the same owned store; no grants or package copies.
 use super::{EventLog, StoreError, invalid};
 use maka_plugin_core::deployment::DeploymentRef;
-use sqlx::Row;
+use rusqlite::{OptionalExtension, params};
 use std::sync::{Arc, Weak};
 
 /// A coalescing cursor, not composition authority. The committed SQL head is
@@ -29,6 +29,7 @@ pub struct DeploymentChanges {
     store: Weak<EventLog>,
     stop: Option<tokio_util::sync::CancellationToken>,
     observed: DeploymentRef,
+    observed_idle: bool,
     wakes: tokio::sync::watch::Receiver<u64>,
 }
 impl EventLog {
@@ -44,6 +45,7 @@ impl EventLog {
             store: Arc::downgrade(self),
             stop: None,
             observed,
+            observed_idle: false,
             wakes: self.subscribe_commits(),
         })
     }
@@ -58,26 +60,26 @@ impl EventLog {
             return Err(invalid("invalid deployment"));
         }
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let row =
-                        sqlx::query("SELECT revision FROM application_deployments WHERE id = ?")
-                            .bind(deployment.to_string())
-                            .fetch_optional(connection)
-                            .await?;
-                    let Some(row) = row else {
-                        return Ok(None);
-                    };
-                    let revision = u64::try_from(row.try_get::<i64, _>("revision")?)
-                        .map_err(|_| invalid("invalid stored application revision"))?;
-                    let source = DeploymentRef {
-                        state_domain,
-                        deployment,
-                        revision,
-                    };
-                    source.validate().map_err(invalid)?;
-                    Ok(Some(source))
-                })
+            .read(move |connection| {
+                let revision = connection
+                    .query_row(
+                        "SELECT revision FROM application_deployments WHERE id = ?",
+                        params![deployment.to_string()],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                let Some(revision) = revision else {
+                    return Ok(None);
+                };
+                let revision = u64::try_from(revision)
+                    .map_err(|_| invalid("invalid stored application revision"))?;
+                let source = DeploymentRef {
+                    state_domain,
+                    deployment,
+                    revision,
+                };
+                source.validate().map_err(invalid)?;
+                Ok(Some(source))
             })
             .await
     }
@@ -90,24 +92,26 @@ impl DeploymentChanges {
 
     pub async fn next(&mut self) -> Result<DeploymentRef, StoreError> {
         loop {
-            // Consume the wake before the SQL read: a commit during the read
-            // remains observable if that read did not already include it.
-            self.wakes.borrow_and_update();
             if self.stop.as_ref().is_some_and(|stop| stop.is_cancelled()) {
                 return Err(StoreError::ConnectionClosed);
             }
             let store = self.store.upgrade().ok_or(StoreError::ConnectionClosed)?;
             let closed = store.connection.close_receipt();
-            let source = store
-                .application_head(self.observed.deployment)
-                .await?
-                .ok_or_else(|| invalid("watched deployment not found"))?;
-            if source.revision < self.observed.revision {
-                return Err(invalid("watched revision exceeds committed head"));
-            }
-            if source.revision > self.observed.revision {
-                self.observed = source.clone();
-                return Ok(source);
+            if !self.observed_idle {
+                // A commit during this read remains observable on the next wake.
+                self.wakes.borrow_and_update();
+                let source = store
+                    .application_head(self.observed.deployment)
+                    .await?
+                    .ok_or_else(|| invalid("watched deployment not found"))?;
+                if source.revision < self.observed.revision {
+                    return Err(invalid("watched revision exceeds committed head"));
+                }
+                if source.revision > self.observed.revision {
+                    self.observed = source.clone();
+                    return Ok(source);
+                }
+                self.observed_idle = true;
             }
             drop(store);
             let stopping = async {
@@ -127,6 +131,7 @@ impl DeploymentChanges {
                 }
                 wake = self.wakes.changed() => {
                     wake.map_err(|_| invalid("application commit source closed"))?;
+                    self.observed_idle = false;
                 }
             }
         }
@@ -195,7 +200,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        store
+        let third = store
             .commit_application(id, 2, input(), vec![], vec![])
             .await
             .unwrap();
@@ -203,7 +208,22 @@ mod tests {
             .commit_application(id, 3, input(), vec![], vec![])
             .await
             .unwrap();
-        assert_eq!(pending.await.unwrap(), fourth);
+        // An accepted head read may finish between the two commits.
+        let next = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        if next == third {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), changes.next())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                fourth
+            );
+        } else {
+            assert_eq!(next, fourth);
+        }
         let mut foreign = fourth.clone();
         foreign.state_domain = uuid::Uuid::new_v4().to_string();
         assert!(store.subscribe_application(foreign).is_err());

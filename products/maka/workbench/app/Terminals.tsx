@@ -28,6 +28,7 @@ import {
   bodyTextStyle,
   captionTextStyle,
   controlStyle,
+  cardFocusStyle,
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
@@ -47,10 +48,10 @@ export function Terminals(props: { model: TerminalsModel }) {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: C.surface,
+            backgroundColor: C.card,
           }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
+          focusStyle={cardFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="plus" color={C.secondary} />

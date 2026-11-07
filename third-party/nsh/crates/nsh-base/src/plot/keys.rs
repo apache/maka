@@ -4,7 +4,10 @@
 //! pointer drives. `gpui-base`'s plot has no keyboard of its own and
 //! WAI-ARIA has no pattern for charts, so the keys are the few a row
 //! picker takes (a slider's Left / Right / Home / End, a listbox's
-//! Escape) and nothing more. As a slider's arrows in a right-to-left
+//! Escape) and nothing more. Over a grid of cells (a heatmap), the keys
+//! are a grid's (WAI-ARIA's data grid): the four arrows move to the cell
+//! beside on the screen, Home and End to the first or last cell of the
+//! line. As a slider's arrows in a right-to-left
 //! layout, Left and Right follow the screen: on a reversed x scale (the
 //! first row at the right edge) Right moves to the row before, while Home
 //! and End, and screen readers' increment and decrement, keep the rows'
@@ -30,6 +33,10 @@ pub(super) enum Step {
     First,
     /// The last row (End).
     Last,
+    /// The cell above (Up, over a grid of cells).
+    Up,
+    /// The cell below (Down, over a grid of cells).
+    Down,
 }
 
 impl Step {
@@ -60,6 +67,8 @@ pub(super) fn step(
     let at = match (step, from.map(|i| i as usize)) {
         (Step::First, _) | (Step::Next, None) => first(),
         (Step::Last, _) | (Step::Previous, None) => last(),
+        // Up and Down step only across a grid.
+        (Step::Up | Step::Down, from) => from.filter(|&i| i < len && placed(i)),
         // A row the rows no longer hold (fewer rows since) moves to the
         // nearest end.
         (Step::Next, Some(i)) => (i + 1..len).find(|&j| placed(j)).or_else(|| {
@@ -90,22 +99,30 @@ const KEYS: &[(&str, bool, Step)] = &[
 
 /// Binds the plot's keys while `active` (focused and interactive): each
 /// moves the hover to the row `to` finds for its step, Left's and Right's
-/// swapped while `mirrored` (the rows run right to left); Escape
-/// (`go(None)`) only while a row is `hovered`.
+/// swapped while `mirrored` (the rows run right to left), and Up and Down
+/// only while the rows are a `grid` (cells; elsewhere they go on to what
+/// they do around the plot, a scroll); Escape (`go(None)`) only while a
+/// row is `hovered`.
 pub(super) fn bind(
     active: impl Fn() -> bool + Copy + 'static,
     mirrored: impl Fn() -> bool + Copy + 'static,
+    grid: impl Fn() -> bool + Copy + 'static,
     hovered: Signal<Option<u32>>,
     to: impl Fn(Step) -> Option<u32> + Copy + 'static,
     go: impl Fn(Option<u32>) + Copy + 'static,
 ) {
     bind_while(active, KEYS, move |step: Step| {
-        let step = match mirrored() {
+        let step = match mirrored() && !grid() {
             true => step.mirrored(),
             false => step,
         };
         go(to(step))
     });
+    bind_while(
+        move || active() && grid(),
+        &[("up", true, Step::Up), ("down", true, Step::Down)],
+        move |step: Step| go(to(step)),
+    );
     let hovering = computed(move || hovered.get().is_some());
     bind_while(
         move || active() && hovering.get(),

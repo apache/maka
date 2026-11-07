@@ -24,7 +24,7 @@ use maka_agent_facts::interaction::{
     entity_id,
 };
 use maka_agent_facts::workspace::PermissionBasis;
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 const BROWSER_ORIGIN_DECISION: &str = "SELECT request.request_id
     FROM interaction_requests AS request
@@ -57,7 +57,6 @@ impl EventLog {
         target: &GrantTarget,
         basis: &PermissionBasis,
     ) -> Result<Option<Decision>, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(session)?;
         entity_id(session).map_err(invalid)?;
         target.validate().map_err(invalid)?;
@@ -78,55 +77,58 @@ impl EventLog {
         let origin = origin.clone();
         let basis = *basis;
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    if crate::workspace_bindings::permission_basis(&mut tx, &session).await?
-                        != Some(basis)
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                if crate::workspace_bindings::permission_basis(&tx, &session)? != Some(basis) {
+                    return Ok(None);
+                }
+                let request: Option<String> = tx
+                    .query_row(
+                        BROWSER_ORIGIN_DECISION,
+                        rusqlite::params![
+                            &session,
+                            capability,
+                            &target.provider_id,
+                            &target.contract_id,
+                            &target.server_id,
+                            &target.tool_name,
+                            &origin,
+                            basis.boundary_revision as i64,
+                            basis.binding.id.to_string(),
+                            basis.binding.permission_epoch as i64
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let decision = if let Some(request) = request {
+                    let record = read_local(&tx, &request)?
+                        .ok_or_else(|| invalid("browser decision disappeared"))?;
+                    if record.session_id != session
+                        || !matches!(
+                            record.request,
+                            InteractionRequest::ClientCapability {
+                                target: ref stored,
+                                basis: Some(captured),
+                                ..
+                            } if stored == &target && captured == basis
+                        )
                     {
-                        return Ok(None);
+                        return Err(invalid("stored browser decision authority changed"));
                     }
-                    let request: Option<String> = sqlx::query_scalar(BROWSER_ORIGIN_DECISION)
-                        .bind(&session)
-                        .bind(capability)
-                        .bind(&target.provider_id)
-                        .bind(&target.contract_id)
-                        .bind(&target.server_id)
-                        .bind(&target.tool_name)
-                        .bind(&origin)
-                        .bind(basis.boundary_revision as i64)
-                        .bind(basis.binding.id.to_string())
-                        .bind(basis.binding.permission_epoch as i64)
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                    let decision = if let Some(request) = request {
-                        let record = read_local(&mut tx, &request)
-                            .await?
-                            .ok_or_else(|| invalid("browser decision disappeared"))?;
-                        if record.session_id != session
-                            || !matches!(
-                                record.request,
-                                InteractionRequest::ClientCapability {
-                                    target: ref stored,
-                                    basis: Some(captured),
-                                    ..
-                                } if stored == &target && captured == basis
-                            )
-                        {
-                            return Err(invalid("stored browser decision authority changed"));
-                        }
-                        let Some(InteractionOutcome::ClientCapabilityDecision { decision, .. }) =
-                            record.outcome
-                        else {
-                            return Err(invalid("stored browser decision changed kind"));
-                        };
-                        Some(decision)
-                    } else {
-                        None
+                    let Some(InteractionOutcome::ClientCapabilityDecision { decision, .. }) =
+                        record.outcome
+                    else {
+                        return Err(invalid("stored browser decision changed kind"));
                     };
-                    tx.commit().await?;
-                    Ok(decision)
-                })
+                    Some(decision)
+                } else {
+                    None
+                };
+                tx.commit()?;
+                Ok(decision)
             })
             .await
     }

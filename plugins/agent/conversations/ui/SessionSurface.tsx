@@ -40,6 +40,7 @@ import { backendName } from '../../../../products/maka/workbench/app/modelSelect
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type {
+  AgentCompletionTarget,
   AgentInteractionResult,
   AgentWorkspaceAccess,
   ModelSelection,
@@ -56,6 +57,8 @@ import {
   type ConversationPreviewInput,
   type ConversationSessionHandle,
   type ComposerSession,
+  type ComposerCompletionSource,
+  type ComposerFocusHandle,
   type ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
@@ -97,10 +100,7 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import {
-  WorkspacePicker,
-  locateWorkspaceDirectory,
-} from '../../../../products/maka/workbench/app/WorkspacePicker';
+import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -134,6 +134,7 @@ import {
 import {
   applicationMenu,
   ownTitleBar,
+  PANEL_INSET,
   windowTitle,
 } from '../../../../products/maka/workbench/app/chrome';
 import {
@@ -190,6 +191,17 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
+type SubmissionAttempt = object;
+type Submission =
+  | { kind: 'idle' }
+  | { kind: 'preparing'; attempt: SubmissionAttempt }
+  | {
+      kind: 'handing_off';
+      attempt: SubmissionAttempt;
+      sessionId: string;
+      task: 'pending' | 'settled';
+    }
+  | { kind: 'finishing'; attempt: SubmissionAttempt };
 export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
@@ -271,10 +283,10 @@ export function createConversationUi(
   const workspaceError = createText();
   const recentOpen = signal(false);
   let recentWrite = Promise.resolve();
-  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+  const setRecentWorkspace = (path: string, remember: boolean) => {
     // Keep this window's writes and their full-list receipts in user-action order.
     const write = recentWrite.then(async () => {
-      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      const recent = (await host.setRecentWorkspace(path, remember)) as RecentWorkspace[];
       if (!alive) return;
       recentKnown.set(true);
       recentWorkspaces.set(recent);
@@ -284,14 +296,20 @@ export function createConversationUi(
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
-    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
-      report,
-    );
+    void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
-  const pendingSending = signal(false);
+  const submission = signal<Submission>({ kind: 'idle' });
+  const pendingSending = computed(() => {
+    const current = submission();
+    return (
+      current.kind === 'preparing' ||
+      current.kind === 'finishing' ||
+      (current.kind === 'handing_off' && current.task === 'pending')
+    );
+  });
   const pendingFiles = computed(() => pending()?.files ?? []);
   const pendingIntake = signal<Promise<void> | null>(null);
   const pendingFileBusy = () => pendingIntake() !== null;
@@ -314,7 +332,21 @@ export function createConversationUi(
     const target = pendingTarget();
     return target?.kind === 'creating' ? target.operationId : null;
   });
-  const pendingHandoff = signal<string | null>(null);
+  const pendingHandoff = computed(() => {
+    const current = submission();
+    return current.kind === 'handing_off' ? current.sessionId : null;
+  });
+  const currentSubmission = (attempt: SubmissionAttempt) => {
+    const current = submission();
+    return alive && current.kind !== 'idle' && current.attempt === attempt ? current : null;
+  };
+  const settleSubmission = (attempt: SubmissionAttempt) => {
+    const current = currentSubmission(attempt);
+    if (!current) return;
+    submission.set(
+      current.kind === 'handing_off' ? { ...current, task: 'settled' } : { kind: 'idle' },
+    );
+  };
   const pendingCreateUncertain = () => pendingCreateAttempt() !== null;
   let pendingModelGeneration = 0;
   const pendingDraftGeneration = signal(0);
@@ -359,7 +391,7 @@ export function createConversationUi(
   };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   const fileDragging = signal(false);
-  let editor: { focus(): void } | undefined;
+  let editor: ComposerFocusHandle | undefined;
   const composerSession = computed(() => {
     const owner = handle();
     return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
@@ -400,7 +432,7 @@ export function createConversationUi(
       } else {
         await host.query('agent', 'directories', {
           kind: 'children',
-          selection: workspace.selection,
+          path: workspace.path,
           after: null,
         });
       }
@@ -723,26 +755,13 @@ export function createConversationUi(
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
-          : (workspace.selection.segments.at(-1) ?? ''));
+          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
       if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
-        if (!observed.session.workspace.worktree) {
-          const roots = await host.query('agent', 'directories', { kind: 'roots' });
-          if (!alive || selected() !== expectedSessionId) return;
-          const found =
-            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
-          if (found)
-            recentWorkspace = {
-              kind: 'directory',
-              selection: {
-                rootId: found.root.selection.rootId,
-                segments: [...found.root.selection.segments, ...found.names!],
-                directoryIdentity: observed.session.workspace.directoryIdentity,
-              },
-            };
-        }
+        if (!observed.session.workspace.worktree)
+          recentWorkspace = { kind: 'directory', path: label };
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
@@ -880,6 +899,12 @@ export function createConversationUi(
     string,
     { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
   >();
+  const abandonHandoff = (attempt: SubmissionAttempt, sessionId: string) => {
+    const current = currentSubmission(attempt);
+    if (current?.kind !== 'handing_off' || current.sessionId !== sessionId) return;
+    prefills.delete(sessionId);
+    submission.set({ kind: 'preparing', attempt });
+  };
   const stagePending = (
     read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
     onText?: (text: string) => void,
@@ -932,8 +957,11 @@ export function createConversationUi(
     const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
     return {
       id: `pending/${generation}`,
+      completion: projectComposerCompletion(host, { kind: 'draft', workspace }),
       draft: pendingText,
       workspace: pendingWorkspaceLabel,
+      backend: pendingBackend,
+      modelDetails: pendingModelDetails,
       permissions: {
         id: `pending/${generation}`,
         access: pendingAccess,
@@ -1018,7 +1046,8 @@ export function createConversationUi(
           selected() !== null
         )
           return;
-        pendingSending.set(true);
+        const attempt: SubmissionAttempt = {};
+        submission.set({ kind: 'preparing', attempt });
         void (async () => {
           try {
             error.set('');
@@ -1123,8 +1152,9 @@ export function createConversationUi(
               throw new UiError(
                 'The conversation draft changed. Open the conversation to review it.',
               );
+            if (!currentSubmission(attempt)) return;
             prefills.set(id, { text, send: sendFirst, files, first: true });
-            pendingHandoff.set(id);
+            submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
             const switched = await switchSession(id, {
               sessionId: null,
               instance: null,
@@ -1132,13 +1162,13 @@ export function createConversationUi(
             if (switched) {
               await browsing.refresh();
             } else {
-              prefills.delete(id);
-              pendingHandoff.set(null);
+              abandonHandoff(attempt, id);
             }
           } catch (reason) {
-            report(reason);
+            if (currentSubmission(attempt)) report(reason);
+            else console.warn('Retired conversation submission failed', reason);
           } finally {
-            if (alive) pendingSending.set(false);
+            settleSubmission(attempt);
           }
         })();
       },
@@ -1396,8 +1426,9 @@ export function createConversationUi(
       const requireOwner = () => {
         if (!owns()) throw new UiError('Conversation navigation was cancelled.');
       };
+      const attempt: SubmissionAttempt = {};
       goalCreating.set(true);
-      pendingSending.set(true);
+      submission.set({ kind: 'preparing', attempt });
       pendingGoalError.set('');
       try {
         await pendingDefaultRead;
@@ -1489,26 +1520,25 @@ export function createConversationUi(
         requireOwner();
         const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
         prefills.set(id, { text, send: false, files, first: true });
-        pendingHandoff.set(id);
+        submission.set({ kind: 'handing_off', attempt, sessionId: id, task: 'pending' });
         const switched = await switchSession(id, {
           sessionId: null,
           instance: overlay()?.instance ?? null,
         });
         if (!switched) {
-          prefills.delete(id);
-          pendingHandoff.set(null);
+          abandonHandoff(attempt, id);
           return false;
         }
         await browsing.refresh();
         return true;
       } catch (reason) {
         console.warn('Goal start failed', reason);
-        if (owns()) pendingGoalError.set(errorText(reason));
+        if (owns() && currentSubmission(attempt)) pendingGoalError.set(errorText(reason));
         return false;
       } finally {
         if (alive) {
           goalCreating.set(false);
-          pendingSending.set(false);
+          settleSubmission(attempt);
         }
       }
     },
@@ -1588,23 +1618,30 @@ export function createConversationUi(
   // A side pane binds its conversation's keys within itself, so they take
   // over from the main pane's only while focus is there.
   const unbindKeys: (() => void)[] = [];
+  const unbindEditorKeys: (() => void)[] = [];
   cleanup(() => {
-    for (const unbind of unbindKeys.splice(0)) unbind();
+    for (const unbind of [...unbindKeys.splice(0), ...unbindEditorKeys.splice(0)]) unbind();
   });
-  const bindKeys = (within?: ViewRef) => {
+  const bindKeys = (within?: ViewRef, input?: ComposerFocusHandle) => {
+    if (input)
+      unbindEditorKeys.push(input.bindKey('ctrl+c', interrupt.interrupt, { fallback: true }));
     const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
-    unbindKeys.push(keymap.bind('mod+p', () => invokeOwn('commands'), options));
-    if (ownTitleBar) unbindKeys.push(keymap.bind('mod+f', () => invokeOwn('find'), options));
-    unbindKeys.push(keymap.bind('mod+g', () => invokeOwn('models'), options));
-    unbindKeys.push(keymap.bind('mod+l', () => invokeOwn('latest'), options));
-    unbindKeys.push(keymap.bind('alt+up', () => invokeOwn('history-focus'), options));
-    unbindKeys.push(keymap.bind('alt+down', () => invokeOwn('activity-focus'), options));
-    if (within) return;
-    unbindKeys.push(keymap.bind('mod+o', () => invokeOwn('sessions'), options));
-    unbindKeys.push(keymap.bind('mod+n', () => invokeOwn('new'), options));
+    const bind = (key: string, action: () => void) => {
+      const unbind = input ? input.bindKey(key, action) : keymap.bind(key, action, options);
+      (input ? unbindEditorKeys : unbindKeys).push(unbind);
+    };
+    bind('mod+p', () => invokeOwn('commands'));
+    if (ownTitleBar) bind('mod+f', () => invokeOwn('find'));
+    bind('mod+g', () => invokeOwn('models'));
+    bind('mod+l', () => invokeOwn('latest'));
+    bind('alt+up', () => invokeOwn('history-focus'));
+    bind('alt+down', () => invokeOwn('activity-focus'));
+    if (side) return;
+    bind('mod+o', () => invokeOwn('sessions'));
+    bind('mod+n', () => invokeOwn('new'));
     if (ownTitleBar) {
-      unbindKeys.push(keymap.bind('mod+shift+]', () => stepSession(1), options));
-      unbindKeys.push(keymap.bind('mod+shift+[', () => stepSession(-1), options));
+      bind('mod+shift+]', () => stepSession(1));
+      bind('mod+shift+[', () => stepSession(-1));
     }
   };
   let sideKeys: ViewRef | undefined;
@@ -1844,6 +1881,7 @@ export function createConversationUi(
       browserRoot = node;
     },
     close: closeSidebar,
+    collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
     selectSession: selectBrowsed,
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
@@ -1893,7 +1931,7 @@ export function createConversationUi(
       recentKnown.set(true);
       recentWorkspaces.set(recent);
       if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
-        await create(recent[0].workspace, null, recent[0].path, false);
+        await create({ kind: 'directory', path: recent[0].path }, null, recent[0].path, false);
     },
   });
   createPendingRecovery({
@@ -2049,6 +2087,11 @@ export function createConversationUi(
             if (workspace() !== next) workspace.set(next);
           },
         },
+        {
+          get loading() {
+            return input.surface !== 'overlays';
+          },
+        },
       );
     },
     session(input: ConversationSessionInput) {
@@ -2107,10 +2150,12 @@ export function createConversationUi(
                   takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
+                    const current = submission();
+                    const handoff =
+                      current.kind === 'handing_off' && current.sessionId === id() ? current : null;
                     if (!available) {
-                      if (pendingHandoff() === id()) {
-                        pendingHandoff.set(null);
-                        pendingSending.set(false);
+                      if (handoff) {
+                        submission.set({ kind: 'idle' });
                         void shell()!.openSession(null).catch(report);
                       }
                       if (prefill)
@@ -2121,9 +2166,13 @@ export function createConversationUi(
                         );
                       return null;
                     }
-                    if (pendingHandoff() === id()) {
+                    if (handoff) {
                       pending.set(null);
-                      pendingHandoff.set(null);
+                      submission.set(
+                        handoff.task === 'pending'
+                          ? { kind: 'finishing', attempt: handoff.attempt }
+                          : { kind: 'idle' },
+                      );
                     }
                     return prefill;
                   }}
@@ -2323,7 +2372,7 @@ export function createConversationUi(
                       style={{
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
-                        backgroundColor: C.surface,
+                        backgroundColor: C.card,
                         // A card of its own on the desktop: square corners
                         // flush on the composer's rounded top read as notches.
                         ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
@@ -2375,7 +2424,7 @@ export function createConversationUi(
                               origin: selected(),
                             })}
                             style={controlStyle}
-                            hoverStyle={controlHoverStyle()}
+                            hoverStyle={{ backgroundColor: C.cardRaised }}
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...bodyTextStyle, color: C.accent }}>
@@ -2394,7 +2443,9 @@ export function createConversationUi(
                 </View>
               }
               attach={(node) => {
+                for (const unbind of unbindEditorKeys.splice(0)) unbind();
                 editor = node;
+                bindKeys(side ? paneRoot : undefined, node);
               }}
               commands={composerCommands}
               models={
@@ -2470,11 +2521,11 @@ export function createConversationUi(
                     disabled={() => pendingSending() || pendingFileBusy()}
                     forget={(path) => {
                       recentOpen.set(false);
-                      void setRecentWorkspace(path, null).catch(report);
+                      void setRecentWorkspace(path, false).catch(report);
                     }}
                     choose={(item) => {
                       recentOpen.set(false);
-                      void create(item.workspace, selected(), item.path);
+                      void create({ kind: 'directory', path: item.path }, selected(), item.path);
                     }}
                     browse={() => {
                       recentOpen.set(false);
@@ -2545,7 +2596,14 @@ export function createConversationUi(
                         backgroundColor: C.scrim,
                       }}
                     >
-                      <View style={{ backgroundColor: C.background }}>
+                      <View
+                        style={
+                          platform.isTerminal
+                            ? { backgroundColor: C.background }
+                            : // The panel's inset keeps the header on the window controls' center line.
+                              { backgroundColor: C.chrome, paddingTop: PANEL_INSET }
+                        }
+                      >
                         <Header
                           title={current.sessionId === null ? '' : tr('Sessions')}
                           commands={inputAction(invokeCommand, {
@@ -2561,7 +2619,7 @@ export function createConversationUi(
                           maxWidth: 640,
                           flex: 1,
                           minHeight: 0,
-                          backgroundColor: C.surface,
+                          backgroundColor: C.chrome,
                         }}
                       >
                         <WorkspaceBrowser
@@ -2702,6 +2760,26 @@ export function createConversationUi(
   };
 }
 
+function projectComposerCompletion(
+  host: Host,
+  target: AgentCompletionTarget,
+): ComposerCompletionSource {
+  return {
+    files:
+      target.kind === 'draft' && target.workspace === null
+        ? null
+        : (query, directory) =>
+            host.subscribe('agent', 'fileCandidates', {
+              target,
+              query,
+              ...(directory ? { directory } : {}),
+            }),
+    skills: ({ query, backend }) =>
+      host.query('agent', 'skillCandidates', { target, backend, query }),
+    pathLabel: host.pathLabel,
+  };
+}
+
 function projectComposerSession(
   owner: ConversationHandle,
   host: Host,
@@ -2714,26 +2792,13 @@ function projectComposerSession(
     checkSend: owner.checkSend,
     dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
-    completion: {
-      files: (query, directory) =>
-        host.subscribe('agent', 'fileCandidates', {
-          sessionId: owner.sessionId,
-          query,
-          ...(directory ? { directory } : {}),
-        }),
-      skills: ({ query, backend }) =>
-        host.query('agent', 'skillCandidates', {
-          sessionId: owner.sessionId,
-          backend,
-          query,
-        }),
-      pathLabel: host.pathLabel,
-    },
+    completion: projectComposerCompletion(host, { kind: 'session', sessionId: owner.sessionId }),
     checklist: {
-      read: (offset) =>
+      read: (offset, limit) =>
         host.query('agent', 'checklist', {
           sessionId: owner.sessionId,
           offset,
+          ...(limit === undefined ? {} : { limit }),
         }),
       watch: (offset) =>
         host.subscribe('agent', 'watchChecklist', {

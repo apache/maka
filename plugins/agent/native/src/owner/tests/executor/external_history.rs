@@ -377,3 +377,122 @@ async fn native_external_legacy_running_record_keeps_original_identity_and_cas_f
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn native_external_message_boundaries_keep_live_and_refreshed_text_tool_text_order() {
+    fn live_rows(events: &[maka_event_log::observation::StoreStreamEvent]) -> Vec<Value> {
+        use maka_agent_facts::model::TextKind;
+        use maka_event_log::observation::StreamFact;
+        let mut rows = Vec::<Value>::new();
+        for event in events {
+            match &event.fact {
+                StreamFact::ExecutorDelta {
+                    message_id,
+                    text_kind,
+                    text,
+                } => {
+                    let id = maka_presentation::executor_message_id(
+                        &event.invocation.invocation_id,
+                        message_id,
+                    );
+                    let field = if *text_kind == TextKind::Text {
+                        "body"
+                    } else {
+                        "thinking"
+                    };
+                    if let Some(row) = rows
+                        .iter_mut()
+                        .find(|row| row["messageId"] == id && row["field"] == field)
+                    {
+                        let joined = format!("{}{text}", row["text"].as_str().unwrap());
+                        row["text"] = joined.into();
+                    } else {
+                        rows.push(json!({"messageId":id,"field":field,"text":text}));
+                    }
+                }
+                StreamFact::ExecutorToolStart { .. } => rows.push(json!({"field":"tool"})),
+                _ => {}
+            }
+        }
+        rows
+    }
+    fn history_rows(history: &Value) -> Vec<Value> {
+        let mut tools = std::collections::BTreeSet::new();
+        history["chunks"].as_array().unwrap().iter().filter_map(|chunk| {
+            if chunk["role"] == "user" { return None; }
+            if !chunk["tool"].is_null() {
+                return tools.insert(chunk["tool"]["toolUseId"].as_str().unwrap()).then(|| json!({"field":"tool"}));
+            }
+            if chunk["text"] == "" { return None; }
+            Some(json!({"messageId":chunk["messageId"],"field":chunk["field"],"text":chunk["text"]}))
+        }).collect()
+    }
+    fn assert_order(rows: &[Value], thinking: bool) {
+        let before = rows
+            .iter()
+            .position(|row| row["text"] == "before tool")
+            .unwrap();
+        let tool = rows.iter().position(|row| row["field"] == "tool").unwrap();
+        let after = rows
+            .iter()
+            .position(|row| row["text"] == "after tool")
+            .unwrap();
+        assert!(before < tool && tool < after, "{rows:?}");
+        assert_ne!(rows[before]["messageId"], rows[after]["messageId"]);
+        let bodies: Vec<_> = rows
+            .iter()
+            .filter(|row| row["field"] == "body")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["before tool", "after tool"]);
+        let thoughts: Vec<_> = rows
+            .iter()
+            .filter(|row| row["field"] == "thinking")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        if thinking {
+            assert_eq!(thoughts, ["native summary", "native snapshot"]);
+        } else {
+            assert!(thoughts.is_empty());
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        for runtime in ["codex", "antigravity", "claude"] {
+            let session = f.create(&format!("Native message boundaries {runtime}")).await;
+            let accepted = f.mutation(2, "send", input_runtime(&session, runtime, "boundaries"), Uuid::new_v4()).await.unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut control, "opened").await;
+            let store = f.session(&session).await;
+            let mut commits = store.subscribe_commits().unwrap();
+            control.get_mut().write_all(b"{\"messageBoundaries\":true}\n").await.unwrap();
+            packet(&mut control, "output").await;
+            let thinking = runtime != "antigravity";
+            let live = loop {
+                let observed = store.session_projection::<Value>(&session).await.unwrap().unwrap();
+                let delivery = store.session_stream_events(&session, 0, observed.through_sequence, 512, 1024 * 1024).await.unwrap();
+                assert!(delivery.next_after.is_none());
+                let rows = live_rows(&delivery.events);
+                let last = if thinking { "native snapshot" } else { "after tool" };
+                if rows.iter().any(|row| row["text"] == last) { break rows; }
+                commits.changed().await.unwrap();
+            };
+            assert_order(&live, thinking);
+            release(&mut control).await;
+            packet(&mut control, "terminal").await;
+            release(&mut control).await;
+            f.drained().await;
+            let result = work(&f, &session, &accepted).await;
+            assert_eq!(result["execution"]["state"], "completed", "{runtime}: {result}");
+            assert_eq!(result["answer"]["text"], "after tool");
+            let refreshed = f.query("history", json!({"sessionId":session,"position":{"kind":"start"},"view":"conversation","includeThinking":true})).await.unwrap();
+            let rows = history_rows(&refreshed);
+            assert_order(&rows, thinking);
+            assert_eq!(rows, live, "{runtime}: {refreshed}");
+            let final_texts: Vec<_> = refreshed["chunks"].as_array().unwrap().iter().filter(|chunk| chunk["finalOutput"] == true).map(|chunk| chunk["text"].as_str().unwrap()).collect();
+            assert_eq!(final_texts, ["after tool"]);
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

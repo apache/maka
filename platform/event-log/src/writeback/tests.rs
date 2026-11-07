@@ -260,7 +260,13 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
         )
     );
     // No-op metadata hints are independent of durable changes.
-    hook(&log, || panic!("replay cannot commit durable changes")).await;
+    let replay_commits = Arc::new(AtomicUsize::new(0));
+    let observed = replay_commits.clone();
+    hook(&log, move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+        true
+    })
+    .await;
     commits.borrow_and_update();
     log.record_application_intent_from(&snapshot, consumer(), reference, json!(null))
         .await
@@ -277,6 +283,7 @@ async fn mixed_receipts_share_full_commit_without_early_claims_or_notifications(
         Ok(Dispatch::Existing(_))
     ));
     assert!(!commits.has_changed().unwrap());
+    assert_eq!(replay_commits.load(Ordering::SeqCst), 0);
     log.connection.shutdown().await.unwrap();
 }
 
@@ -294,10 +301,10 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
         let operation = request(&log).await;
         let reference = operation.reference().unwrap();
         let baseline = counts(&log);
-        log.connection.run(|db| Box::pin(async move {
-            sqlx::raw_sql("CREATE TEMP TRIGGER mixed_fault AFTER INSERT ON message_admissions WHEN NEW.session_id='a' BEGIN SELECT RAISE(ABORT, 'mixed storage fault'); END;").execute(db).await?;
+        log.connection.run(|db| {
+            db.execute_batch("CREATE TEMP TRIGGER mixed_fault AFTER INSERT ON message_admissions WHEN NEW.session_id='a' BEGIN SELECT RAISE(ABORT, 'mixed storage fault'); END;")?;
             Ok(())
-        })).await.unwrap();
+        }).await.unwrap();
         if rollback_fails {
             forbid_rollback(&log).await;
         }
@@ -331,17 +338,18 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
             poison.await.err().unwrap(),
         ];
         for failure in failures {
-            let sql = match failure {
-                StoreError::Sqlx(sql) if !rollback_fails => sql,
-                StoreError::CommitUnknown(sql) if rollback_fails => sql,
-                other => panic!("{other:?}"),
+            if rollback_fails {
+                assert!(
+                    matches!(&failure, StoreError::Shared(cause) if matches!(cause.as_ref(), StoreError::RollbackFailed { .. }))
+                );
+            }
+            let StoreError::Sqlite(sql) = failure.underlying() else {
+                panic!("{failure:?}");
             };
-            let database = sql.as_database_error().unwrap();
             assert_eq!(
-                database.code().unwrap(),
-                rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER.to_string()
+                sql.sqlite_error().unwrap().extended_code,
+                rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER
             );
-            assert!(database.as_error().source().is_some());
             assert!(sql.to_string().contains("mixed storage fault"));
         }
         assert!(
@@ -350,7 +358,8 @@ async fn mixed_sql_failure_preserves_diagnostics_and_never_releases_effect_claim
         );
         assert!(matches!(unstarted.await, Err(CommitError::Rejected(_))));
         assert!(!commits.has_changed().unwrap());
-        log.connection.shutdown().await.unwrap();
+        let closed = log.connection.shutdown().await;
+        assert_eq!(closed.is_err(), rollback_fails);
         assert_eq!(counts(&log), baseline);
     }
 }
@@ -368,10 +377,10 @@ async fn mixed_deferred_commit_failure_releases_no_claim_but_acknowledged_cleanu
     let operation = request(&log).await;
     let reference = operation.reference().unwrap();
     let baseline = counts(&log);
-    log.connection.run(|db| Box::pin(async move {
-        sqlx::raw_sql("CREATE TABLE commit_probe (deployment TEXT, revision INTEGER, FOREIGN KEY(deployment,revision) REFERENCES application_sources(deployment,revision) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_mixed_commit AFTER INSERT ON application_intents BEGIN INSERT INTO commit_probe VALUES ('missing',1); END;").execute(db).await?;
+    log.connection.run(|db| {
+        db.execute_batch("CREATE TABLE commit_probe (deployment TEXT, revision INTEGER, FOREIGN KEY(deployment,revision) REFERENCES application_sources(deployment,revision) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_mixed_commit AFTER INSERT ON application_intents BEGIN INSERT INTO commit_probe VALUES ('missing',1); END;")?;
         Ok(())
-    })).await.unwrap();
+    }).await.unwrap();
     let (release, gate) = gate(&log).await;
     let mut intent = Box::pin(log.record_application_intent_from(
         &snapshot,
@@ -390,8 +399,14 @@ async fn mixed_deferred_commit_failure_releases_no_claim_but_acknowledged_cleanu
     commits.borrow_and_update();
     release.send(()).unwrap();
     gate.await.unwrap();
-    assert!(matches!(intent.await, Err(StoreError::CommitUnknown(_))));
-    assert!(matches!(dispatch.await, Err(StoreError::CommitUnknown(_))));
+    assert!(matches!(
+        intent.await.err().unwrap().underlying(),
+        StoreError::CommitUnknown(_)
+    ));
+    assert!(matches!(
+        dispatch.await.err().unwrap().underlying(),
+        StoreError::CommitUnknown(_)
+    ));
     assert!(matches!(missing.await, Err(StoreError::SessionNotFound)));
     assert!(recovery.await.unwrap().is_none());
     assert!(!commits.has_changed().unwrap());
@@ -400,13 +415,9 @@ async fn mixed_deferred_commit_failure_releases_no_claim_but_acknowledged_cleanu
     // transaction or speculative row. A distinct later operation can proceed.
     log.connection
         .run(|db| {
-            Box::pin(async move {
-                assert!(!sqlx::Connection::is_in_transaction(db));
-                sqlx::query("DROP TRIGGER fail_mixed_commit")
-                    .execute(db)
-                    .await?;
-                Ok(())
-            })
+            assert!(db.is_autocommit());
+            db.execute("DROP TRIGGER fail_mixed_commit", [])?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -435,14 +446,12 @@ async fn mixed_authority_failure_preserves_io_kind_and_closes_before_reusing_wri
     let moved = displaced.clone();
     log.connection
         .run(move |db| {
-            Box::pin(async move {
-                db.lock_handle().await?.set_update_hook(move |update| {
-                    if update.table == "application_intents" {
-                        std::fs::rename(&root, &moved).unwrap();
-                    }
-                });
-                Ok(())
-            })
+            db.update_hook(Some(move |_, _: &str, table: &str, _| {
+                if table == "application_intents" {
+                    std::fs::rename(&root, &moved).unwrap();
+                }
+            }))?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -457,24 +466,24 @@ async fn mixed_authority_failure_preserves_io_kind_and_closes_before_reusing_wri
     assert!(futures_util::poll!(&mut intent).is_pending());
     assert!(futures_util::poll!(&mut admission).is_pending());
     let mut control = Box::pin(log.connection.run(|_| {
-        Box::pin(async {
-            panic!("lost authority cannot run next control");
-            #[allow(unreachable_code)]
-            Ok(())
-        })
+        panic!("lost authority cannot run next control");
+        #[allow(unreachable_code)]
+        Ok(())
     }));
     assert!(futures_util::poll!(&mut control).is_pending());
     release.send(()).unwrap();
     gate.await.unwrap();
     for error in [intent.await.err().unwrap(), admission.await.err().unwrap()] {
-        let StoreError::Io(error) = error else {
+        let StoreError::Io(error) = error.underlying() else {
             panic!("{error:?}")
         };
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-        assert!(error.get_ref().is_some());
     }
-    assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
-    log.connection.shutdown().await.unwrap();
+    assert!(matches!(
+        control.await,
+        Err(StoreError::OperationUnknown | StoreError::ConnectionClosed)
+    ));
+    assert!(log.connection.shutdown().await.is_err());
     let db = rusqlite::Connection::open(displaced.join(ROOT_DATABASE)).unwrap();
     assert_eq!(
         db.query_row("SELECT count(*) FROM application_intents", [], |r| r

@@ -11,6 +11,7 @@ use crossbeam_channel::Sender;
 use nsh_core::MountBatch;
 use nsh_engine::MountSink;
 
+mod assets;
 mod canvas;
 mod class_bench;
 mod clock;

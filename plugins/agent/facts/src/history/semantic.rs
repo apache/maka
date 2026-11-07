@@ -252,6 +252,25 @@ fn row(stored: &StoredEvent, index: u64, order: RowPosition, kind: SemanticKind)
     }
 }
 
+pub fn append_executor_message(
+    out: &mut Transition,
+    stored: &StoredEvent,
+    start_sequence: u64,
+    text: String,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let key = position(stored.sequence, 0);
+    fragment(out, key, Payload::Text(text));
+    out.rows.push(row(
+        stored,
+        0,
+        position(start_sequence, 0),
+        SemanticKind::ExecutorText { payload: key },
+    ));
+}
+
 impl Frontier {
     fn stable(&mut self, transition: &mut Transition, cut: RowPosition) {
         self.stable_cut = Some(self.stable_cut.map_or(cut, |old| old.max(cut)));
@@ -356,15 +375,6 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 true,
             );
             frontier.stable(&mut out, position(stored.sequence, END_INDEX));
-        }
-        Fact::ExecutorCompleted { text } => {
-            fragment(&mut out, key, Payload::Text(text.clone()));
-            out.rows.push(row(
-                stored,
-                0,
-                key,
-                SemanticKind::ExecutorText { payload: key },
-            ));
         }
         Fact::ModelRequested {
             step_id,

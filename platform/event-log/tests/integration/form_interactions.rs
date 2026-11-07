@@ -23,7 +23,6 @@ use maka_agent_facts::interaction::InteractionOutcome;
 use maka_agent_facts::interaction::InteractionRecord;
 use maka_event_log::EventLog;
 use serde_json::json;
-use sqlx::Connection;
 
 #[tokio::test]
 async fn form_answers_survive_reopen_without_grants_and_match_semantically() {
@@ -123,24 +122,26 @@ async fn form_answers_survive_reopen_without_grants_and_match_semantically() {
             .unwrap()
             .matches
     );
-    let mut connection = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
-    )
-    .await
-    .unwrap();
-    let raw: String = sqlx::query_scalar("SELECT outcome_json FROM interaction_outcomes")
-        .fetch_one(&mut connection)
-        .await
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let raw: String = connection
+        .query_row(
+            "SELECT outcome_json FROM interaction_outcomes",
+            rusqlite::params![],
+            |row| row.get(0),
+        )
         .unwrap();
     assert!(raw.contains("\"n\":1}"));
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM client_capability_session_grants")
-            .fetch_one(&mut connection)
-            .await
+        connection
+            .query_row(
+                "SELECT count(*) FROM client_capability_session_grants",
+                rusqlite::params![],
+                |row| row.get::<_, i64>(0)
+            )
             .unwrap(),
         0
     );
-    connection.close().await.unwrap();
+    connection.close().unwrap();
     log.close().await.unwrap();
     let reopened = EventLog::open(&path).await.unwrap();
     assert_eq!(

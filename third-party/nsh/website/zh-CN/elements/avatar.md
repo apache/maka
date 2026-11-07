@@ -58,11 +58,11 @@ mount(App);
 | `src` | `.src(..)` | `string \| ImageAsset` | 无 | 图片，取值与 [`<Image>`](./image.md) 的 `src` 相同：URL、`asset:/` 或 `data:` URI、`blob:` URL（用户选的照片：`URL.createObjectURL(file)`），或导入的图片。加载完成后显示；空字符串表示没有图片。 |
 | `name` | `.name(..)` | `string` | 无 | 这个人的名字：屏幕阅读器读出的内容，以及应用没有传 `fallback` 时后备内容显示的首字母。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | `name` | 屏幕阅读器读出的内容，优先于 `name`。`""` 使头像成为装饰性的，对屏幕阅读器隐藏。 |
-| `fallbackDelay` | `.fallback_delay(..)` | `number`（毫秒） | `0` | 图片加载时后备内容等待多久才显示，让很快加载完的图片直接出现，不会先闪一下后备内容。 |
+| `fallbackDelay` | `.fallback_delay(..)` | `number`（毫秒） | `0` | 图片加载时后备内容等待多久才显示，让很快加载完的图片直接出现，不会先闪一下后备内容。`Infinity`：加载时不显示后备内容，只在失败或没有图片时显示。 |
 | `imageClass`、`imageStyle` | `.image_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 图片：它的填充方式、圆角和动效。 |
 | `fallbackClass`、`fallbackStyle` | `.fallback_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 后备内容：它的背景、文字颜色和大小，以及内容的对齐方式。 |
 | `fallback` | `.fallback(..)` | `JSX.Element` | 首字母 | 代替首字母的后备内容：一个图标、没有名字的人的占位内容。 |
-| `children` | `.child(..)` | `JSX.Element` | 无 | 显示在图片之上的内容：在线状态圆点、徽标。 |
+| `children` | `.child(..)` | `JSX.Element` | 无 | 显示在图片之上的内容：在线状态圆点、徽标。屏幕阅读器读出的是头像的标签，而不是这些内容（见[无障碍](#accessibility)）。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 头像本身：它的尺寸和形状。 |
 
 | 事件 | Rust | 参数 | 说明 |
@@ -114,12 +114,15 @@ import { Avatar, AvatarGroup } from "nsh/base";
 | `children` | `.child(..)` | `JSX.Element` | 无 | 头像，按顺序排列。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 这一排：它的方向（`flex-row`）和间距。 |
 
-重叠、描边和溢出部件的形状都由应用决定：在第一个之后的每个头像上加负外边距（`-ml-2`）让它们叠在一起，再用与背景同色的描边把它们分开。对于很长的列表，只传入前 `limit` 个人并设置 `total`：只会创建显示出来的头像。
+重叠、描边和溢出部件的形状都由应用决定：在第一个之后的每个头像上加负外边距（`-ml-2`）让它们叠在一起，再用与背景同色的描边把它们分开。对于很长的列表，只传入前 `limit` 个人并设置 `total`：只会创建显示出来的头像。溢出部件代表的人数是 `total` 减去显示的头像数，显示的头像数取子元素数量和 `limit` 中较小的一个：`total={8}` 且只有两个子元素时，显示两个头像和“+6”。
+
+<a id="accessibility"></a>
 
 ## 无障碍
 
 - 对屏幕阅读器来说，头像是一张图片，标签是 `accessibilityLabel` 或 `name`：名字只读一次。后备内容和图片对屏幕阅读器隐藏，所以首字母不会单独读出。两者都没有，或者 `accessibilityLabel=""` 时，头像是装饰性的，对屏幕阅读器隐藏，适合旁边已经显示了名字的头像。
 - 头像组是一个组，标签是它的 `accessibilityLabel`（“Ada、Grace 和另外 5 人”）；显示的头像是其中的图片。溢出部件读出它的内容（“+5”），应用提供 `overflowAccessibilityLabel`（“还有 5 人”）时读出这个标签：NSH 不写任何自己的文字。
+- 对屏幕阅读器来说，头像是一个元素，所以它的子元素显示的内容不会单独读出；在 iOS 上，子元素中的按钮或链接根本无法到达。把在线状态圆点或徽标的含义写进 `accessibilityLabel`（“Ada Lovelace，在线”），把可以按压的内容放在头像旁边，而不是头像里面。
 - 两者都不接受按压或键盘焦点：需要按压时把头像放进 `Button`。
 
 关于标签、角色和播报的一般说明，见[无障碍](../docs/accessibility.md)。

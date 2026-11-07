@@ -122,7 +122,13 @@ pub fn compile(entry: &Path, output: &Path) -> Result<CompiledUi> {
     let entry = fs::canonicalize(entry)?;
     let output = std::path::absolute(output)?;
     let mut host = nsh_core::element::Registry::ui_set("maka/host");
-    host.native_values(&["host", "AttachmentPicker", "TerminalGrid", "UploadIntake"]);
+    host.native_values(&[
+        "host",
+        "AttachmentPicker",
+        "ComposerInput",
+        "TerminalGrid",
+        "UploadIntake",
+    ]);
     let bundled = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: entry.clone(),
         minify: false,

@@ -64,7 +64,9 @@ sideways through the columns, with scroll bars (`scrollbar={false}` hides them, 
 ## Rows and columns
 
 `data` is the rows: objects whose fields the columns' `key`s name, or arrays the columns index by position. Numbers,
-booleans and strings show as text. A column is a `DataTableColumn`:
+booleans and strings show as text. Rust gives the rows a field at a time, each of one type:
+`DataTableRows::new(2).texts("symbol", ["AAPL", "MSFT"]).numbers("change", [1.2, -0.4])`. A column is a
+`DataTableColumn`:
 
 | Field | Description |
 |---|---|

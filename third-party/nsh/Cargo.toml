@@ -7,7 +7,7 @@ exclude = ["crates/gpui", "third-party/gpui-wgpu", "third-party/icy_sixel"]
 default-members = ["crates/xtask"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://nsh.dev"
@@ -27,23 +27,23 @@ private_interfaces = "deny"
 [workspace.dependencies]
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
-nsh-core = { version = "0.3.0", path = "crates/nsh-core" }
-nsh-package = { version = "0.3.0", path = "crates/nsh-package" }
+nsh-core = { version = "0.4.0", path = "crates/nsh-core" }
+nsh-package = { version = "0.4.0", path = "crates/nsh-package" }
 # Without `highlight`: the platforms turn it on, the CLI and the bundler leave it off.
-nsh-base = { version = "0.3.0", path = "crates/nsh-base", default-features = false }
-nsh-macros = { version = "0.3.0", path = "crates/nsh-macros" }
+nsh-base = { version = "0.4.0", path = "crates/nsh-base", default-features = false }
+nsh-macros = { version = "0.4.0", path = "crates/nsh-macros" }
 # Without `zlib` and `crypto`: what enables the VM picks them (`nsh-engine`'s `js`, the web runtime).
-nsh-js = { version = "0.3.0", path = "crates/nsh-js", default-features = false }
-nsh-engine = { version = "0.3.0", path = "crates/nsh-engine", default-features = false }
-nsh-bundler = { version = "0.3.0", path = "crates/nsh-bundler", default-features = false }
-nsh-platform-ios = { version = "0.3.0", path = "crates/nsh-platform-ios", default-features = false }
-nsh-platform-android = { version = "0.3.0", path = "crates/nsh-platform-android", default-features = false }
-nsh-platform-linux = { version = "0.3.0", path = "crates/nsh-platform-linux", default-features = false }
-nsh-platform-macos = { version = "0.3.0", path = "crates/nsh-platform-macos", default-features = false }
-nsh-platform-windows = { version = "0.3.0", path = "crates/nsh-platform-windows", default-features = false }
-nsh-platform-tui = { version = "0.3.0", path = "crates/nsh-platform-tui", default-features = false }
-nsh-dev = { version = "0.3.0", path = "crates/nsh-dev" }
-nsh-testing = { version = "0.3.0", path = "crates/nsh-testing", default-features = false }
+nsh-js = { version = "0.4.0", path = "crates/nsh-js", default-features = false }
+nsh-engine = { version = "0.4.0", path = "crates/nsh-engine", default-features = false }
+nsh-bundler = { version = "0.4.0", path = "crates/nsh-bundler", default-features = false }
+nsh-platform-ios = { version = "0.4.0", path = "crates/nsh-platform-ios", default-features = false }
+nsh-platform-android = { version = "0.4.0", path = "crates/nsh-platform-android", default-features = false }
+nsh-platform-linux = { version = "0.4.0", path = "crates/nsh-platform-linux", default-features = false }
+nsh-platform-macos = { version = "0.4.0", path = "crates/nsh-platform-macos", default-features = false }
+nsh-platform-windows = { version = "0.4.0", path = "crates/nsh-platform-windows", default-features = false }
+nsh-platform-tui = { version = "0.4.0", path = "crates/nsh-platform-tui", default-features = false }
+nsh-dev = { version = "0.4.0", path = "crates/nsh-dev" }
+nsh-testing = { version = "0.4.0", path = "crates/nsh-testing", default-features = false }
 
 anyhow = "1"
 thiserror = "2"
@@ -52,7 +52,6 @@ crossbeam-channel = "0.5"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
-unicode-width = "0.2"
 tiny-skia = "0.12"
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
 rustybuzz = "0.20"
@@ -67,6 +66,14 @@ imagesize = "0.15"
 # system fonts or raster images, so an SVG never reads files or fonts.
 resvg = { version = "0.46", default-features = false }
 ttf-parser = "0.25"
+# TeX formulas (`TextView`): KaTeX's parser and layout, ported to Rust.
+ratex-parser = "0.1.15"
+ratex-layout = "0.1.15"
+ratex-types = "0.1.15"
+ratex-font = "0.1.15"
+# WOFF and WOFF2 fonts, decompressed to the TrueType / OpenType data the
+# text engines register (`nsh-core`'s `text::font_data`).
+wuff = "0.2.9"
 oxc_sourcemap = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -114,8 +121,12 @@ regex = "1"
 # The text of `nsh-base`'s `Editor`: a rope, and its grapheme and word boundaries.
 ropey = "1.6"
 unicode-segmentation = "1.13"
+# Which characters are drawn as color emoji (`Emoji_Presentation`), kept upright in italic text.
+unicode-properties = { version = "0.1.3", default-features = false, features = ["emoji"] }
 # The line and word diffs of `nsh-base`'s `DiffView` (histogram, git's indent heuristic).
 imara-diff = "0.2"
+# The columns `DiffView` gives wide (CJK) characters: East Asian Width.
+unicode-width = "0.2"
 markdown = "1.0.0"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3.0"
@@ -455,6 +466,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSScrollView",
   "NSSecureTextField",
   "NSText",
+  "NSLayoutManager",
   "NSTextContainer",
   "NSTextField",
   "NSActionCell",

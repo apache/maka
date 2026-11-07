@@ -3,7 +3,8 @@
 //! closed, it stays with its ending look for as long as its transitions
 //! then run, and `onClose` comes after; opened again on its way out it is
 //! taken back; with reduced motion, or no ending look, it goes at once and
-//! nothing more is sent. On a manual clock: time moves only as the test
+//! nothing more is sent. A tooltip's `delay` of `Infinity` never ends and
+//! one of `NaN` is none. On a manual clock: time moves only as the test
 //! says.
 
 use std::{
@@ -23,10 +24,12 @@ use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
 /// What the platform was sent: each view's parent and test id, the
-/// opacities of its styles in order, and whether it takes presses.
+/// opacities of its styles in order, whether it takes presses, and the
+/// views put in each view in order (the last one on top).
 #[derive(Default)]
 struct Seen {
     parents: HashMap<NodeId, NodeId>,
+    stacks: HashMap<NodeId, Vec<NodeId>>,
     test_ids: HashMap<String, NodeId>,
     styles: HashMap<NodeId, Vec<f32>>,
     inert: HashMap<NodeId, bool>,
@@ -70,13 +73,18 @@ impl App {
 /// `root` on a Mac, on a manual clock; `reduce_motion`: the user asked for
 /// less motion.
 fn start(root: Root, reduce_motion: bool) -> App {
+    start_on(root, reduce_motion, Os::MacOs, Idiom::Desktop)
+}
+
+/// [`start`] on `os` and `idiom`.
+fn start_on(root: Root, reduce_motion: bool, os: Os, idiom: Idiom) -> App {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
         ..EngineConfig::new(root)
     };
-    config.environment.os = Os::MacOs;
-    config.environment.idiom = Idiom::Desktop;
+    config.environment.os = os;
+    config.environment.idiom = idiom;
     config.environment.reduce_motion = reduce_motion;
     let mut app = Headless::start(config).expect("the engine starts");
     let seen = Arc::new(Mutex::new(Seen::default()));
@@ -92,8 +100,32 @@ fn start(root: Root, reduce_motion: bool) -> App {
                     seen.inert
                         .insert(*id, props.pointer_events == PointerEvents::None);
                 }
-                MountItem::Insert { parent, child, .. } => {
+                MountItem::Insert {
+                    parent,
+                    child,
+                    before,
+                } => {
                     seen.parents.insert(*child, *parent);
+                    let stack = seen.stacks.entry(*parent).or_default();
+                    stack.retain(|id| id != child);
+                    let at = before
+                        .and_then(|b| stack.iter().position(|id| *id == b))
+                        .unwrap_or(stack.len());
+                    stack.insert(at, *child);
+                }
+                MountItem::ProjectRoot {
+                    parent,
+                    id,
+                    following,
+                } => {
+                    seen.parents.insert(*id, *parent);
+                    let stack = seen.stacks.entry(*parent).or_default();
+                    stack.retain(|view| view != id);
+                    let at = following
+                        .iter()
+                        .find_map(|next| stack.iter().position(|view| view == next))
+                        .unwrap_or(stack.len());
+                    stack.insert(at, *id);
                 }
                 MountItem::ViewStyle { id, style } => {
                     seen.styles.entry(*id).or_default().push(style.opacity);
@@ -252,6 +284,35 @@ fn a_popover_reports_the_side_it_went_on() {
     app.app.wait_for("Side: Some(Top)").unwrap();
 }
 
+#[test]
+fn on_a_phone_a_popover_is_above_its_backdrop() {
+    let mut app = start_on(
+        Root::new::<PopoverScreen>(|| PopoverProps {
+            looks: false,
+            low: false,
+        }),
+        false,
+        Os::Ios,
+        Idiom::Phone,
+    );
+    app.app.press("id:trigger").unwrap();
+    app.app.wait_for("Body").unwrap();
+    let seen = app.seen.lock().unwrap();
+    let popup = seen.popup("body");
+    let stack = &seen.stacks[&seen.parents[&popup]];
+    assert!(stack.len() >= 2, "the backdrop and the popup: {stack:?}");
+    assert_eq!(
+        stack.last(),
+        Some(&popup),
+        "the popup on top, taking the presses on it"
+    );
+    let backdrop = stack[stack.len() - 2];
+    assert!(
+        !seen.inert.get(&backdrop).copied().unwrap_or(false),
+        "the backdrop under it takes the presses outside"
+    );
+}
+
 /// A desktop menu with a submenu, both fading for 200 ms on their way out.
 #[component]
 fn MenuScreen() -> impl IntoElement {
@@ -350,4 +411,63 @@ fn a_tooltip_stays_with_its_ending_look_until_its_exit_ran() {
     app.app.run_for(Duration::from_millis(150)).unwrap();
     assert!(!app.app.shows("Tip"));
     app.app.wait_for("Closed: true").unwrap();
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct DelayProps {
+    /// The tooltip's `delay`.
+    delay: f64,
+}
+
+/// A trigger whose tooltip shows after `delay`, and a place away from it.
+#[component]
+fn DelayScreen(props: DelayProps) -> impl IntoElement {
+    view()
+        .pt(px(100.0))
+        .pl(px(40.0))
+        .child(
+            view()
+                .test_id("trigger")
+                .w(px(80.0))
+                .h(px(30.0))
+                .tooltip(tooltip().delay(props.delay).child(text("Tip")))
+                .child(text("Trigger")),
+        )
+        .child(view().test_id("away").h(px(200.0)).child(text("Away")))
+}
+
+fn delay_app(delay: f64) -> App {
+    start(
+        Root::new::<DelayScreen>(move || DelayProps { delay }),
+        false,
+    )
+}
+
+#[test]
+fn a_tooltip_delay_of_infinity_never_shows_it() {
+    let mut app = delay_app(f64::INFINITY);
+    app.app.hover("id:trigger").unwrap();
+    app.app.run_for(Duration::from_secs(10)).unwrap();
+    assert!(!app.app.shows("Tip"));
+    app.app.hover("id:away").unwrap();
+    app.app.run_for(Duration::from_millis(50)).unwrap();
+    assert!(!app.app.shows("Tip"));
+}
+
+#[test]
+fn a_tooltip_delay_of_nan_is_none() {
+    let mut app = delay_app(f64::NAN);
+    app.app.hover("id:trigger").unwrap();
+    app.app.run_for(Duration::from_millis(20)).unwrap();
+    assert!(app.app.shows("Tip"), "shown at once");
+}
+
+#[test]
+fn a_tooltip_shows_once_the_pointer_rested_for_its_delay() {
+    let mut app = delay_app(300.0);
+    app.app.hover("id:trigger").unwrap();
+    app.app.run_for(Duration::from_millis(250)).unwrap();
+    assert!(!app.app.shows("Tip"), "not before 300 ms");
+    app.app.run_for(Duration::from_millis(100)).unwrap();
+    assert!(app.app.shows("Tip"));
 }

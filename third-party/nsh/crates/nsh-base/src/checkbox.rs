@@ -33,6 +33,12 @@ pub struct CheckboxProps {
     /// What it is for screen readers (default `"checkbox"`; a menu item
     /// that is checked, ...).
     pub role: Prop<Option<AccessibilityRole>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A small checkbox (a box with no label) takes presses a
+    /// finger lands near it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The Tailwind classes of the indicator, the box that shows the value;
     /// `checked:`, `indeterminate:` and `disabled:` follow the checkbox.
     pub indicator_class: Prop<Option<SharedString>>,
@@ -65,7 +71,8 @@ pub enum CheckboxEvent {
 /// and `style` style the checkbox, `indicatorClass` / `indicatorStyle` the
 /// indicator, and `checked:`, `indeterminate:` and `disabled:` classes on
 /// each follow the checkbox's state (or `checkedStyle`,
-/// `indeterminateStyle` and `disabledStyle` on the checkbox).
+/// `indeterminateStyle` and `disabledStyle` on the checkbox). `hitSlop`
+/// widens where presses count past its bounds, as a view's does.
 #[component]
 pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElement {
     let (checked, indeterminate) = (props.checked, props.indeterminate);
@@ -88,6 +95,7 @@ pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElem
         })
         .checked_style(props.checked_style)
         .indeterminate_style(props.indeterminate_style)
+        .hit_slop(props.hit_slop)
         .on_press(move |_: &()| {
             let next = indeterminate.get_untracked() || !checked.get_untracked();
             cx.emit(CheckboxEvent::Change(next))

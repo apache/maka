@@ -45,8 +45,6 @@ mod preupdate_hook;
 pub(crate) mod deserialize;
 
 mod worker;
-mod worker_connection;
-pub use worker_connection::SqliteWorkerConnection;
 
 /// A connection to an open [Sqlite] database.
 ///
@@ -184,12 +182,7 @@ pub(crate) struct Statements {
 }
 
 impl SqliteConnection {
-    /// Establish the actual worker before running PRAGMAs or collations. The
-    /// returned connection must remain owned through configure and real close.
-    /// WorkerCrashed does not confirm cleanup; callers must retain their original
-    /// authority. Other errors occur before worker transfer, after any partial
-    /// handle has synchronously closed on that worker.
-    pub async fn establish(options: &SqliteConnectOptions) -> Result<Self, Error> {
+    pub(crate) async fn establish(options: &SqliteConnectOptions) -> Result<Self, Error> {
         let params = EstablishParams::from_options(options)?;
         let worker = ConnectionWorker::establish(params).await?;
         Ok(Self {
@@ -197,47 +190,6 @@ impl SqliteConnection {
             worker,
             row_channel_size: options.row_channel_size,
         })
-    }
-
-    /// Run one synchronous operation on this connection's existing SQLite worker.
-    ///
-    /// The worker retains exclusive access to the borrowed handle throughout the
-    /// callback. The callback must not retain/return the handle or handle-backed
-    /// objects, use it from another thread, close it, control transactions, or
-    /// invalidate driver-owned statements/hooks. Any temporary statements, blobs
-    /// and non-owning wrappers must be destroyed before the callback exits.
-    /// Direct FFI access has the same unsafe caller obligations and semver-exempt
-    /// `libsqlite3-sys` type contract as [`LockedSqliteHandle::as_raw_handle`].
-    ///
-    /// The callback must not wait for work on this same connection or for the
-    /// submitting task to advance. Captures/results must be owned; `Send + 'static`
-    /// does not make returning an unsafe handle-backed wrapper valid.
-    ///
-    /// Once enqueued, the operation runs even if its waiting future is dropped.
-    /// Abandonment provides no result or rollback guarantee: drop/roll back the
-    /// enclosing transaction before reuse when its outcome is unknown. A Rust
-    /// callback panic is resumed on the awaiting task; it is not a close receipt.
-    /// Callback result errors may be represented directly by the return value.
-    pub async fn run_on_worker<F, R>(&mut self, operation: F) -> Result<R, Error>
-    where
-        F: FnOnce(NonNull<sqlite3>) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.run_with_connection(move |connection| operation(connection.as_raw_handle())).await
-    }
-
-    /// Run a synchronous operation with this worker's existing query executor.
-    ///
-    /// The callback has the same acceptance, cancellation and panic behavior as
-    /// [`Self::run_on_worker`]. Its queries reuse the original statement cache.
-    /// Query futures/streams are immediately ready; poll them on this worker.
-    /// Do not await outside I/O, control transactions or retain raw handles.
-    pub async fn run_with_connection<F, R>(&mut self, operation: F) -> Result<R, Error>
-    where
-        F: FnOnce(&mut SqliteWorkerConnection<'_>) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.worker.run_with_connection(operation).await
     }
 
     /// Lock the SQLite database handle out from the worker thread so direct SQLite API calls can

@@ -21,7 +21,6 @@ use maka_agent_facts::language::Language;
 use maka_agent_facts::model::{ModelFinishReason, ModelGeneration};
 use maka_agent_facts::tools::ToolError;
 use maka_agent_ports::llm;
-use maka_agent_ports::preferences;
 use maka_agent_ports::session::history;
 use maka_capabilities::call;
 use maka_capabilities::storage;
@@ -116,14 +115,11 @@ pub struct Recaps {
     pub store: Arc<dyn storage::Store>,
     pub history: Arc<dyn History>,
     pub models: Arc<dyn Models>,
-    pub preferences: Arc<dyn preferences::Preferences>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Session recap input is invalid")]
     Input,
-    #[error("Session recap is unavailable in incognito mode")]
-    Private,
     #[error("Session history access was refused or is unavailable")]
     History,
     #[error("Session history exceeds the bounded recap scan; recap was not generated")]
@@ -154,16 +150,6 @@ impl Recaps {
         }
         .validate()
         .map_err(|_| Error::Input)?;
-        if self
-            .preferences
-            .read()
-            .await
-            .map_err(|_| Error::Private)?
-            .privacy
-            .incognito_active
-        {
-            return Err(Error::Private);
-        }
         // Cached derived text retains the source history's access boundary.
         self.history
             .read(
@@ -413,7 +399,6 @@ mod tests {
     use maka_agent_facts::model::ModelUsage;
     use maka_agent_facts::tools::ToolError;
     use maka_agent_ports::llm;
-    use maka_agent_ports::preferences;
     use maka_agent_ports::session::history;
     use maka_capabilities::call;
     use maka_capabilities::storage;
@@ -472,24 +457,6 @@ mod tests {
         }
     }
     #[derive(Default)]
-    struct Privacy(AtomicBool);
-    impl preferences::Preferences for Privacy {
-        fn read(&self) -> BoxFuture<'_, Result<preferences::Snapshot, maka_capabilities::Error>> {
-            Box::pin(async {
-                Ok(preferences::Snapshot {
-                    revision: 1,
-                    privacy: maka_agent_facts::configuration::policy::PrivacyPolicy {
-                        incognito_active: self.0.load(Ordering::SeqCst),
-                    },
-                    personalization: maka_agent_facts::configuration::policy::Personalization {
-                        display_name: String::new(),
-                    },
-                    workspace_instructions: true,
-                })
-            })
-        }
-    }
-    #[derive(Default)]
     struct History {
         endless: AtomicBool,
         denied: AtomicBool,
@@ -536,6 +503,10 @@ mod tests {
                         timestamp: 1,
                         timing: None,
                         role: history::Role::Assistant,
+                        order: history::RowPosition {
+                            source_sequence: if second { 7 } else { 1 },
+                            item_index: 0,
+                        },
                         position: history::RowPosition {
                             source_sequence: if second { 7 } else { 1 },
                             item_index: 0,
@@ -608,7 +579,6 @@ mod tests {
             store,
             history,
             models,
-            preferences: Arc::new(Privacy::default()),
         }
     }
     fn scope() -> call::Scope {
@@ -691,12 +661,12 @@ mod tests {
         scope.finish().await.unwrap();
     }
     #[tokio::test]
-    async fn oversized_history_and_privacy_refuse_before_model_dispatch() {
+    async fn oversized_history_refuses_before_model_dispatch() {
         let store = Arc::new(Store::default());
         let history = Arc::new(History::default());
         let models = Arc::new(Models::default());
         history.endless.store(true, Ordering::SeqCst);
-        let mut backend = recaps(store.clone(), history.clone(), models.clone());
+        let backend = recaps(store.clone(), history.clone(), models.clone());
         let parent = scope();
         assert!(matches!(
             backend
@@ -706,15 +676,6 @@ mod tests {
         ));
         assert_eq!(models.calls.load(Ordering::SeqCst), 0);
         assert!(store.0.lock().unwrap().is_empty());
-        let private = Arc::new(Privacy::default());
-        private.0.store(true, Ordering::SeqCst);
-        backend.preferences = private;
-        let reads = history.reads.load(Ordering::SeqCst);
-        assert!(matches!(
-            backend.read(&parent, "session").await,
-            Err(Error::Private)
-        ));
-        assert_eq!(history.reads.load(Ordering::SeqCst), reads);
         parent.finish().await.unwrap();
     }
 

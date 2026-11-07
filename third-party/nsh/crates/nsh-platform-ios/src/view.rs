@@ -54,6 +54,7 @@ impl AppView {
         container.setAutoresizingMask(
             UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
         );
+        crate::register_app_components(&options.components);
         AppView {
             inner: Rc::new(Inner {
                 container,

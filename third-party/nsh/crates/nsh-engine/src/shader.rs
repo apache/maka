@@ -17,6 +17,15 @@
 //! frames after it is rendered, and a GPU that falls behind skips frames
 //! instead of stalling the main thread.
 //!
+//! Effects, transitions and shaders that read what is behind them get the
+//! platform's pictures ([`ShaderView::set_input`], premultiplied, in the
+//! renderer's [`PixelFormat`], covering the box and `overflow` points
+//! beyond it), bound as the program's `sample_*` inputs; a transition's
+//! `nsh.progress` runs on the view's clock ([`ShaderView::start_transition`]).
+//! Frames cover the box and `overflow` points beyond each side
+//! ([`ShaderView::overflow`]): the backend places them that far outside the
+//! view.
+//!
 //! Limits: a frame is at most [`MAX_SIDE`] pixels a side (the scale drops
 //! for larger views); a shader is rendered only when something it reads
 //! changed (its size, its uniforms, `nsh.time` for animated ones), never
@@ -34,8 +43,8 @@ use std::{
 
 use nsh_core::{
     animation::AnimationValue,
-    geometry::{Points, Size},
-    shader::{ShaderLayer, builtins},
+    geometry::{Percentage, Points, Size},
+    shader::{PROGRESS_WORD, ShaderInput, ShaderLayer, ShaderRole, builtins},
 };
 use rustc_hash::FxHashMap;
 
@@ -104,9 +113,13 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: PixelFormat,
-    /// The bind group layouts: the built-ins alone, and with the uniforms.
-    layouts: [wgpu::BindGroupLayout; 2],
-    pipeline_layouts: [wgpu::PipelineLayout; 2],
+    /// The bind group layouts: the built-ins alone, with the uniforms,
+    /// with the pictures, with both (index: uniforms + 2 × pictures).
+    layouts: [wgpu::BindGroupLayout; 4],
+    pipeline_layouts: [wgpu::PipelineLayout; 4],
+    /// What a picture the platform has not given reads: transparent.
+    empty: wgpu::TextureView,
+    sampler: wgpu::Sampler,
     /// Pipelines by the hash of their shader's source; `None` for one the
     /// device refused (reported once).
     pipelines: std::cell::RefCell<FxHashMap<u64, Option<Arc<wgpu::RenderPipeline>>>>,
@@ -152,7 +165,8 @@ impl Renderer {
         log::debug!("shaders: {:?}", adapter.get_info());
         let entry = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            // The vertex stage reads `nsh.size` and `nsh.overflow`.
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -160,17 +174,48 @@ impl Renderer {
             },
             count: None,
         };
+        let pictures = || {
+            std::iter::once(wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            })
+            .chain(ShaderInput::ALL.into_iter().map(|input| {
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3 + input.index() as u32,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }
+            }))
+        };
         let layouts = [
+            vec![entry(0)],
+            vec![entry(0), entry(1)],
+            std::iter::once(entry(0)).chain(pictures()).collect(),
+            [entry(0), entry(1)].into_iter().chain(pictures()).collect(),
+        ]
+        .map(|entries: Vec<_>| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("nsh built-ins"),
-                entries: &[entry(0)],
-            }),
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("nsh built-ins and uniforms"),
-                entries: &[entry(0), entry(1)],
-            }),
-        ];
-        let pipeline_layouts = [0, 1].map(|i| {
+                label: Some("nsh shader"),
+                entries: &entries,
+            })
+        });
+        let empty = device
+            .create_texture(&picture_descriptor(format, 1, 1))
+            .create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nsh pictures"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let pipeline_layouts = [0, 1, 2, 3].map(|i| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &[Some(&layouts[i])],
@@ -183,6 +228,8 @@ impl Renderer {
             format,
             layouts,
             pipeline_layouts,
+            empty,
+            sampler,
             pipelines: Default::default(),
         })
     }
@@ -204,7 +251,7 @@ impl Renderer {
                 label: Some("nsh shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(shader.wgsl())),
             });
-        let uniforms = usize::from(shader.uniform_size() > 0);
+        let uniforms = layout_index(layer);
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -247,6 +294,66 @@ impl Renderer {
     }
 }
 
+/// Which bind group layout a layer's program takes.
+fn layout_index(layer: &ShaderLayer) -> usize {
+    usize::from(layer.shader.uniform_size() > 0)
+        + 2 * usize::from(!layer.shader.inputs().is_empty())
+}
+
+fn picture_descriptor(
+    format: PixelFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("nsh shader picture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: format.texture(),
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }
+}
+
+/// Why a picture of `len` bytes cannot be uploaded as `height` rows of
+/// `width` pixels `stride` bytes apart: a wrong size would be a GPU
+/// validation error outside any error scope.
+fn picture_fits(
+    renderer: &Renderer,
+    len: usize,
+    width: u32,
+    height: u32,
+    stride: u32,
+) -> Result<(), String> {
+    let max = renderer.device.limits().max_texture_dimension_2d;
+    if width > max || height > max {
+        return Err(format!("larger than the device's {max} pixels a side"));
+    }
+    let row = u64::from(width) * 4;
+    if u64::from(stride) < row {
+        return Err(format!("{stride} bytes a row hold no {width} pixels"));
+    }
+    let needed = u64::from(stride) * u64::from(height - 1) + row;
+    if (len as u64) < needed {
+        return Err(format!("{len} bytes hold no {needed}"));
+    }
+    Ok(())
+}
+
+/// A picture the platform gave, on the GPU.
+struct Picture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
 /// Where a read-back buffer is.
 mod state {
     pub(super) const IDLE: u8 = 0;
@@ -277,6 +384,8 @@ struct Bindings {
     builtins: wgpu::Buffer,
     uniforms: Option<wgpu::Buffer>,
     group: wgpu::BindGroup,
+    /// The layout it was made for.
+    layout: usize,
     /// The uniforms' size it was made for.
     size: u32,
 }
@@ -315,6 +424,16 @@ pub struct ShaderView {
     bindings: Option<Bindings>,
     serial: u64,
     frame: Frame,
+    /// The pictures the platform gave, by [`ShaderInput::index`].
+    pictures: [Option<Picture>; 4],
+    /// The pictures changed since the bind group was made.
+    pictures_changed: bool,
+    /// `nsh.progress` as an animated value moved it.
+    progress: Option<f32>,
+    /// The transition running: since when and for how long.
+    transition: Option<(Instant, Duration)>,
+    /// It runs backwards: `nsh.progress` goes from 1 to 0.
+    backwards: bool,
 }
 
 impl ShaderView {
@@ -364,9 +483,151 @@ impl ShaderView {
         }
         if !same_program {
             self.bindings = None;
+            self.progress = None;
+        }
+        if layer.is_none() {
+            self.pictures = Default::default();
+            self.transition = None;
         }
         self.layer = layer;
         self.dirty = true;
+    }
+
+    /// Takes the picture of `input` the platform made: `height` rows of
+    /// `width` premultiplied pixels in the renderer's format, `stride`
+    /// bytes apart, covering the box and [`Self::overflow`] points beyond
+    /// each side. `None` lets it go (it reads transparent), and so does a
+    /// picture whose bytes do not hold its rows or that is larger than the
+    /// device's textures (with a warning).
+    pub fn set_input(
+        &mut self,
+        renderer: &Renderer,
+        input: ShaderInput,
+        picture: Option<(&[u8], u32, u32, u32)>,
+    ) {
+        let picture =
+            picture
+                .filter(|p| p.1 > 0 && p.2 > 0)
+                .filter(|&(pixels, width, height, stride)| {
+                    match picture_fits(renderer, pixels.len(), width, height, stride) {
+                        Ok(()) => true,
+                        Err(why) => {
+                            log::warn!(
+                                "a shader's {} picture, {width} × {height}: {why}",
+                                input.function()
+                            );
+                            false
+                        }
+                    }
+                });
+        let slot = &mut self.pictures[input.index()];
+        let Some((pixels, width, height, stride)) = picture else {
+            if slot.take().is_some() {
+                self.pictures_changed = true;
+                self.dirty = true;
+            }
+            return;
+        };
+        if slot
+            .as_ref()
+            .is_none_or(|p| (p.width, p.height) != (width, height))
+        {
+            let texture =
+                renderer
+                    .device
+                    .create_texture(&picture_descriptor(renderer.format, width, height));
+            let view = texture.create_view(&Default::default());
+            *slot = Some(Picture {
+                texture,
+                view,
+                width,
+                height,
+            });
+            self.pictures_changed = true;
+        }
+        let picture = slot.as_ref().expect("a picture");
+        renderer.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &picture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.dirty = true;
+    }
+
+    /// Whether it has the picture of `input`.
+    pub fn has_input(&self, input: ShaderInput) -> bool {
+        self.pictures[input.index()].is_some()
+    }
+
+    /// Starts a transition: `nsh.progress` goes from 0 to 1 over
+    /// `duration` from `now` (the platform gives the `from` picture first).
+    pub fn start_transition(&mut self, duration: Duration, now: Instant) {
+        self.transition = Some((now, duration));
+        self.backwards = false;
+        self.dirty = true;
+    }
+
+    /// Starts a transition that runs backwards, `nsh.progress` from 1 to 0
+    /// (a page that leaves, a dialog that closes: the same shader as their
+    /// coming, the other way).
+    pub fn start_transition_backwards(&mut self, duration: Duration, now: Instant) {
+        self.start_transition(duration, now);
+        self.backwards = true;
+    }
+
+    /// Whether a transition runs at `now`; one that ended lets its `from`
+    /// picture go (the children then show as they are).
+    pub fn transitioning(&mut self, now: Instant) -> bool {
+        match self.transition {
+            Some((since, duration)) if now.saturating_duration_since(since) < duration => true,
+            Some(_) => {
+                self.transition = None;
+                self.pictures[ShaderInput::From.index()] = None;
+                self.pictures_changed = true;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the platform shows the frames instead of the children: an
+    /// effect and a screen effect always, a transition while one runs.
+    pub fn replaces_children(&mut self, now: Instant) -> bool {
+        match self.layer.as_ref().map(|l| l.role) {
+            Some(ShaderRole::Effect | ShaderRole::Screen) => true,
+            Some(ShaderRole::Transition | ShaderRole::ScreenTransition) => self.transitioning(now),
+            _ => false,
+        }
+    }
+
+    /// How far beyond the box its frames reach, in points.
+    pub fn overflow(&self) -> Points {
+        self.layer.as_ref().map_or(Points::ZERO, |l| l.overflow)
+    }
+
+    fn progress_at(&self, now: Instant) -> f32 {
+        if let Some((since, duration)) = self.transition {
+            let t = now.saturating_duration_since(since).as_secs_f32();
+            let p = (t / duration.as_secs_f32().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+            return if self.backwards { 1.0 - p } else { p };
+        }
+        self.progress
+            .or_else(|| self.layer.as_ref().map(|l| l.progress.0))
+            .unwrap_or(0.0)
     }
 
     /// The layer it shows.
@@ -377,6 +638,18 @@ impl ShaderView {
     /// Writes animated slot `slot`'s value ([`ShaderLayer::write_slot`]).
     pub fn set_slot(&mut self, slot: u16, value: AnimationValue) {
         let Some(layer) = &self.layer else { return };
+        if layer
+            .slots
+            .get(slot as usize)
+            .is_some_and(|s| s.word == PROGRESS_WORD)
+        {
+            let progress = value.number();
+            if self.progress != Some(progress) {
+                self.progress = Some(progress);
+                self.dirty = true;
+            }
+            return;
+        }
         let before = self.words.clone();
         layer.write_slot(&mut self.words, slot, value);
         if before != self.words {
@@ -399,7 +672,10 @@ impl ShaderView {
         let Some(layer) = &self.layer else {
             return false;
         };
-        self.dirty || (layer.shader.animated() && !layer.paused) || self.pending()
+        self.dirty
+            || (layer.shader.animated() && !layer.paused)
+            || self.transition.is_some()
+            || self.pending()
     }
 
     /// Whether a frame is on its way back from the GPU.
@@ -416,15 +692,24 @@ impl ShaderView {
         &self.frame
     }
 
+    /// Collects a frame that came back without rendering another; `true`
+    /// when [`Self::frame`] is new. A page's or a dialog's overlay whose
+    /// transition ended shows the frames still on their way this way.
+    pub fn collect_frame(&mut self, renderer: &Renderer) -> bool {
+        let _ = renderer.device.poll(wgpu::PollType::Poll);
+        self.collect()
+    }
+
     /// Renders a frame if one is due and collects one that came back;
     /// `true` when [`Self::frame`] is new. `now` is the frame clock's time.
     pub fn render(&mut self, renderer: &Renderer, now: Instant) -> bool {
-        let _ = renderer.device.poll(wgpu::PollType::Poll);
-        let mut collected = self.collect();
+        let mut collected = self.collect_frame(renderer);
         let Some(layer) = self.layer.clone() else {
             return collected;
         };
-        let due = self.dirty || (layer.shader.animated() && !layer.paused);
+        let running = self.transitioning(now);
+        let due = self.dirty || (layer.shader.animated() && !layer.paused) || running;
+        let progress = self.progress_at(now);
         if !due {
             return collected;
         }
@@ -458,16 +743,29 @@ impl ShaderView {
             return collected;
         };
         let size = layer.shader.uniform_size();
-        if self.bindings.as_ref().is_none_or(|b| b.size != size) {
-            self.bindings = Some(bindings(renderer, size));
+        let layout = layout_index(&layer);
+        if std::mem::take(&mut self.pictures_changed)
+            || self
+                .bindings
+                .as_ref()
+                .is_none_or(|b| b.size != size || b.layout != layout)
+        {
+            self.bindings = Some(bindings(renderer, size, layout, &self.pictures));
         }
         let bindings = self.bindings.as_ref().expect("bindings");
-        let scale = width as f32 / self.size.width.0.max(f32::MIN_POSITIVE);
+        let overflow = layer.overflow;
+        let scale = width as f32 / (self.size.width.0 + 2.0 * overflow.0).max(f32::MIN_POSITIVE);
         let time = self.clock.time(now);
         renderer.queue.write_buffer(
             &bindings.builtins,
             0,
-            &words_bytes(&builtins(self.size, time, scale)),
+            &words_bytes(&builtins(
+                self.size,
+                time,
+                scale,
+                Percentage(progress),
+                overflow,
+            )),
         );
         if let Some(buffer) = &bindings.uniforms {
             renderer
@@ -540,9 +838,13 @@ impl ShaderView {
         self.collect() || collected
     }
 
-    /// The frame's size in pixels.
+    /// The frame's size in pixels: the box and the overflow around it.
     fn pixels(&self) -> (u32, u32) {
-        let (w, h) = (self.size.width.0.max(0.0), self.size.height.0.max(0.0));
+        if self.size.width.0 <= 0.0 || self.size.height.0 <= 0.0 {
+            return (0, 0);
+        }
+        let grow = 2.0 * self.overflow().0;
+        let (w, h) = (self.size.width.0 + grow, self.size.height.0 + grow);
         let mut scale = self.scale.max(0.0);
         let side = w.max(h) * scale;
         if side > MAX_SIDE as f32 {
@@ -632,7 +934,12 @@ fn target(renderer: &Renderer, width: u32, height: u32) -> Target {
     }
 }
 
-fn bindings(renderer: &Renderer, size: u32) -> Bindings {
+fn bindings(
+    renderer: &Renderer,
+    size: u32,
+    layout: usize,
+    pictures: &[Option<Picture>; 4],
+) -> Bindings {
     let buffer = |size: u32| {
         renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nsh shader uniforms"),
@@ -641,7 +948,7 @@ fn bindings(renderer: &Renderer, size: u32) -> Bindings {
             mapped_at_creation: false,
         })
     };
-    let builtins = buffer(16);
+    let builtins = buffer(32);
     let uniforms = (size > 0).then(|| buffer(size));
     let mut entries = vec![wgpu::BindGroupEntry {
         binding: 0,
@@ -653,17 +960,33 @@ fn bindings(renderer: &Renderer, size: u32) -> Bindings {
             resource: u.as_entire_binding(),
         });
     }
+    if layout >= 2 {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::Sampler(&renderer.sampler),
+        });
+        for input in ShaderInput::ALL {
+            let view = pictures[input.index()]
+                .as_ref()
+                .map_or(&renderer.empty, |p| &p.view);
+            entries.push(wgpu::BindGroupEntry {
+                binding: 3 + input.index() as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+    }
     let group = renderer
         .device
         .create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &renderer.layouts[usize::from(uniforms.is_some())],
+            layout: &renderer.layouts[layout],
             entries: &entries,
         });
     Bindings {
         builtins,
         uniforms,
         group,
+        layout,
         size,
     }
 }
@@ -834,5 +1157,153 @@ mod tests {
             view.render(&renderer, Instant::now());
         }
         assert!(!view.wants_frame());
+    }
+
+    #[test]
+    fn effects_read_their_pictures() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(1.0)), 1.0);
+        let effect = (*layer(
+            "fn shade(uv: vec2f) -> vec4f { let c = sample_content(uv); return vec4f(c.b, c.g, c.r, c.a); }",
+            &[],
+        ))
+        .clone()
+        .with_role(ShaderRole::Effect);
+        assert!(effect.shader.inputs().contains(ShaderInput::Content));
+        view.set_layer(Some(Arc::new(effect)));
+        assert!(view.replaces_children(Instant::now()));
+        // Without a picture, the content is transparent.
+        let f = frame(&mut view, &renderer);
+        assert_eq!(pixel(&f, 0, 0), [0, 0, 0, 0]);
+        // Red, then green: the shader swaps red and blue.
+        let picture = [255, 0, 0, 255, 0, 255, 0, 255];
+        view.set_input(&renderer, ShaderInput::Content, Some((&picture, 2, 1, 8)));
+        let f = frame(&mut view, &renderer);
+        assert_eq!(pixel(&f, 0, 0), [0, 0, 255, 255]);
+        assert_eq!(pixel(&f, 1, 0), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn a_picture_its_bytes_do_not_hold_is_let_go() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_input(&renderer, ShaderInput::Content, Some((&[0; 8], 2, 1, 8)));
+        assert!(view.has_input(ShaderInput::Content));
+        // Two rows of two pixels in one row's bytes, a row narrower than its
+        // pixels, a picture wider than the device's textures.
+        view.set_input(&renderer, ShaderInput::Content, Some((&[0; 8], 2, 2, 8)));
+        assert!(!view.has_input(ShaderInput::Content));
+        view.set_input(&renderer, ShaderInput::From, Some((&[0; 16], 2, 2, 4)));
+        assert!(!view.has_input(ShaderInput::From));
+        let max = renderer.device.limits().max_texture_dimension_2d;
+        view.set_input(
+            &renderer,
+            ShaderInput::To,
+            Some((&[0; 4], max + 1, 1, 4 * (max + 1))),
+        );
+        assert!(!view.has_input(ShaderInput::To));
+    }
+
+    #[test]
+    fn transitions_run_their_progress() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(1.0), px(1.0)), 1.0);
+        let Some(crossfade) = nsh_core::shader::crossfade() else {
+            eprintln!("no cross-fade: skipped");
+            return;
+        };
+        let fade =
+            ShaderLayer::new(crossfade, &[], &mut Vec::new()).with_role(ShaderRole::Transition);
+        view.set_layer(Some(Arc::new(fade)));
+        let start = Instant::now();
+        assert!(!view.replaces_children(start), "no transition runs yet");
+        view.set_input(
+            &renderer,
+            ShaderInput::From,
+            Some((&[255, 0, 0, 255], 1, 1, 4)),
+        );
+        view.set_input(
+            &renderer,
+            ShaderInput::To,
+            Some((&[0, 0, 255, 255], 1, 1, 4)),
+        );
+        view.start_transition(Duration::from_millis(1000), start);
+        assert!(view.replaces_children(start));
+        let f = frame_at(&mut view, &renderer, start + Duration::from_millis(500));
+        let p = pixel(&f, 0, 0);
+        assert!(
+            (120..=135).contains(&p[0]) && (120..=135).contains(&p[2]),
+            "{p:?}"
+        );
+        let end = start + Duration::from_millis(1500);
+        assert!(!view.replaces_children(end), "it ended");
+        assert!(!view.has_input(ShaderInput::From));
+    }
+
+    #[test]
+    fn overflow_grows_the_frame_and_animated_progress_moves() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(2.0)), 1.0);
+        let glow = ShaderLayer::new(
+            Shader::compile(
+                "fn shade(uv: vec2f) -> vec4f { if (uv.x < 0.0) { return vec4f(nsh.progress, 0.0, 0.0, 1.0); } return vec4f(0.0, 0.0, 1.0, 1.0); }",
+            )
+            .unwrap(),
+            &[],
+            &mut Vec::new(),
+        )
+        .with_role(ShaderRole::Effect)
+        .with_overflow(px(1.0))
+        .with_progress(Percentage(0.0), Some(9));
+        view.set_layer(Some(Arc::new(glow)));
+        view.set_slot(0, AnimationValue::Number(1.0));
+        let f = frame(&mut view, &renderer);
+        assert_eq!((f.width, f.height), (4, 4), "the box and a point around it");
+        assert_eq!(
+            pixel(&f, 0, 1),
+            [255, 0, 0, 255],
+            "left of the box: progress 1"
+        );
+        assert_eq!(pixel(&f, 2, 2), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn collecting_a_frame_renders_none() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(2.0)), 1.0);
+        // Reads `nsh.time`: `render` draws again on every call.
+        view.set_layer(Some(layer(
+            "fn shade(uv: vec2f) -> vec4f { return vec4f(fract(nsh.time), 0.0, 0.0, 1.0); }",
+            &[],
+        )));
+        assert!(!view.render(&renderer, Instant::now()), "on its way");
+        let start = Instant::now();
+        while !view.collect_frame(&renderer) {
+            assert!(start.elapsed() < Duration::from_secs(5), "no frame");
+            let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+        assert_eq!((view.frame().width, view.frame().height), (2, 2));
+        assert!(!view.pending(), "no other frame was rendered");
+        assert!(!view.collect_frame(&renderer));
+        assert!(view.wants_frame(), "its time still runs");
     }
 }

@@ -18,9 +18,11 @@
  */
 
 use super::*;
+use maka_app_client::Client;
 use maka_plugin_core::operation::{OperationOutcome, Receipt};
 
-async fn replace_input(view: &mut AppView, label: &str, text: &str) {
+async fn replace_draft(view: &mut AppView, client: &Client, session: &str, text: &str) {
+    let label = "Message composer";
     wait_enabled_node(view, label).await;
     tab_to_label(view, label).await;
     wait_focused_input(view, label).await;
@@ -33,12 +35,8 @@ async fn replace_input(view: &mut AppView, label: &str, text: &str) {
     } else {
         assert!(view.handle_event(Event::Paste(text.into())));
     }
-    wait_view_state(view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|context| context.text.as_deref() == Some(text))
-    })
-    .await;
+    commit_native_events(view).await;
+    support::wait_draft(client, session, text).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -56,7 +54,13 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
     .await;
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
     wait_editable_composer(&mut view).await;
-    replace_input(&mut view, "Message composer", "ORIGINAL_RESUME_INPUT").await;
+    replace_draft(
+        &mut view,
+        &client,
+        &fixture.session,
+        "ORIGINAL_RESUME_INPUT",
+    )
+    .await;
     support::click_button(&mut view, "Send message").await;
     support::wait_enabled_button(&mut view, "Stop response").await;
     let mut request = fixture.next_request().await;
@@ -76,7 +80,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
     support::wait_enabled_button(&mut view, "Continue response").await;
     fixture.idle(&client, &fixture.session).await;
     drop(request);
-    replace_input(&mut view, "Message composer", "UNSENT_NEW_REQUEST").await;
+    replace_draft(&mut view, &client, &fixture.session, "UNSENT_NEW_REQUEST").await;
     support::wait_enabled_button(&mut view, "Send message").await;
     assert!(
         !view
@@ -84,7 +88,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
             .iter()
             .any(|node| node.label == "Continue response")
     );
-    replace_input(&mut view, "Message composer", "").await;
+    replace_draft(&mut view, &client, &fixture.session, "").await;
     support::click_button(&mut view, "Continue response").await;
     support::wait_enabled_button(&mut view, "Stop response").await;
     let mut continuation = fixture.next_request().await;
@@ -106,7 +110,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         .await
         .unwrap();
     assert_ne!(resumed["run"]["turnId"], source_turn);
-    replace_input(&mut view, "Message composer", "UNSENT_WHILE_RUNNING").await;
+    replace_draft(&mut view, &client, &fixture.session, "UNSENT_WHILE_RUNNING").await;
     support::wait_enabled_button(&mut view, "Send message").await;
     shortcut(&mut view, 'p');
     select_command(&mut view, "Add to queue").await;

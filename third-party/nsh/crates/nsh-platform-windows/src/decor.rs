@@ -277,8 +277,19 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
 
     let bg = state.background();
     let gradients = effects.map_or(&[][..], |e| &e.background_images[..]);
-    if !bg.is_transparent() || !gradients.is_empty() {
-        let shape = BoxShape::new(cx, w, h, radii);
+    let fills = usize::from(!bg.is_transparent()) + gradients.len();
+    if fills > 0 {
+        let mut shape = BoxShape::new(cx, w, h, radii, under_border(state));
+        // Several fills of one rounded shape each cover its edge pixels
+        // partly, and stacked they cover them more than once: clipped
+        // once, the edge is covered once.
+        let clipped = fills > 1 && shape.geometry.is_some();
+        if clipped {
+            if let Some(g) = shape.geometry.take() {
+                cx.push_clip_geometry(&g);
+            }
+            shape.radii = [0.0; 4];
+        }
         if !bg.is_transparent() {
             shape.fill(cx, cx.solid(bg));
         }
@@ -297,6 +308,9 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
                 }
                 None => {}
             }
+        }
+        if clipped {
+            cx.pop();
         }
     }
 
@@ -318,8 +332,34 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
     }
 }
 
+/// How far inside the border box the background is filled: half the
+/// border when an opaque solid border covers every side of a rounded box.
+/// The fill's antialiased edge then lies under the border's opaque middle;
+/// filled to the border box, it would share the border's antialiased outer
+/// edge, and the two partial coverages stacked let the background show
+/// outside the border at the corners. Anything else is filled to the
+/// border box, as CSS's `background-clip: border-box`.
+fn under_border(state: &ViewState) -> f32 {
+    if !state.radii().iter().any(|&r| r > 0.0) {
+        return 0.0;
+    }
+    let b = state.borders();
+    if b.style != BorderStyle::Solid || !b.colors.iter().all(|c| c.0 & 0xff == 0xff) {
+        return 0.0;
+    }
+    let widths = b.widths.to_array().map(|w| w.0);
+    widths
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min)
+        .max(0.0)
+        / 2.0
+}
+
 /// The view's rounded box, filled the cheapest way its corners allow.
 struct BoxShape {
+    /// How far inside the border box it is.
+    inset: f32,
     w: f32,
     h: f32,
     radii: [f32; 4],
@@ -328,12 +368,16 @@ struct BoxShape {
 }
 
 impl BoxShape {
-    fn new(cx: &DrawCx<'_>, w: f32, h: f32, radii: [f32; 4]) -> BoxShape {
+    /// The `w` x `h` box with `radii`, `inset` points inside its edges.
+    fn new(cx: &DrawCx<'_>, w: f32, h: f32, radii: [f32; 4], inset: f32) -> BoxShape {
+        let (w, h) = ((w - 2.0 * inset).max(0.0), (h - 2.0 * inset).max(0.0));
+        let radii = radii.map(|r| (r - inset).max(0.0));
         let round = radii.iter().any(|&r| r > 0.0);
         let geometry = round
-            .then(|| cx.rounded_geometry(rect(0.0, 0.0, w, h), radii))
+            .then(|| cx.rounded_geometry(rect(inset, inset, w, h), radii))
             .flatten();
         BoxShape {
+            inset,
             w,
             h,
             radii,
@@ -343,14 +387,14 @@ impl BoxShape {
 
     fn fill<B: windows::core::Param<ID2D1Brush>>(&self, cx: &DrawCx<'_>, brush: B) {
         let uniform = self.radii.iter().all(|&r| r == self.radii[0]);
+        let bounds = rect_f(self.inset, self.inset, self.w, self.h);
         // SAFETY: COM calls between BeginDraw and EndDraw.
         unsafe {
             if self.radii[0] <= 0.0 && uniform {
-                cx.dc
-                    .FillRectangle(&rect_f(0.0, 0.0, self.w, self.h), brush);
+                cx.dc.FillRectangle(&bounds, brush);
             } else if uniform {
                 let rr = D2D1_ROUNDED_RECT {
-                    rect: rect_f(0.0, 0.0, self.w, self.h),
+                    rect: bounds,
                     radiusX: self.radii[0],
                     radiusY: self.radii[0],
                 };

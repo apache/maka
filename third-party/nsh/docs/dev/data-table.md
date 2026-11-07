@@ -13,7 +13,7 @@ supplies padding, colors, borders and state feedback through `classes` and `styl
 |---|---|
 | `mod.rs` | The component: `DataTableProps`, `DataTableEvent`, `DataTableApi` (the ref's methods); the values: `DataTableAlign`, `DataTableSortDirection` (`PropEnum`s), `DataTableColumn`, `DataTableColumnGroup`, `DataTableSort`, `DataTableSelection`, `DataTableRange`, `DataTableCell`, ... (`JsObject`s) |
 | `parts.rs` | The parts the app styles: one `parts!` list makes `DataTableClasses`, `DataTableStyles` and `DataTablePart` |
-| `data.rs` | `DataTableRows`: the rows from JS, arrays or objects by the columns' keys, and each field as a `Cell` |
+| `data.rs` | `DataTableRows`: the rows from JS (arrays, or objects by the columns' keys) or from Rust a typed column at a time (`new`, `texts`, `numbers`, `bools`, as the core's `Rows::from_columns`), each field as a `Cell` |
 | `axis.rs` | `Axis`: one axis's real extent against the extent the scroll views get (see "Huge tables") |
 | `columns.rs` | `Columns`: the columns' order, widths and prefix sums, the fixed ones, finding the column at an x, resizing, moving |
 | `selection.rs` | `Selection`, `Selectable` (gpui-component's `rowSelectable`, `columnSelectable`, `cellSelectable`), and `Nav`: what a key moves the selection to |
@@ -37,39 +37,19 @@ The table is a body, a hit layer over it and a header (`view.rs`), from the bott
 The fixed-column separator sits above each row background and below its cells, so app-supplied cell borders
 remain visible at the fixed boundary.
 
-Rows come from `RowWindow::following` (`window.rs`): the rows in view and 4 past each edge, moved with every row a
-scroll crosses; columns the same with 1 past each edge. A scroll makes as many rows as it brings into reach, each frame
-alike: a window that jumped a viewport and a half ahead (as `List`'s does) made several hundred cells' texts at once,
-~20 ms on a Pixel 10 Pro, a stall of several frames while the scroll view moved on.
-
-The rows' and the scrolling columns' origins move by whole device pixels (`region`, `on_pixel`, `view.rs`), as layout
-rounds frames: at a fraction, the cells' texts would round to another pixel in their cells as the origin moves, and every
-cell's frame would be sent again at each scroll frame.
-
-The rows and the scrolling columns are *slots* (`Slots`, `view.rs`): views made once, each showing the item of the
-window whose index leaves its slot number when divided by their count (the most the window has held). When the window
-moves by `k` rows, `k` row slots take other rows: their texts and places change, and no view is made or dropped while
-scrolling, however far. This is the retained tree's form of gpui-component's `uniform_list`, which draws the rows in
-view each frame: the cost of a scroll is the cells that change, never the views that would have to be built.
+Rows come from `RowWindow::following` (`window.rs`): the rows and columns in view and a few past each edge. The rows'
+and the scrolling columns' origins move by whole device pixels (`region`, `on_pixel`, `view.rs`). The rows and the
+scrolling columns are *slots* (`Slots`, `view.rs`): views made once and reused for the items the window brings into
+reach, so no view is made or dropped while scrolling, however far, and the cost of a scroll is the cells that change.
 
 ## Huge tables
 
-Platforms keep scroll offsets and content sizes in 32-bit floats, so ten million rows (a quarter of a billion points)
-cannot be a scroll view's content. Past `MAX_EXTENT` (3 000 000 points) the scroll view gets that extent and its offset
-is scaled to the content's (`Axis::ratio`); the table finds the rows from the scaled offset and places them relative to
-the first row in view, so what is drawn is exact at any size and the scroll bar still spans the content. The columns
-work the same way on the horizontal axis. Offsets the table scrolls to (`scrollToRow`, revealing the selection) are
-`Axis::scroll_points`: the 32-bit float that does not stop short of the row, since far down a scaled axis one step of
-that float is several content points. Columns hold prefix sums, so finding the column at an x is a binary search.
-
-Scaled, a finger would move the content as many times as far as itself as the ratio says (a million rows of 28 points:
-nine times, a slow drag of 3 rows moving 25). Where no scroll bar is dragged (not `is_desktop()`), offsets are followed
-from an anchor instead (`Anchor`, `Axis::content_offset_from`): the content moves as far as the scroll for half the room
-to the scroll view's end that way, faster past that so the ends still meet. When a scroll comes to rest (`ScrollEnd`,
-`Dt::rest`) the anchor moves to where the bar stands for the content shown (`Axis::anchor_at`, on a device pixel) and the
-scroll view is scrolled there, unseen: the cells are placed from the content offset, which does not change. A scroll the
-table makes takes the anchor of its target the same way; an animated one within reach moves one to one from where it
-is. On the desktops the offset stays scaled: dragging the bar must reach the whole content.
+Platforms keep scroll offsets and content sizes in 32-bit floats, so ten million rows cannot be a scroll view's
+content. Past `MAX_EXTENT` the scroll view gets a bounded extent and the table maps its offset to the content's
+(`Axis`, `Anchor` in the table's code), so what is drawn is exact at any size, the scroll bar still spans the content
+and offsets the table scrolls to (`scrollToRow`, revealing the selection) land on the row. The columns work the same
+way on the horizontal axis. On touch devices drags move the content one to one; on the desktops dragging the bar
+reaches the whole content.
 
 ## Columns' own classes, fitting, bounce
 

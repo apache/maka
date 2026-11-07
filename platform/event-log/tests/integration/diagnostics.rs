@@ -64,7 +64,6 @@ async fn opening(log: &EventLog, session: &str, id: &str) -> Invocation {
                 thinking_level: None,
                 sandbox_mode: SandboxMode::ReadOnly,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
             })),

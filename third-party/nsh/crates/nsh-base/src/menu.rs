@@ -22,7 +22,7 @@ use nsh_core::{
 
 use crate::{
     popup::{OpenChangeReason, OpenState, PopupPresence, SheetMotion, StateLooks, lifecycle},
-    roving::{bar, bar_trigger, leave_bar},
+    roving::{bar_trigger, leave_bar, popup_bar},
 };
 
 /// How long a finger stays on a context menu's trigger before it opens
@@ -52,6 +52,8 @@ struct MenuContext {
     next: Stored<u32>,
     /// The popup part and its states' looks, for the submenus' popups.
     looks: StateLooks,
+    /// Desktops: this level's popup, which its submenus open outside of.
+    popup: ElementRef,
 }
 
 impl MenuContext {
@@ -117,6 +119,7 @@ fn surface(
         let change = change.clone();
         Rc::new(move |reason: OpenChangeReason| change(false, reason))
     };
+    let presence = PopupPresence::new(move || !sheet && open.get(), parts.looks());
     provide_context(MenuContext {
         close,
         sheet,
@@ -126,6 +129,7 @@ fn surface(
         open: computed(move || open.get()),
         next: stored(1),
         looks: parts.looks(),
+        popup: presence.popup(),
     });
     // An attempt to close it: reported, then it closes (none while it
     // goes).
@@ -155,7 +159,6 @@ fn surface(
     // A sheet comes in and goes with its motion; a popup with the app's
     // transitions between its looks.
     let motion = SheetMotion::new(move || sheet && open.get(), || Placement::Bottom);
-    let presence = PopupPresence::new(move || !sheet && open.get(), parts.looks());
     {
         let (opened, closed) = (emit.clone(), emit.clone());
         lifecycle(
@@ -351,17 +354,42 @@ pub fn Menu(props: MenuProps, cx: Scope<MenuEvent>) -> impl IntoElement {
     };
     let toggle = change.clone();
     // In a toolbar, the trigger is one of its items.
-    let around = bar();
+    let around = popup_bar();
+    // In a bar, the menu open is the bar's: the pointer over another
+    // menu's trigger moves it there.
+    if let Some(menus) = around.as_ref().map(|b| b.open_menu.clone()) {
+        let me = change.clone();
+        effect(move || {
+            let on = open.get();
+            let mut menu = menus.borrow_mut();
+            if on {
+                *menu = Some(me.clone());
+            } else if menu.as_ref().is_some_and(|m| Rc::ptr_eq(m, &me)) {
+                *menu = None;
+            }
+        });
+    }
     view()
         .child(props.trigger.place(move |trigger| {
             let toggle = toggle.clone();
+            let menus = around.as_ref().map(|b| b.open_menu.clone());
+            let me = toggle.clone();
             let trigger = trigger
                 .element_ref(&anchor)
                 .accessibility_state(move || AccessibilityState {
                     expanded: Some(open.get()),
                     ..AccessibilityState::default()
                 })
-                .on_press(move || toggle(!open.get_untracked(), OpenChangeReason::TriggerPress));
+                .on_press(move || toggle(!open.get_untracked(), OpenChangeReason::TriggerPress))
+                .on_mouse_enter(move |_: &MouseEvent| {
+                    let shown = menus.as_ref().and_then(|m| m.borrow().clone());
+                    if let Some(shown) = shown
+                        && !Rc::ptr_eq(&shown, &me)
+                    {
+                        shown(false, OpenChangeReason::Hover);
+                        me(true, OpenChangeReason::Hover);
+                    }
+                });
             bar_trigger(around.clone(), trigger, anchor)
         }))
         .child(surface(
@@ -663,6 +691,9 @@ pub struct SubmenuProps {
     /// It does not open.
     #[prop(default)]
     pub disabled: Prop<bool>,
+    /// Desktops: the gap between the menu around it and its popup.
+    #[prop(default)]
+    pub offset: Prop<Points>,
     /// The item that opens it, among its menu's items.
     pub trigger: Prop<Option<Slot>>,
     /// Touch screens: the row above its items that returns to the items
@@ -694,8 +725,10 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
     // Open while chosen at its level and every level around it is open:
     // closing the menu closes it, no state written.
     let sub_open = computed(move || around.get() && open_sub.get() == Some(id));
+    let presence = PopupPresence::new(move || sub_open.get(), menu.looks);
     let inner = MenuContext {
         level: id,
+        popup: presence.popup(),
         open_sub: signal(None),
         open: sub_open,
         ..menu.clone()
@@ -740,12 +773,12 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
             .into_element();
     }
     let anchor = element_ref();
+    let edges = menu.popup;
     let open = move || {
         if !props.disabled.get_untracked() {
             open_sub.set(Some(id));
         }
     };
-    let presence = PopupPresence::new(move || sub_open.get(), inner.looks);
     view()
         .child(props.trigger.place(move |t| {
             t.element_ref(&anchor)
@@ -761,7 +794,8 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
             move || presence.mounted(),
             move || {
                 overlay()
-                    .anchor(&anchor)
+                    .anchor_beside(&anchor, &edges)
+                    .offset(props.offset)
                     .placement(Placement::Right)
                     .align(Align::Start)
                     .role(AccessibilityRole::Menu)

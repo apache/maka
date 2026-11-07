@@ -23,7 +23,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-maka-graph.workspace = true
 maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true

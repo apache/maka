@@ -41,7 +41,7 @@ async fn saved_source(fixture: &Fixture, kind: &str, revision: u64) -> Value {
         .query("importDirectories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let mut location = json!({"kind":kind,"directory":roots["roots"][0]["selection"]});
+    let mut location = json!({"kind":kind,"path":roots["roots"][0]["path"]});
     if kind == "open_code" {
         location["database"] = json!("opencode.db");
     }
@@ -71,7 +71,7 @@ async fn imports_original_codex_history_requires_preview_and_keeps_receipt_acros
             json!({
                 "kind":"save_source", "revision":0, "id":null,
                 "name":"完整".repeat(9000),
-                "location":{"kind":"codex","directory":roots["roots"][0]["selection"]}
+                "location":{"kind":"codex","path":roots["roots"][0]["path"]}
             }),
             Uuid::new_v4(),
         )
@@ -98,7 +98,7 @@ async fn imports_original_codex_history_requires_preview_and_keeps_receipt_acros
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let input = json!({"kind":"copy","selection":review["preview"]["selection"],"directory":destinations["roots"][1]["selection"],"title":"My imported conversation"});
+    let input = json!({"kind":"copy","selection":review["preview"]["selection"],"path":destinations["roots"][1]["path"],"title":"My imported conversation"});
     let mut rows = codex_rows();
     rows.push(json!({"type":"event_msg","payload":{"type":"agent_message","message":"Appended after review"}}));
     write_lines(&path, &rows);
@@ -234,9 +234,9 @@ async fn imports_reject_stale_sources_foreign_entries_and_replaced_physical_dire
     let other = fixture
         .query("directories", json!({"kind":"roots"}))
         .await
-        .unwrap()["roots"][1]["selection"]
+        .unwrap()["roots"][1]["path"]
         .clone();
-    assert_eq!(fixture.mutation(2,"import",json!({"kind":"save_source","revision":1,"id":null,"name":"Unpublished","location":{"kind":"codex","directory":other}}),Uuid::new_v4()).await.unwrap()["kind"],"unavailable");
+    assert_eq!(fixture.mutation(2,"import",json!({"kind":"save_source","revision":1,"id":null,"name":"Unpublished","location":{"kind":"codex","path":other}}),Uuid::new_v4()).await.unwrap()["kind"],"unavailable");
     assert_eq!(
         fixture
             .mutation(

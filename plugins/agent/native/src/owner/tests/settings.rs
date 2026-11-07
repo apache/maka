@@ -191,22 +191,6 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         response(&mut third).await;
         fixture.drained().await;
         let current = query(&fixture, "assistantPreferences", json!({})).await;
-        assert_eq!(current["incognitoActive"], false);
-        let (privacy, reference) = mutate(&fixture, "updateAssistantPreferences", json!({
-            "expectedRevision":current["revision"],
-            "mutation":{"kind":"privacy","incognitoActive":true}
-        }), None).await;
-        assert_eq!(privacy["kind"], "committed");
-        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["incognitoActive"], true);
-        assert!(fixture.config.runtime_policy().await.unwrap().policy.privacy.incognito_active);
-        assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
-            OperationOutcome::Returned { value: privacy });
-        let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
-            "expectedRevision":current["revision"],
-            "mutation":{"kind":"privacy","incognitoActive":false}
-        }), None).await;
-        assert_eq!(stale["kind"], "revision_conflict");
-        let current = query(&fixture, "assistantPreferences", json!({})).await;
         assert_eq!(current["shell"]["titles"], true);
         let (disabled, reference) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
@@ -226,6 +210,55 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn default_sandbox_preferences_apply_only_to_new_root_conversations() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let original = fixture.create("Existing conversation").await;
+        let mut preferences = query(&fixture, "assistantPreferences", json!({})).await;
+        for (mode, access) in [
+            ("read-only", "read_only"),
+            ("danger-full-access", "danger_full_access"),
+            ("workspace-write", "workspace_write"),
+        ] {
+            let (saved, _) = mutate(
+                &fixture,
+                "updateAssistantPreferences",
+                json!({
+                    "expectedRevision":preferences["revision"],
+                    "mutation":{"kind":"default_sandbox","mode":mode}
+                }),
+                None,
+            )
+            .await;
+            assert_eq!(saved["kind"], "committed");
+            preferences = query(&fixture, "assistantPreferences", json!({})).await;
+            assert_eq!(preferences["defaultSandboxMode"], mode);
+            let existing = fixture
+                .query("observe", json!({"sessionId":original}))
+                .await
+                .unwrap();
+            assert_eq!(
+                existing["session"]["permissions"]["access"],
+                "workspace_write"
+            );
+            let created = fixture.create(mode).await;
+            let created = fixture
+                .query("observe", json!({"sessionId":created}))
+                .await
+                .unwrap();
+            assert_eq!(
+                created["session"]["permissions"],
+                json!({"access":access,"requestPermissions":true})
+            );
+        }
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -335,22 +368,28 @@ async fn global_instruction_api_and_admission_share_one_selected_file() {
         assert_eq!(fallback["source"],"agents");
         assert_eq!(fallback["content"],"FALLBACK UNIQUE");
         assert_eq!(fallback["path"], home.join(".agents/AGENTS.md").to_str().unwrap());
-        let prompt = f.owner.capture_behavior(&workspace, &policy, language).await.unwrap().unwrap().text;
+        let prompt = f.owner.capture_behavior(Some(&workspace), &policy, language).await.unwrap().unwrap().text;
         assert!(prompt.starts_with("You are [Maka](https://github.com/apache/maka), an AI agent.\n\n<global_instruction>\nFALLBACK UNIQUE\n</global_instruction>\n\n"));
         assert_eq!(prompt.matches("FALLBACK UNIQUE").count(), 1);
         assert!(prompt.contains("<workspace-instructions file=\"CLAUDE.md\" scope=\"global\">\nOTHER GLOBAL GUIDANCE"));
         assert!(prompt.contains("<workspace-instructions file=\"AGENTS.md\" scope=\"project\">\nPROJECT GUIDANCE"));
         assert!(!prompt.contains("<workspace-instructions file=\"AGENTS.md\" scope=\"global\">"));
+        let external = f.owner.capture_behavior(None, &policy, language).await.unwrap().unwrap().text;
+        assert_eq!(external, "You are [Maka](https://github.com/apache/maka), an AI agent.\n\n<global_instruction>\nFALLBACK UNIQUE\n</global_instruction>");
+        assert_eq!(external.matches("FALLBACK UNIQUE").count(), 1);
+        assert!(!external.contains("GUIDANCE"));
+        assert!(!external.contains("<workspace-instructions"));
         let mut disabled = policy.clone();
         disabled.policy.workspace_instructions.enabled = false;
-        let without_instructions = f.owner.capture_behavior(&workspace, &disabled, language).await.unwrap().unwrap().text;
+        let without_instructions = f.owner.capture_behavior(Some(&workspace), &disabled, language).await.unwrap().unwrap().text;
         assert!(!without_instructions.contains("<global_instruction>"));
         assert!(!without_instructions.contains("GUIDANCE"));
+        assert_eq!(f.owner.capture_behavior(None, &disabled, language).await.unwrap().unwrap().text, without_instructions);
         std::fs::write(home.join(".maka/AGENTS.md"), "").unwrap();
         let empty = f.query("globalInstructions",json!({})).await.unwrap();
         assert_eq!(empty["source"],"maka");
         assert_eq!(empty["content"],"");
-        let prompt = f.owner.capture_behavior(&workspace, &policy, language).await.unwrap().unwrap().text;
+        let prompt = f.owner.capture_behavior(Some(&workspace), &policy, language).await.unwrap().unwrap().text;
         assert!(!prompt.contains("FALLBACK UNIQUE"));
         assert!(!prompt.contains("<global_instruction>"));
         let stale = f.mutation(2,"updateGlobalInstructions",json!({"source":fallback["source"],"revision":fallback["revision"],"content":"STALE"}),Uuid::new_v4()).await.unwrap();

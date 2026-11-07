@@ -16,7 +16,7 @@ describe("on a phone", () => {
   });
 
   test("topics toggle in and out while the list stays open, and closing confirms them", async () => {
-    await app.press("role:combobox[Topics]");
+    await app.press("id:topics-toggle");
     await app.waitFor("role:option[Web]");
     expect(app.shows("2 selected")).toBe(true);
     await app.press("role:option[Web]");
@@ -32,9 +32,9 @@ describe("on a phone", () => {
   });
 
   test("search narrows the topics, and the clear button empties them", async () => {
-    await app.press("role:combobox[Topics]");
+    await app.press("id:topics-toggle");
     await app.waitFor("role:option[Web]");
-    await app.type("text:Search topics", "an");
+    await app.type("role:combobox[Topics]", "an");
     await app.waitUntil(() => app.count("role:option") === 2);
     expect(app.shows("role:option[Animation]")).toBe(true);
     expect(app.shows("role:option[Android]")).toBe(true);
@@ -42,23 +42,22 @@ describe("on a phone", () => {
     await app.waitUntil(() => !app.shows("role:option[Animation]"));
     await app.press("label:Clear the topics");
     await app.waitFor("Topics: none");
-    await app.waitFor("Add topics");
   });
 
   test("a reviewer replaces the last and closes the list", async () => {
-    await app.press("role:combobox[Reviewer]");
+    await app.press("id:reviewer-toggle");
     await app.waitFor("role:option[Grace]");
     await app.press("role:option[Grace]");
     await app.waitFor("Reviewer: Grace");
     await app.waitUntil(() => !app.shows("role:option[Ada]"));
-    await app.press("role:combobox[Reviewer]");
+    await app.press("id:reviewer-toggle");
     await app.waitFor("role:option[Linus]");
     await app.press("role:option[Linus]");
     await app.waitFor("Reviewer: Linus");
   });
 
   test("assignees show as chips with their faces, up to four, and a chip's cross takes one off", async () => {
-    await app.press("role:combobox[Assignees]");
+    await app.press("id:assignees-toggle");
     await app.waitFor("role:option[Alan Turing]");
     await app.press("role:option[Alan Turing]");
     await app.waitFor("Assignees: Ada Lovelace, Grace Hopper, Alan Turing");
@@ -75,9 +74,9 @@ describe("on a phone", () => {
   });
 
   test("a label that does not exist is offered, and choosing the offer creates it", async () => {
-    await app.press("role:combobox[Labels]");
+    await app.press("id:labels-toggle");
     await app.waitFor("role:option[feature]");
-    await app.type("text:Search or create labels", "flaky");
+    await app.type("role:combobox[Labels]", "flaky");
     await app.waitFor("role:option[Create “flaky”]");
     expect(app.count("role:option")).toBe(1);
     await app.press("role:option[Create “flaky”]");
@@ -86,7 +85,7 @@ describe("on a phone", () => {
     await app.waitFor("role:option[flaky]");
     expect(app.shows("role:option[Create “flaky”]")).toBe(false);
     // A label's title, whatever its case, is never offered again.
-    await app.type("text:Search or create labels", "BUG");
+    await app.type("role:combobox[Labels]", "BUG");
     await app.waitUntil(() => app.count("role:option") === 1);
     expect(app.shows("role:option[bug]")).toBe(true);
     await app.back();
@@ -97,11 +96,11 @@ describe("on a phone", () => {
 
   test("a command list runs the command chosen and keeps no value", async () => {
     expect(app.texts()).toContain("Nothing run yet");
-    await app.press("role:combobox[Command]");
+    await app.press("id:command-toggle");
     await app.waitFor("role:option[New file]");
     expect(app.texts()).toContain("APPEARANCE");
     expect(app.enabled("role:option[Reset zoom]")).toBe(false);
-    await app.type("text:Type a command", "term");
+    await app.type("role:combobox[Command]", "term");
     await app.waitUntil(() => app.count("role:option") === 1);
     await app.press("role:option[Toggle terminal]");
     await app.waitFor("Command: Toggle terminal");

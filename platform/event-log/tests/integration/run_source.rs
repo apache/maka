@@ -415,8 +415,9 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
             frozen = Some(warm);
         }
         let before = log.sqlite_resource_stats().await.unwrap();
-        let statement = before
-            .writer
+        let statement = before.readers[0]
+            .as_ref()
+            .unwrap()
             .statements
             .iter()
             .find(|statement| {
@@ -436,8 +437,9 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
         assert_eq!(latest.boundary.high_water, latest_ordinal);
         assert_eq!(latest.last.sequence, *sequences.last().unwrap());
         let after = log.sqlite_resource_stats().await.unwrap();
-        let statement = after
-            .writer
+        let statement = after.readers[0]
+            .as_ref()
+            .unwrap()
             .statements
             .iter()
             .find(|statement| statement.statement_id == id)

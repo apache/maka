@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's Direct2D backend on Windows and GPUI on macOS and Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
+`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's AppKit backend on macOS, its Direct2D backend on Windows and GPUI on Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
 
 Build from the repository root:
 
@@ -50,9 +50,16 @@ Closing the window, the quit menu item and the quit key all close the window; th
 
 The GPUI window opens on the display, at the position and size, and in the full-screen or maximized state it had when it last closed, as recorded in `clients/desktop-window.json` in the Root. If that display is gone it opens centered on the main display; if too little of its top edge would be on the display to grab, it opens centered there.
 
-If the Host stops while the GPUI window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. Until a Host is reached the window keeps the last workbench, whose actions fail, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
+If the Host stops while the AppKit or GPUI window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. The old UI stops accepting actions, all permission setup windows close, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
 
-On macOS, a non-empty `MAKA_APPKIT` runs the workbench on NSH's AppKit backend instead of GPUI. This backend is experimental and not the default. It saves the window's frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. If the Host stops, the window keeps the last workbench and does not reconnect. It refuses plugin changes that need a UI reload, and it posts no system notifications.
+On macOS the AppKit window saves its frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. It follows Host replacements as described above. A plugin change that needs a UI reload takes effect on the Host, but the window keeps the old UI until it is reopened. A completed skill reference in the composer is deleted a character at a time, since AppKit input has no `tokens`. The window posts no system notifications. A non-empty `MAKA_GPUI` opens the GPUI window instead, with the placement, reconnection, UI reload and notifications described above.
+
+## Computer permission setup
+
+AppKit and GPUI open system-permission setup in a separate resizable window, keyed by the original Host source and request. Reopening that request focuses its existing window. Closing it or pressing Escape dismisses only setup; cancelling the original interaction remains an explicit UI action. Closing the main workbench closes its setup windows as well.
+
+On macOS's default AppKit backend, a verified local application is shown with its actual system icon and can be dragged into System Settings as a file URL. Neither the UI nor component props choose the dragged path. The source starts only one session per mouse gesture; a cancelled or rejected drag leaves the window open and can be tried again with a new gesture. GPUI does not advertise this native drag capability. Setup uses the same client storage and appearance settings as the main workbench, but its bindings remain scoped to the request's original Host service, including remote sources. Host replacement disposes of all old setup surfaces before loading a fresh workbench. Both macOS backends open only the permission utility at floating level, docked inside the active screen’s upper-right work area, so System Settings does not cover it. Reopening the same request focuses its window without changing a position the user adjusted; the main workbench never floats.
+
 
 ## Windows Direct2D
 
@@ -66,7 +73,7 @@ cargo build -p maka-cli -p maka-desktop-shell
 
 Use the Windows Rust/MSVC prerequisites in [native build tooling](../../../scripts/rust/README.md) and [NSH's Windows guide](../../../third-party/nsh/docs/dev/windows.md). Install the lockfile's JavaScript dependencies before building: missing npm packages can otherwise survive as unresolved runtime imports in generated plugin bundles. Rebuild the CLI's embedded UI packages after correcting an incomplete dependency installation.
 
-Windows has one desktop backend: Direct2D. There is no backend feature switch or GPUI fallback. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of its window and does not reconnect after that Host stops. It rejects UI reload requests and system notifications explicitly. Window activation follows Win32 activation messages, text-size changes apply immediately, and the workbench's exit command closes the native window.
+Windows has one desktop backend: Direct2D. There is no backend feature switch or GPUI fallback. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of its window and does not reconnect after that Host stops. It rejects UI reload requests and system notifications explicitly. Separate system-permission setup windows are unsupported, so the workbench keeps the inline permission flow. Window activation follows Win32 activation messages, text-size changes apply immediately, and the workbench's exit command closes the native window.
 
 ## Verification
 

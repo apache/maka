@@ -430,8 +430,8 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             source(
                 "notice",
                 "notice",
-                annotated.then(|| MessageOrigin::WorkhubTask {
-                    task_id: "wt_actual".into(),
+                annotated.then(|| MessageOrigin::BotWorker {
+                    session_id: "worker_actual".into(),
                 }),
             ),
         ];
@@ -473,9 +473,9 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             }
             assert!(rows[0].position < rows[1].position && rows[1].position < rows[2].position);
             let mut delivered = sources[1].message.clone();
-            delivered.message_id = "graph-steering".into();
-            delivered.origin = Some(MessageOrigin::WorkhubGraph {
-                graph_id: "agent_graph_actual".into(),
+            delivered.message_id = "worker-steering".into();
+            delivered.origin = Some(MessageOrigin::BotWorker {
+                session_id: "worker_steered".into(),
             });
             let mut steered = opening;
             steered.sequence += 1;
@@ -499,7 +499,7 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             assert_eq!(rows.len(), 1);
             assert_eq!(
                 serde_json::to_value(&rows[0].message).unwrap()["origin"],
-                json!({"kind":"workhub_graph","graphId":"agent_graph_actual"})
+                json!({"kind":"bot_worker","sessionId":"worker_steered"})
             );
         } else {
             assert_eq!(rows[0].message.id, "opening");
@@ -755,4 +755,160 @@ fn reasoning_summary_items_are_paragraphs_in_history_without_changing_model_text
         };
         assert_eq!(text.to_string(), "**检查🙂****Build**");
     }
+}
+
+#[test]
+fn executor_omits_empty_messages_and_preserves_start_chronology_over_id_lexicography() {
+    use maka_agent_facts::executor::{Binding, Output};
+    let invocation = Invocation {
+        session_id: "session".into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    };
+    let mut seq = 0_u64;
+    let mut next = |fact| {
+        seq += 1;
+        StoredEvent {
+            sequence: seq,
+            event: RuntimeEvent::new(invocation.clone(), fact),
+        }
+    };
+    let mut view = InvocationView::new();
+    let mut seen = Vec::new();
+    let mut rows = Vec::new();
+    let mut record = |view: &mut InvocationView, seen: &mut Vec<(u64, RuntimeEvent)>, fact| {
+        let stored = next(fact);
+        seen.push((stored.sequence, stored.event.clone()));
+        view.push(&stored).unwrap()
+    };
+    rows.extend(record(
+        &mut view,
+        &mut seen,
+        Fact::InvocationOpened {
+            input: InvocationInput::Message {
+                content: "task".into(),
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+            configuration: None,
+        },
+    ));
+    rows.extend(record(
+        &mut view,
+        &mut seen,
+        Fact::ExecutorStarted {
+            settings: Default::default(),
+            binding: Binding {
+                executor_id: "claude".to_owned().try_into().unwrap(),
+                package_id: "pkg".into(),
+                entry_id: "entry".into(),
+                activation: "act".into(),
+            },
+        },
+    ));
+    for output in [
+        Output::MessageStart {
+            message_id: "tool-only".into(),
+        },
+        Output::OutputDelta {
+            message_id: "tool-only".into(),
+            text: String::new(),
+        },
+        Output::ThinkingDelta {
+            message_id: "tool-only".into(),
+            text: String::new(),
+        },
+        Output::ToolStart {
+            tool_call_id: "c1".into(),
+            name: "Read".into(),
+            input: json!({}),
+        },
+        Output::ToolResult {
+            tool_call_id: "c1".into(),
+            text: "ok".into(),
+            is_error: false,
+        },
+        Output::MessageEnd {
+            message_id: "tool-only".into(),
+        },
+    ] {
+        rows.extend(record(
+            &mut view,
+            &mut seen,
+            Fact::ExecutorObserved { output },
+        ));
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|row| matches!(row.message.content, Content::Assistant { .. })),
+        "tool-only API messages without text or thinking must not emit blank assistant rows"
+    );
+    let mut duplicate = InvocationView::new();
+    for (sequence, event) in &seen {
+        duplicate
+            .push(&StoredEvent {
+                sequence: *sequence,
+                event: event.clone(),
+            })
+            .unwrap();
+    }
+    assert!(matches!(
+        duplicate.push(&next(Fact::ExecutorObserved {
+            output: Output::MessageStart {
+                message_id: "tool-only".into()
+            },
+        })),
+        Err(ProjectionError::Invalid("duplicate executor message start"))
+    ));
+    for output in [
+        Output::MessageStart {
+            message_id: "z-first".into(),
+        },
+        Output::OutputDelta {
+            message_id: "z-first".into(),
+            text: "first".into(),
+        },
+        Output::MessageStart {
+            message_id: "a-second".into(),
+        },
+        Output::OutputDelta {
+            message_id: "a-second".into(),
+            text: "second".into(),
+        },
+        Output::MessageStart {
+            message_id: "b-empty".into(),
+        },
+    ] {
+        rows.extend(view.push(&next(Fact::ExecutorObserved { output })).unwrap());
+    }
+    let overlay: Vec<_> = view
+        .overlay()
+        .into_iter()
+        .map(|message| match message.content {
+            Content::Assistant { text, .. } => text,
+            other => panic!("unexpected overlay row: {other:?}"),
+        })
+        .collect();
+    assert_eq!(overlay, ["first", "second"]);
+    let ended = view
+        .push(&next(Fact::InvocationEnded {
+            outcome: InvocationOutcome::Cancelled {
+                source: "user".into(),
+            },
+        }))
+        .unwrap();
+    let cancelled: Vec<_> = ended
+        .into_iter()
+        .filter_map(|row| match row.message.content {
+            Content::Assistant {
+                text,
+                interrupted: true,
+                ..
+            } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cancelled, ["first", "second"]);
 }

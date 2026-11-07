@@ -24,6 +24,7 @@ use crate::projects::{
     ProjectError, ProjectMutation, ProjectRecord, ProjectRegistration, ProjectRelink,
     ProjectRelinkGuard,
 };
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -39,7 +40,7 @@ struct BindingAdvance {
 impl RootStore {
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.list_projects().await
+        self.log.list_projects().await
     }
 
     pub async fn projects_with_identity_prefix(
@@ -47,12 +48,12 @@ impl RootStore {
         prefix: &str,
     ) -> Result<Vec<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.projects_with_identity_prefix(prefix).await
+        self.log.projects_with_identity_prefix(prefix).await
     }
 
     pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>, StoreError> {
         self.require_open()?;
-        self.control.get_project(id).await
+        self.log.get_project(id).await
     }
 
     pub async fn register_project(
@@ -194,7 +195,7 @@ impl RootStore {
         self.require_open()?;
         let mutation = self.project_mutations.clone().lock_owned().await;
         self.require_open()?;
-        Ok(self.control.scoped(Arc::new(mutation)))
+        Ok(self.log.scoped(Arc::new(mutation)))
     }
 
     async fn prepare_relink(
@@ -219,14 +220,15 @@ impl RootStore {
             let id: Option<String> = control
                 .connection
                 .read(move |connection| {
-                    Box::pin(async move {
-                        Ok(
-                            sqlx::query_scalar("SELECT id FROM projects WHERE identity=?")
-                                .bind(identity)
-                                .fetch_optional(connection)
-                                .await?,
-                        )
-                    })
+                    {
+                        Ok(connection
+                            .query_row(
+                                "SELECT id FROM projects WHERE identity=?",
+                                rusqlite::params![identity],
+                                |row| row.get(0),
+                            )
+                            .optional()?)
+                    }
                 })
                 .await?;
             match id {
@@ -256,33 +258,24 @@ impl RootStore {
             .ok_or(StoreError::SessionBusy)?;
         // The original scoped control handle retains the mutation mutex too.
         let custody: crate::connection::custody::Custody = Arc::new((exclusive, control));
-        // Every partition contributes its two indexed maxima. No control write
-        // happens unless all counters can advance; pinned members cannot change
-        // an offset or acquire a new attachment between this check and commit.
-        let changes: Arc<[BindingAdvance]> = changes.into();
-        for partition in &self.partitions {
-            let changes = changes.clone();
-            partition
-                .scoped(custody.clone())
-                .connection
-                .read(move |connection| {
-                    Box::pin(async move {
-                        for change in changes.iter() {
-                            crate::workspace_bindings::require_headroom(
-                                connection,
-                                change.id,
-                                change.permission_epoch,
-                                change.metadata_epoch,
-                            )
-                            .await?;
-                        }
-                        Ok(())
-                    })
-                })
-                .await?;
-        }
+        // Pinned members cannot change counters or attachments before commit.
+        self.log
+            .scoped(custody.clone())
+            .connection
+            .read(move |connection| {
+                for change in &changes {
+                    crate::workspace_bindings::require_headroom(
+                        connection,
+                        change.id,
+                        change.permission_epoch,
+                        change.metadata_epoch,
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
         self.require_open()?;
-        Ok((self.control.scoped(custody), guard))
+        Ok((self.log.scoped(custody), guard))
     }
 }
 
@@ -296,17 +289,15 @@ async fn binding_advances(
         .clone()
         .filter(|project| project.id != source.id);
     let scope = guard.owner_scope.clone();
-    control.connection.read(move |connection| Box::pin(async move {
+    control.connection.read(move |connection| {
         let mut changes = BTreeMap::new();
         for (project, relocation) in std::iter::once((source, true)).chain(absorbed.map(|project| (project, false))) {
             for project_id in std::iter::once(project.id).chain(project.aliases) {
                 let mut after = String::new();
                 loop {
-                    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
-                        "SELECT id,permission_epoch,metadata_epoch FROM workspace_bindings
+                    let rows: Vec<(String, i64, i64)> = connection.prepare_cached("SELECT id,permission_epoch,metadata_epoch FROM workspace_bindings
                          WHERE owner_scope=? AND json_extract(workspace_json,'$.projectId')=? AND id>?
-                         ORDER BY id LIMIT 32",
-                    ).bind(&scope).bind(&project_id).bind(&after).fetch_all(&mut *connection).await?;
+                         ORDER BY id LIMIT 32")?.query_map(rusqlite::params![&scope, &project_id, &after], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<Vec<_>, _>>()?;
                     if rows.is_empty() { break; }
                     for (id, permission, metadata) in rows {
                         after.clone_from(&id);
@@ -324,7 +315,7 @@ async fn binding_advances(
             }
         }
         Ok(changes.into_values().collect())
-    })).await
+    }).await
 }
 
 fn next_epoch(current: i64, increment: u64) -> Result<u64, StoreError> {

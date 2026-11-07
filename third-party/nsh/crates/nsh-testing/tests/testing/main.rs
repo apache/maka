@@ -154,7 +154,7 @@ fn open_sets_the_environment_and_routes_answer_requests() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 7);
+    assert_eq!(results.len(), 8);
 }
 
 #[test]
@@ -240,6 +240,15 @@ fn animations_that_loop_forever_hold_no_step() {
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
     assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn steps_on_a_manual_clock_return_once_the_app_is_idle() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/idle");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 4);
 }
 
 #[test]

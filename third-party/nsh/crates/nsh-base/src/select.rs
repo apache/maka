@@ -91,25 +91,39 @@ impl SelectItem {
     }
 }
 
-/// An item's row as `renderItem` draws it: the item and its state.
+/// An item's row as `renderItem` draws it: what the item is, never its
+/// state, so the drawing is made once per item and keeps its views while
+/// the highlight moves and the value changes. The states are the row's
+/// (`focus:` while highlighted, `selected:` while chosen, `disabled:`;
+/// with `group` in `itemClass`, its content's `group-focus:`,
+/// `group-selected:`, `group-disabled:`).
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
-pub struct SelectItemState {
+pub struct SelectEntry {
     /// The item's `value`.
     pub value: SharedString,
     /// The item's `title`.
     pub title: SharedString,
-    /// The item cannot be chosen.
+    /// The item's `disabled`.
     pub disabled: bool,
-    /// It is selected: the select's value, one of the combobox's.
-    pub selected: bool,
-    /// The keys or the pointer are on it: Return or a press chooses it.
-    pub highlighted: bool,
     /// Its index among the `items`.
     pub index: u32,
     /// The item's `group`.
     #[prop(skip_none)]
     pub group: Option<SharedString>,
+}
+
+impl SelectEntry {
+    /// What `renderItem` gets of `item`, at `index` among the items.
+    pub(crate) fn of(item: &SelectItem, index: usize) -> Self {
+        Self {
+            value: item.value.clone(),
+            title: item.title.clone(),
+            disabled: item.disabled,
+            index: index as u32,
+            group: item.group.clone(),
+        }
+    }
 }
 
 /// A section's header as `renderGroup` draws it.
@@ -205,6 +219,9 @@ pub struct SelectProps {
     pub searchable: Prop<bool>,
     /// The search field's placeholder.
     pub search_placeholder: Prop<Option<SharedString>>,
+    /// What screen readers call the search field (the app's words: what
+    /// it searches); a placeholder is a hint, not its name.
+    pub search_accessibility_label: Prop<Option<SharedString>>,
     /// A clear button while an item is chosen (`gpui-component`'s
     /// `cleanable`): a press clears the value, reported by
     /// `onChange(null)`, and leaves the list closed.
@@ -249,7 +266,8 @@ pub struct SelectProps {
     pub list_style: Prop<Style>,
     /// The classes of each item's row: `focus:` while highlighted (the keys
     /// or the pointer are on it), `selected:` while chosen, `disabled:`
-    /// while it cannot be.
+    /// while it cannot be; with `group`, its content follows them
+    /// (`group-focus:`, `group-selected:`, `group-disabled:`).
     pub item_class: Prop<Option<SharedString>>,
     /// The inline style of each item's row, over its classes: its text
     /// styles too (`color`, `fontSize`), which its title inherits.
@@ -284,9 +302,10 @@ pub struct SelectProps {
     /// What the list shows while no item does (a search that matches
     /// nothing, no items).
     pub empty: Prop<Option<Slot>>,
-    /// An item's row drawn by the app, for the rows in view; without it
-    /// a row shows the item's title.
-    pub render_item: Prop<Option<Renderer<SelectItemState>>>,
+    /// An item's row drawn by the app from what the item is, never its
+    /// state (the row's classes are), once per item in view; without it a
+    /// row shows the item's title.
+    pub render_item: Prop<Option<Renderer<SelectEntry>>>,
     /// A section's header drawn by the app; without it a header shows its
     /// title.
     pub render_group: Prop<Option<Renderer<SelectGroup>>>,
@@ -574,13 +593,17 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         item_style: props.item_style,
         group_class: props.group_class,
         group_style: props.group_style,
-        search_class: props.search_class,
-        search_style: props.search_style,
-        search_placeholder: props.search_placeholder,
+        search: Some(listbox::SearchField {
+            class: props.search_class,
+            style: props.search_style,
+            placeholder: props.search_placeholder,
+            accessibility_label: props.search_accessibility_label,
+        }),
         render_item: props.render_item,
         render_group: props.render_group,
         empty: props.empty,
         footer: None,
+        cover: Some(crate::popup::Cover::new()),
     };
     let toggle = change;
     // Bound on the slot: in a TSX app they go to the app's element in it

@@ -21,7 +21,7 @@ use super::{advance, invalidate_test, status, status_basis, write_secret};
 use crate::{ConfigError, ConfigurationStore, Result, TransactionMode, catalog};
 use maka_agent_facts::configuration::headers::*;
 use maka_agent_facts::configuration::*;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeMap;
 
 fn locator(id: String) -> CredentialLocator {
@@ -31,11 +31,12 @@ fn locator(id: String) -> CredentialLocator {
     }
 }
 
-async fn read(tx: &mut SqliteConnection, locator: &CredentialLocator) -> Result<Option<String>> {
-    sqlx::query_scalar("SELECT secret FROM credentials WHERE locator = ?")
-        .bind(serde_json::to_string(locator)?)
-        .fetch_optional(tx)
-        .await
+fn read(tx: &Connection, locator: &CredentialLocator) -> Result<Option<String>> {
+    tx.prepare_cached("SELECT secret FROM credentials WHERE locator = ?")?
+        .query_row(rusqlite::params![serde_json::to_string(locator)?], |row| {
+            row.get(0)
+        })
+        .optional()
         .map_err(Into::into)
 }
 
@@ -47,19 +48,17 @@ impl ConfigurationStore {
     pub async fn request_headers(&self, id: String) -> Result<RequestHeadersQueryResult> {
         validation::entity_id(&id).map_err(ConfigError::Invalid)?;
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                let Some(connection) = catalog::find(tx, &id).await? else {
-                    return Ok(RequestHeadersQueryResult::ConnectionNotFound);
-                };
-                let locator = locator(id);
-                let secret = read(tx, &locator).await?;
-                Ok(RequestHeadersQueryResult::Found {
-                    names: parse(secret.as_deref())?.into_keys().collect(),
-                    basis: RequestHeadersBasis {
-                        connection: catalog::basis(&connection),
-                        credential: status_basis(&status(tx, &locator).await?),
-                    },
-                })
+            let Some(connection) = catalog::find(tx, &id)? else {
+                return Ok(RequestHeadersQueryResult::ConnectionNotFound);
+            };
+            let locator = locator(id);
+            let secret = read(tx, &locator)?;
+            Ok(RequestHeadersQueryResult::Found {
+                names: parse(secret.as_deref())?.into_keys().collect(),
+                basis: RequestHeadersBasis {
+                    connection: catalog::basis(&connection),
+                    credential: status_basis(&status(tx, &locator)?),
+                },
             })
         })
         .await
@@ -76,9 +75,9 @@ impl ConfigurationStore {
         input.normalize().map_err(ConfigError::Invalid)?;
         validation::revision(now, false).map_err(ConfigError::Invalid)?;
         self.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
+            {
                 let id = &input.expected.connection.connection_id;
-                let Some(connection) = catalog::find(tx, id).await? else {
+                let Some(connection) = catalog::find(tx, id)? else {
                     return Ok(RequestHeadersReplaceResult::ConnectionNotFound);
                 };
                 let actual_connection = catalog::basis(&connection);
@@ -89,14 +88,14 @@ impl ConfigurationStore {
                     });
                 }
                 let locator = locator(id.clone());
-                let actual_credential = status_basis(&status(tx, &locator).await?);
+                let actual_credential = status_basis(&status(tx, &locator)?);
                 if actual_credential != input.expected.credential {
                     return Ok(RequestHeadersReplaceResult::CredentialStale {
                         expected: input.expected.credential,
                         actual: actual_credential,
                     });
                 }
-                let previous = read(tx, &locator).await?;
+                let previous = read(tx, &locator)?;
                 let saved = parse(previous.as_deref())?;
                 let by_name: BTreeMap<_, _> = saved
                     .iter()
@@ -129,26 +128,25 @@ impl ConfigurationStore {
                     });
                 }
                 if headers.is_empty() {
-                    sqlx::query("DELETE FROM credentials WHERE locator = ?")
-                        .bind(serde_json::to_string(&locator)?)
-                        .execute(&mut *tx)
-                        .await?;
+                    tx.execute(
+                        "DELETE FROM credentials WHERE locator = ?",
+                        rusqlite::params![serde_json::to_string(&locator)?],
+                    )?;
                 } else {
-                    write_secret(tx, &locator, &secret, now).await?;
+                    write_secret(tx, &locator, &secret, now)?;
                 }
-                invalidate_test(tx, &locator).await?;
-                advance(tx).await?;
-                let connection = catalog::find(tx, id)
-                    .await?
+                invalidate_test(tx, &locator)?;
+                advance(tx)?;
+                let connection = catalog::find(tx, id)?
                     .ok_or_else(|| ConfigError::Invalid("connection disappeared".into()))?;
                 Ok(RequestHeadersReplaceResult::Committed {
                     names,
                     basis: RequestHeadersBasis {
                         connection: catalog::basis(&connection),
-                        credential: status_basis(&status(tx, &locator).await?),
+                        credential: status_basis(&status(tx, &locator)?),
                     },
                 })
-            })
+            }
         })
         .await
     }

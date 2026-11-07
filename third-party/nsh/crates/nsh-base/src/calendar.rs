@@ -23,11 +23,22 @@
 //!   ends, Page Up and Down a month (with Shift a year), Return and Space
 //!   select. Moving past the shown months turns them.
 //! - **Items**: every control is an item the app draws (`renderItem`,
-//!   [`CalendarItemState`]: its kind, value, date and state) or styles
-//!   (`itemClass`: `selected:` on the selected days, the shown month and
-//!   year, `disabled:` on the dates that cannot be picked). Without
-//!   `renderItem` an item shows its number, and Previous / Next `‹` / `›`,
-//!   as `gpui-base`'s default labels.
+//!   [`CalendarEntry`]: what it is, its kind, value and date, never its
+//!   state) and styles (`itemClass`): `selected:` on the selected date or
+//!   every day of the range (as React Aria's range calendar), the shown
+//!   month and year and the open view's toggle; `disabled:` on what takes
+//!   no press; `focus:` on the day with the keyboard; and the `data-*`
+//!   attributes Tailwind's `data-*:` variants read (as shadcn's calendar):
+//!   `data-range-start`, `data-range-end` and `data-range-middle` on a
+//!   complete range's days (a half range's start is `selected:` alone),
+//!   `data-today`, `data-outside` on the days of the months
+//!   around (`group-*:` inside, under `group`). So a drawing is made once
+//!   per item: the keys, a pick and the focus draw nothing again, and a
+//!   turn of the months draws the days it brings once each (a day's
+//!   drawing is kept by its month and date, so with several months the
+//!   ones still shown keep theirs). Without `renderItem` an item shows its
+//!   number, and Previous / Next `‹` / `›`, as `gpui-base`'s default
+//!   labels.
 //! - **Layout**: the grid fills the width it is given, as a table's
 //!   columns do: the months share the body, and the weekdays, the days and
 //!   the months and years to pick share their rows equally (`flex: 1`), so
@@ -41,11 +52,13 @@ use chrono::{Datelike, Days, Months, NaiveDate};
 use nsh_core::{
     element::{
         Arg, Callback, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, Style, TextPartStyle,
-        TsTypes,
+        TsTypes, layout_rtl,
     },
     keymap::When,
     prelude::*,
 };
+
+use crate::keys::directed;
 
 /// How many years a page of the year view shows (`gpui-base`'s 20).
 const YEARS_PER_PAGE: usize = 20;
@@ -502,10 +515,18 @@ pub enum CalendarItemKind {
     Year,
 }
 
-/// An item as `renderItem` draws it (`gpui-base`'s `CalendarItemState`).
+/// An item as `renderItem` draws it: what it is (`gpui-base`'s
+/// `CalendarItemState` without its states), so the drawing is made once
+/// and kept while the item's state changes. The states are the item's
+/// classes: `selected:` (the date, every day of a range, the shown month
+/// or year, the open view's toggle), `disabled:` (what takes no press),
+/// `focus:` (the day with the keyboard), and on the days the `data-*`
+/// attributes `data-range-start`, `data-range-end`, `data-range-middle`,
+/// `data-today` and `data-outside` (`group-selected:`,
+/// `group-data-range-start:`, ... inside, under `group` in `itemClass`).
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
-pub struct CalendarItemState {
+pub struct CalendarEntry {
     /// What it is.
     pub kind: CalendarItemKind,
     /// Its number: the day of the month, the month (1 to 12), the year,
@@ -514,26 +535,20 @@ pub struct CalendarItemState {
     /// A day's ISO date.
     #[prop(skip_none)]
     pub date: Option<SharedString>,
-    /// The year of the month it belongs to (a day, a weekday, a toggle),
-    /// else the shown one.
+    /// The year of the month it belongs to: a day's (that of the month
+    /// whose weeks show it), a month toggle's or title's, a month's of the
+    /// month view; a year toggle's and a year's own. `0` for Previous,
+    /// Next and the weekdays.
     pub year: i32,
-    /// The month it belongs to, 1 to 12, else the shown one.
+    /// The month it belongs to, 1 to 12: a day's (that of the month whose
+    /// weeks show it), a month toggle's or title's, a month's of the month
+    /// view. `0` for the others.
     pub month: u32,
-    /// It is selected: the date or an end of the range, the shown month or
-    /// year, the open view's toggle.
-    pub active: bool,
-    /// A day inside the complete range, its ends included.
-    pub in_range: bool,
-    /// Secondary: a weekday, a day of the month before or after, a disabled
-    /// day.
-    pub muted: bool,
-    /// It takes no press: a disabled date, a weekday, Previous and Next in
-    /// the month view or at the ends of the years.
-    pub disabled: bool,
-    /// The day is today.
+    /// The day is today (also `data-today` on the item).
     pub today: bool,
-    /// The keyboard is on the day.
-    pub focused: bool,
+    /// The day is of the month before or after the one whose weeks show it
+    /// (also `data-outside` on the item).
+    pub outside: bool,
 }
 
 /// The props of [`Calendar`].
@@ -589,16 +604,22 @@ pub struct CalendarProps {
     /// The inline style of each row, over its classes.
     #[prop(default)]
     pub row_style: Prop<Style>,
-    /// The classes of each item: `selected:` while active, `disabled:`
-    /// while it takes no press, `focus:` with the keyboard on it.
+    /// The classes of each item: `selected:` while selected (the date,
+    /// every day of a range, the shown month or year, the open view's
+    /// toggle), `disabled:` while it takes no press, `focus:` with the
+    /// keyboard on it; on the days `data-range-start:`,
+    /// `data-range-end:`, `data-range-middle:` (a range's days), `data-today:`
+    /// and `data-outside:` (a day of the months around); with `group`, the
+    /// content follows them (`group-selected:`, `group-data-today:`, ...).
     pub item_class: Prop<Option<SharedString>>,
     /// The inline style of each item, over its classes: its text styles
     /// too, which its number inherits.
     #[prop(default)]
     pub item_style: Prop<TextPartStyle>,
-    /// Draws each item's content (`gpui-base`'s item slot): month and
-    /// weekday names, today's mark, the range's band.
-    pub render_item: Prop<Option<Renderer<CalendarItemState>>>,
+    /// Draws each item's content (`gpui-base`'s item slot) from what the
+    /// item is, never its state (the item's classes are): month and
+    /// weekday names, today's mark, the range's band (`group-data-range-*:`).
+    pub render_item: Prop<Option<Renderer<CalendarEntry>>>,
 }
 
 /// The events of a [`Calendar`].
@@ -688,7 +709,7 @@ pub(crate) struct Config {
     pub(crate) row_style: Prop<Style>,
     pub(crate) item_class: Prop<Option<SharedString>>,
     pub(crate) item_style: Prop<TextPartStyle>,
-    pub(crate) render_item: Prop<Option<Renderer<CalendarItemState>>>,
+    pub(crate) render_item: Prop<Option<Renderer<CalendarEntry>>>,
 }
 
 /// Where a key moves the keyboard from a day, the week starting on the
@@ -942,12 +963,15 @@ impl Grid {
     }
 
     /// The day keys while a day has the focus: bound when the focus comes
-    /// to the days and kept while it moves among them.
+    /// to the days and kept while it moves among them. The weeks run from
+    /// the right in a right-to-left layout, where Left is the next day and
+    /// Right the previous.
     fn bind_keys(self, changed: Rc<dyn Fn(Date)>) {
         effect(move || {
             if !self.days_focused.get() {
                 return;
             }
+            let rtl = layout_rtl();
             let by = move |f: Step| {
                 move |_: &str| {
                     let first_day = self.config.first_day_of_week.get_untracked();
@@ -979,7 +1003,7 @@ impl Grid {
             ];
             for (key, f) in keys {
                 on_key_with(
-                    key,
+                    &directed(key, rtl),
                     KeyOptions {
                         when: When::NotEditing,
                         repeat: true,
@@ -1140,14 +1164,35 @@ fn page_at(grid: Grid, offset: u32) -> NaiveDate {
     grid.page.get() + Months::new(offset)
 }
 
-/// An item that screen readers call `label`: the app's `renderItem` with
-/// `state`, else `content` (the label when `None`). The app's function
-/// draws nothing while `shown` says the item is hidden (a row of days the
-/// month does not use).
+/// An item's states, which its classes read: `selected` and `disabled`
+/// (screen readers hear them too).
+#[derive(Clone, Copy)]
+struct States {
+    selected: Memo<bool>,
+    disabled: Memo<bool>,
+}
+
+impl States {
+    /// States that do not change.
+    fn fixed(selected: bool, disabled: bool) -> Self {
+        Self {
+            selected: computed(move || selected),
+            disabled: computed(move || disabled),
+        }
+    }
+}
+
+/// An item that screen readers call `label`: what the app's `renderItem`
+/// draws of `entry`, under the key `key` gives, else `content` (the label
+/// when `None`); its states are its classes'. The app's function draws
+/// nothing while `shown` says the item is hidden (a row of days the month
+/// does not use), and draws again only when the entry (or the key)
+/// changes.
 fn item(
     grid: Grid,
-    key: SharedString,
-    state: Memo<CalendarItemState>,
+    key: impl Fn() -> SharedString + 'static,
+    entry: Memo<CalendarEntry>,
+    states: States,
     label: impl Fn() -> SharedString + 'static,
     content: Option<Rc<dyn Fn() -> SharedString>>,
     shown: Option<Memo<bool>>,
@@ -1156,15 +1201,15 @@ fn item(
     let custom = computed(move || config.render_item.with(Option::is_some));
     let label = Rc::new(label);
     let content = content.unwrap_or_else(|| label.clone());
+    let key = Rc::new(key);
+    let States { selected, disabled } = states;
     view()
         .role(AccessibilityRole::Button)
-        .disabled(move || state.with(|s| s.disabled))
-        .accessibility_state(move || {
-            state.with(|s| AccessibilityState {
-                selected: s.active,
-                disabled: s.disabled,
-                ..AccessibilityState::default()
-            })
+        .disabled(disabled)
+        .accessibility_state(move || AccessibilityState {
+            selected: selected.get(),
+            disabled: disabled.get(),
+            ..AccessibilityState::default()
         })
         .label(move || label())
         .app_class(config.item_class)
@@ -1177,7 +1222,7 @@ fn item(
                         return None;
                     }
                     let render = config.render_item.get()?;
-                    Some(render.render(key.clone(), state.get()))
+                    Some(render.render(key(), entry.get()))
                 });
             }
             let content = content.clone();
@@ -1202,16 +1247,14 @@ fn nav(grid: Grid, kind: CalendarItemKind) -> AnyElement {
             }
         }
     });
-    let state = computed(move || {
-        let page = grid.page.get();
-        CalendarItemState {
-            kind,
-            year: page.year(),
-            month: page.month(),
-            disabled: disabled.get(),
-            ..CalendarItemState::default()
-        }
+    let entry = computed(move || CalendarEntry {
+        kind,
+        ..CalendarEntry::default()
     });
+    let states = States {
+        selected: computed(|| false),
+        disabled,
+    };
     let label = if previous {
         config.previous_accessibility_label
     } else {
@@ -1220,8 +1263,9 @@ fn nav(grid: Grid, kind: CalendarItemKind) -> AnyElement {
     let key: SharedString = if previous { "previous" } else { "next" }.into();
     item(
         grid,
-        key,
-        state,
+        move || key.clone(),
+        entry,
+        states,
         move || {
             label
                 .get()
@@ -1259,9 +1303,9 @@ fn nav(grid: Grid, kind: CalendarItemKind) -> AnyElement {
 fn toggle(grid: Grid, kind: CalendarItemKind) -> AnyElement {
     let month = kind == CalendarItemKind::MonthToggle;
     let opens = if month { Mode::Month } else { Mode::Year };
-    let state = computed(move || {
+    let entry = computed(move || {
         let page = grid.page.get();
-        CalendarItemState {
+        CalendarEntry {
             kind,
             value: if month {
                 page.month() as i32
@@ -1269,17 +1313,21 @@ fn toggle(grid: Grid, kind: CalendarItemKind) -> AnyElement {
                 page.year()
             },
             year: page.year(),
-            month: page.month(),
-            active: grid.view.get() == opens,
-            ..CalendarItemState::default()
+            month: if month { page.month() } else { 0 },
+            ..CalendarEntry::default()
         }
     });
+    let states = States {
+        selected: computed(move || grid.view.get() == opens),
+        disabled: computed(|| false),
+    };
     let key: SharedString = if month { "month-toggle" } else { "year-toggle" }.into();
     item(
         grid,
-        key,
-        state,
-        move || state.with(|s| s.value.to_string().into()),
+        move || key.clone(),
+        entry,
+        states,
+        move || entry.with(|e| e.value.to_string().into()),
         None,
         None,
     )
@@ -1309,22 +1357,23 @@ fn toggle(grid: Grid, kind: CalendarItemKind) -> AnyElement {
 /// The title of month `offset` of a calendar of several: a month toggle
 /// that takes no press (`gpui-base` shows each month's label there).
 fn title(grid: Grid, offset: u32) -> AnyElement {
-    let state = computed(move || {
+    let entry = computed(move || {
         let page = page_at(grid, offset);
-        CalendarItemState {
+        CalendarEntry {
             kind: CalendarItemKind::MonthToggle,
             value: page.month() as i32,
             year: page.year(),
             month: page.month(),
-            disabled: true,
-            ..CalendarItemState::default()
+            ..CalendarEntry::default()
         }
     });
+    let key: SharedString = format!("title-{offset}").into();
     item(
         grid,
-        format!("title-{offset}").into(),
-        state,
-        move || state.with(|s| format!("{} {}", s.month, s.year).into()),
+        move || key.clone(),
+        entry,
+        States::fixed(false, true),
+        move || entry.with(|e| format!("{} {}", e.month, e.year).into()),
         None,
         None,
     )
@@ -1342,28 +1391,38 @@ fn picker_item(grid: Grid, kind: CalendarItemKind, at: usize) -> AnyElement {
             grid.year_page.get() + at as i32
         }
     };
-    let state = computed(move || {
-        let page = grid.page.get();
+    let entry = computed(move || {
         let value = value();
-        CalendarItemState {
+        CalendarEntry {
             kind,
             value,
-            year: if is_month { page.year() } else { value },
-            month: if is_month { value as u32 } else { page.month() },
-            active: if is_month {
-                page.month() as i32 == value
+            year: if is_month {
+                grid.page.with(NaiveDate::year)
             } else {
-                page.year() == value
+                value
             },
-            ..CalendarItemState::default()
+            month: if is_month { value as u32 } else { 0 },
+            ..CalendarEntry::default()
         }
     });
+    let states = States {
+        selected: computed(move || {
+            let page = grid.page.get();
+            if is_month {
+                page.month() as i32 == value()
+            } else {
+                page.year() == value()
+            }
+        }),
+        disabled: computed(|| false),
+    };
     let key: SharedString = format!("{}-{at}", if is_month { "month" } else { "year" }).into();
     item(
         grid,
-        key,
-        state,
-        move || state.with(|s| s.value.to_string().into()),
+        move || key.clone(),
+        entry,
+        states,
+        move || entry.with(|e| e.value.to_string().into()),
         None,
         None,
     )
@@ -1401,7 +1460,7 @@ fn month(grid: Grid, offset: u32, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     };
     let weekdays = row().children(
         (0..7)
-            .map(|at| weekday(grid, page, offset, at))
+            .map(|at| weekday(grid, offset, at))
             .collect::<Vec<_>>(),
     );
     let weeks = (0..WEEKS)
@@ -1439,31 +1498,67 @@ fn month(grid: Grid, offset: u32, changed: Rc<dyn Fn(Date)>) -> AnyElement {
 }
 
 /// The weekday at place `at` of month `offset`'s weekdays.
-fn weekday(grid: Grid, page: Memo<NaiveDate>, offset: u32, at: u32) -> AnyElement {
+fn weekday(grid: Grid, offset: u32, at: u32) -> AnyElement {
     let first_day = grid.config.first_day_of_week;
     let day = computed(move || ((first_day.get() + at) % 7) as i32);
-    let state = computed(move || {
-        let page = page.get();
-        CalendarItemState {
-            kind: CalendarItemKind::Weekday,
-            value: day.get(),
-            year: page.year(),
-            month: page.month(),
-            muted: true,
-            disabled: true,
-            ..CalendarItemState::default()
-        }
+    let entry = computed(move || CalendarEntry {
+        kind: CalendarItemKind::Weekday,
+        value: day.get(),
+        ..CalendarEntry::default()
     });
+    let key: SharedString = format!("weekday-{offset}-{at}").into();
     item(
         grid,
-        format!("weekday-{offset}-{at}").into(),
-        state,
+        move || key.clone(),
+        entry,
+        States::fixed(false, true),
         move || day.get().to_string().into(),
         None,
         None,
     )
     .flex_1()
     .into_element()
+}
+
+/// What the value makes of a day.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Marks {
+    /// The date, or a day of the range (its ends included, as React Aria's
+    /// range calendar selects them); a half range's start.
+    selected: bool,
+    /// A complete range's start (`data-range-start`).
+    start: bool,
+    /// A complete range's end (`data-range-end`); a range of one day is
+    /// both.
+    end: bool,
+    /// A day inside a complete range, not an end (`data-range-middle`).
+    middle: bool,
+}
+
+impl Marks {
+    fn of(value: &Date, day: NaiveDate) -> Self {
+        match *value {
+            Date::Single(v) => Self {
+                selected: v == Some(day),
+                ..Self::default()
+            },
+            Date::Range(Some(start), Some(end)) => {
+                let inside = day >= start && day <= end;
+                let (start, end) = (day == start, day == end);
+                Self {
+                    selected: inside,
+                    start,
+                    end,
+                    middle: inside && !start && !end,
+                }
+            }
+            // Half a range: its start is selected, and no range shows.
+            Date::Range(start, _) => Self {
+                selected: start == Some(day),
+                ..Self::default()
+            },
+        }
+    }
 }
 
 /// Where a day cell is: its month, the first day the month's weeks show,
@@ -1494,30 +1589,34 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     let label = computed(move || iso(date.get()));
     let disabled = computed(move || grid.disabled(date.get()));
     let is_stop = computed(move || own.get() && grid.is_stop(date.get()));
-    // What the value makes of the day: a pick checks every day, and makes
-    // the state again only of those it changed.
+    // What the value makes of the day: a pick checks every day, and
+    // changes the states of those it changed only.
     let marks = computed(move || {
         let date = date.get();
-        grid.shown
-            .with(|v| (v.is_active(&date), v.is_in_range(&date)))
+        grid.shown.with(|v| Marks::of(v, date))
     });
-    let state = computed(move || {
-        let (active, in_range) = marks.get();
-        let (date, page, disabled) = (date.get(), page.get(), disabled.get());
-        CalendarItemState {
+    let entry = computed(move || {
+        let (date, page) = (date.get(), page.get());
+        CalendarEntry {
             kind: CalendarItemKind::Day,
             value: date.day() as i32,
             date: Some(label.get()),
             year: page.year(),
             month: page.month(),
-            active,
-            in_range,
-            muted: !own.get() || disabled,
-            disabled,
             today: date == grid.today,
-            focused: grid.days_focused.get() && is_stop.get(),
+            outside: !own.get(),
         }
     });
+    // Its drawing is kept by its month and date: a turn of the months
+    // draws the days it brings, and those still shown keep theirs.
+    let key = move || -> SharedString {
+        let page = page.get();
+        format!("day-{}-{:02}-{}", page.year(), page.month(), label.get()).into()
+    };
+    let states = States {
+        selected: computed(move || marks.get().selected),
+        disabled,
+    };
     let me = element_ref();
     let laid_out = signal(false);
     // The keyboard comes here once the day is laid out: a ref reaches its
@@ -1543,12 +1642,18 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     // Screen readers hear the whole date (`gpui-base`'s `aria_label`).
     item(
         grid,
-        format!("day-{id}").into(),
-        state,
+        key,
+        entry,
+        states,
         move || label.get(),
         Some(Rc::new(move || date.get().day().to_string().into())),
         shown,
     )
+    .project_data("range-start", move || marks.get().start)
+    .project_data("range-end", move || marks.get().end)
+    .project_data("range-middle", move || marks.get().middle)
+    .project_data("today", move || entry.with(|e| e.today))
+    .project_data("outside", move || entry.with(|e| e.outside))
     .flex_1()
     .element_ref(&me)
     .on_layout(move |_: &Bounds<Points>| {

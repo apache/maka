@@ -61,6 +61,7 @@ pub fn Toolbar(props: ToolbarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         roving: Roving::new(Pattern::Toolbar(axis)),
         disabled: props.disabled,
         axis: Some(axis),
+        open_menu: Default::default(),
     });
     view()
         .when(axis == Axis::Horizontal, |v| v.flex_row())

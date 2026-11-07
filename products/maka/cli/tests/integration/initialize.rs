@@ -25,11 +25,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use maka_agent_facts::configuration::policy::RuntimePolicy;
 use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 
 fn initialize(root: &Path, timeout: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_maka"))
+    Command::new(crate::maka_executable())
         .args([
             "host",
             "init",
@@ -51,7 +52,16 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("root");
     let mut child = initialize(&root, "15000");
-    let mut input = br#"{"privacy":{"incognitoActive":true}}"#.to_vec();
+    let mut proxy = RuntimePolicy::default().network_proxy;
+    proxy.enabled = true;
+    proxy.port = 8443;
+    proxy.auth_enabled = true;
+    proxy.username = "bootstrap-user".into();
+    let mut input = serde_json::to_vec(&serde_json::json!({
+        "networkProxy": proxy,
+        "proxyPassword": "private-bootstrap-proxy-secret",
+    }))
+    .unwrap();
     // Complete valid input remains accepted beyond the former byte ceiling.
     input.resize(128 * 1024, b' ');
     child.stdin.take().unwrap().write_all(&input).unwrap();
@@ -68,16 +78,20 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
     let store = ConfigurationStore::for_root(owner).await.unwrap();
     let policy = store.runtime_policy().await.unwrap();
     assert_eq!(policy.revision, 1);
-    assert!(policy.policy.privacy.incognito_active);
+    assert_eq!(policy.policy.network_proxy, proxy);
+    assert_eq!(
+        store
+            .network_configuration()
+            .await
+            .unwrap()
+            .password
+            .as_deref(),
+        Some("private-bootstrap-proxy-secret")
+    );
     store.close().await.unwrap();
 
     let mut child = initialize(&root, "15000");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(br#"{"privacy":{"incognitoActive":false}}"#)
-        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
     assert!(!child.wait_with_output().unwrap().status.success());
     let owner = Arc::new(RootOwner::open_existing(&root, &namespaces).unwrap());
     let store = ConfigurationStore::for_root(owner).await.unwrap();
@@ -87,13 +101,13 @@ async fn public_init_persists_settings_from_stdin_and_rejects_reconfiguration() 
 
 #[test]
 fn public_init_rejects_invalid_settings_without_exposing_input() {
-    let mut invalid_suffix = br#"{"privacy":{"incognitoActive":true}}"#.to_vec();
+    let mut invalid_suffix = b"{}".to_vec();
     // JSON must be checked through EOF, including past the former byte ceiling.
     invalid_suffix.resize(128 * 1024, b' ');
     invalid_suffix.extend_from_slice(b"private-secret-invalid-suffix");
     for input in [
         Vec::new(),
-        b"{}".to_vec(),
+        br#"{"unexpected":true}"#.to_vec(),
         b"private-secret-invalid-json".to_vec(),
         invalid_suffix,
     ] {
@@ -122,9 +136,7 @@ fn public_init_times_out_unfinished_input_without_leaving_a_reader_or_root() {
     let mut child = initialize(&root, "1000");
     let mut input = child.stdin.take().unwrap();
     // Even valid JSON is not accepted until the caller finishes its input.
-    input
-        .write_all(br#"{"privacy":{"incognitoActive":true}}"#)
-        .unwrap();
+    input.write_all(b"{}").unwrap();
     loop {
         if child.try_wait().unwrap().is_some() {
             break;

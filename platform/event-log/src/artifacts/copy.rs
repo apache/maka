@@ -17,19 +17,16 @@
  * under the License.
  */
 
-mod partition;
-
 use super::records::{advance, invalid, read_record, require_session};
 use crate::StoreError;
 use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
-use sqlx::SqliteConnection;
 
 /// Copy an explicitly authorized attachment without materializing its BLOB in the Host.
 /// The caller commits this together with the message that owns the destination.
-pub(crate) async fn copy_in_transaction(
-    tx: &mut SqliteConnection,
+pub(crate) fn copy_in_transaction(
+    tx: &rusqlite::Connection,
     source: &AttachmentRef,
     destination: &AttachmentRef,
     turn: &str,
@@ -49,14 +46,13 @@ pub(crate) async fn copy_in_transaction(
     else {
         return Err(invalid("Attachment destination is not a Session Artifact"));
     };
-    let (mut artifact, digest) = read_record(tx, source_session, source_id)
-        .await?
+    let (mut artifact, digest) = read_record(tx, source_session, source_id)?
         .ok_or_else(|| invalid("Delegated attachment source no longer exists"))?;
     artifact.validate_attachment(source).map_err(invalid)?;
     if artifact.source == ArtifactSource::UserUpload && artifact.summary.as_ref() != Some(&digest) {
         return Err(StoreError::ArtifactConflict);
     }
-    require_session(tx, target_session).await?;
+    require_session(tx, target_session)?;
     artifact.session_id = target_session.clone();
     artifact.id = target_id.clone();
     artifact.turn_id = turn.into();
@@ -64,48 +60,27 @@ pub(crate) async fn copy_in_transaction(
     artifact.validate().map_err(invalid)?;
     artifact.validate_attachment(destination).map_err(invalid)?;
     let encoded = serde_json::to_string(&artifact)?;
-    if let Some((existing, target_digest)) = read_record(tx, target_session, target_id).await? {
+    if let Some((existing, target_digest)) = read_record(tx, target_session, target_id)? {
         if existing != artifact || target_digest != digest {
             return Err(StoreError::ArtifactConflict);
         }
-        let same: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM artifacts s JOIN artifacts t
+        let same: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM artifacts s JOIN artifacts t
              ON t.session_id = ?3 AND t.id = ?4 WHERE s.session_id = ?1 AND s.id = ?2
-             AND (SELECT length(payload) FROM artifact_contents WHERE content_sha256=s.content_sha256) = ?5 AND s.content_sha256 = t.content_sha256)",
-        )
-        .bind(source_session)
-        .bind(source_id)
-        .bind(target_session)
-        .bind(target_id)
-        .bind(artifact.size_bytes as i64)
-        .fetch_one(tx)
-        .await?;
+             AND (SELECT length(payload) FROM contents WHERE content_sha256=s.content_sha256) = ?5 AND s.content_sha256 = t.content_sha256)")?.query_row(rusqlite::params![source_session, source_id, target_session, target_id, artifact.size_bytes as i64], |row| row.get(0))?;
         return if same {
             Ok(())
         } else {
             Err(StoreError::ArtifactConflict)
         };
     }
-    let inserted = sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, canonical_at, lookup_digest)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN artifact_contents USING(content_sha256)
-         WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
-    )
-    .bind(source_session)
-    .bind(source_id)
-    .bind(target_session)
-    .bind(target_id)
-    .bind(created_at as i64)
-    .bind(encoded)
-    .bind(artifact.size_bytes as i64)
-    .bind(super::identity::artifact_lookup_digest(target_session, target_id).as_slice())
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    let inserted = tx.prepare_cached("INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, canonical_at, lookup_digest)
+         SELECT ?3, ?4, ?5, ?6, content_sha256, canonical_at, ?8 FROM artifacts JOIN contents USING(content_sha256)
+         WHERE session_id = ?1 AND artifacts.id = ?2 AND length(payload) = ?7")?.execute(rusqlite::params![source_session, source_id, target_session, target_id, created_at as i64, encoded, artifact.size_bytes as i64, super::identity::artifact_lookup_digest(target_session, target_id).as_slice()])?
+    ;
     if inserted != 1 {
         return Err(StoreError::ArtifactConflict);
     }
-    advance(tx, target_session).await
+    advance(tx, target_session)
 }
 
 impl crate::EventLog {
@@ -117,8 +92,6 @@ impl crate::EventLog {
         request: maka_agent_ports::execution::CopyAttachment,
     ) -> Result<AttachmentRef, StoreError> {
         use sha2::{Digest, Sha256};
-        use sqlx::Connection;
-        self.validate_root()?;
         request
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
@@ -131,29 +104,22 @@ impl crate::EventLog {
         };
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let created_at =
-                        match read_record(&mut tx, &request.target_session_id, &id).await? {
-                            Some((artifact, _)) => artifact.created_at,
-                            None => std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map_err(|error| invalid(&error.to_string()))?
-                                .as_millis()
-                                .try_into()
-                                .map_err(|_| invalid("clock overflow"))?,
-                        };
-                    copy_in_transaction(
-                        &mut tx,
-                        &request.attachment,
-                        &destination,
-                        &id,
-                        created_at,
-                    )
-                    .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(destination)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let created_at = match read_record(&tx, &request.target_session_id, &id)? {
+                    Some((artifact, _)) => artifact.created_at,
+                    None => std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|error| invalid(&error.to_string()))?
+                        .as_millis()
+                        .try_into()
+                        .map_err(|_| invalid("clock overflow"))?,
+                };
+                copy_in_transaction(&tx, &request.attachment, &destination, &id, created_at)?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                Ok(destination)
             })
             .await
     }

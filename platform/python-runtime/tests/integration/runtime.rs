@@ -52,7 +52,7 @@ fn echo() -> Arc<dyn ToolExecutor> {
     }))
 }
 fn executor(limits: CellLimits) -> CodeExecutor {
-    CodeExecutor::with_worker(limits, env!("CARGO_BIN_EXE_maka-python-worker").into()).unwrap()
+    CodeExecutor::with_worker(limits, super::python_worker()).unwrap()
 }
 fn context() -> CellContext {
     CellContext::new(

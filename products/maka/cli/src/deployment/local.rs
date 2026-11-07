@@ -1008,7 +1008,10 @@ mod tests {
     }
 
     fn bundled_settings() -> maka_plugin_core::package::PackageSelection {
-        let bundle = PathBuf::from(env!("OUT_DIR")).join("product");
+        let bundle = std::env::var_os("OUT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("OUT_DIR")))
+            .join("product");
         Package::read_from(&bundle.join("packages/settings"))
             .unwrap()
             .application_ref()
@@ -1225,17 +1228,15 @@ mod tests {
         let mut publication: Configuration =
             serde_json::from_value(record.configuration.clone()).unwrap();
         let Configuration::PublicHost { endpoints, .. } = &mut publication;
-        for name in ["agent", "coordinator"] {
-            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                assert!(
-                    endpoints
-                        .get_mut(name)
-                        .unwrap()
-                        .grant
-                        .methods
-                        .remove(method)
-                );
-            }
+        for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+            assert!(
+                endpoints
+                    .get_mut("agent")
+                    .unwrap()
+                    .grant
+                    .methods
+                    .remove(method)
+            );
         }
         // A caller can remove business management while retaining product-owned
         // Agent publication. Owner coordination must not need this endpoint.

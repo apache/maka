@@ -5,7 +5,7 @@
 //! [`MountItem::Shader`]: nsh_core::MountItem::Shader
 //! [`Shader::glsl_es`]: nsh_core::shader::Shader::glsl_es
 
-use nsh_core::shader::{ShaderLayer, SlotKind};
+use nsh_core::shader::{ShaderLayer, ShaderRole, SlotKind};
 use serde_json::{Value, json};
 
 /// What encodes a shader view's layer ([`encode`]).
@@ -36,11 +36,15 @@ pub(crate) fn encode_layer(layer: Option<&ShaderLayer>) -> String {
     }
 }
 
-/// The layer as `nsh.js`'s `op_sh` takes it: `null`, or the program (its
-/// key, its two shaders and the names of its uniform blocks), its uniform
-/// words, its animated slots (`[word, kind]`, kind 0 `f32`, 1 `i32`, 2
-/// `u32`, 3 RGB, 4 RGBA), whether it reads the time and whether it is
-/// paused.
+/// The layer as `nsh.js`'s `op_sh` (and `op_shn`) takes it: `null`, or the
+/// program (its key, its two shaders, the names of its uniform blocks and
+/// of the samplers of the pictures it reads, `[name, input]` with input 0
+/// content, 1 backdrop, 2 from, 3 to), its uniform words, its animated
+/// slots (`[word, kind]`, kind 0 `f32`, 1 `i32`, 2 `u32`, 3 RGB, 4 RGBA; the
+/// one at `progressSlot` moves `nsh.progress`), whether it reads the time
+/// and whether it is paused, its role (0 a fill, 1 an effect, 2 a
+/// transition, 3 a screen effect, 4 a screen transition), its overflow in
+/// points and its progress.
 fn encode(layer: Option<&ShaderLayer>) -> String {
     let Some(layer) = layer else {
         return "null".into();
@@ -75,8 +79,26 @@ fn encode(layer: Option<&ShaderLayer>) -> String {
         "u": program.uniforms_block,
         "words": &layer.uniforms[..],
         "slots": slots,
+        "pictures": program
+            .pictures
+            .iter()
+            .map(|(name, input)| json!([name, input.index()]))
+            .collect::<Vec<_>>(),
         "animated": shader.animated(),
         "paused": layer.paused,
+        "role": match layer.role {
+            ShaderRole::Fill => 0,
+            ShaderRole::Effect => 1,
+            ShaderRole::Transition => 2,
+            ShaderRole::Screen => 3,
+            ShaderRole::ScreenTransition => 4,
+            // A role this runtime does not know draws as a fill, under the
+            // children, as on a platform that draws no effects.
+            _ => 0,
+        },
+        "overflow": layer.overflow.0,
+        "progress": layer.progress,
+        "progressSlot": layer.progress_slot(),
     })
     .to_string()
 }

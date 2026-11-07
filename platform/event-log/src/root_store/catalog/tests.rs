@@ -18,13 +18,9 @@
  */
 
 use super::*;
-use crate::{
-    root::{RootNamespaces, RootOwner},
-    root_store::{partition_for, routes::Creation},
-};
-use serde::Deserialize;
+use crate::root::{RootNamespaces, RootOwner};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 async fn fixture() -> (tempfile::TempDir, RootStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -49,32 +45,23 @@ fn filter() -> CatalogFilter {
         pending_only: false,
     }
 }
-fn ids_for_partitions() -> Vec<String> {
-    (0..PARTITION_COUNT)
-        .map(|part| {
-            (0..1000)
-                .map(|n| format!("owner-{part}-{n:03}"))
-                .find(|id| partition_for(b"session", id) == part)
-                .unwrap()
-        })
-        .collect()
+fn session_ids() -> Vec<String> {
+    (0..8).map(|index| format!("owner-{index}-001")).collect()
 }
 async fn hidden(root: &RootStore, id: &str) {
     let id = id.to_owned();
-    root.control
+    root.log
         .connection
         .run(move |db| {
-            Box::pin(async move {
-                use sqlx::Connection;
-                let mut tx = db.begin().await?;
-                sqlx::query("UPDATE session_routes SET visible=0 WHERE session_id=?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-                crate::sessions::advance_catalog(&mut tx).await?;
-                tx.commit().await?;
-                Ok(())
-            })
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Deferred)?;
+            tx.execute(
+                "UPDATE session_creations SET visible=0 WHERE session_id=?",
+                rusqlite::params![id],
+            )?;
+            crate::sessions::advance_catalog(&tx)?;
+            tx.commit()?;
+            Ok(())
         })
         .await
         .unwrap();
@@ -84,18 +71,11 @@ fn page_ids<T>(page: &SessionPage<T>) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn eight_partition_keyset_merge_preserves_forward_reverse_and_resets_missing_anchor() {
+async fn keyset_paging_preserves_forward_reverse_and_resets_missing_anchor() {
     let (_dir, root) = fixture().await;
-    let mut ids = ids_for_partitions();
+    let mut ids = session_ids();
     ids.extend((0..31).map(|n| format!("owner-extra-{n:03}")));
     ids.sort();
-    assert_eq!(
-        ids.iter()
-            .map(|id| partition_for(b"session", id))
-            .collect::<BTreeSet<_>>()
-            .len(),
-        8
-    );
     for id in &ids {
         root.create_session(id, id, &json!({"title":id}), 1)
             .await
@@ -118,10 +98,6 @@ async fn eight_partition_keyset_merge_preserves_forward_reverse_and_resets_missi
     assert_eq!(page_ids(&first), ids[..5]);
     assert_eq!(first.pending_session_count, 2);
     assert!(first.previous_cursor.is_none());
-    let encoded = first.revision.rsplit(':').next().unwrap();
-    let vector: Value = serde_json::from_slice(&hex::decode(encoded).unwrap()).unwrap();
-    assert_eq!(vector["partitions"].as_array().unwrap().len(), 8);
-    assert!(vector["control"].as_i64().unwrap() > 0);
     let second = root
         .list_sessions::<Value>(Some(&first.revision), first.next_cursor.as_deref(), 5)
         .await
@@ -165,112 +141,30 @@ async fn eight_partition_keyset_merge_preserves_forward_reverse_and_resets_missi
     root.close().await.unwrap();
 }
 
-#[derive(Deserialize)]
-struct Named {
-    title: String,
-}
-
-#[tokio::test]
-async fn sql_excludes_pending_hidden_orphan_and_wrong_partition_rows_before_decoding() {
-    let (_dir, root) = fixture().await;
-    root.create_session("visible", "visible", &json!({"title":"Visible"}), 1)
-        .await
-        .unwrap();
-    let visible_part = partition_for(b"session", "visible");
-    root.partitions[(visible_part + 1) % 8]
-        .create_session("visible", "rogue", &json!({"title":13}), 1)
-        .await
-        .unwrap();
-    root.create_session("hidden", "hidden", &json!({"title":13}), 1)
-        .await
-        .unwrap();
-    hidden(&root, "hidden").await;
-    let command = Creation::Session {
-        configuration: json!({"title":13}),
-        created_at: 1,
-    };
-    let (pending_part, _) = root
-        .reserve_creation("pending", "pending", command)
-        .await
-        .unwrap();
-    root.partitions[pending_part]
-        .create_session("pending", "pending", &json!({"title":13}), 1)
-        .await
-        .unwrap();
-    root.partitions[0]
-        .create_session("orphan", "orphan", &json!({"title":13}), 1)
-        .await
-        .unwrap();
-    let page = root
-        .scoped_sessions::<Named>(
-            CatalogScope::Profile,
-            None,
-            SessionPosition::Start,
-            filter(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(page_ids(&page), vec!["visible"]);
-    assert_eq!(page.sessions[0].configuration.title, "Visible");
-    for id in ["hidden", "pending", "orphan"] {
-        assert!(root.get_session::<Named>(id).await.unwrap().is_none());
-        assert!(!root.session_is_available(id).await.unwrap());
-        assert!(root.observe_session::<Named>(id).await.unwrap().is_none());
-    }
-    let hidden_part = partition_for(b"session", "hidden");
-    assert!(
-        root.partitions[hidden_part]
-            .root_catalog_records::<Named>(hidden_part, vec!["hidden".into()], None)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        root.get_session::<Named>("visible")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        root.session_projection::<Named>("visible")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        root.observe_session::<Named>("visible")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    root.close().await.unwrap();
-}
-
 #[tokio::test]
 async fn revision_binds_all_data_counters_control_visibility_and_query_without_turn_control_writes()
 {
     use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
     let (_dir, root) = fixture().await;
-    let ids = ids_for_partitions();
+    let ids = session_ids();
     for id in &ids {
         root.create_session(id, id, &json!({"title":id}), 1)
             .await
             .unwrap();
     }
-    for part in 0..8 {
-        let page = root.list_sessions::<Value>(None, None, 1).await.unwrap();
-        root.partitions[part]
-            .connection
-            .run(|db| Box::pin(async move { crate::sessions::advance_catalog(db).await }))
-            .await
-            .unwrap();
-        assert!(matches!(
-            root.list_sessions::<Value>(Some(&page.revision), page.next_cursor.as_deref(), 1)
-                .await,
-            Err(StoreError::RevisionConflict { .. })
-        ));
-    }
-    let before = root.catalog_vector().await.unwrap();
+    let page = root.list_sessions::<Value>(None, None, 1).await.unwrap();
+    root.log
+        .connection
+        .run(|db| crate::sessions::advance_catalog(db))
+        .await
+        .unwrap();
+    assert!(matches!(
+        root.list_sessions::<Value>(Some(&page.revision), page.next_cursor.as_deref(), 1)
+            .await,
+        Err(StoreError::RevisionConflict { .. })
+    ));
+
+    let before = root.catalog_version().await.unwrap();
     let session = root.session(&ids[0]).await.unwrap();
     session
         .append(
@@ -294,9 +188,8 @@ async fn revision_binds_all_data_counters_control_visibility_and_query_without_t
         )
         .await
         .unwrap();
-    let after = root.catalog_vector().await.unwrap();
-    assert_eq!(before.control, after.control);
-    assert_ne!(before.partitions, after.partitions);
+    let after = root.catalog_version().await.unwrap();
+    assert_ne!(before.revision, after.revision);
     let page = root.list_sessions::<Value>(None, None, 1).await.unwrap();
     hidden(&root, &ids[7]).await;
     assert!(matches!(
@@ -319,9 +212,9 @@ async fn revision_binds_all_data_counters_control_visibility_and_query_without_t
 }
 
 #[tokio::test]
-async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursors() {
+async fn pinned_sessions_lead_cross_session_pages_and_unpin_invalidates_cursors() {
     let (_dir, root) = fixture().await;
-    let mut ids = ids_for_partitions();
+    let mut ids = session_ids();
     ids.extend((0..65).map(|n| format!("owner-extra-{n:03}")));
     ids.sort();
     for (n, id) in ids.iter().enumerate() {
@@ -511,7 +404,7 @@ async fn root_sidebar_counts_pending_children_without_listing_them() {
 }
 
 #[tokio::test]
-async fn child_pages_cross_partitions_and_keep_archived_parents_traversable() {
+async fn child_pages_sessions_and_keep_archived_parents_traversable() {
     use crate::sessions::CatalogSelection;
     let (_dir, root) = fixture().await;
     for (id, parent, archived) in [

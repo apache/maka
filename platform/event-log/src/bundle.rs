@@ -21,16 +21,16 @@
 //! or permission to import the source Host's work and grants.
 
 use crate::{EventLog, StoreError};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, SqliteConnection};
 use std::collections::HashSet;
 
 mod accounting;
-mod blobs;
-mod closure;
-mod export;
-mod format;
+pub(crate) mod blobs;
+pub(crate) mod closure;
+pub(crate) mod export;
+pub(crate) mod format;
 mod import;
 pub use import::ImportReceipt;
 mod reader;
@@ -38,6 +38,7 @@ mod relocation;
 mod stage;
 mod validation;
 pub use export::BundleSummary;
+pub(crate) use export::{history_cut, require_idle};
 pub use reader::inspect;
 pub use stage::StagedBundle;
 
@@ -47,6 +48,12 @@ pub enum BundleError {
     CandidateSetStale,
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+impl From<rusqlite::Error> for BundleError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Store(error.into())
+    }
 }
 
 /// Exact, sorted catalog membership observed with all revisions in one snapshot.
@@ -70,17 +77,17 @@ impl EventLog {
     /// Preview only. Export must resolve this again inside its material snapshot;
     /// this result cannot authorize a later read or reserve a mutable subtree.
     pub async fn preview_bundle(&self, root: &str) -> Result<Inventory, BundleError> {
-        self.validate_root()?;
         crate::sessions::validate_id(root)?;
         let root = root.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let result = inventory(&mut tx, &root).await;
-                    tx.rollback().await?;
-                    Ok(result)
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let result = inventory(&tx, &root);
+                tx.rollback()?;
+                Ok(result)
             })
             .await?
     }
@@ -96,18 +103,14 @@ impl Inventory {
     }
 }
 
-async fn inventory(
-    connection: &mut SqliteConnection,
-    root: &str,
-) -> Result<Inventory, BundleError> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND NOT EXISTS(
+pub(crate) fn inventory(connection: &Connection, root: &str) -> Result<Inventory, BundleError> {
+    let exists: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=? AND NOT EXISTS(
             SELECT 1 FROM session_retirements WHERE session_id=id AND remove_session=1))",
-    )
-    .bind(root)
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(StoreError::from)?;
+        )?
+        .query_row(rusqlite::params![root], |row| row.get(0))
+        .map_err(StoreError::from)?;
     if !exists {
         return Err(StoreError::SessionNotFound.into());
     }
@@ -115,8 +118,9 @@ async fn inventory(
     let mut frontier = vec![root.to_owned()];
     while !frontier.is_empty() {
         // Deduplicate all parent-edge kinds before expanding the next frontier.
-        let children: Vec<String> = sqlx::query_scalar(
-            "SELECT live.id FROM session_history_copies c
+        let children: Vec<String> = {
+            let mut statement = connection.prepare_cached(
+                "SELECT live.id FROM session_history_copies c
                JOIN session_control live ON live.id=c.session_id
              WHERE c.source_session_id IN (SELECT value FROM json_each(?1))
                AND NOT EXISTS(SELECT 1 FROM session_retirements
@@ -134,10 +138,15 @@ async fn inventory(
                AND NOT EXISTS(SELECT 1 FROM session_retirements
                  WHERE session_id=live.id AND remove_session=1)
 ",
-        )
-        .bind(serde_json::to_string(&frontier).map_err(StoreError::from)?)
-        .fetch_all(&mut *connection)
-        .await
+            )?;
+
+            statement
+                .query_map(
+                    rusqlite::params![serde_json::to_string(&frontier).map_err(StoreError::from)?],
+                    |row| row.get(0),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }
         .map_err(StoreError::from)?;
         frontier.clear();
         for id in children {
@@ -156,8 +165,7 @@ async fn inventory(
             digest.update(b"\n");
         }
         digest.update(id.as_bytes());
-        let revision = crate::workspace_bindings::current_session_revision(connection, &id)
-            .await?
+        let revision = crate::workspace_bindings::current_session_revision(connection, &id)?
             .ok_or(StoreError::SessionNotFound)?;
         sessions.push(Session { id, revision });
     }

@@ -62,7 +62,6 @@ fn state_error(error: maka_session_state::Error) -> ToolError {
 pub struct Availability {
     catalog: ToolCatalog,
     names: Arc<[String]>,
-    behavior: Option<maka_agent_facts::execution::BehaviorId>,
     loaded: LoadedTools,
 }
 
@@ -96,7 +95,6 @@ impl Availability {
     ) -> Result<Self, ToolError> {
         let mut catalog = self.catalog.clone();
         let request = crate::request::BindingRequest {
-            behavior: self.behavior.clone(),
             model,
             invocation,
             execution,
@@ -119,12 +117,8 @@ impl Availability {
         Self {
             names: catalog.names().into(),
             catalog,
-            behavior: None,
             loaded,
         }
-    }
-    pub fn set_behavior(&mut self, behavior: maka_agent_facts::execution::BehaviorId) {
-        self.behavior = Some(behavior);
     }
     pub fn enabled(&self) -> bool {
         self.catalog.discovery
@@ -147,7 +141,6 @@ impl Availability {
         Self {
             catalog,
             names,
-            behavior: self.behavior.clone(),
             loaded: self.loaded.clone(),
         }
     }

@@ -63,6 +63,7 @@ struct Presentation {
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
     host: nsh_engine::HostChannel,
+    tmux: bool,
 }
 
 impl Presentation {
@@ -132,6 +133,7 @@ pub(crate) fn run(
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the terminal shell requires a terminal on stdin and stdout".into());
     }
+    let tmux = std::env::var_os("TMUX").is_some();
     let mut terminal = PlatformTerminal::new().map_err(|error| error.to_string())?;
     #[cfg(windows)]
     terminal.set_discard_input_on_drop(false);
@@ -150,6 +152,7 @@ pub(crate) fn run(
         stop: stop.clone(),
         driver: Some(thread::current()),
         host: config.host.clone(),
+        tmux,
         ..Default::default()
     };
     let closing = stop.clone();
@@ -205,7 +208,7 @@ pub(crate) fn run(
             }
         }
         let pending = Arc::new(AtomicBool::new(false));
-        let (commands, frames) = ui::spawn(config, pending.clone(), thread::current())
+        let (commands, frames) = ui::spawn(config, pending.clone(), thread::current(), tmux)
             .map_err(|error| error.to_string())?;
         // Returning drops both channel endpoints without joining either
         // blocked owner, including startup errors after terminal mutation.

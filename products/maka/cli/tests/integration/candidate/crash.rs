@@ -45,7 +45,7 @@ async fn activity(client: &AppClient, session: &str) -> Value {
 async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
     let mut fixture = RootStartupFixture::new();
     let root = fixture.root.clone();
-    let executable = Path::new(env!("CARGO_BIN_EXE_maka"));
+    let executable = crate::maka_executable();
     let journal = fixture.directory().join("client.db");
     let owner = Arc::new(
         RootOwner::create(&root, &RootNamespaces::for_current_account().unwrap()).unwrap(),
@@ -69,7 +69,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         }
     });
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut first_host = tokio::process::Command::new(executable)
+        let mut first_host = tokio::process::Command::new(&executable)
             .args(["host", "serve", "--root"])
             .arg(&root)
             .stdin(Stdio::null())
@@ -96,7 +96,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
             .query("agent", "directories", json!({"kind":"roots"}))
             .await
             .unwrap();
-        let created = mutate(&client, "create", json!({"title":"Crash","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
+        let created = mutate(&client, "create", json!({"title":"Crash","labels":[],"workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})).await;
         let session = created["session"]["id"].as_str().unwrap().to_owned();
         mutate(&client, "send", json!({"sessionId":session,"message":"BEFORE_THE_CRASH","backend":{"kind":"model","connectionId":selection["connectionId"],"modelId":selection["modelId"]}})).await;
         let held = requests.recv().await.unwrap();
@@ -109,7 +109,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         drop(client);
 
         fixture.begin_admission();
-        let host = startup::connect_root(executable, &root).await.unwrap();
+        let host = startup::connect_root(&executable, &root).await.unwrap();
         fixture.adopt();
         assert_ne!(host.epoch(), first_epoch);
         let client = AppClient::new(

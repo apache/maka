@@ -82,6 +82,7 @@ the state methods (`.checked(..)`, `.disabled_style(..)`) that follow the switch
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say: what the switch turns on, when its children have no text that says it. |
 | `trackClass`, `trackStyle` | `.track_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The track, the part the thumb moves along. |
 | `thumbClass`, `thumbStyle` | `.thumb_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The thumb, inside the track. |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content after the track: a label, which screen readers say. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The switch itself: the row around the track and the label. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The switch's style while pressed, hovered, focused or disabled, as the `<state>:` classes. |
@@ -123,6 +124,23 @@ its track and thumb apply, over their `checked:` ones:
 >
   <Text>Sync over cellular</Text>
 </Switch>
+```
+
+## A small target with hitSlop
+
+A switch with no label beside it can be smaller than a finger. `hitSlop` makes presses that land near it count, in
+points past each side, without changing its layout or its look: one number for every side, or the sides named
+(`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presses-and-feedback) takes them.
+
+```tsx
+<Switch
+  checked={on()}
+  hitSlop={{ top: 8, bottom: 8 }}
+  accessibilityLabel="Notifications"
+  onChange={({ checked }) => on.set(checked)}
+  trackClass="w-9 rounded-full bg-muted p-0.5 checked:bg-primary"
+  thumbClass="size-4 rounded-full bg-background checked:translate-x-4"
+/>
 ```
 
 ## Accessibility

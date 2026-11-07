@@ -107,23 +107,4 @@ impl ResolvedConfiguration {
             binding: self.binding,
         }
     }
-
-    /// Attach to a new binding after the old effective boundary was resolved.
-    /// The Session metadata transaction validates the reference's current epochs.
-    pub fn into_stored(self, workspace: BindingRef) -> StoredSessionConfiguration {
-        StoredSessionConfiguration {
-            parent_session_id: self.parent_session_id,
-            backend: self.backend,
-            collaboration_mode: self.collaboration_mode,
-            tools: self.tools,
-            compaction_prompt: self.compaction_prompt,
-            title: self.title,
-            title_is_manual: self.title_is_manual,
-            pinned: self.pinned,
-            labels: self.labels,
-            workspace,
-            permissions: self.permissions,
-            boundary_revision: self.boundary_revision,
-        }
-    }
 }

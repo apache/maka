@@ -25,9 +25,13 @@ use crate::checkpoints::{
     Head, Manifest, ObjectRef, Publication, PublicationRequest, PublicationState, Request,
     Revision, Scope, invalid,
 };
+use rusqlite::OptionalExtension;
 use std::future::Future;
 mod journal;
+pub(in crate::root_store) mod load;
 mod objects;
+pub(crate) mod restore;
+mod workspace;
 use objects::Objects;
 
 #[derive(Clone)]
@@ -63,11 +67,12 @@ impl RootStore {
     }
 
     pub(super) async fn recover_checkpoints(&self) -> Result<(), StoreError> {
-        for partition in &self.partitions {
-            if journal::pending(partition, String::new()).await?.is_empty() {
-                continue;
+        {
+            let log = &self.log;
+            if journal::pending(log, String::new()).await?.is_empty() {
+                return Ok(());
             }
-            let log = partition.scoped(partition.clone());
+            let log = log.scoped(log.clone());
             worker(log, self.gates.clone(), |log, objects| async move {
                 let mut after = String::new();
                 loop {
@@ -100,6 +105,13 @@ impl RootStore {
 }
 
 impl HistoryCheckpoints {
+    /// Resolve trusted source binding before consulting a possibly changed live Session.
+    pub async fn original_request(
+        &self,
+        publication: PublicationRequest,
+    ) -> Result<Option<PublicationRequest>, StoreError> {
+        journal::original(&self.session.scoped().await?, self.request(publication)?).await
+    }
     fn request(&self, publication: PublicationRequest) -> Result<Request, StoreError> {
         let request = Request {
             scope: self.scope.clone(),
@@ -185,37 +197,71 @@ impl HistoryCheckpoints {
             log,
             self.session.gates.clone(),
             move |log, objects| async move {
-                let head = journal::read_head(&log, scope.clone(), session.clone())
-                    .await?
-                    .filter(|head| head.revision == revision)
-                    .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
-                let manifest = objects.manifest(&head.manifest)?;
-                let Manifest::NativeHistory {
-                    root_id,
-                    scope: origin,
-                    inventory,
-                    ..
-                } = &manifest;
-                if root_id != objects.root_id()
-                    || origin != &scope
-                    || inventory.root_session_id != session
-                {
-                    return Err(invalid("history checkpoint origin differs"));
-                }
-                let bundle = objects.read(manifest.bundle())?;
-                // Confirm the retained revision again after expensive verification.
-                if journal::read_head(&log, scope, session).await?.as_ref() != Some(&head) {
-                    return Err(invalid("history checkpoint revision unavailable"));
-                }
-                Ok(Checkout {
-                    head,
-                    manifest,
-                    bundle,
-                })
+                checkout(&log, &objects, scope, session, revision).await
             },
         )
         .await
     }
+}
+
+async fn checkout(
+    log: &EventLog,
+    objects: &Objects,
+    scope: Scope,
+    session: String,
+    revision: Revision,
+) -> Result<Checkout, StoreError> {
+    let (head, manifest) = selected_checkpoint(log, objects, &scope, &session, revision).await?;
+    let digest = head.manifest.digest.clone();
+    let key = log
+        .connection
+        .read(move |db| {
+            db.query_row(
+                "SELECT capture_key FROM history_snapshots WHERE digest=?",
+                rusqlite::params![digest],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StoreError::MaterialCollected)
+        })
+        .await?;
+    let bundle = materialize_bundle(log, key, &manifest).await?;
+    // Confirm the retained revision again after expensive verification.
+    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+        return Err(invalid("history checkpoint revision unavailable"));
+    }
+    Ok(Checkout {
+        head,
+        manifest,
+        bundle,
+    })
+}
+
+async fn selected_checkpoint(
+    log: &EventLog,
+    objects: &Objects,
+    scope: &Scope,
+    session: &str,
+    revision: Revision,
+) -> Result<(Head, Manifest), StoreError> {
+    let head = journal::read_head(log, scope.clone(), session.to_owned())
+        .await?
+        .filter(|head| head.revision == revision)
+        .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
+    let manifest = objects.manifest(&head.manifest)?;
+    let Manifest {
+        root_id,
+        scope: origin,
+        inventory,
+        ..
+    } = &manifest;
+    if root_id != objects.root_id() || origin != scope || inventory.root_session_id != session {
+        return Err(invalid("history checkpoint origin differs"));
+    }
+    if let Some(snapshot) = manifest.workspace() {
+        workspace::verify(objects, snapshot)?;
+    }
+    Ok((head, manifest))
 }
 
 fn bundle_error(error: BundleError) -> StoreError {
@@ -230,38 +276,92 @@ async fn capture(
     objects: &Objects,
     request: &Request,
 ) -> Result<ObjectRef, StoreError> {
+    let key = request.key()?;
+    log.capture_snapshot(
+        key.clone(),
+        request.session_id.clone(),
+        request.publication.confirmed_subtree_digest.clone(),
+    )
+    .await?;
     let file = tokio::fs::File::from_std(objects.create(request, "bundle")?);
-    let (file, summary) = log
-        .export_bundle(
-            &request.session_id,
-            &request.publication.confirmed_subtree_digest,
-            file,
-        )
-        .await
-        .map_err(bundle_error)?;
+    let (file, summary) = log.export_snapshot(key, file).await?;
     file.sync_all().await?;
     drop(file);
-    let bundle = objects.publish(&objects.staging(request, "bundle")?)?;
+    let mut file = std::fs::File::open(objects.staging(request, "bundle")?)?;
+    let bundle = objects::measure(&mut file)?;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
     boundary("payload");
-    let manifest = Manifest::NativeHistory {
+    let mut staged = StagedBundle::read(tokio::fs::File::from_std(file))
+        .await
+        .map_err(bundle_error)?;
+    let validated = async {
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.summary().inventory != summary.inventory
+            || staged.summary().digest != summary.digest
+        {
+            return Err(invalid("checkpoint captured bundle differs"));
+        }
+        staged.history_cut(&request.session_id).await
+    }
+    .await;
+    let closed = staged.close().await.map_err(bundle_error);
+    let history_cut = validated?;
+    closed?;
+    let workspace = request
+        .publication
+        .workspace
+        .as_ref()
+        .map(|source| workspace::capture(objects, request, source))
+        .transpose()?;
+    let manifest = Manifest {
         root_id: objects.root_id().into(),
         scope: request.scope.clone(),
         inventory: summary.inventory,
         bundle,
         transfer_digest: summary.digest,
+        history_cut,
+        workspace,
     };
-    validate_bundle(objects, &manifest).await?;
     objects.publish_manifest(request, &manifest)
 }
 
-async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), StoreError> {
-    let Manifest::NativeHistory {
+async fn materialize_bundle(
+    log: &EventLog,
+    key: String,
+    manifest: &Manifest,
+) -> Result<std::fs::File, StoreError> {
+    let file = tokio::fs::File::from_std(tempfile::tempfile()?);
+    let (file, summary) = log.export_snapshot(key, file).await?;
+    let mut file = file.into_std().await;
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    if summary.inventory != manifest.inventory
+        || summary.digest != manifest.transfer_digest
+        || objects::measure(&mut file)? != manifest.bundle
+    {
+        return Err(invalid("checkpoint bundle differs from frozen manifest"));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
+}
+
+async fn validate_bundle(
+    log: &EventLog,
+    objects: &Objects,
+    manifest: &Manifest,
+    key: String,
+) -> Result<(), StoreError> {
+    if let Some(workspace) = manifest.workspace() {
+        workspace::verify(objects, workspace)?;
+    }
+    let Manifest {
         inventory,
         bundle,
         transfer_digest,
         ..
     } = manifest;
-    let file = tokio::fs::File::from_std(objects.read(bundle)?);
+    let file = tokio::fs::File::from_std(materialize_bundle(log, key, manifest).await?);
     let mut staged = StagedBundle::read(file).await.map_err(bundle_error)?;
     let result = async {
         if &staged.summary().inventory != inventory
@@ -270,7 +370,11 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
         {
             return Err(invalid("checkpoint manifest and bundle differ"));
         }
-        staged.validate_history().await.map_err(bundle_error)
+        staged.validate_history().await.map_err(bundle_error)?;
+        if staged.history_cut(&inventory.root_session_id).await? != manifest.history_cut {
+            return Err(invalid("checkpoint history cut differs from bundle"));
+        }
+        Ok(())
     }
     .await;
     let closed = staged.close().await.map_err(bundle_error);
@@ -278,12 +382,13 @@ async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), S
 }
 
 async fn verify(
+    log: &EventLog,
     objects: &Objects,
     request: &Request,
     reference: &ObjectRef,
 ) -> Result<(), StoreError> {
     let manifest = objects.manifest(reference)?;
-    let Manifest::NativeHistory {
+    let Manifest {
         root_id,
         scope,
         inventory,
@@ -296,7 +401,7 @@ async fn verify(
     {
         return Err(invalid("checkpoint manifest origin or membership differs"));
     }
-    validate_bundle(objects, &manifest).await
+    validate_bundle(log, objects, &manifest, request.key()?).await
 }
 
 async fn resume(
@@ -305,7 +410,7 @@ async fn resume(
     request: &Request,
     manifest: ObjectRef,
 ) -> Result<Publication, StoreError> {
-    match verify(objects, request, &manifest).await {
+    match verify(log, objects, request, &manifest).await {
         Ok(()) => journal::commit(log, request.clone(), manifest).await,
         Err(error) => journal::unavailable(log, request.clone(), manifest, error.to_string()).await,
     }
@@ -370,6 +475,33 @@ where
     F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
+    physical_worker(log, gates, Objects::open, action).await
+}
+
+async fn read_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
+    physical_worker(log, gates, Objects::existing, action).await
+}
+
+async fn physical_worker<T, F, Fut>(
+    log: EventLog,
+    gates: Arc<gates::Gates>,
+    open: fn(Arc<root::RootOwner>) -> Result<Objects, StoreError>,
+    action: F,
+) -> Result<T, StoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(EventLog, Objects) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
     let root = log.owned_root()?;
     gates.start_work()?;
     let mut work = PhysicalWork {
@@ -386,7 +518,7 @@ where
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let objects = Objects::open(root)?;
+                let objects = open(root)?;
                 runtime.block_on(action(log, objects))
             })();
             work.complete = true;

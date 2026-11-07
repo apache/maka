@@ -70,7 +70,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         } else {
             "native-cli-test"
         };
-        let mut command = Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut command = Command::new(crate::maka_executable());
         if matches!(end, End::Standalone) {
             command.args(["host", "serve", "--root"]).arg(&fixture.root);
             #[cfg(unix)]
@@ -167,7 +167,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         });
 
         // Initialization verifies identity without competing for an active writer lease.
-        let init = Command::new(env!("CARGO_BIN_EXE_maka"))
+        let init = Command::new(crate::maka_executable())
             .args(["host", "init", "--root"])
             .arg(&fixture.root)
             .output()
@@ -182,7 +182,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
             fixture.root_id
         );
 
-        let status = Command::new(env!("CARGO_BIN_EXE_maka"))
+        let status = Command::new(crate::maka_executable())
             .args(["host", "status", "--root"])
             .arg(&fixture.root)
             .output()
@@ -197,7 +197,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
         assert_eq!(status["closing"], false);
         if matches!(end, End::Standalone) {
             runtime.block_on(client.close()).unwrap();
-            let stale = Command::new(env!("CARGO_BIN_EXE_maka"))
+            let stale = Command::new(crate::maka_executable())
                 .args(["host", "retire", "--root"])
                 .arg(&fixture.root)
                 .args(["--expected-host-epoch", "stale"])
@@ -213,7 +213,7 @@ fn candidate_preserves_root_authority_and_drains_on_owner_loss_or_released_idle(
                     .unwrap()
                     .is_none()
             );
-            let retired = Command::new(env!("CARGO_BIN_EXE_maka"))
+            let retired = Command::new(crate::maka_executable())
                 .args(["host", "retire", "--root"])
                 .arg(&fixture.root)
                 .args([
@@ -455,7 +455,7 @@ impl CandidateFixture {
             && let Some(epoch) = record["hostEpoch"].as_str()
         {
             // This fixture owns a fresh, random root; the CLI rechecks the live epoch.
-            let _ = Command::new(env!("CARGO_BIN_EXE_maka"))
+            let _ = Command::new(crate::maka_executable())
                 .args(["host", "retire", "--root"])
                 .arg(&self.root)
                 .args(["--expected-host-epoch", epoch])

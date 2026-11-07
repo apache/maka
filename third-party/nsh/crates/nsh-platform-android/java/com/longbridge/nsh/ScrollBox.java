@@ -43,6 +43,8 @@ final class ScrollBox extends FrameLayout implements Node {
     private boolean pulling;
     private float startY;
     private boolean touching;
+    /** The down time of the touch whose DOWN this view took (-1: none yet). */
+    private long downTime = -1;
     private final Runnable settled = this::settled;
 
     // `ScrollBehavior`; offsets and lengths in dp.
@@ -285,6 +287,18 @@ final class ScrollBox extends FrameLayout implements Node {
         if (!snaps()) return false;
         snap(velocity);
         return true;
+    }
+
+    /** Whether this view took the DOWN of the touch that went down at {@code downTime}. */
+    boolean took(long downTime) {
+        return this.downTime == downTime;
+    }
+
+    /** Whether a drag by ({@code dx}, {@code dy}) px along this view's axis has content to move. */
+    boolean scrolls(float dx, float dy) {
+        if (scroller == null || !enabled) return false;
+        if (horizontal) return Math.abs(dx) > Math.abs(dy) && scroller.canScrollHorizontally(dx < 0 ? 1 : -1);
+        return Math.abs(dy) > Math.abs(dx) && scroller.canScrollVertically(dy < 0 ? 1 : -1);
     }
 
     /** Glides to the snap point for a release at {@code velocity} (px/s). */
@@ -1013,6 +1027,9 @@ final class ScrollBox extends FrameLayout implements Node {
         } else {
             handled = super.dispatchTouchEvent(e);
         }
+        // For a pan around this view (Box.scrollTakes): a touch that a view
+        // above took never comes here, and leaves the time of an older one.
+        if (action == MotionEvent.ACTION_DOWN) downTime = handled ? e.getDownTime() : -1;
         if (action == MotionEvent.ACTION_UP && tapMode >= 0 && !dragging
                 && (tapMode == 0 || !handlesTap(this, e.getX(), e.getY()))) {
             hideKeyboard();

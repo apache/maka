@@ -17,11 +17,12 @@ Because NSH renders with the system's own views, a native component is just one 
 there is no layering problem, it clips, scrolls and receives touches like a `<View>`.
 
 > [!NOTE]
-> Native components exist only where an app embeds NSH ([iOS](./ios.md), [Android](./android.md),
+> Native components are registered by the app that embeds NSH ([iOS](./ios.md), [Android](./android.md),
 > [macOS](./macos.md#embedding-in-a-mac-app), [Linux](./linux.md#embedding-in-a-gtk-app),
-> [Windows](./windows.md#embedding-in-a-win32-app)).
-> A packaged standalone app (`nsh package`) or a development host registers none, so the element renders an empty
-> view there (the name is logged once as unknown).
+> [Windows](./windows.md#embedding-in-a-win32-app)), or on Windows, macOS, Linux and iOS by the app's own Rust crate,
+> whose components the development host and the packaged app (`nsh package`) register
+> ([Registering from the app's crate](#registering-from-the-apps-crate)). A name nothing registered renders an empty
+> view (the name is logged once as unknown).
 
 ## How it fits together
 
@@ -602,6 +603,74 @@ view, and its container gets the touches. A component that returns a child windo
 hidden with its view, receives its own input, and sits above everything NSH draws (NSH content over it is hidden, as
 with web views). `ComponentContext::emit`, `set_size` (points) and `redraw` work from any thread. Register before
 `AppView::load`; a registry belongs to one `AppView` (and the views made from the same `AppOptions`).
+
+A component also takes the mouse wheel and touchpad scrolls over it with `wheel` (an image viewer zooms with them). The
+`Wheel` it gets holds the pointer (`x`, `y`, the component's points), the distance in points (`dx`, `dy`, positive
+toward the right and down, as scroll views move their content) and in wheel notches (`notches_x`, `notches_y`, with
+fractions from precision touchpads and high-resolution wheels), whether it came in fine steps (`precise`) and the
+modifiers held (`shift`, `ctrl`, `alt`). It returns `true` for a scroll it took; the scroll views around it scroll with
+the rest, and by default with all of them. A scroll a scroll view has begun stays on that view. Ctrl + wheel is also a
+precision touchpad's pinch, and Shift + wheel arrives as the wheel sent it (`dy`, with `shift`):
+
+```rust
+use nsh_platform_windows::Wheel;
+
+impl NativeComponent for ImageView {
+    // draw, set_prop, ...
+
+    fn wheel(&mut self, event: &Wheel) -> bool {
+        if !event.ctrl {
+            return false; // the scroll views around it scroll
+        }
+        // √2 per notch, about the pointer.
+        let factor = 2f32.powf(-event.notches_y / 2.0);
+        self.zoom_about(event.x, event.y, factor);
+        self.context.redraw();
+        true
+    }
+}
+```
+
+## Registering from the app's crate
+
+An app with a Rust crate of its own (`nsh.json` `"rust"`, [Rust](./rust.md)) registers native components in that
+crate, so they work in the hosts NSH builds for the app: the development host of `nsh run` and `nsh test --target`, and
+the app `nsh package` makes. A function with `#[native_components(<platform>)]` at the crate's root (`lib.rs`) registers
+them on that platform's `Components`, and the host calls it for every view it makes, as an embedding app registers on
+its `AppView`:
+
+```rust
+use std::rc::Rc;
+use nsh_core::prelude::*;
+
+#[native_components(windows)]
+fn components(components: &nsh_platform_windows::Components) {
+    use nsh_platform_windows::{ComponentContext, NativeComponent};
+    components.register(
+        "embed.badge",
+        Rc::new(|context: ComponentContext| -> Box<dyn NativeComponent> {
+            Box::new(Badge { on: false, context })
+        }),
+    );
+}
+```
+
+The platform is `windows`, `macos`, `linux` or `ios`, and the components are those of
+`nsh_platform_windows`, `nsh_platform_macos`, `nsh_platform_linux` or `nsh_platform_ios` (the sections above). The
+function compiles only on its platform, so a crate has one per platform it supports, each registering the same names,
+and depends on each platform's crate for that platform only, at the version and from the source of its other NSH
+crates (`nsh-core` and the rest; the CLI checks that they all match):
+
+```toml
+[target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { version = "0.3", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "0.3", default-features = false }
+```
+
+The host registers the crate's components when it makes each view, before the code holding the view registers its
+own: a name registered on the view after that (`AppView::register_component`) replaces the crate's.
 
 ## Rules and limits
 

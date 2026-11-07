@@ -88,6 +88,26 @@ frame id:shader 0 64 200 100
 frame id:label 10 10 180 17
 frame id:still 0 164 50 50
 covers [nsh] Shader
+# core-shader-effects
+tap id:case-core-shader-effects
+expect Pressed 0
+expect Spring
+expect Season 1
+frame id:effect 0 64 200 60
+frame id:inside 10 10 180 17
+frame id:transition 0 124 200 40
+frame id:fade 0 164 100 20
+# The effect's children keep their presses; a transition's change with its
+# value, the shader drawing the change over them.
+tap id:inside
+expect Pressed 1
+tap id:next
+expect Summer
+absent Spring
+expect Season 2
+tap id:next
+expect Autumn
+expect Season 3
 # core-elements
 tap id:case-core-elements
 expect In scroll
@@ -137,6 +157,13 @@ expect Nothing here
 expect Long 0
 expect Long 4
 absent Long 6
+drawing id:sep-0 fillStyle #ff0000ff
+drawing id:sep-1 fillStyle #ff0000ff
+tap id:reload
+expect Separator cleanups: 0
+tap id:theme
+drawing id:sep-0 fillStyle #0000ffff
+drawing id:sep-1 fillStyle #0000ffff
 tap id:add
 expect 4. Item 4
 expect 3. Cherry

@@ -241,6 +241,9 @@ In Rust, each prop below is a method of `nav_page()` in snake case: `.title(..)`
 | `headerLeft` | `JSX.Element` | | iOS and Android: views at the start of the header (they replace the back button). |
 | `headerRight` | `JSX.Element` | | iOS and Android: views at the end of the header. |
 | `ios={{ headerRightSystemItem }}` | `"add" \| "done" \| "close" \| "edit" \| "compose" \| "search" \| "share" \| "trash" \| "save" \| "cancel"` | | iOS: UIKit's own bar button at the end of the header, with the system's look, symbol or label, in place of `headerRight`'s views; a press on it is a press on the first pressable view of `headerRight`, so keep one there. Android shows `headerRight` as it is. |
+| `ios={{ headerLeftSystemItem }}` | same as `headerRightSystemItem` | | iOS: the same, at the start of the header, pressing `headerLeft`. |
+| `ios={{ headerRightSymbol }}` | `string` | | iOS: UIKit's own bar button showing the SF Symbol of that name (`"slider.horizontal.3"`) in place of `headerRight`'s views; a press on it is a press on the first pressable view of `headerRight`, and VoiceOver reads that view's label. `headerRightSystemItem` wins over it; a name SF Symbols does not have shows `headerRight` as it is. Android shows `headerRight` as it is. |
+| `ios={{ headerLeftSymbol }}` | `string` | | iOS: the same, at the start of the header, pressing `headerLeft`. |
 | `headerTitle` | `JSX.Element` | | iOS and Android: views replacing the title. |
 | `headerLargeTitle` | `boolean` | `false` | iOS: a large title that shrinks into the bar as the content scrolls. |
 | `headerBackTitle` | `string` | | The label of the back button that leads back to this page (iOS; Android's up arrow says it to screen readers). |

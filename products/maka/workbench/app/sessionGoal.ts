@@ -35,7 +35,6 @@ import { createText, errorText, isObservationCancelled, UiError } from './text';
 export function goalRejection(reason: string): MessageKey {
   const reasons: Record<string, MessageKey> = {
     goal_current_unfinished: 'Finish or cancel the current Goal before starting another.',
-    goal_incognito: 'Turn off incognito to start a Goal.',
     goal_disabled: 'Goals are unavailable in this Agent.',
     scheduler_authorization_changed: 'Conversation settings changed. Try again.',
     goal_status_tool_unavailable: 'Enable Goal tools for this conversation to start a Goal.',

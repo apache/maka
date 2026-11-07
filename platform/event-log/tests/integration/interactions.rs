@@ -26,7 +26,6 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::workspace::{BindingStamp, PermissionBasis};
 use maka_event_log::EventLog;
-use sqlx::Connection;
 
 async fn bound_session(log: &EventLog, session: &str, boundary_revision: u64) -> PermissionBasis {
     let reference = log
@@ -541,18 +540,13 @@ async fn first_outcome_and_atomic_grant_survive_conflicts_faults_and_reopen() {
     assert_eq!(observation.through_sequence, 0);
 
     // Failure between outcome insertion and grant insertion must roll back both.
-    let mut observer = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(&path),
-    )
-    .await
-    .unwrap();
-    sqlx::raw_sql(
-        "CREATE TRIGGER fail_grant BEFORE INSERT ON client_capability_session_grants
+    let observer = rusqlite::Connection::open(&path).unwrap();
+    observer
+        .execute_batch(
+            "CREATE TRIGGER fail_grant BEFORE INSERT ON client_capability_session_grants
         BEGIN SELECT RAISE(ABORT, 'injected grant failure'); END;",
-    )
-    .execute(&mut observer)
-    .await
-    .unwrap();
+        )
+        .unwrap();
     assert!(
         log.commit_interaction_outcome("request", decision(Decision::Allow, 20))
             .await
@@ -576,10 +570,7 @@ async fn first_outcome_and_atomic_grant_survive_conflicts_faults_and_reopen() {
             .unwrap(),
         waiting
     );
-    sqlx::raw_sql("DROP TRIGGER fail_grant")
-        .execute(&mut observer)
-        .await
-        .unwrap();
+    observer.execute_batch("DROP TRIGGER fail_grant").unwrap();
 
     let (allow, deny) = tokio::join!(
         log.commit_interaction_outcome("request", decision(Decision::Allow, 21)),
@@ -649,7 +640,7 @@ async fn first_outcome_and_atomic_grant_survive_conflicts_faults_and_reopen() {
         .unwrap();
     assert!(projection.pending_interactions.is_empty());
     assert_eq!(projection.through_sequence, observation.through_sequence);
-    observer.close().await.unwrap();
+    observer.close().unwrap();
     log.close().await.unwrap();
 
     let log = EventLog::open(&path).await.unwrap();

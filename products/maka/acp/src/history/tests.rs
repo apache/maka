@@ -33,7 +33,7 @@ fn position(sequence: u64) -> RowPosition {
 fn chunk(sequence: u64, role: &str, tool: &str, offset: u64, text: &str) -> HistoryChunk {
     serde_json::from_value(json!({
         "field":"body", "messageId":if role == "tool_call" { tool.to_owned() } else { format!("result-{sequence}") }, "turnId":"turn", "timestamp":1,
-        "role":role, "position":position(sequence), "offset":offset, "totalBytes":6, "text":text,
+        "role":role, "order":position(sequence), "position":position(sequence), "offset":offset, "totalBytes":6, "text":text,
         "tool":{"toolUseId":tool,
             "call":{"position":position(if role == "tool_call" { sequence } else { sequence - 1 }),"name":"Read",
                 "ancestorToolUseIds":[],"origin":"provider","title":null,"pending":role == "tool_call","dispatched":role == "tool_result"},
@@ -111,7 +111,7 @@ async fn subsequent_tool_rounds_read_only_new_pages_and_publish_complete_results
         }
         let results: Vec<Value> = updates
             .iter()
-            .map(|update| serde_json::to_value(update).unwrap())
+            .map(|update| crate::presentation::wire(update).unwrap())
             .filter(|update| update["content"][0]["content"]["text"] == "abcdef")
             .collect();
         assert_eq!(
@@ -167,7 +167,7 @@ async fn failed_page_does_not_return_progress_and_retry_replays_every_fragment()
         .iter()
         .flat_map(|chunk| projection.chunk(chunk).unwrap())
         .collect();
-    let output = serde_json::to_value(updates.last().unwrap()).unwrap();
+    let output = crate::presentation::wire(updates.last().unwrap()).unwrap();
     assert_eq!(output["content"][0]["content"]["text"], "abcdef");
     assert_eq!(snapshot.through, 20);
 }
@@ -240,12 +240,12 @@ async fn terminal_without_result_refreshes_late_dispatch_before_marking_failed()
         .flat_map(|chunk| projection.chunk(chunk).unwrap())
         .collect();
     assert_eq!(updates.len(), 1);
-    let output = serde_json::to_value(&updates[0]).unwrap();
+    let output = crate::presentation::wire(&updates[0]).unwrap();
     assert_eq!(output["title"], "Read workspace");
     assert_eq!(output["_meta"]["maka"]["presentation"], "workspace.read");
     let terminal = projection.finish("turn", false).unwrap();
     assert_eq!(terminal.len(), 1);
-    let output = serde_json::to_value(&terminal[0]).unwrap();
+    let output = crate::presentation::wire(&terminal[0]).unwrap();
     assert_eq!(output["status"], "failed");
     assert_eq!(output["title"], "Read workspace");
     assert_eq!(output["_meta"]["maka"]["presentation"], "workspace.read");

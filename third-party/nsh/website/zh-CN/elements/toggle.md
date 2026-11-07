@@ -80,6 +80,7 @@ mount(App);
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不接受按压，也没有按压反馈；`disabled:` 样式生效，屏幕阅读器说它不可用。禁用的 `ToggleGroup` 里的开关按钮也被禁用。 |
 | `pressedStyle` | `.pressed_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 按下且未禁用时开关按钮的样式，同 `aria-pressed:` 类。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器读出的内容：当子元素里没有文字说明它开启什么时（一个图标）。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 应用的图标或标签，屏幕阅读器会读出。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 开关按钮本身：内容外面的那层表面。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 正在按压、悬停、获得焦点或禁用时开关按钮的样式，同对应的 `<state>:` 类。 |
@@ -143,6 +144,22 @@ mount(App);
 </ToggleGroup>
 ```
 
+## 用 hitSlop 扩大小目标
+
+图标开关按钮可能比手指还小。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```tsx
+<Toggle
+  pressed={favorite()}
+  hitSlop={12}
+  accessibilityLabel="Favorite"
+  onChange={({ pressed }) => favorite.set(pressed)}
+  class="size-5 items-center justify-center"
+>
+  <Text>★</Text>
+</Toggle>
+```
+
 ## 无障碍
 
 - 开关按钮对屏幕阅读器是一个元素，角色为 `"button"`，带按下状态：一个开关按钮。它的标签是子元素的文字，或 `accessibilityLabel`。
@@ -164,7 +181,7 @@ mount(App);
 | Home、End | 把焦点移到第一个或最后一个开关按钮。 |
 | Space、Return | 按下获得焦点的开关按钮。 |
 
-方向键跳过禁用的开关按钮，且不按下任何东西：开关按钮只在被按压时改变。两组方向键都能移动，不论这一组的布局如何，布局是应用的类。`focus:` 样式显示焦点在哪里。`ToggleGroup` 之外的 `Toggle` 自己占一站。
+方向键跳过禁用的开关按钮，且不按下任何东西：开关按钮只在被按压时改变。两组方向键都能移动，不论这一组的布局如何，布局是应用的类。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个开关按钮，Right 移到上一个；Up、Down、Home 和 End 不变。`focus:` 样式显示焦点在哪里。`ToggleGroup` 之外的 `Toggle` 自己占一站。
 
 ## 平台说明
 

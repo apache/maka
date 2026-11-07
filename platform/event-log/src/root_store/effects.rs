@@ -18,9 +18,10 @@
  */
 
 //! Selected Session custody for a one-shot Host browser lease-child service.
-use super::{EventLog, SessionStore, StoreError};
+use super::{EventLog, SessionStore, StoreError, gates};
 use crate::effects::{Outcome, Record, Request, browser_lease_session};
 use maka_capabilities::storage::Namespace;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Original durable T1 with the accepted Session's existing SQL lifetime pin.
@@ -51,6 +52,12 @@ impl BrowserLeaseChildReceipt {
         self.log.settle_host_effect(self.id, outcome, None).await
     }
 }
+struct BrowserChildWork(Arc<gates::Gates>);
+impl Drop for BrowserChildWork {
+    fn drop(&mut self) {
+        self.0.finish_work();
+    }
+}
 impl SessionStore {
     /// Durably admit a browser source-lease child service before its first effect.
     /// Observation fields grant no permission; the Host checks the live lease.
@@ -63,7 +70,12 @@ impl SessionStore {
         request: Request,
     ) -> Result<BrowserLeaseChildReceipt, StoreError> {
         self.check_session(browser_lease_session(&request)?)?;
-        let dependency = self.control_dependency()?;
+        let dependency: Option<crate::connection::custody::Custody> = if self.execution.is_some() {
+            None
+        } else {
+            self.gates.start_work()?;
+            Some(Arc::new(BrowserChildWork(self.gates.clone())))
+        };
         let mut log = self.scoped().await?;
         if let Some(dependency) = dependency {
             log = log.scoped(dependency);
@@ -76,7 +88,7 @@ impl SessionStore {
     ///
     /// # Errors
     /// Returns storage errors or rejects a foreign/non-browser receipt even if
-    /// it shares the same package namespace or physical writer partition.
+    /// it shares the same package namespace or physical writer.
     pub async fn browser_lease_child_effect(
         &self,
         namespace: Namespace,

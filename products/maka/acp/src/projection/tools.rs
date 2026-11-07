@@ -40,7 +40,7 @@ impl Projection {
         &mut self,
         chunk: &HistoryChunk,
         text: &str,
-    ) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    ) -> Result<Vec<Update>, crate::Error> {
         let source = chunk
             .tool
             .as_ref()
@@ -48,50 +48,42 @@ impl Projection {
         let tool = self.ensure_tool(&chunk.turn_id, &source.tool_use_id)?;
         if let Some(call) = &source.call {
             tool.position = Some(call.position);
-            tool.card.name = MaybeUndefined::Value(call.name.clone());
-            tool.card.title = MaybeUndefined::Value(
-                call.title
-                    .as_ref()
-                    .map_or(call.name.as_str(), |title| title.fallback.as_str())
-                    .to_owned(),
-            );
+            tool.card.name = Some(call.name.clone());
+            tool.card.title = call
+                .title
+                .as_ref()
+                .map_or(call.name.as_str(), |title| title.fallback.as_str())
+                .to_owned();
             tool.meta("presentation", json!(call.presentation));
         }
         if let Some(result) = &source.result {
             tool.authoritative = true;
-            tool.card.status = MaybeUndefined::Value(
-                if result.is_error
-                    || matches!(
-                        result.settlement,
-                        Some(
-                            maka_agent_facts::tool_call::ToolSettlement::Unknown
-                                | maka_agent_facts::tool_call::ToolSettlement::Rejected
-                                | maka_agent_facts::tool_call::ToolSettlement::Failed
-                        )
+            tool.card.status = if result.is_error
+                || matches!(
+                    result.settlement,
+                    Some(
+                        maka_agent_facts::tool_call::ToolSettlement::Unknown
+                            | maka_agent_facts::tool_call::ToolSettlement::Rejected
+                            | maka_agent_facts::tool_call::ToolSettlement::Failed
                     )
-                {
-                    acp::ToolCallStatus::Failed
-                } else {
-                    acp::ToolCallStatus::Completed
-                },
-            );
+                ) {
+                ToolStatus::Failed
+            } else {
+                ToolStatus::Completed
+            };
             tool.meta("settlement", json!(result.settlement));
             tool.meta("image", json!(result.image));
         }
         if chunk.role == Role::ToolResult {
-            tool.card.content = MaybeUndefined::Value(text_content(text));
+            tool.card.output = Some(text.into());
         } else {
-            tool.card.raw_input = MaybeUndefined::Value(json!({"preview":text}));
+            tool.card.input = Some(json!({"preview":text}));
         }
         self.publish(&source.tool_use_id)
     }
 
     /// Call after durable transcript catchup and authoritative turn settlement.
-    pub fn finish(
-        &mut self,
-        turn: &str,
-        completed: bool,
-    ) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    pub fn finish(&mut self, turn: &str, completed: bool) -> Result<Vec<Update>, crate::Error> {
         if completed
             && self
                 .tools
@@ -109,7 +101,7 @@ impl Projection {
         let mut updates = vec![];
         for id in ids {
             let tool = self.tools.get_mut(&id).expect("existing tool");
-            tool.card.status = MaybeUndefined::Value(acp::ToolCallStatus::Failed);
+            tool.card.status = ToolStatus::Failed;
             tool.meta("hostStatus", json!("interrupted"));
             tool.meta("resultPending", json!(false));
             updates.extend(self.publish(&id)?);
@@ -126,15 +118,15 @@ impl Projection {
                     published: None,
                     authoritative: false,
                     position: None,
-                    card: acp::ToolCallUpdate::new(id.to_owned())
-                        .title(id.to_owned())
-                        .kind(acp::ToolKind::Other)
-                        .status(acp::ToolCallStatus::InProgress)
-                        .content(Vec::<acp::ToolCallContent>::new())
-                        .meta(acp::Meta::from_iter([(
-                            "maka".into(),
-                            json!({"turnId":turn}),
-                        )])),
+                    card: ToolCard {
+                        id: id.into(),
+                        title: id.into(),
+                        name: None,
+                        status: ToolStatus::Running,
+                        input: None,
+                        output: None,
+                        meta: Meta::from_iter([("maka".into(), json!({"turnId":turn}))]),
+                    },
                 },
             );
         }
@@ -145,28 +137,20 @@ impl Projection {
         Ok(tool)
     }
 
-    fn publish(&mut self, id: &str) -> Result<Vec<acp::SessionUpdate>, crate::Error> {
+    fn publish(&mut self, id: &str) -> Result<Vec<Update>, crate::Error> {
         let tool = self.tools.get_mut(id).expect("existing tool");
         if tool.published.as_ref() == Some(&tool.card) {
             return Ok(vec![]);
         }
         tool.published = Some(tool.card.clone());
-        Ok(vec![acp::SessionUpdate::ToolCallUpdate(tool.card.clone())])
+        Ok(vec![Update::Tool(tool.card.clone())])
     }
 }
 
 impl Tool {
     fn meta(&mut self, key: &str, value: Value) {
-        if let MaybeUndefined::Value(meta) = &mut self.card.meta {
-            meta["maka"][key] = value;
-        }
+        self.card.meta["maka"][key] = value;
     }
-}
-
-fn text_content(text: &str) -> Vec<acp::ToolCallContent> {
-    vec![acp::ToolCallContent::Content(Box::new(acp::Content::new(
-        text,
-    )))]
 }
 
 #[cfg(test)]
@@ -177,14 +161,14 @@ mod tests {
         let text = "result".repeat(20_000);
         let chunk: HistoryChunk = serde_json::from_value(json!({
             "field":"body", "messageId":"result", "turnId":"turn", "timestamp":1,
-            "role":"tool_result", "position":{"sourceSequence":2,"itemIndex":0}, "offset":0, "totalBytes":text.len(), "text":text,
+            "role":"tool_result", "order":{"sourceSequence":2,"itemIndex":0}, "position":{"sourceSequence":2,"itemIndex":0}, "offset":0, "totalBytes":text.len(), "text":text,
             "tool":{"toolUseId":"call", "call":null,
                 "result":{"position":{"sourceSequence":2,"itemIndex":0},"settlement":"returned","isError":false,"image":false,"images":0}}
         }))
         .unwrap();
         let mut projection = Projection::default();
         let updates = projection.chunk(&chunk).unwrap();
-        let encoded = serde_json::to_value(&updates[0]).unwrap();
+        let encoded = crate::presentation::wire(&updates[0]).unwrap();
         assert_eq!(encoded["content"][0]["content"]["text"], text);
     }
 }

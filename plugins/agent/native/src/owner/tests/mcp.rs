@@ -272,14 +272,14 @@ async fn exercise_mcp_permissions(scenario: Scenario) {
     .expect("MCP permission scenario completes");
 }
 
-fn portable(record: &std::path::Path) -> Value {
+pub(super) fn portable(record: &std::path::Path) -> Value {
     json!({"mcpServers":{"fixture":{
         "command":"node", "args":[std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mcp/tests/server.mjs"),"normal",record],
         "tools":["echo"], "preapproved":true,
         "env":{"MCP_TEST_SECRET":"do-not-display-this-value"}
     }}})
 }
-fn write_config(path: &std::path::Path, config: &Value) {
+pub(super) fn write_config(path: &std::path::Path, config: &Value) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec(config).unwrap()).unwrap();
 }
@@ -367,7 +367,7 @@ async fn exercise_file_consent() {
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
     let workspace_b = f.owner.session(&b).await.unwrap().configuration.workspace;
     let record_a = home.path().join("a-record");
     let record_b = home.path().join("b-record");
@@ -538,7 +538,7 @@ async fn mcp_slow_startup_does_not_block_other_session_stop_or_owner_shutdown() 
         let f = Arc::new(Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await);
         let a = f.create("slow MCP").await;
         let roots = f.query("directories",json!({"kind":"roots"})).await.unwrap();
-        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
         let running = f.send(&b).await.unwrap();
         let (mut socket,_) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -617,7 +617,7 @@ async fn mcp_management_preserves_file_fields_and_targets_physical_instances_wit
         .mutation(
             2,
             "selectWorkspace",
-            roots["roots"][0]["selection"].clone(),
+            json!({"path":roots["roots"][0]["path"]}),
             Uuid::new_v4(),
         )
         .await
@@ -839,6 +839,8 @@ async fn mcp_edits_do_not_rebind_a_tool_waiting_for_approval() {
 
 #[tokio::test]
 async fn mcp_connection_survives_model_retry_park_and_resumed_execution() {
+    use maka_agent_engine::ModelSource;
+
     tokio::time::timeout(Duration::from_secs(90), async {
         let home = tempfile::tempdir().unwrap();
         let original = home.path().join("retry-original");
@@ -847,46 +849,136 @@ async fn mcp_connection_survives_model_retry_park_and_resumed_execution() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(
             &format!("http://{}/v1", listener.local_addr().unwrap()),
-            None, None, None,
+            None,
+            None,
+            None,
             |configuration| {
                 configuration.assistant = Some(crate::contract::AssistantConfiguration {
                     home: Some(home.path().to_str().unwrap().into()),
                 });
             },
-        ).await;
+        )
+        .await;
         let file = home.path().join(".agents/mcp.json");
         write_config(&file, &portable(&original));
         let session = f.create("Model retry retains its MCP connection").await;
         f.send(&session).await.unwrap();
         let store = f.session(&session).await;
-        let mut commits = store.subscribe_commits().unwrap();
         let (mut first, _) = listener.accept().await.unwrap();
         request(&mut first).await;
-        let body = r#"{"error":{"type":"rate_limit_error","message":"retry later"}}"#;
-        first.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let (prime, basis) = {
+            let runs = f.owner.runs.state().await;
+            let control = runs.controls.get(&session).unwrap();
+            (control.invocation.clone(), control.basis.clone())
+        };
+        response(&mut first).await;
         drop(first);
-        loop {
-            if let Some(checkpoint) = store.activation_checkpoint(&session).await.unwrap() {
-                assert!(matches!(checkpoint.checkpoint.suspension,
-                    maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }));
-                break;
-            }
-            commits.changed().await.unwrap();
-        }
         f.drained().await;
+
+        let configuration = store
+            .invocation_configuration(&prime)
+            .await
+            .unwrap()
+            .unwrap();
+        // Keep the historical retry parked while replacing the current MCP catalog.
+        let admission = f.owner.runs.ordered(&session).await;
+        let identity = Uuid::new_v4();
+        let invocation = maka_agent_facts::event::Invocation {
+            session_id: session.clone(),
+            turn_id: format!("retry-turn-{identity}"),
+            run_id: format!("retry-run-{identity}"),
+            invocation_id: format!("retry-invocation-{identity}"),
+        };
+        let source = crate::model::Source::restore(
+            f.owner.configuration.clone(),
+            f.owner.credentials.clone(),
+            basis.model.clone().unwrap(),
+            session.clone(),
+            f.owner.revision.clone(),
+        )
+        .unwrap();
+        let prepared = source.capture().await.unwrap();
+        let tools = f
+            .owner
+            .selected_tools(
+                &session,
+                &basis,
+                configuration.tool_discovery,
+                configuration.editing_tools,
+            )
+            .unwrap();
+        let seeded = maka_agent_engine::retry_fixture::seed_due_model_retry(
+            &f.owner.engine,
+            store.clone(),
+            maka_agent_engine::RunInput {
+                invocation,
+                model_source: Some(Arc::new(source)),
+                model_revision: Some(prepared.revision),
+                provider_id: prepared.provider_id,
+                context: prepared.context,
+                provider: prepared.provider,
+                provider_options: prepared.options,
+                main_output_limit: prepared.main_output_limit,
+                supports_vision: prepared.supports_vision,
+                request_fingerprint: Some(basis.fingerprint.clone()),
+                native_activation_basis: Some(basis),
+                configuration,
+                work: maka_agent_engine::RunWork::Message {
+                    message: "Hello".into(),
+                    source_messages: vec![],
+                    tools,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            seeded.checkpoint.checkpoint.suspension,
+            maka_agent_facts::native_approval::ActivationSuspension::ModelRetry { .. }
+        ));
         write_config(&file, &portable(&replacement));
         f.query("tools", json!({})).await.unwrap();
+        assert_eq!(
+            store
+                .activation_checkpoint(&session)
+                .await
+                .unwrap()
+                .unwrap()
+                .receipt,
+            seeded.checkpoint.receipt,
+            "editing the MCP catalog preserves the same parked retry",
+        );
+        drop(admission);
         let (mut resumed, _) = listener.accept().await.unwrap();
         request(&mut resumed).await;
-        assert!(store.activation_checkpoint(&session).await.unwrap().is_none());
+        assert!(
+            store
+                .activation_checkpoint(&session)
+                .await
+                .unwrap()
+                .is_none()
+        );
         write_config(&file, &portable(&latest));
         f.query("tools", json!({})).await.unwrap();
         echo_turn(&listener, resumed, "RETRIED_ORIGINAL", false).await;
         f.drained().await;
         assert_eq!(calls(&original), 1);
+        assert_eq!(
+            std::fs::read_to_string(&original)
+                .unwrap()
+                .lines()
+                .filter(
+                    |line| serde_json::from_str::<Value>(line).unwrap()["method"] == "initialize"
+                )
+                .count(),
+            1,
+            "parking and resuming keep the original MCP process",
+        );
         assert_eq!(calls(&replacement), 0);
         assert_eq!(calls(&latest), 0);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 }

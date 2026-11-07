@@ -88,6 +88,19 @@ pub struct DiffHunk {
     pub file: u32,
 }
 
+/// Where a change of a [`DiffView`] is in its rows (`hunkBounds()`): what
+/// an overview ruler beside the view marks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct DiffHunkBounds {
+    /// Its index among the changes (`hunks()`).
+    pub index: u32,
+    /// Its rows' box in the box of every row (the content `onScroll`
+    /// reports the size of): from the top of its first row to the bottom
+    /// of its last, the annotations under them included, across the view.
+    pub bounds: Bounds<Points>,
+}
+
 /// What a [`DiffView`]'s texts differ by.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, JsObject)]
 #[non_exhaustive]
@@ -339,6 +352,22 @@ pub enum DiffViewEvent {
     /// now.
     #[args(file)]
     FileToggle(DiffFile),
+    /// The rows scrolled, or the viewport or the rows changed size (a
+    /// resize; other texts, layout or wrapping; a file or separator
+    /// expanded or collapsed; an annotation laid out): the rows' offset,
+    /// their size and the viewport's, as a `Scroll`'s `onScroll` gives
+    /// them, when one differs from those reported last (first once the
+    /// view is laid out). The rows scroll vertically, as wide as the
+    /// viewport: `offset.x` is 0.
+    #[args(offset, content_size, size)]
+    Scroll(Point<Points>, Size<Points>, Size<Points>),
+    /// Where the changes are in the rows (`hunkBounds()`'s list) changed:
+    /// other texts, layout or wrapping, a file or separator expanded or
+    /// collapsed, an annotation laid out or a resize moved or resized one,
+    /// even when the rows kept their height (first once the view is laid
+    /// out). An overview ruler redraws its marks from it.
+    #[args(hunk_bounds)]
+    HunkBoundsChange(Vec<DiffHunkBounds>),
 }
 
 /// The methods of a [`DiffView`]'s ref.
@@ -460,6 +489,26 @@ impl DiffViewApi {
     /// Collapses the file at `path`, or expands it when it is collapsed.
     pub fn toggle_file(&self, path: String) {
         self.dv.set_file_collapsed(&path, None);
+    }
+
+    /// Where each change is in the rows (the content `onScroll` reports
+    /// the size of), in order: the marks of an overview ruler. The changes
+    /// of a collapsed file have none.
+    pub fn hunk_bounds(&self) -> Vec<DiffHunkBounds> {
+        self.dv.hunk_bounds()
+    }
+
+    /// How far the rows are scrolled down (`x` is always 0: each side
+    /// scrolls horizontally on its own).
+    pub fn scroll_offset(&self) -> Point<Points> {
+        self.dv.scroll_offset()
+    }
+
+    /// Scrolls the rows to `offset.y` (as far as they go) at once, as a
+    /// scroll bar's thumb dragged by the pointer follows it; the sides keep
+    /// their horizontal scroll (`offset.x` is ignored).
+    pub fn set_scroll_offset(&self, offset: Point<Points>) {
+        self.dv.set_scroll_offset(offset.y);
     }
 }
 

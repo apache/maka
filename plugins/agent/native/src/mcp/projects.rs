@@ -17,8 +17,10 @@
  * under the License.
  */
 
+mod client;
 use super::{Servers, files};
 use crate::contract::{McpServerView, McpView, Workspace};
+use client::Client;
 use maka_agent_facts::{configuration::mcp::Transport, tools::ToolDefinition};
 use std::{
     collections::BTreeMap,
@@ -31,8 +33,21 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ClientGeneration(uuid::Uuid);
+impl ClientGeneration {
+    pub fn fresh() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+    pub fn interrupt(self) -> String {
+        format!("mcp_{}", self.0.simple())
+    }
+}
 pub(crate) struct Catalog {
     pub revision: Option<String>,
+    pub client_mcp: Option<ClientGeneration>,
+    pub _parent: Option<Arc<Catalog>>,
     pub tools: maka_tools::ToolCatalog,
     pub definitions: Arc<Vec<ToolDefinition>>,
     pub bindings: Arc<BTreeMap<String, Option<String>>>,
@@ -41,12 +56,13 @@ struct Snapshot {
     scope: String,
     acquired: AtomicU64,
     catalog: Arc<Catalog>,
-    servers: Servers,
+    servers: Option<Servers>,
 }
 #[derive(Default)]
 struct Snapshots {
     revisions: BTreeMap<String, Arc<Snapshot>>,
     current: BTreeMap<String, String>,
+    clients: BTreeMap<String, Client>,
 }
 pub(crate) enum Prepared {
     Ready(Arc<Catalog>),
@@ -262,6 +278,19 @@ impl Projects {
         }
         self.capture(workspace).await
     }
+    /// Completion observes captured tools without opening MCP connections.
+    pub async fn observed(&self, workspace: Option<&Workspace>) -> Result<Arc<Catalog>, String> {
+        let mut proposal = self.propose(workspace.cloned()).await?;
+        if !self.trusted(&proposal).await? {
+            proposal = self.propose(None).await?;
+        }
+        let snapshots = self.snapshots.read().expect("MCP snapshots");
+        Ok(snapshots
+            .revisions
+            .get(&proposal.revision)
+            .map(|snapshot| snapshot.catalog.clone())
+            .unwrap_or_else(|| self.base.clone()))
+    }
     fn supersede(&self, scope: &str, current: Option<&str>) {
         let mut snapshots = self.snapshots.write().expect("MCP snapshots");
         match current {
@@ -417,6 +446,8 @@ impl Projects {
                 bindings.extend(servers.bindings.clone());
                 let catalog = Arc::new(Catalog {
                     revision: Some(proposal.revision.clone()),
+                    client_mcp: None,
+                    _parent: None,
                     tools,
                     definitions: Arc::new(definitions),
                     bindings: Arc::new(bindings),
@@ -437,7 +468,7 @@ impl Projects {
                             scope,
                             acquired: AtomicU64::new(0),
                             catalog: catalog.clone(),
-                            servers,
+                            servers: Some(servers),
                         }),
                     );
                 }
@@ -491,12 +522,16 @@ impl Projects {
                     snapshots.revisions.remove(&revision)
                 })
                 .collect();
-            let Snapshots { revisions, current } = &mut *snapshots;
+            let Snapshots {
+                revisions, current, ..
+            } = &mut *snapshots;
             current.retain(|_, revision| revisions.contains_key(revision));
             retired
         };
         for snapshot in retired {
-            if let Err(error) = snapshot.servers.close().await {
+            if let Some(servers) = &snapshot.servers
+                && let Err(error) = servers.close().await
+            {
                 *self.cleanup_failure.lock().expect("MCP cleanup state") = Some(error.clone());
                 return Err(error);
             }
@@ -515,13 +550,19 @@ impl Projects {
             .values()
             .cloned()
             .collect();
-        let mut error = self
+        let mut error = self.close_clients().await.err();
+        if let Some(failure) = self
             .cleanup_failure
             .lock()
             .expect("MCP cleanup state")
-            .clone();
+            .clone()
+        {
+            error.get_or_insert(failure);
+        }
         for snapshot in snapshots {
-            if let Err(cause) = snapshot.servers.close().await {
+            if let Some(servers) = &snapshot.servers
+                && let Err(cause) = servers.close().await
+            {
                 error.get_or_insert(cause);
             }
         }

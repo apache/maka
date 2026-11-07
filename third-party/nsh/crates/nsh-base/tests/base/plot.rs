@@ -3,11 +3,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use nsh_base::plot::{Curve, PlotMotion, SliceClass, area, grid, line, pie, plot};
+use nsh_base::plot::{
+    ColorScale, Curve, DivergingScale, PlotMotion, SliceClass, TreemapPadding, TreemapValueLabel,
+    area, grid, line, pie, plot, treemap,
+};
 use nsh_core::{
     MountItem, Size,
     animation::{AnimationOp, Driver},
-    element::{Root, RowAccessor, Rows, Spring, Timing},
+    element::{Root, RowAccessor, RowText, Rows, Spring, Timing},
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -222,4 +225,71 @@ fn the_hover_follows_the_pointer_in_the_same_frame_and_glides_on_keys() {
     app.press_key("right").unwrap();
     app.wait_for("Day 6").unwrap();
     assert!(springs("keyboard.press(right)") > 0);
+}
+
+/// A market map made in Rust: two sectors and three stocks, their ids and
+/// parents from Rust functions of the rows' indices, sized by cap and
+/// colored by change on a diverging scale.
+#[component]
+fn Market() -> impl IntoElement {
+    const IDS: [&str; 5] = ["tech", "fin", "NVDA", "MSFT", "JPM"];
+    const PARENTS: [&str; 5] = ["", "", "tech", "tech", "fin"];
+    let hovered = signal(None::<u32>);
+    let rows = Rows::from_columns(
+        5,
+        [
+            ("cap".into(), vec![0.0, 0.0, 4300.0, 3700.0, 830.0]),
+            ("chg".into(), vec![0.0, 0.0, 2.4, -0.6, 1.3]),
+        ],
+    );
+    view()
+        .child(
+            plot()
+                .data(rows)
+                .color_scale(ColorScale::from(
+                    DivergingScale::new([rgb(0xdc2626), rgb(0xe5e5e5), rgb(0x16a34a)])
+                        .domain([-3.0, 3.0]),
+                ))
+                .accessibility_label("Market map")
+                .w(px(300.0))
+                .h(px(160.0))
+                .on_hover_change(move |index: &Option<u32>| hovered.set(*index))
+                .child(
+                    treemap()
+                        .id(RowText::from_fn(|i| IDS[i].into()))
+                        .parent(RowText::from_fn(|i| PARENTS[i].into()))
+                        .value(RowAccessor::key("cap"))
+                        .color_value(RowAccessor::key("chg"))
+                        .padding_inner(TreemapPadding::from([px(3.0), px(1.0)]))
+                        .padding_top(TreemapPadding::from(px(18.0)))
+                        .label(RowText::from_fn(|i| IDS[i].into()))
+                        .value_label(TreemapValueLabel::from_fn(|_, value| {
+                            format!("{value:.0}B").into()
+                        })),
+                ),
+        )
+        .child(text(move || match hovered.get() {
+            Some(row) => format!("Node {}", IDS[row as usize]),
+            None => "No node".to_owned(),
+        }))
+}
+
+#[test]
+fn a_rust_treemap_lays_out_its_rows_and_reports_the_node_under_the_pointer() {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::of::<Market>())
+    };
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.first_render().unwrap();
+    app.wait_for("No node").unwrap();
+    // Each leaf named, with its value; a group's value is its leaves' sum.
+    app.wait_for("4300B").unwrap();
+    app.wait_for("JPM").unwrap();
+    // The middle of the map (150): inside Technology (8,000 of 8,830, 270
+    // wide), right of NVIDIA (4,300 of its 8,000, 145 wide): Microsoft.
+    app.hover("label:Market map").unwrap();
+    app.wait_for("Node MSFT").unwrap();
 }

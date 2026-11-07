@@ -30,7 +30,7 @@ pub(crate) fn record_rows(
     rows: &[Row],
 ) -> Result<(), StoreError> {
     let mut identity = db.prepare_cached(
-        "SELECT rowid,message_id FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
+        "SELECT rowid,message_id FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 AND item_index=?3",
     )?;
     let mut insert = db.prepare_cached("INSERT INTO recall_terms(rowid,grams) VALUES(?1,?2)")?;
     for row in rows {
@@ -229,30 +229,29 @@ pub(crate) fn mark_progress(
     session: &str,
     through: i64,
 ) -> Result<(), StoreError> {
-    db.prepare_cached("INSERT INTO recall_progress VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET through_source_sequence=excluded.through_source_sequence")?
+    db.prepare_cached("INSERT INTO recall_progress VALUES(?1,?2) ON CONFLICT(owner_key) DO UPDATE SET through_source_sequence=excluded.through_source_sequence")?
         .execute(params![session, through])?;
     Ok(())
 }
 
 pub(crate) fn reset_session(db: &Connection, session: &str) -> Result<(), StoreError> {
-    db.prepare_cached("DELETE FROM recall_progress WHERE session_id=?")?
+    db.prepare_cached("DELETE FROM recall_progress WHERE owner_key=?")?
         .execute([session])?;
     Ok(())
 }
 
 pub(super) fn visible_sessions(
     db: &Connection,
-    partition: usize,
     prefix: &str,
     session: Option<&str>,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<String>, StoreError> {
     let query = format!(
-        "SELECT s.id FROM session_control s {} AND (?3 IS NULL OR s.id=?3) ORDER BY s.id",
+        "SELECT s.id FROM session_control s {} AND (?2 IS NULL OR s.id=?2) ORDER BY s.id",
         super::VISIBLE,
     );
     let mut statement = db.prepare_cached(&query)?;
-    let mut rows = statement.query(params![partition as i64, prefix, session])?;
+    let mut rows = statement.query(params![prefix, session])?;
     let mut sessions = Vec::new();
     while let Some(row) = rows.next()? {
         super::check(cancellation)?;

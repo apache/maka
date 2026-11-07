@@ -74,7 +74,20 @@ pub enum OverlayAnchor {
     /// padding and border around them (the view itself while it has no
     /// children). A trigger wrapped in a view its parent
     /// stretches is placed against what shows, not the stretched wrapper.
+    /// The element that takes a component's slot (the app's, from TSX or
+    /// Rust) goes by its own box: the slot's holder around it is that
+    /// wrapper.
     Content(NodeId),
+    /// Beside a view inside another, as a submenu beside its row: lined
+    /// up with `node` along the side it goes on, and outside `edges` (the
+    /// menu around the row) across it, so the gap is measured from the
+    /// menu's edge, not from the row inside its padding.
+    Beside {
+        /// The view it lines up with.
+        node: NodeId,
+        /// The view whose edges it goes outside of.
+        edges: NodeId,
+    },
 }
 
 /// The side of the anchor an overlay goes on (`placement`), as
@@ -163,6 +176,13 @@ pub struct OverlayConfig {
     /// (`EventKind::Show` / `EventKind::Dismiss`). `None`: the pointer
     /// decides.
     pub open: Option<bool>,
+    /// A view inside it laid over the anchor, as a select's list opens
+    /// with the selected item over the trigger: the overlay starts where
+    /// the anchor does, with that view's middle on the anchor's, kept
+    /// inside the area, instead of on a side. Where the view is in the
+    /// overlay is kept while the overlay keeps its size, so scrolling its
+    /// content does not move it. `None`: on a side, as `placement` says.
+    pub cover: Option<NodeId>,
 }
 
 /// The delay of a hint before it shows (500 ms, as the desktops' tooltips).

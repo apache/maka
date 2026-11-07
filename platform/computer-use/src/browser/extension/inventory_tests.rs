@@ -950,8 +950,7 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
                 .extension
                 .as_ref()
                 .unwrap()
-                .claim
-                .as_ref()
+                .physical_claim()
                 .unwrap()
                 .claim_id(),
             "replacement-claim"
@@ -964,6 +963,153 @@ async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again()
         ledger.extension.clear();
     }
     fixture.assert_no_frame_and_close().await;
+}
+
+#[tokio::test]
+async fn unknown_attachment_keeps_exact_cleanup_custody_without_current_admission() {
+    use cua_driver_core::browser::ExtensionOperationOutcome;
+    let mut fixture = Fixture::open().await;
+    let provider = fixture.provider();
+    let owner = uuid::Uuid::new_v4();
+    let identity = browser(&provider).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &provider).await.unwrap();
+    let epoch = crate::desktop::NativeEpochId::new();
+    let operation = context_operation("unknown-turn");
+    let call = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(owner, &provider, "unknown-turn", "17", Origin::UserClaimed)
+            .unwrap();
+        ledger
+            .extension_context(
+                owner,
+                &provider,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let reply = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "attach");
+        write_frame(
+            &mut fixture.server,
+            json!({"kind":"controlEvent","event":{"kind":"reply","data":{
+                "id":frame["request"]["id"],
+                "outcome":{"kind":"unknown","data":{
+                    "reason":"attachment cleanup unconfirmed",
+                    "details":{"custody":{"claim":"cleanup-only-claim","tabId":17,"targetId":"target-17"}}
+                }}
+            }}}),
+        )
+        .await;
+    };
+    let (attached, ()) =
+        bounded(async { tokio::join!(call.dispatch(call.control.attach_tab(17)), reply) }).await;
+    assert!(matches!(
+        attached.map_err(|error| *error),
+        Err(ExtensionProviderError::OutcomeUnknown { reason, .. })
+            if reason == "attachment cleanup unconfirmed"
+    ));
+    let claim = {
+        let mut ledger = host.lock().await;
+        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        let request = crate::BrowserSessionPreparation {
+            native_owner: owner,
+            native_epoch: epoch.to_string(),
+            browser_id: provider.id().into(),
+            generation: provider.extension().unwrap().identity().generation.clone(),
+            turn_id: operation.turn_id.clone(),
+            operation_id: operation.operation_id.clone(),
+            target: crate::BrowserPreparationTarget::ClaimedTab {
+                tab_id: "17".into(),
+                claim_id: "cleanup-only-claim".into(),
+            },
+        };
+        assert!(matches!(
+            ledger.extension_preparation_current(&call, &request),
+            Err(ToolError::CleanupUnconfirmed(message))
+                if message == "extension session preparation lost its live reservation"
+        ));
+        ledger.tabs[&identity]
+            .extension
+            .as_ref()
+            .unwrap()
+            .physical_claim()
+            .cloned()
+            .expect("the actual Unknown reply must retain its exact cleanup claim")
+    };
+    assert!(matches!(
+        call.control.open_cdp_channel(&claim).await,
+        Err(ExtensionProviderError::Refused { kind, .. }) if kind == "claim_unavailable"
+    ));
+    let reply = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "detach");
+        assert_eq!(frame["request"]["claim"], "cleanup-only-claim");
+        result(
+            &mut fixture.server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"detached":true,"proof":"detach_ack"}),
+        )
+        .await;
+    };
+    let (detached, ()) = bounded(async {
+        tokio::join!(
+            call.dispatch_retirement(call.control.detach_tab(&claim)),
+            reply
+        )
+    })
+    .await;
+    let detached = detached.unwrap();
+    let mut ledger = host.lock().await;
+    ledger.reconcile_provider(owner, &provider).await.unwrap();
+    assert!(matches!(
+        ledger
+            .retire_extension_cleanup(owner, &provider, &identity, &call.control)
+            .await,
+        Err(ToolError::CleanupUnconfirmed(message))
+            if message == "extension effect custody remains unknown before claim retirement: attachment cleanup unconfirmed"
+    ));
+    drop(ledger);
+    let pending = bounded(fixture.extension.pending_operations())
+        .await
+        .unwrap();
+    assert!(matches!(pending.as_slice(), [entry]
+        if entry.id == detached.completion_id()
+            && matches!(&entry.operation, ExtensionOperation::Detach { claim, tab_id: 17, target_id }
+                if claim == "cleanup-only-claim" && target_id == "target-17")
+            && matches!(&entry.outcome, Some(ExtensionOperationOutcome::Result(value))
+                if value == &json!({"detached":true,"proof":"detach_ack"}))));
+    // This unresolved fixture must retain its cleanup ACK. Closing its public
+    // transport proves no extra IPC, not retirement or settlement of Unknown.
+    bounded(fixture.extension.close()).await;
+    let mut byte = [0_u8];
+    assert_eq!(
+        bounded(fixture.server.read(&mut byte)).await.unwrap(),
+        0,
+        "the fixture transport must close without another IPC frame"
+    );
+    assert!(matches!(
+        bounded(fixture.extension.recover_completion(detached.completion_id()))
+            .await
+            .unwrap(),
+        ExtensionRecoveredOperation::Cleanup(proof)
+            if proof.completion_id() == detached.completion_id()
+    ));
+    assert!(matches!(
+        host.lock()
+            .await
+            .retire_extension_cleanup(owner, &provider, &identity, &call.control)
+            .await,
+        Err(ToolError::CleanupUnconfirmed(_))
+    ));
 }
 
 #[tokio::test]

@@ -87,8 +87,13 @@
         host: app.host ? { call: (name, args) => host.call(name, args) } : undefined,
         assets: app.assets,
         data: app.data,
+        sides: app.sides,
         readAsset: (uri) => fonts.get(path(uri)) ?? null,
-        prepareChunk: (id) => Promise.all((app.chunkFonts[id] ?? []).map(loadFont)),
+        // The chunk's fonts and the side modules of the runtime it needs.
+        prepareChunk: (id) => Promise.all([
+          ...(app.chunkFonts[id] ?? []).map(loadFont),
+          player.loadSides(app.chunkSides?.[id], app.sides),
+        ]),
         // A release shows no error box; an app that could not start says so.
         overlay: false,
         onError: (message) => {
@@ -101,13 +106,17 @@
       ...(app.entryChunks ?? []).flatMap(id => (app.chunkFonts[id] ?? []).map(loadFont)),
     ]);
     player = loaded;
+    // Every side module the app may need, downloaded behind its first
+    // screen: ready before the user opens what needs one.
+    player.prefetchSides(app.sides);
     if (hostModule) {
       host = await hostModule.createHost(player);
       if (typeof host?.call !== "function") throw new Error("nsh.json web.host: createHost(player) returned no call(name, args)");
     }
     status.hidden = true;
     if (app.rust) player.runRust();
-    else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks });
+    else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks, nativeExports: app.nativeExports });
+    player.preloadSides(app.sides);
   } catch (err) {
     fail("This app could not be loaded.", String(err?.message ?? err));
   }

@@ -29,6 +29,7 @@ import type {
   ClientOperation,
   OperationReply,
   ServiceMethods,
+  SystemPermissionGrant,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 
@@ -181,6 +182,19 @@ export function createHost(application: UiHost) {
           };
     },
     query,
+    get systemPermissionWindow() {
+      return nativeHost.systemPermissionWindow;
+    },
+    openSystemPermissionSetup: (sessionId: string, requestId: string) =>
+      nativeHost.openSystemPermissionSetup(sessionId, requestId),
+    systemPermissionStatus: (sessionId: string, requestId: string) =>
+      nativeHost.systemPermissionStatus(sessionId, requestId) as Promise<
+        Output<'agent', 'systemPermissionStatus'>
+      >,
+    requestSystemPermission: (sessionId: string, requestId: string, grant: SystemPermissionGrant) =>
+      nativeHost.requestSystemPermission(sessionId, requestId, grant) as Promise<
+        Output<'agent', 'systemPermissionStatus'>
+      >,
     systemPermissionActions: (sessionId: string, requestId: string) =>
       nativeHost.systemPermissionActions(sessionId, requestId),
     systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
@@ -188,8 +202,8 @@ export function createHost(application: UiHost) {
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
     stageDroppedFiles: (files: string[]) => nativeHost.stageDroppedFiles(files),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
-    setRecentWorkspace: (path: string, workspace: unknown) =>
-      nativeHost.setRecentWorkspace(path, workspace),
+    setRecentWorkspace: (path: string, remember: boolean) =>
+      nativeHost.setRecentWorkspace(path, remember),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),

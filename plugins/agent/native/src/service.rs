@@ -109,6 +109,7 @@ impl Handler for Agent {
                         }
                     }
                 }
+                "sessionMcp" => owner.session_mcp(decode(input)?, context).await,
                 "projectMcp" => encode(owner.project_mcp(decode(input)?, context.scope()).await?),
                 "trustProjectMcp" => {
                     context.operation().ok_or("agent_mutation_required")?;
@@ -348,8 +349,12 @@ impl Handler for Agent {
                     )
                 }
                 "directories" => encode(
-                    maka_workspace_support::query(owner.workspace_roots.clone(), decode(input)?)
-                        .await?,
+                    maka_workspace_support::query(
+                        owner.workspace_roots.clone(),
+                        decode(input)?,
+                        owner.home.as_deref(),
+                    )
+                    .await?,
                 ),
                 "create" => {
                     let input: Create = decode(input)?;
@@ -365,19 +370,6 @@ impl Handler for Agent {
                         .preview_history_checkpoint(decode(input)?, context.scope())
                         .await?,
                 ),
-                "publishHistoryCheckpoint" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .publish_history_checkpoint(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
-                "historyCheckpointReceipt" => encode(
-                    owner
-                        .history_checkpoint_receipt(decode(input)?, context)
-                        .await?,
-                ),
                 "historyCheckpointHead" => encode(
                     owner
                         .history_checkpoint_head(decode(input)?, context.scope())
@@ -385,6 +377,58 @@ impl Handler for Agent {
                 ),
                 "readHistoryCheckpoint" => {
                     owner.read_history_checkpoint(decode(input)?, context).await
+                }
+                "loadHistoryCheckpoint" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .load_history_checkpoint(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "restoreSessionCheckpoint" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .restore_session_checkpoint(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "sessionCheckpointRestoreReceipt" => encode(
+                    owner
+                        .session_checkpoint_restore_receipt(decode(input)?, context)
+                        .await?,
+                ),
+                "publishCheckpoint" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .publish_checkpoint(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "checkpointReceipt" => {
+                    encode(owner.checkpoint_receipt(decode(input)?, context).await?)
+                }
+                "historyCheckpointLoadReceipt" => encode(
+                    owner
+                        .history_checkpoint_load_receipt(decode(input)?, context)
+                        .await?,
+                ),
+                "loadedHistoryCheckpointHistory" => checkpoint_output(
+                    owner
+                        .loaded_checkpoint_history(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "loadedHistoryCheckpointArtifacts" => checkpoint_output(
+                    owner
+                        .loaded_checkpoint_artifacts(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "loadedHistoryCheckpointArtifact" => {
+                    owner
+                        .loaded_checkpoint_artifact(decode(input)?, context)
+                        .await
                 }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
@@ -566,7 +610,6 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "history" => {
-                    use maka_agent_ports::session::history::Page;
                     use maka_agent_ports::session::history::Read;
                     let input: History = decode(input)?;
                     owner.require_session(&input.session_id).await?;
@@ -588,13 +631,8 @@ impl Handler for Agent {
                     }
                     .validate()
                     .map_err(|_| "agent_cursor_invalid")?;
-                    let result = {
-                        let Page::Ready {
-                            through,
-                            chunks,
-                            before,
-                            after,
-                        } = owner
+                    let result = HistoryPage::from(
+                        owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
                             .history_view(
@@ -612,45 +650,9 @@ impl Handler for Agent {
                                 },
                             )
                             .await
-                            .map_err(|_| "agent_history_unavailable")?;
-                        HistoryPage::Ready {
-                            through,
-                            before,
-                            after,
-                            chunks: chunks
-                                .into_iter()
-                                .map(|chunk| HistoryChunk {
-                                    model_part: chunk.model_part,
-                                    has_references: chunk.has_references,
-                                    final_output: chunk.final_output,
-                                    model: chunk.model,
-                                    origin: chunk.origin,
-                                    compaction: chunk.compaction,
-                                    attachments: chunk
-                                        .attachments
-                                        .into_iter()
-                                        .map(|attachment| HistoryAttachment {
-                                            name: attachment.name,
-                                            mime_type: attachment.mime_type,
-                                            bytes: attachment.bytes,
-                                            kind: attachment.kind,
-                                        })
-                                        .collect(),
-                                    timing: chunk.timing,
-                                    field: chunk.field,
-                                    message_id: chunk.message_id,
-                                    turn_id: chunk.turn_id,
-                                    timestamp: chunk.timestamp,
-                                    role: chunk.role,
-                                    position: chunk.position,
-                                    offset: chunk.offset,
-                                    total_bytes: chunk.total_bytes,
-                                    text: chunk.text,
-                                    tool: chunk.tool,
-                                })
-                                .collect(),
-                        }
-                    };
+                            .map_err(|_| "agent_history_unavailable")?,
+                    );
+
                     owner.require_session(&input.session_id).await?;
                     if context.scope().cancellation.is_cancelled() {
                         return Err("agent_observation_cancelled".into());
@@ -1078,6 +1080,21 @@ impl Handler for Agent {
                             .await?,
                     )
                 }
+                "systemPermissionStatus" => {
+                    let input: InteractionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
+                    encode(owner.system_permission_status(input).await?)
+                }
+                "requestSystemPermission" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .request_system_permission(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "respond" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -1358,6 +1375,12 @@ async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())
 }
+fn checkpoint_output<T: Serialize>(value: T) -> Result<Value, String> {
+    let value = encode(value)?;
+    maka_plugin_core::json::exact_numbers(&value)
+        .map_err(|_| "agent_history_checkpoint_output_unavailable")?;
+    Ok(value)
+}
 fn encode<T: Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|_| "agent_output_unavailable".into())
 }
@@ -1423,11 +1446,33 @@ fn delivery(event: StoreStreamEvent) -> Delivery {
     let model_tool_id = |step: &str, call: &str| tool_id(&format!("{step}:{call}"));
     let fact = match event.fact {
         StreamFact::InvocationOpened => DeliveryFact::Opened,
-        StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted {
-            message_id: event.id,
+        StreamFact::ExecutorStarted => DeliveryFact::ExecutorStarted,
+        StreamFact::ExecutorMessageStarted { message_id } => DeliveryFact::ExecutorMessageStarted {
+            message_id: maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            ),
         },
-        StreamFact::ExecutorDelta { text_kind, text } => DeliveryFact::Delta {
-            step_id: event.invocation.invocation_id.clone(),
+        StreamFact::ExecutorMessageEnded { message_id } => {
+            let id = maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            );
+            DeliveryFact::PartCommitted {
+                step_id: id.clone(),
+                message_id: id,
+                ordinal: 0,
+            }
+        }
+        StreamFact::ExecutorDelta {
+            message_id,
+            text_kind,
+            text,
+        } => DeliveryFact::Delta {
+            step_id: maka_presentation::executor_message_id(
+                &event.invocation.invocation_id,
+                &message_id,
+            ),
             part_id: match text_kind {
                 maka_agent_facts::model::TextKind::Text => "text",
                 maka_agent_facts::model::TextKind::Thinking => "thinking",

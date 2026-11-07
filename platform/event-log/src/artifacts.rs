@@ -28,7 +28,7 @@ use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::artifact::ArtifactSource;
 use maka_agent_facts::artifact::content_digest;
 use records::{advance, decode, invalid, read_record, require_session};
-use sqlx::Connection;
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ArtifactDeletion {
@@ -70,19 +70,23 @@ impl EventLog {
         artifact: Artifact,
         bytes: impl AsRef<[u8]> + Send + 'static,
     ) -> Result<Artifact, StoreError> {
-        self.validate_root()?;
         self.check_bound_session(&artifact.session_id)?;
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    // The job retains the payload owner, including any memory reservation,
-                    // independently of its caller. Hashing runs on the database thread.
-                    let artifact = commit_in_transaction(&mut tx, artifact, bytes.as_ref()).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            .run_prepared(
+                move || {
+                    let prepared = PreparedArtifact::new(artifact, bytes.as_ref())?;
+                    Ok((prepared, bytes))
+                },
+                |connection, (prepared, bytes)| {
+                    let tx = rusqlite::Transaction::new_unchecked(
+                        connection,
+                        rusqlite::TransactionBehavior::Immediate,
+                    )?;
+                    let artifact = commit_prepared(&tx, prepared, bytes.as_ref())?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     Ok(artifact)
-                })
-            })
+                },
+            )
             .await
     }
 
@@ -92,55 +96,92 @@ impl EventLog {
         session_id: &str,
         artifact_id: &str,
     ) -> Result<ArtifactDeletion, StoreError> {
-        self.validate_root()?;
         records::ids(session_id, Some(artifact_id))?;
         let (session_id, artifact_id) = (session_id.to_owned(), artifact_id.to_owned());
         let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    require_session(&mut tx, &session_id).await?;
+                {
+                    let tx = rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+                    require_session(&tx, &session_id)?;
                     let Some((artifact, _)) =
-                        read_record(&mut tx, &session_id, &artifact_id).await?
+                        read_record(&tx, &session_id, &artifact_id)?
                     else {
                         return Ok(ArtifactDeletion::NotFound);
                     };
-                    let retained: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM session_history_artifacts WHERE session_id = ? AND artifact_id = ?)",
-                    ).bind(&session_id).bind(&artifact_id).fetch_one(&mut *tx).await?;
+                    let retained: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM session_history_artifacts WHERE session_id = ? AND artifact_id = ?)")?.query_row(rusqlite::params![&session_id, &artifact_id], |row| row.get(0))?;
                     if !artifact.source.user_deletable() || retained
-                        || sqlx::query_scalar::<_, bool>("SELECT canonical_at IS NOT NULL FROM artifacts WHERE session_id = ? AND id = ?")
-                            .bind(&session_id).bind(&artifact_id).fetch_one(&mut *tx).await?
+                        || tx.prepare_cached("SELECT canonical_at IS NOT NULL FROM artifacts WHERE session_id = ? AND id = ?")?.query_row(rusqlite::params![&session_id, &artifact_id], |row| row.get(0))?
                     {
                         return Ok(ArtifactDeletion::Protected);
                     }
-                    sqlx::query("DELETE FROM artifacts WHERE session_id = ? AND id = ?")
-                        .bind(&session_id)
-                        .bind(&artifact_id)
-                        .execute(&mut *tx)
-                        .await?;
-                    advance(&mut tx, &session_id).await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    tx.prepare_cached("DELETE FROM artifacts WHERE session_id = ? AND id = ?")?.execute(rusqlite::params![&session_id, &artifact_id])?;
+                    advance(&tx, &session_id)?;
+                    tx.commit().map_err(StoreError::CommitUnknown)?;
                     commits.material_released();
                     Ok(ArtifactDeletion::Deleted)
-                })
+                }
             })
             .await
     }
 }
 
-/// Shared immutable artifact write; the caller owns the enclosing transaction.
-pub(crate) async fn commit_in_transaction(
-    connection: &mut sqlx::SqliteConnection,
-    mut artifact: Artifact,
+pub(crate) struct PreparedArtifact {
+    artifact: Artifact,
+    digest: String,
+    encoded: String,
+}
+impl PreparedArtifact {
+    fn new(artifact: Artifact, bytes: &[u8]) -> Result<Self, StoreError> {
+        let digest = content_digest(bytes);
+        Self::from_digest(artifact, bytes.len() as u64, digest)
+    }
+    fn from_digest(artifact: Artifact, bytes: u64, digest: String) -> Result<Self, StoreError> {
+        let encoded = validate_material(&artifact, bytes, &digest)?;
+        Ok(Self {
+            artifact,
+            digest,
+            encoded,
+        })
+    }
+    pub(crate) fn from_projection(
+        pending: &maka_agent_facts::event::ProjectionArtifactWrite,
+        evidence: &maka_agent_facts::artifact::ArtifactEvidence,
+    ) -> Result<Self, StoreError> {
+        if pending.artifact().id != evidence.id || pending.bytes().len() as u64 != evidence.bytes {
+            return Err(StoreError::EventConflict);
+        }
+        // EventWrite freezes this digest with the private projection payload.
+        Self::from_digest(
+            pending.artifact().clone(),
+            evidence.bytes,
+            evidence.digest.clone(),
+        )
+    }
+}
+
+/// Import independently verifies its untrusted payload before publishing a binding.
+pub(crate) fn commit_in_transaction(
+    connection: &rusqlite::Connection,
+    artifact: Artifact,
     bytes: &[u8],
 ) -> Result<Artifact, StoreError> {
-    let digest = content_digest(bytes);
-    let encoded = validate_material(&artifact, bytes.len() as u64, &digest)?;
-    require_session(connection, &artifact.session_id).await?;
+    commit_prepared(connection, PreparedArtifact::new(artifact, bytes)?, bytes)
+}
+
+pub(crate) fn commit_prepared(
+    connection: &rusqlite::Connection,
+    prepared: PreparedArtifact,
+    bytes: &[u8],
+) -> Result<Artifact, StoreError> {
+    let PreparedArtifact {
+        mut artifact,
+        digest,
+        encoded,
+    } = prepared;
+    require_session(connection, &artifact.session_id)?;
     if let Some((existing, stored_digest)) =
-        read_record(connection, &artifact.session_id, &artifact.id).await?
+        read_record(connection, &artifact.session_id, &artifact.id)?
     {
         if artifact.source == ArtifactSource::ToolResultProjection
             && artifact.created_at != existing.created_at
@@ -151,47 +192,14 @@ pub(crate) async fn commit_in_transaction(
         if artifact != existing || digest != stored_digest {
             return Err(StoreError::ArtifactConflict);
         }
-        verify_payload(connection, &artifact, bytes).await?;
+        verify_payload(connection, &artifact, bytes)?;
         return Ok(existing);
     }
-    store_content(connection, &digest, bytes).await?;
-    sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, lookup_digest)
-        VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&artifact.session_id)
-    .bind(&artifact.id)
-    .bind(artifact.created_at as i64)
-    .bind(encoded)
-    .bind(digest)
-    .bind(identity::artifact_lookup_digest(&artifact.session_id, &artifact.id).as_slice())
-    .execute(&mut *connection)
-    .await?;
-    advance(connection, &artifact.session_id).await?;
+    crate::content::put(connection, &digest, bytes)?;
+    connection.prepare_cached("INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, lookup_digest)
+        VALUES (?, ?, ?, ?, ?, ?)")?.execute(rusqlite::params![&artifact.session_id, &artifact.id, artifact.created_at as i64, encoded, digest, identity::artifact_lookup_digest(&artifact.session_id, &artifact.id).as_slice()])?;
+    advance(connection, &artifact.session_id)?;
     Ok(artifact)
-}
-
-// The caller's transaction publishes content and its Session reference together.
-// Hash equality selects a candidate; exact bytes still decide whether it is reusable.
-async fn store_content(
-    connection: &mut sqlx::SqliteConnection,
-    digest: &str,
-    bytes: &[u8],
-) -> Result<(), StoreError> {
-    let inserted = sqlx::query("INSERT INTO artifact_contents(content_sha256,payload) VALUES (?,?) ON CONFLICT(content_sha256) DO NOTHING")
-        .bind(digest).bind(bytes).execute(&mut *connection).await?.rows_affected();
-    if inserted == 0
-        && !sqlx::query_scalar::<_, bool>(
-            "SELECT payload=? FROM artifact_contents WHERE content_sha256=?",
-        )
-        .bind(bytes)
-        .bind(digest)
-        .fetch_one(connection)
-        .await?
-    {
-        return Err(StoreError::ArtifactConflict);
-    }
-    Ok(())
 }
 
 /// Validate immutable metadata against already checked payload length and digest.
@@ -212,35 +220,28 @@ pub(crate) fn validate_material(
     Ok(encoded)
 }
 
-pub(crate) async fn verify_projection_replay(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn verify_projection_replay(
+    connection: &rusqlite::Connection,
     artifact: &Artifact,
     bytes: &[u8],
+    expected_digest: &str,
 ) -> Result<(), StoreError> {
-    let Some((existing, digest)) =
-        read_record(connection, &artifact.session_id, &artifact.id).await?
+    let Some((existing, digest)) = read_record(connection, &artifact.session_id, &artifact.id)?
     else {
         return Err(StoreError::EventConflict);
     };
-    if &existing != artifact || digest != content_digest(bytes) {
+    if &existing != artifact || digest != expected_digest {
         return Err(StoreError::EventConflict);
     }
-    verify_payload(connection, artifact, bytes).await
+    verify_payload(connection, artifact, bytes)
 }
 
-async fn verify_payload(
-    connection: &mut sqlx::SqliteConnection,
+fn verify_payload(
+    connection: &rusqlite::Connection,
     artifact: &Artifact,
     bytes: &[u8],
 ) -> Result<(), StoreError> {
-    let matches: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ? AND payload = ?)",
-    )
-    .bind(&artifact.session_id)
-    .bind(&artifact.id)
-    .bind(bytes)
-    .fetch_one(connection)
-    .await?;
+    let matches: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM artifacts JOIN contents USING(content_sha256) WHERE session_id = ? AND artifacts.id = ? AND payload = ?)")?.query_row(rusqlite::params![&artifact.session_id, &artifact.id, bytes], |row| row.get(0))?;
     if !matches {
         return Err(StoreError::ArtifactConflict);
     }
@@ -256,8 +257,8 @@ pub struct ImageChunk {
     pub bytes: Vec<u8>,
 }
 
-pub(crate) async fn read_image(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_image(
+    connection: &rusqlite::Connection,
     session: &str,
     id: &str,
     mime: &str,
@@ -266,26 +267,22 @@ pub(crate) async fn read_image(
     row_event: u64,
 ) -> Result<ImageChunk, StoreError> {
     records::ids(session, Some(id))?;
-    require_session(connection, session).await?;
-    let (artifact, digest) = read_record(connection, session, id)
-        .await?
+    require_session(connection, session)?;
+    let (artifact, digest) = read_record(connection, session, id)?
         .ok_or_else(|| invalid("tool image artifact not found"))?;
-    let canonical_at: Option<i64> =
-        sqlx::query_scalar("SELECT canonical_at FROM artifacts WHERE session_id = ? AND id = ?")
-            .bind(session)
-            .bind(id)
-            .fetch_one(&mut *connection)
-            .await?;
+    let canonical_at: Option<i64> = connection
+        .prepare_cached("SELECT canonical_at FROM artifacts WHERE session_id = ? AND id = ?")?
+        .query_row(rusqlite::params![session, id], |row| row.get(0))?;
     if !canonical_at.is_some_and(|at| at > 0 && at as u64 <= row_event) {
         return Err(invalid(
             "tool image bytes were not frozen at their canonical row",
         ));
     }
-    image_chunk(connection, &artifact, digest, mime, offset, limit).await
+    image_chunk(connection, &artifact, digest, mime, offset, limit)
 }
 
-pub(crate) async fn read_attachment_image(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn read_attachment_image(
+    connection: &rusqlite::Connection,
     session: &str,
     id: &str,
     attachment: Option<&maka_agent_facts::attachment::AttachmentRef>,
@@ -293,9 +290,8 @@ pub(crate) async fn read_attachment_image(
     limit: usize,
 ) -> Result<ImageChunk, StoreError> {
     records::ids(session, Some(id))?;
-    require_session(connection, session).await?;
-    let (artifact, digest) = read_record(connection, session, id)
-        .await?
+    require_session(connection, session)?;
+    let (artifact, digest) = read_record(connection, session, id)?
         .ok_or_else(|| invalid("uploaded image artifact not found"))?;
     if artifact.source != ArtifactSource::UserUpload || artifact.summary.as_ref() != Some(&digest) {
         return Err(invalid("image is not an immutable user upload"));
@@ -307,11 +303,11 @@ pub(crate) async fn read_attachment_image(
         .mime_type
         .as_deref()
         .ok_or_else(|| invalid("uploaded image has no MIME type"))?;
-    image_chunk(connection, &artifact, digest, mime, offset, limit).await
+    image_chunk(connection, &artifact, digest, mime, offset, limit)
 }
 
-async fn image_chunk(
-    connection: &mut sqlx::SqliteConnection,
+fn image_chunk(
+    connection: &rusqlite::Connection,
     artifact: &Artifact,
     digest: String,
     mime: &str,
@@ -337,9 +333,7 @@ async fn image_chunk(
     if offset > artifact.size_bytes {
         return Err(StoreError::ArtifactOffset);
     }
-    let (total, bytes): (i64, Vec<u8>) = sqlx::query_as(
-        "SELECT length(payload), substr(payload, ?, ?) FROM artifacts JOIN artifact_contents USING(content_sha256) WHERE session_id = ? AND id = ?"
-    ).bind(offset as i64 + 1).bind(limit as i64).bind(&artifact.session_id).bind(&artifact.id).fetch_one(&mut *connection).await?;
+    let (total, bytes): (i64, Vec<u8>) = connection.prepare_cached("SELECT length(payload), substr(payload, ?, ?) FROM artifacts JOIN contents USING(content_sha256) WHERE session_id = ? AND artifacts.id = ?")?.query_row(rusqlite::params![offset as i64 + 1, limit as i64, &artifact.session_id, &artifact.id], |row| Ok((row.get(0)?, row.get(1)?,)))?;
     if total as u64 != artifact.size_bytes
         || bytes.len() as u64 != (artifact.size_bytes - offset).min(limit as u64)
     {
@@ -356,8 +350,8 @@ async fn image_chunk(
 /// Consume artifact-backed media in the same transaction as original settlement.
 /// The private artifact owner field survives pruning and is inherited by copies;
 /// a later copy/consumer cannot retroactively establish an earlier byte identity.
-pub(crate) async fn freeze_tool_media(
-    connection: &mut sqlx::SqliteConnection,
+pub(crate) fn freeze_tool_media(
+    connection: &rusqlite::Connection,
     event: &maka_agent_facts::event::RuntimeEvent,
     sequence: u64,
 ) -> Result<(), StoreError> {
@@ -390,8 +384,7 @@ pub(crate) async fn freeze_tool_media(
         if session_id != &event.invocation.session_id {
             continue;
         }
-        sqlx::query("UPDATE artifacts SET canonical_at=COALESCE(canonical_at, ?) WHERE session_id=? AND id=?")
-            .bind(sequence as i64).bind(session_id).bind(relative_path).execute(&mut *connection).await?;
+        connection.prepare_cached("UPDATE artifacts SET canonical_at=COALESCE(canonical_at, ?) WHERE session_id=? AND id=?")?.execute(rusqlite::params![sequence as i64, session_id, relative_path])?;
         // Unavailable borrowed media does not revoke the successful effect or
         // its exact raw result. No freeze/read grant is created for a missing
         // artifact; replay already renders unavailable media explicitly.

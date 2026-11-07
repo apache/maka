@@ -1181,7 +1181,9 @@ pub(crate) fn key_pressed(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     if event.vk == VK_ESCAPE
         && let Some(field) = crate::text_input::focused(surface)
     {
-        crate::text_input::blur(&field);
+        if !crate::text_input::composing(&field) {
+            crate::text_input::blur(&field);
+        }
         return true;
     }
     go_back(surface)

@@ -18,14 +18,21 @@
  */
 
 use crate::{Error, client::Client};
-use agent_client_protocol::schema::v2 as acp;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use maka_agent_api::contract::{
-    DirectoryPage, DirectorySelection, Session, SessionActivity, SessionPage,
-};
+use maka_agent_api::contract::{Session, SessionActivity, SessionPage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
+
+pub(crate) struct Page {
+    pub sessions: Vec<Summary>,
+    pub next_cursor: Option<String>,
+}
+pub(crate) struct Summary {
+    pub id: String,
+    pub cwd: PathBuf,
+    pub title: String,
+}
 
 pub(super) fn ensure_idle(session: &Session) -> Result<(), Error> {
     if session.archived || !matches!(session.activity, SessionActivity::Idle) {
@@ -44,59 +51,6 @@ pub(super) fn directory(path: &Path) -> Result<PathBuf, Error> {
     }
     Ok(path.components().collect())
 }
-pub(super) async fn select(client: &Client, cwd: &Path) -> Result<DirectorySelection, Error> {
-    let DirectoryPage::Roots { roots } = client
-        .query("agent", "directories", json!({"kind":"roots"}))
-        .await?
-    else {
-        return Err("Host omitted published workspace roots".into());
-    };
-    let mut current = roots
-        .into_iter()
-        .filter(|root| cwd.starts_with(&root.path))
-        .max_by_key(|root| root.path.len())
-        .ok_or("Workspace cwd is outside published Host roots")?;
-    loop {
-        if Path::new(&current.path) == cwd {
-            return Ok(current.selection);
-        }
-        let mut after = None;
-        let mut seen = std::collections::HashSet::new();
-        current = loop {
-            let DirectoryPage::Children {
-                children,
-                after: next,
-                ..
-            } = client
-                .query(
-                    "agent",
-                    "directories",
-                    json!({"kind":"children","selection":current.selection,"after":after}),
-                )
-                .await?
-            else {
-                return Err("Host omitted workspace children".into());
-            };
-            if let Some(child) = children.into_iter().find(|child| {
-                let path = Path::new(&child.path);
-                // Canonical aliases may point back to this directory or an
-                // ancestor. Every step must consume part of the target path.
-                path != Path::new(&current.path)
-                    && path.starts_with(&current.path)
-                    && cwd.starts_with(path)
-            }) {
-                break child;
-            }
-            let Some(next) = next else {
-                return Err("Workspace cwd is unavailable in the published Host root".into());
-            };
-            if seen.len() >= 4096 || !seen.insert(next.clone()) {
-                return Err("Directory pagination exceeded its limit".into());
-            }
-            after = Some(next);
-        };
-    }
-}
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
@@ -106,13 +60,11 @@ struct Cursor {
 }
 pub(super) async fn read(
     client: &Client,
-    request: acp::ListSessionsRequest,
-) -> Result<acp::ListSessionsResponse, Error> {
-    let cwd = request
-        .cwd
-        .map(|path| directory(path.as_ref()))
-        .transpose()?;
-    let position = if let Some(cursor) = request.cursor {
+    cwd: Option<PathBuf>,
+    cursor: Option<String>,
+) -> Result<Page, Error> {
+    let cwd = cwd.map(|path| directory(path.as_ref())).transpose()?;
+    let position = if let Some(cursor) = cursor {
         let token = cursor.to_string();
         if token.len() > 8192 {
             return Err("ACP session list cursor is too large".into());
@@ -137,9 +89,11 @@ pub(super) async fn read(
         if cwd.as_ref().is_some_and(|filter| filter != &path) {
             continue;
         }
-        results.push(
-            acp::SessionInfo::new(session.id, acp::AbsolutePath::new(path)).title(session.title),
-        );
+        results.push(Summary {
+            id: session.id,
+            cwd: path,
+            title: session.title,
+        });
     }
     let next = page
         .after
@@ -152,8 +106,11 @@ pub(super) async fn read(
             if token.len() > 8192 {
                 return Err("Host session cursor exceeds ACP limit".into());
             }
-            Ok::<_, Error>(acp::SessionListCursor::new(token))
+            Ok::<_, Error>(token)
         })
         .transpose()?;
-    Ok(acp::ListSessionsResponse::new(results).next_cursor(next))
+    Ok(Page {
+        sessions: results,
+        next_cursor: next,
+    })
 }

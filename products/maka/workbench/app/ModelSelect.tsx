@@ -163,10 +163,6 @@ export function ModelSelect(props: {
               ? undefined
               : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
-          onPress={inputAction(props.toggle, {
-            sessionId: owner.sessionId,
-            instance: props.instance(),
-          })}
           style={{
             ...toolbarControlStyle,
             maxWidth: '100%',

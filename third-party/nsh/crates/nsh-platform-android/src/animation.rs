@@ -154,6 +154,7 @@ impl UiAnimation {
                 }
             }
             MountItem::Shader { id, layer } => self.shaders.set(id, layer),
+            MountItem::NavShader { id, shader } => self.shaders.set_nav(id, shader),
             MountItem::Delete { id } => {
                 self.shaders.delete(id);
                 self.bindings.remove(&id);

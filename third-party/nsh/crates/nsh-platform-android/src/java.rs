@@ -37,8 +37,9 @@ pub(crate) struct Java {
     pub(crate) view_report_error: JMethodID,
     pub(crate) view_read_asset: JMethodID,
     pub(crate) view_request_frame: JMethodID,
-    /// `shaderFrame(int, ByteBuffer, int, int)`: a shader view's new frame
-    /// (UI thread).
+    /// `shaderFrame(int, ByteBuffer, int, int, boolean, float)`: a shader
+    /// view's new frame, whether it replaces the view's children and the
+    /// pixels it overflows by (UI thread).
     pub(crate) view_shader_frame: JMethodID,
     pub(crate) view_app_stopped: JMethodID,
     pub(crate) view_host_message: JMethodID,
@@ -127,7 +128,7 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         view_shader_frame: env.get_method_id(
             view_class,
             "shaderFrame",
-            "(ILjava/nio/ByteBuffer;II)V",
+            "(ILjava/nio/ByteBuffer;IIZF)V",
         )?,
         view_app_stopped: env.get_method_id(view_class, "appStopped", "()V")?,
         view_host_message: env.get_method_id(

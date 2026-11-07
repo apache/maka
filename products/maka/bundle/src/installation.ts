@@ -48,7 +48,7 @@ export function installation(
       description,
       result,
       confirmation: 'preapproved',
-      nestable: ['files', 'processes', 'web', 'skills'].includes(service),
+      nestable: ['files', 'processes', 'web', 'skills', 'ui'].includes(service),
     });
   add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
   add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
@@ -186,7 +186,7 @@ export function installation(
     [
       'create',
       'SessionCreate',
-      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
+      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace by directory path (absolute, ~ allowed, within the configured workspace locations) or reuse a conversation\'s with kind=session, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
     ],
     [
       'fork',
@@ -206,7 +206,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send a task or follow-up to a conversation. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering by default; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. Set delivery=queue to wait for the current turn without interrupting. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt means admission, not completion: use SessionWork/SessionHistory to read actual results before reporting success.',
+      'Send a task or follow-up to a conversation. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. Use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
     [
       'stop',
@@ -261,6 +261,7 @@ export function installation(
       description,
       result: 'json',
       confirmation: 'preapproved',
+      nestable: true,
     });
   const agent: CompositionConfiguration['agent'] = {
     toolDiscovery: true,
@@ -299,8 +300,6 @@ export function installation(
     computer: { desktop: 'auto', browsers: [] },
     web: { network: 'allowed' },
     decisions_api: { network: 'allowed' },
-    coordinator: agent,
-    coordinatorProcesses: processes,
     skills: {
       sources: [],
       bundled: true,

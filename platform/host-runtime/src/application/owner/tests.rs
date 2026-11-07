@@ -233,12 +233,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                     .runtime
                     .own_resource(&provider, "native provider")
                     .unwrap(),
-                close: Some(Box::pin(async move { closing.close().await })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: Some(native.clone()),
-                vm: None,
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async move { closing.close().await }),
+                    owner: CodeOwner::Native(native.clone()),
+                }),
             },
         );
         owner
@@ -266,12 +264,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                 exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource,
-                close: Some(Box::pin(async { Ok(()) })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: None,
-                vm: Some(vm),
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async { Ok(()) }),
+                    owner: CodeOwner::JavaScript { vm: Some(vm) },
+                }),
             },
         );
         owner
@@ -378,12 +374,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
                     exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
                     resource,
-                    close: Some(Box::pin(async { Ok(()) })),
-                    initializing: false,
-                    closing: false,
-                    retiring: false,
-                    native_owner: None,
-                    vm: Some(index),
+                    lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                        close: Box::pin(async { Ok(()) }),
+                        owner: CodeOwner::JavaScript { vm: Some(index) },
+                    }),
                 },
             );
             owner
@@ -412,11 +406,11 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         while let Some(done) = owner.jobs.next().await {
             owner.complete(done);
             owner.drive();
-            if owner.closed {
+            if owner.is_closed() {
                 break;
             }
         }
-        assert!(owner.closed);
+        assert!(owner.is_closed());
     })
     .await
     .unwrap();
@@ -481,13 +475,13 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         .commit_application(id, 0, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
-    let cursor = store.subscribe_application(first.clone()).unwrap();
+    let mut cursor = store.subscribe_application(first.clone()).unwrap();
     let second = store
         .commit_application(id, 1, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
     // This is a real completed SQL head read retained across another owner turn.
-    let (cursor, observed) = next_change(cursor).await;
+    let observed = cursor.next().await;
     assert_eq!(observed.as_ref().unwrap(), &second);
     let third = store
         .commit_application(id, 2, input.clone(), vec![], vec![ui.clone()])
@@ -525,7 +519,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         .unwrap();
     owner.drive();
     owner.observe_source(observed.unwrap());
-    let (_, latest) = next_change(cursor).await;
+    let latest = cursor.next().await;
     owner.observe_source(latest.unwrap());
     let snapshot = owner.snapshot();
     assert_eq!(snapshot.desired, Some(third.clone()));
@@ -640,17 +634,15 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
                     .runtime
                     .own_resource(&activation, "native fixture")
                     .unwrap(),
-                close: Some(Box::pin(async move {
-                    if provider {
-                        closed.fetch_add(1, Ordering::SeqCst);
-                    }
-                    Ok(())
-                })),
-                initializing: false,
-                closing: false,
-                retiring: false,
-                native_owner: None,
-                vm: None,
+                lifecycle: ActivationLifecycle::Initialized(InitializedCode {
+                    close: Box::pin(async move {
+                        if provider {
+                            closed.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Ok(())
+                    }),
+                    owner: CodeOwner::Native(Arc::new(())),
+                }),
             },
         );
         if provider || !loading_consumer {
@@ -752,7 +744,7 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         0,
         "native close must wait for actual call cleanup"
     );
-    assert!(!owner.closed);
+    assert!(!owner.is_closed());
     gate.cleanup.notify_one();
     let done = owner.jobs.next().await.unwrap();
     owner.complete(done);
@@ -771,7 +763,7 @@ async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_co
         owner.complete(done);
         owner.drive();
     }
-    assert!(owner.closed);
+    assert!(owner.is_closed());
     assert_eq!(closes.load(Ordering::SeqCst), 1);
 }
 

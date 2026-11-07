@@ -485,14 +485,50 @@ impl ScrollState {
     /// The indicator's rectangle in a view of `size` and how far it can
     /// travel along its track, or `None` when the content fits.
     pub fn thumb(&self, size: Size<Points>) -> Option<(Bounds<Points>, Points)> {
-        let (rect, travel) = self.thumb_f(size)?;
+        self.thumb_within(
+            size,
+            Bounds {
+                origin: Point::default(),
+                size,
+            },
+        )
+    }
+
+    /// [`ScrollState::thumb`] in a view of `size` of which the scroll
+    /// views and clips around it leave `visible` (view coordinates) in
+    /// sight: the indicator runs along the visible part's bottom (a
+    /// horizontal view) or right edge (a vertical one), so a scroll view
+    /// taller or wider than the one it is in keeps its bar in view. `None`
+    /// also when nothing of the view is visible.
+    pub fn thumb_within(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+    ) -> Option<(Bounds<Points>, Points)> {
+        let (rect, travel) = self.thumb_f(size, visible)?;
         Some((rect, Points(travel)))
     }
 
-    fn thumb_f(&self, size: Size<Points>) -> Option<(Bounds<Points>, f32)> {
+    /// The visible part's right and bottom edges in a view of `size`, or
+    /// `None` when none of it is visible.
+    fn visible_edges(size: Size<Points>, visible: Bounds<Points>) -> Option<(f32, f32)> {
+        let (w, h) = (size.width.0, size.height.0);
+        let left = visible.origin.x.0.max(0.0);
+        let top = visible.origin.y.0.max(0.0);
+        let right = (visible.origin.x.0 + visible.size.width.0).min(w);
+        let bottom = (visible.origin.y.0 + visible.size.height.0).min(h);
+        (right > left && bottom > top).then_some((right, bottom))
+    }
+
+    fn thumb_f(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+    ) -> Option<(Bounds<Points>, f32)> {
         const EDGE: f32 = 2.0;
         let thick = INDICATOR_THICK.0;
         let (w, h) = (size.width.0, size.height.0);
+        let (right, bottom) = Self::visible_edges(size, visible)?;
         let inset = self.behavior.content_inset;
         let (dim, total, offset) = if self.horizontal {
             (
@@ -514,9 +550,9 @@ impl ScrollState {
             } else {
                 start
             };
-            (x, h - thick - EDGE, len, thick)
+            (x, bottom - thick - EDGE, len, thick)
         } else {
-            (w - thick - EDGE, start, thick, len)
+            (right - thick - EDGE, start, thick, len)
         };
         let rect = Bounds {
             origin: point(Points(x), Points(y)),
@@ -532,17 +568,39 @@ impl ScrollState {
     /// `size` grabs the indicator, faded out or not: on the desktop it is a
     /// scroll bar.
     pub fn grabs_thumb(&self, size: Size<Points>, at: Point<Points>) -> bool {
+        self.grabs_thumb_within(
+            size,
+            Bounds {
+                origin: Point::default(),
+                size,
+            },
+            at,
+        )
+    }
+
+    /// [`ScrollState::grabs_thumb`] in a view of which `visible` is in
+    /// sight, the indicator placed as [`ScrollState::thumb_within`] places
+    /// it.
+    pub fn grabs_thumb_within(
+        &self,
+        size: Size<Points>,
+        visible: Bounds<Points>,
+        at: Point<Points>,
+    ) -> bool {
         let (x, y) = (at.x.0, at.y.0);
         if !self.indicator || !self.behavior.enabled {
             return false;
         }
-        let Some((rect, _)) = self.thumb_f(size) else {
+        let Some((rect, _)) = self.thumb_f(size, visible) else {
+            return false;
+        };
+        let Some((right, bottom)) = Self::visible_edges(size, visible) else {
             return false;
         };
         let (along, across, start, len, edge) = if self.horizontal {
-            (x, y, rect.origin.x.0, rect.size.width.0, size.height.0)
+            (x, y, rect.origin.x.0, rect.size.width.0, bottom)
         } else {
-            (y, x, rect.origin.y.0, rect.size.height.0, size.width.0)
+            (y, x, rect.origin.y.0, rect.size.height.0, right)
         };
         (edge - THUMB_GRAB..=edge).contains(&across)
             && (start - THUMB_SLOP..=start + len + THUMB_SLOP).contains(&along)
@@ -1293,7 +1351,7 @@ pub fn drag_end(host: &impl ScrollHost, vx: f32, vy: f32) {
 /// sees it can scroll and where its scroll bar is.
 pub fn hovered(host: &impl ScrollHost) {
     let shown = host.scroll_mut(|s, size| {
-        if s.thumb_f(size).is_none() || !s.indicator || !s.behavior.enabled {
+        if s.thumb(size).is_none() || !s.indicator || !s.behavior.enabled {
             return false;
         }
         s.live.shown = host.now();
@@ -1336,7 +1394,7 @@ pub fn thumb_move(host: &impl ScrollHost, moved: Point<Points>) {
         return;
     };
     let Some(Some(pos)) = host.scroll(|s, size| {
-        let (_, travel) = s.thumb_f(size)?;
+        let (_, travel) = s.thumb(size)?;
         let (min, max) = s.limits(size);
         let d = if !s.horizontal {
             dy
@@ -1345,7 +1403,7 @@ pub fn thumb_move(host: &impl ScrollHost, moved: Point<Points>) {
         } else {
             dx
         };
-        let d = thumb_scroll(Points(d), Points(max), Points(travel)).0;
+        let d = thumb_scroll(Points(d), Points(max), travel).0;
         Some((start + d).clamp(min, max.max(min)))
     }) else {
         return;
@@ -2087,6 +2145,28 @@ mod tests {
         assert!(s.grabs_thumb(size, pt(295.0, 10.0)));
         assert!(!s.grabs_thumb(size, pt(200.0, 10.0)));
         assert!(!s.grabs_thumb(size, pt(295.0, 300.0)));
+    }
+
+    #[test]
+    fn thumb_stays_in_the_visible_part() {
+        // A horizontal scroll view 2000 tall in a viewport showing its rows
+        // 600 to 1000: the bar runs along the visible part's bottom, where
+        // a press grabs it, not along the view's own.
+        let mut s = scroll_state((900.0, 2000.0), true);
+        s.indicator = true;
+        s.behavior.enabled = true;
+        let size = sz(300.0, 2000.0);
+        let visible = Bounds::new(pt(0.0, 600.0), sz(300.0, 400.0));
+        let (rect, _) = s.thumb_within(size, visible).unwrap();
+        assert_eq!(rect.origin.y.0, 1000.0 - INDICATOR_THICK.0 - 2.0);
+        assert!(s.grabs_thumb_within(size, visible, pt(20.0, 997.0)));
+        assert!(!s.grabs_thumb_within(size, visible, pt(20.0, 1997.0)));
+        // Unclipped, it is the view's own bottom.
+        let (rect, _) = s.thumb(size).unwrap();
+        assert_eq!(rect.origin.y.0, 2000.0 - INDICATOR_THICK.0 - 2.0);
+        // Out of sight: no bar.
+        let hidden = Bounds::new(pt(0.0, 2100.0), sz(300.0, 400.0));
+        assert!(s.thumb_within(size, hidden).is_none());
     }
 
     #[test]

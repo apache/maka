@@ -357,7 +357,7 @@ await fetch("https://api.example.com/upload", { method: "POST", body: form });
 /**
  * HTTP through the platform's network stack (NSURLSession,
  * HttpURLConnection), streaming both ways; `data:` and `blob:` URLs are
- * answered locally.
+ * answered locally, and `asset:/` URLs with the app's bundled files.
  */
 function fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
 

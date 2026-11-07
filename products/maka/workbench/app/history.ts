@@ -22,6 +22,7 @@ import type {
   AgentHistoryPage,
   HistoryCompaction,
   HistoryModel,
+  HistoryPosition,
   HistoryTurnTiming,
   MessageOrigin,
 } from '../../../../packages/plugin-sdk/src/index.js';
@@ -39,6 +40,7 @@ export type Row = {
   role: string;
   text: string;
   position?: Position;
+  order?: Position;
   fragments?: Fragment[];
   prefix?: boolean;
   totalBytes?: number;
@@ -63,6 +65,39 @@ export type Row = {
   closedAt?: number | null;
 };
 
+export function senderSession(origin: MessageOrigin | null | undefined): string | null {
+  if (origin?.kind === 'session') return origin.invocation.session_id;
+  // A Bot Turn started because a worker finished names that worker.
+  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
+}
+
+/** Closed native text can commit behind the loaded tail, at its message-start seat. */
+export function historyFollowPosition(
+  last: Row | undefined,
+  live: readonly Row[],
+  closedStarts: readonly number[] = [],
+  windowStart?: number,
+): HistoryPosition {
+  let start: number | undefined;
+  const consider = (sequence: number | undefined) => {
+    if (sequence === undefined || (windowStart !== undefined && sequence < windowStart)) return;
+    start = Math.min(start ?? sequence, sequence);
+  };
+  for (const row of live) if (!row.preview && row.closedAt != null) consider(row.startSequence);
+  for (const sequence of closedStarts) consider(sequence);
+  if (start !== undefined) return { kind: 'event', sequence: start };
+  return last
+    ? {
+        kind: 'after',
+        cursor: {
+          position: last.position!,
+          field: last.field as 'body' | 'thinking',
+          offset: last.fragments!.at(-1)!.offset,
+        },
+      }
+    : { kind: 'start' };
+}
+
 /** The opening user message, only when the loaded window proves the turn's start. */
 export function openingUserMessage(
   rows: readonly Row[],
@@ -79,7 +114,7 @@ export function openingUserMessage(
   return null;
 }
 
-/** Whether the user wrote this message, rather than the Host generating it (a Plan execution, WorkHub). */
+/** Whether the user wrote this message, rather than the Host generating it (a Goal or Plan execution). */
 export function userAuthored(row: Row): boolean {
   return row.origin === undefined;
 }
@@ -131,6 +166,7 @@ export function hasTextPrefix(row: Row): boolean {
 
 export function historyMetadata(chunk: any, through: number, previous?: Row) {
   return {
+    order: chunk.order,
     totalBytes: chunk.totalBytes,
     attachments:
       chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
@@ -217,8 +253,8 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
   if (!changed) return rows;
   return [...merged.values()].sort(
     (a, b) =>
-      a.position!.sourceSequence - b.position!.sourceSequence ||
-      a.position!.itemIndex - b.position!.itemIndex ||
+      a.order!.sourceSequence - b.order!.sourceSequence ||
+      a.order!.itemIndex - b.order!.itemIndex ||
       Number(a.field === 'body') - Number(b.field === 'body'),
   );
 }

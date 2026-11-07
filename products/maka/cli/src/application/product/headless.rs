@@ -370,20 +370,11 @@ async fn begin(
     let deployment = sources.deployment;
     // These product endpoints publish every method of their selected service.
     // Explicit generic Host selections leave this ownership set empty.
-    let product_methods = [
-        "agent",
-        "coordinator",
-        "settings",
-        "authentication",
-        "setup",
-        "terminal",
-        "coordinatorTerminal",
-        "workhub",
-    ]
-    .into_iter()
-    .filter(|name| sources.endpoints.contains_key(*name))
-    .map(str::to_owned)
-    .collect();
+    let product_methods = ["agent", "settings", "authentication", "setup", "terminal"]
+        .into_iter()
+        .filter(|name| sources.endpoints.contains_key(*name))
+        .map(str::to_owned)
+        .collect();
     let selection = Selection::PublicHost {
         endpoints: sources.endpoints,
         native: sources.native,
@@ -649,16 +640,14 @@ mod tests {
             .await
             .unwrap();
         let Selection::PublicHost { endpoints, .. } = &mut selection;
-        for name in ["agent", "coordinator"] {
-            assert!(
-                endpoints
-                    .get_mut(name)
-                    .unwrap()
-                    .grant
-                    .methods
-                    .remove("projectMcp")
-            );
-        }
+        assert!(
+            endpoints
+                .get_mut("agent")
+                .unwrap()
+                .grant
+                .methods
+                .remove("projectMcp")
+        );
         let stale_selection = serde_json::to_value(selection).unwrap();
         assert!(
             store
@@ -685,7 +674,6 @@ mod tests {
             [
                 "/base: update product baseline and user overrides",
                 "/publication/endpoints/agent/grant/methods: follow current service contract",
-                "/publication/endpoints/coordinator/grant/methods: follow current service contract",
             ]
         );
         let unchanged = inspection
@@ -756,17 +744,15 @@ mod tests {
                 product_methods,
                 ..
             } = &mut narrowed;
-            for name in ["agent", "coordinator"] {
-                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                    assert!(
-                        endpoints
-                            .get_mut(name)
-                            .unwrap()
-                            .grant
-                            .methods
-                            .remove(method)
-                    );
-                }
+            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                assert!(
+                    endpoints
+                        .get_mut("agent")
+                        .unwrap()
+                        .grant
+                        .methods
+                        .remove(method)
+                );
             }
             if !product_owned {
                 product_methods.clear();
@@ -788,13 +774,11 @@ mod tests {
             assert_eq!(reopened.source().reference, initial.source().reference);
             assert_eq!(reopened.source().input, initial.source().input);
             let Selection::PublicHost { endpoints, .. } = &selection;
-            for name in ["agent", "coordinator"] {
-                for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
-                    assert_eq!(
-                        endpoints[name].grant.methods.contains(method),
-                        product_owned
-                    );
-                }
+            for method in ["projectMcp", "trustProjectMcp", "fileCandidates"] {
+                assert_eq!(
+                    endpoints["agent"].grant.methods.contains(method),
+                    product_owned
+                );
             }
             let expected = if product_owned { &original } else { &narrowed };
             assert_eq!(serde_json::to_value(selection).unwrap(), *expected);

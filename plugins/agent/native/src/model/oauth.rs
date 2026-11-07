@@ -696,7 +696,7 @@ mod tests {
                 let log = std::fs::read_to_string(capture.path()).unwrap();
                 let failures = log.lines().filter(|line| line.contains("credential_refresh_commit")).collect::<Vec<_>>();
                 assert_eq!(failures.len(), 1, "original SQL failure must survive Adapter conversion: {log}");
-                let cause = if unknown { "cause=\"config_commit_unknown\"" } else { "cause=\"config_sqlx\"" };
+                let cause = if unknown { "cause=\"config_commit_unknown\"" } else { "cause=\"config_sqlite\"" };
                 assert!(failures[0].contains(cause), "{log}");
                 assert!(failures[0].contains(&fixture.snapshot.target().connection_id), "{log}");
                 assert!(!log.contains("injected rotation failure"));

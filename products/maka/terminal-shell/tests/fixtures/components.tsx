@@ -97,14 +97,14 @@ function Consent() {
     },
   };
   const host = {
-    query: async (_endpoint, method) =>
+    query: async (_endpoint: string, method: string) =>
       method === 'interaction'
         ? record
         : {
             entries: [{ requestId: record.requestId }],
           },
     pendingControls: async () => [],
-  } as Host;
+  } as unknown as Host;
   return (
     <HostProvider value={host}>
       <View style={{ flex: 1 }}>
@@ -235,8 +235,10 @@ function CompletionComposer(props: { prediction?: boolean }) {
                 Promise.resolve({
                   enabled: false,
                   revision: 1,
+                  digest: null,
                   total: 0,
                   completed: 0,
+                  activeIndex: null,
                   current: null,
                   offset: 0,
                   items: [],
@@ -308,6 +310,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
+      <Text accessibilityLabel={`Draft ${draft()}`}>{draft()}</Text>
       <Composer
         session={() => owner}
         active={() => true}
@@ -335,6 +338,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
 function WorkspacePages(props: { busy: boolean }) {
   const session = (workspace: string, index: number): BrowserSession => ({
     id: `${workspace}-${index}`,
+    parentSessionId: null,
     title: `${workspace} conversation ${index}`,
     revision: 1,
     labels: [],
@@ -378,7 +382,6 @@ function WorkspacePages(props: { busy: boolean }) {
             name: `Empty ${index}`,
             archived: false,
             available: false,
-            selection: null,
             path: null,
           }))
         : [],
@@ -429,6 +432,7 @@ function WorkspacePages(props: { busy: boolean }) {
         focusHandled={() => {}}
         attach={() => {}}
         close={() => {}}
+        collapse={() => {}}
         selectSession={async () => {}}
         create={async () => {}}
         newConversation={() => {}}

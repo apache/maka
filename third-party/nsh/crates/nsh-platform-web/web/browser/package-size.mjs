@@ -9,6 +9,7 @@ const root = resolve(process.argv[2]);
 const option = name => process.argv.slice(3).find(arg => arg.startsWith(`--${name}=`))?.split('=').slice(1).join('=');
 const requests = option('requests') ? JSON.parse(await readFile(option('requests'), 'utf8')).map(url => decodeURIComponent(new URL(url).pathname)) : null;
 const files = [];
+let browserRuntimes = 0;
 function sections(bytes) {
   const names = ['custom', 'type', 'import', 'function', 'table', 'memory', 'global', 'export', 'start', 'element', 'code', 'data', 'data-count'];
   const result = [];
@@ -30,9 +31,9 @@ async function walk(dir) {
       if (process.argv.includes('--require-browser') && name.endsWith('.wasm')) {
         const module = await WebAssembly.compile(bytes);
         const exports = WebAssembly.Module.exports(module).map(entry => entry.name);
-        if (!exports.includes('nsh_browser_initialize') || exports.includes('nsh_start_bytecode')) {
-          throw new Error(`${name} is not a browser-only runtime`);
-        }
+        // Side modules export neither; only the runtime has the entry.
+        if (exports.includes('nsh_start_bytecode')) throw new Error(`${name} is not a browser-only runtime`);
+        if (exports.includes('nsh_browser_initialize')) browserRuntimes++;
       }
       files.push({ name, sha256: createHash('sha256').update(bytes).digest('hex'), raw: bytes.length,
         sections: name.endsWith('.wasm') ? sections(bytes) : undefined,
@@ -43,6 +44,7 @@ async function walk(dir) {
   }
 }
 await walk(root);
+if (process.argv.includes('--require-browser') && browserRuntimes === 0) throw new Error(`${root} has no browser-only runtime`);
 const sum = selected => Object.fromEntries(['raw', 'gzip', 'brotli'].map(key => [key, selected.reduce((n, file) => n + file[key], 0)]));
 const total = sum(files);
 console.log(JSON.stringify({ methodology: 'Per-file gzip level 9; Brotli quality 11; code only (Wasm, JS, bytecode), decimal bytes. Excludes fonts/media/HTML and HTTP overhead.', total, wasm: sum(files.filter(f => f.name.endsWith('.wasm'))), initial: requests ? sum(files.filter(f => f.initial)) : null, optional: requests ? sum(files.filter(f => !f.initial)) : null, files: files.sort((a,b) => a.name.localeCompare(b.name)) }, null, 2));

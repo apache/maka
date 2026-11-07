@@ -17,7 +17,6 @@
  * under the License.
  */
 
-use maka_agent_facts::execution::BehaviorId;
 use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::InvocationConfiguration;
 use maka_agent_facts::execution::SandboxMode;
@@ -43,7 +42,6 @@ pub fn configuration(tool_mode: ToolMode) -> InvocationConfiguration {
             .expect("UTF-8 test working directory"),
         sandbox_mode: SandboxMode::DangerFullAccess,
         collaboration_mode: CollaborationMode::Agent,
-        orchestration_mode: BehaviorId::default(),
         tool_mode,
         code_language: Default::default(),
         model: None,

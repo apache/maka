@@ -20,13 +20,11 @@
 use super::{Journal, error, write};
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sqlx::SqliteConnection;
 
 #[derive(Serialize, Deserialize)]
 pub struct RecentWorkspace {
     pub path: String,
-    pub workspace: Value,
 }
 
 impl Journal {
@@ -48,13 +46,13 @@ impl Journal {
         &self,
         owner: String,
         path: String,
-        workspace: Option<Value>,
+        remember: bool,
     ) -> Result<Vec<RecentWorkspace>> {
         let write::Output::RecentWorkspaces(recent) = self
             .write(write::Command::SetRecentWorkspace {
                 owner,
                 path,
-                workspace,
+                remember,
             })
             .await?
         else {
@@ -68,7 +66,7 @@ pub(super) async fn set(
     connection: &mut SqliteConnection,
     owner: String,
     path: String,
-    workspace: Option<Value>,
+    remember: bool,
 ) -> Result<Vec<RecentWorkspace>> {
     let value: Option<String> =
         sqlx::query_scalar("SELECT value FROM recent_workspaces WHERE owner=?")
@@ -82,8 +80,8 @@ pub(super) async fn set(
         .map_err(error)?
         .unwrap_or_default();
     recent.retain(|item| item.path != path);
-    if let Some(workspace) = workspace {
-        recent.insert(0, RecentWorkspace { path, workspace });
+    if remember {
+        recent.insert(0, RecentWorkspace { path });
     }
     sqlx::query("INSERT INTO recent_workspaces(owner,value) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET value=excluded.value")
         .bind(owner).bind(serde_json::to_string(&recent).map_err(error)?)

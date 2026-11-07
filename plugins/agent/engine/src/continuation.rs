@@ -196,6 +196,7 @@ pub(super) async fn inspect(
             Vec::new()
         };
         let replay = replay(
+            &inner.cleanup,
             input,
             prompt,
             definitions,
@@ -214,13 +215,14 @@ pub(super) async fn inspect(
     if let Some(arena) = arena
         && let Err(error) = arena.close().await
     {
-        return Err(crate::cleanup::preparation_failed(error));
+        return Err(inner.cleanup.preparation_failed(error));
     }
     result
 }
 
 /// Shared by reversible handoff preparation and independently verified admission.
 pub(super) async fn replay<W>(
+    cleanup: &crate::cleanup::Evidence,
     input: &RunInput<W>,
     mut prompt: crate::prepared_prompt::PreparedPrompt,
     definitions: Vec<Arc<maka_model::ToolDefinition>>,
@@ -294,7 +296,7 @@ pub(super) async fn replay<W>(
     if let Some(arena) = arena
         && let Err(error) = arena.close().await
     {
-        return Err(crate::cleanup::preparation_failed(error));
+        return Err(cleanup.preparation_failed(error));
     }
     result
 }

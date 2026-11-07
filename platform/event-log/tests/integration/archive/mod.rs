@@ -324,9 +324,9 @@ async fn archive_publication_is_atomic_and_preserves_original_source_integrity()
     );
     // Deliberately corrupt immutable physical material outside its publisher.
     inspect
-        .execute_batch("DROP TRIGGER event_body_immutable")
+        .execute_batch("DROP TRIGGER content_immutable")
         .unwrap();
-    inspect.execute("UPDATE event_bodies SET payload=CAST(replace(CAST(payload AS TEXT),'xxxxxxxx','yyyyyyyy') AS BLOB) WHERE id=(
+    inspect.execute("UPDATE contents SET payload=CAST(replace(CAST(payload AS TEXT),'xxxxxxxx','yyyyyyyy') AS BLOB) WHERE id=(
         SELECT e.body_id FROM event_log e WHERE e.event_id=?)",
         [&target.event().id]).unwrap();
     assert!(
@@ -537,8 +537,8 @@ async fn inherited_archives_remain_scoped_to_their_copied_owner() {
 async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history() {
     use maka_agent_facts::{
         execution::{
-            ApprovalPolicy, BehaviorId, CollaborationMode, InvocationConfiguration, SandboxMode,
-            ToolMode, WorkspaceOrigin,
+            ApprovalPolicy, CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode,
+            WorkspaceOrigin,
         },
         executor::Binding,
         read::{MAX_PAGE_CHARS, ResourceAddress},
@@ -575,7 +575,6 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
                 thinking_level: None,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
             })),
@@ -638,9 +637,7 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
     log.append(&settled).await.unwrap();
     log.append(&event(
         "exec-run",
-        Fact::ExecutorCompleted {
-            text: "done".into(),
-        },
+        Fact::ExecutorCompleted { message_id: None },
     ))
     .await
     .unwrap();

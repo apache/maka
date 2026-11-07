@@ -18,15 +18,14 @@
  */
 
 use maka_agent_facts::configuration::*;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::{ConfigError, ConfigurationStore, Result, TransactionMode};
 
 impl ConfigurationStore {
     pub async fn catalog(&self) -> Result<ConnectionCatalogSnapshot> {
-        self.transaction(TransactionMode::Deferred, |tx| Box::pin(read(tx)))
-            .await
+        self.transaction(TransactionMode::Deferred, read).await
     }
 
     /// Reads model choices for one connection and preserves the global default model.
@@ -39,40 +38,23 @@ impl ConfigurationStore {
         };
         let connection_id = connection_id.to_owned();
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Box::pin(async move {
-                let (revision, default): (i64, Option<String>) = sqlx::query_as(
-                    "SELECT revision, default_target FROM connection_catalog WHERE singleton = 1",
-                )
-                .fetch_one(&mut *tx)
-                .await?;
+            {
+                let (revision, default): (i64, Option<String>) = tx.prepare_cached("SELECT revision, default_target FROM connection_catalog WHERE singleton = 1")?.query_row(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?,)))?;
                 let default_target: Option<ConnectionTarget> = default
                     .map(|json| serde_json::from_str(&json))
                     .transpose()?;
-                let rows: Vec<String> = sqlx::query_scalar(
-                    "SELECT document FROM connections WHERE connection_id = ?",
-                )
-                .bind(&connection_id)
-                .fetch_all(&mut *tx)
-                .await?;
+                let rows: Vec<String> = tx.prepare_cached("SELECT document FROM connections WHERE connection_id = ?")?.query_map(rusqlite::params![&connection_id], |row| row.get(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
                 let mut connections = rows.iter().map(|row| decode_entry(row)).collect::<Result<Vec<_>>>()?;
                 if let Some(target) = &default_target
                     && target.connection_id != connection_id
                 {
-                    let document: Option<String> = sqlx::query_scalar(
-                        "SELECT CASE WHEN json_type(projected, '$.modelOverrides') = 'null'
+                    let document: Option<String> = tx.prepare_cached("SELECT CASE WHEN json_type(projected, '$.modelOverrides') = 'null'
                             THEN json_remove(projected, '$.modelOverrides') ELSE projected END
                          FROM (SELECT json_set(document,
                             '$.models', (SELECT json_group_array(json(value)) FROM json_each(document, '$.models') WHERE json_extract(value, '$.id') = ?),
                             '$.enabledModelIds', (SELECT json_group_array(value) FROM json_each(document, '$.enabledModelIds') WHERE value = ?),
                             '$.modelOverrides', json(NULLIF((SELECT json_group_object(key, json(value)) FROM json_each(document, '$.modelOverrides') WHERE key = ?), '{}'))) AS projected
-                         FROM connections WHERE connection_id = ?)",
-                    )
-                    .bind(&target.model_id)
-                    .bind(&target.model_id)
-                    .bind(&target.model_id)
-                    .bind(&target.connection_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+                         FROM connections WHERE connection_id = ?)")?.query_row(rusqlite::params![&target.model_id, &target.model_id, &target.model_id, &target.connection_id], |row| row.get(0)).optional()?;
                     if let Some(document) = document {
                         connections.push(decode_entry(&document)?);
                     }
@@ -82,7 +64,7 @@ impl ConfigurationStore {
                     default_target,
                     connections,
                 })
-            })
+            }
         })
         .await
     }
@@ -93,48 +75,45 @@ impl ConfigurationStore {
     ) -> Result<CreateCatalogConnectionResult> {
         let input = validation::normalize_create(input).map_err(ConfigError::Invalid)?;
         self.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
-                let current = read(tx).await?;
-                if current.revision != input.expected_catalog_revision {
-                    return Ok(CatalogMutationResult::RevisionConflict {
-                        expected_revision: input.expected_catalog_revision,
-                        actual_revision: current.revision,
-                    });
-                }
-                if current
-                    .connections
-                    .iter()
-                    .any(|row| row.slug == input.connection.slug)
-                {
-                    return Ok(CatalogMutationResult::ConnectionExists {
-                        slug: input.connection.slug,
-                    });
-                }
-                let draft = input.connection;
-                let row = ConnectionCatalogEntry {
-                    connection_id: Uuid::new_v4().to_string(),
-                    revision: 1,
-                    slug: draft.slug,
-                    name: draft.name,
-                    provider: draft.provider,
-                    configuration: draft.configuration,
-                    enabled: draft.enabled,
-                    enabled_model_ids: draft.enabled_model_ids,
-                    model_overrides: draft.model_overrides,
-                    request_body_overlay: draft.request_body_overlay,
-                    models: Vec::new(),
-                    model_source: None,
-                    models_fetched_at: None,
-                    last_test: None,
-                };
-                crate::model_catalog::validate_overrides(&row)?;
-                write_entry(tx, &row).await?;
-                let revision =
-                    advance(tx, current.revision, current.default_target.as_ref()).await?;
-                Ok(CatalogMutationResult::Committed {
-                    catalog_revision: revision,
-                    connection: Some(basis(&row)),
-                })
+            let current = read(tx)?;
+            if current.revision != input.expected_catalog_revision {
+                return Ok(CatalogMutationResult::RevisionConflict {
+                    expected_revision: input.expected_catalog_revision,
+                    actual_revision: current.revision,
+                });
+            }
+            if current
+                .connections
+                .iter()
+                .any(|row| row.slug == input.connection.slug)
+            {
+                return Ok(CatalogMutationResult::ConnectionExists {
+                    slug: input.connection.slug,
+                });
+            }
+            let draft = input.connection;
+            let row = ConnectionCatalogEntry {
+                connection_id: Uuid::new_v4().to_string(),
+                revision: 1,
+                slug: draft.slug,
+                name: draft.name,
+                provider: draft.provider,
+                configuration: draft.configuration,
+                enabled: draft.enabled,
+                enabled_model_ids: draft.enabled_model_ids,
+                model_overrides: draft.model_overrides,
+                request_body_overlay: draft.request_body_overlay,
+                models: Vec::new(),
+                model_source: None,
+                models_fetched_at: None,
+                last_test: None,
+            };
+            crate::model_catalog::validate_overrides(&row)?;
+            write_entry(tx, &row)?;
+            let revision = advance(tx, current.revision, current.default_target.as_ref())?;
+            Ok(CatalogMutationResult::Committed {
+                catalog_revision: revision,
+                connection: Some(basis(&row)),
             })
         })
         .await
@@ -150,26 +129,24 @@ impl ConfigurationStore {
             validation::target(target).map_err(ConfigError::Invalid)?;
         }
         self.transaction(TransactionMode::Immediate, move |tx| {
-            Box::pin(async move {
-                let current = read(tx).await?;
-                if current.revision != input.expected_catalog_revision {
-                    return Ok(CatalogMutationResult::RevisionConflict {
-                        expected_revision: input.expected_catalog_revision,
-                        actual_revision: current.revision,
-                    });
-                }
-                if let Some(target) = &input.target
-                    && !valid_target(target, &current.connections)
-                {
-                    return Ok(CatalogMutationResult::InvalidDefaultTarget {
-                        target: target.clone(),
-                    });
-                }
-                let revision = advance(tx, current.revision, input.target.as_ref()).await?;
-                Ok(CatalogMutationResult::Committed {
-                    catalog_revision: revision,
-                    connection: None,
-                })
+            let current = read(tx)?;
+            if current.revision != input.expected_catalog_revision {
+                return Ok(CatalogMutationResult::RevisionConflict {
+                    expected_revision: input.expected_catalog_revision,
+                    actual_revision: current.revision,
+                });
+            }
+            if let Some(target) = &input.target
+                && !valid_target(target, &current.connections)
+            {
+                return Ok(CatalogMutationResult::InvalidDefaultTarget {
+                    target: target.clone(),
+                });
+            }
+            let revision = advance(tx, current.revision, input.target.as_ref())?;
+            Ok(CatalogMutationResult::Committed {
+                catalog_revision: revision,
+                connection: None,
             })
         })
         .await
@@ -192,16 +169,17 @@ pub(crate) fn valid_target(target: &ConnectionTarget, rows: &[ConnectionCatalogE
     })
 }
 
-pub(crate) async fn read(tx: &mut SqliteConnection) -> Result<ConnectionCatalogSnapshot> {
-    let (revision, default): (i64, Option<String>) = sqlx::query_as(
-        "SELECT revision, default_target FROM connection_catalog WHERE singleton = 1",
-    )
-    .fetch_one(&mut *tx)
-    .await?;
+pub(crate) fn read(tx: &Connection) -> Result<ConnectionCatalogSnapshot> {
+    let (revision, default): (i64, Option<String>) = tx
+        .prepare_cached(
+            "SELECT revision, default_target FROM connection_catalog WHERE singleton = 1",
+        )?
+        .query_row(rusqlite::params![], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let revision = crate::database::unsigned(revision)?;
-    let rows: Vec<String> = sqlx::query_scalar("SELECT document FROM connections ORDER BY rowid")
-        .fetch_all(&mut *tx)
-        .await?;
+    let rows: Vec<String> = tx
+        .prepare_cached("SELECT document FROM connections ORDER BY rowid")?
+        .query_map(rusqlite::params![], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let connections = rows
         .iter()
         .map(|row| decode_entry(row))
@@ -215,15 +193,11 @@ pub(crate) async fn read(tx: &mut SqliteConnection) -> Result<ConnectionCatalogS
     })
 }
 
-pub(crate) async fn find(
-    tx: &mut SqliteConnection,
-    id: &str,
-) -> Result<Option<ConnectionCatalogEntry>> {
-    let document: Option<String> =
-        sqlx::query_scalar("SELECT document FROM connections WHERE connection_id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+pub(crate) fn find(tx: &Connection, id: &str) -> Result<Option<ConnectionCatalogEntry>> {
+    let document: Option<String> = tx
+        .prepare_cached("SELECT document FROM connections WHERE connection_id = ?")?
+        .query_row(rusqlite::params![id], |row| row.get(0))
+        .optional()?;
     document.map(|document| decode_entry(&document)).transpose()
 }
 
@@ -233,32 +207,24 @@ fn decode_entry(document: &str) -> Result<ConnectionCatalogEntry> {
     Ok(row)
 }
 
-pub(crate) async fn write_entry(
-    tx: &mut SqliteConnection,
-    row: &ConnectionCatalogEntry,
-) -> Result<()> {
+pub(crate) fn write_entry(tx: &Connection, row: &ConnectionCatalogEntry) -> Result<()> {
     validation::catalog_entry(row).map_err(ConfigError::Invalid)?;
-    sqlx::query("INSERT INTO connections VALUES(?, ?, ?, ?)
-        ON CONFLICT(connection_id) DO UPDATE SET revision = excluded.revision, document = excluded.document")
-        .bind(&row.connection_id).bind(&row.slug).bind(row.revision as i64)
-        .bind(serde_json::to_string(row)?).execute(&mut *tx).await?;
+    tx.execute("INSERT INTO connections VALUES(?, ?, ?, ?)
+        ON CONFLICT(connection_id) DO UPDATE SET revision = excluded.revision, document = excluded.document", rusqlite::params![&row.connection_id, &row.slug, row.revision as i64, serde_json::to_string(row)?])?;
     Ok(())
 }
 
-pub(crate) async fn advance(
-    tx: &mut SqliteConnection,
+pub(crate) fn advance(
+    tx: &Connection,
     previous: u64,
     target: Option<&ConnectionTarget>,
 ) -> Result<u64> {
     let revision = next_revision(previous)?;
     let target = target.map(serde_json::to_string).transpose()?;
-    sqlx::query(
+    tx.execute(
         "UPDATE connection_catalog SET revision = ?, default_target = ? WHERE singleton = 1",
-    )
-    .bind(revision as i64)
-    .bind(target)
-    .execute(&mut *tx)
-    .await?;
+        rusqlite::params![revision as i64, target],
+    )?;
     Ok(revision)
 }
 

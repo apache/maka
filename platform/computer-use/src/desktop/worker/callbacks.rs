@@ -430,13 +430,18 @@ impl Future for SignalUncertainty {
     }
 }
 type Job = (u64, u64);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ParentScopePhase {
+    Accepting,
+    Sealed,
+    ReleaseRequested,
+}
 struct ParentScope {
     files: Arc<tokio::sync::Mutex<files::Custody>>,
     invocation_id: u64,
     token: ScopeToken,
     capabilities: ParentCapabilities,
-    sealed: bool,
-    released: bool,
+    phase: ParentScopePhase,
     last_request: u64,
 }
 #[derive(Default)]
@@ -566,8 +571,7 @@ impl ParentCallbacks {
                         invocation_id,
                         token: grant.token,
                         capabilities,
-                        sealed: false,
-                        released: false,
+                        phase: ParentScopePhase::Accepting,
                         last_request: 0,
                     },
                 );
@@ -608,7 +612,10 @@ impl ParentCallbacks {
                 Err(failed(
                     "opaque presentation check requires its verified opaque document scope",
                 ))
-            } else if state.closed.is_some() || scope.sealed || attachment.is_none() {
+            } else if state.closed.is_some()
+                || scope.phase != ParentScopePhase::Accepting
+                || attachment.is_none()
+            {
                 Err(failed("Browser attachment scope is sealed or unavailable"))
             } else {
                 if state.checks.contains_key(&(token.id, id)) {
@@ -755,7 +762,7 @@ impl ParentCallbacks {
             let document = token.key.access.document();
             let host = scope.capabilities.effects.clone();
             if state.closed.is_some()
-                || scope.sealed
+                || scope.phase != ParentScopePhase::Accepting
                 || request.turn_id != token.key.identity.turn
                 || request.browser_id != document.browser_id
                 || request.generation != document.generation
@@ -890,7 +897,7 @@ impl ParentCallbacks {
                     let mut state = self.0.state.lock().unwrap();
                     let scope = checked_scope(&state, &token, true)?;
                     let host = scope.capabilities.effects.clone();
-                    if state.closed.is_some() || scope.sealed {
+                    if state.closed.is_some() || scope.phase != ParentScopePhase::Accepting {
                         Err(failed("Browser Host effect scope is sealed or unavailable"))
                     } else if let Some(host) = host {
                         if state.effects.contains_key(&(token.id, id)) {
@@ -967,7 +974,7 @@ impl ParentCallbacks {
                         Some(signal) => {
                             signal.finish(Err(error.into()));
                         }
-                        None if scope.sealed => {} // Seal can overtake a request refused before T1.
+                        None if scope.phase != ParentScopePhase::Accepting => {} // Seal can overtake a request refused before T1.
                         None => return Err(failed("Browser declined effect identity mismatch")),
                     }
                     state.effects.remove(&(token.id, id));
@@ -1057,8 +1064,7 @@ impl ParentCallbacks {
                     let mut state = self.0.state.lock().unwrap();
                     checked_scope(&state, &token, true)?;
                     let scope = state.scopes.get_mut(&token.id).unwrap();
-                    scope.sealed = true;
-                    scope.released = true;
+                    scope.phase = ParentScopePhase::ReleaseRequested;
                 }
                 self.prune(token.id);
             }
@@ -1114,7 +1120,9 @@ impl ParentCallbacks {
                 .values_mut()
                 .filter(|scope| &scope.token.key.identity == identity)
                 .map(|scope| {
-                    scope.sealed = true;
+                    if scope.phase == ParentScopePhase::Accepting {
+                        scope.phase = ParentScopePhase::Sealed;
+                    }
                     scope.token.clone()
                 })
                 .collect::<Vec<_>>();
@@ -1193,7 +1201,7 @@ fn checked_scope<'a>(
         .get(&token.id)
         .filter(|scope| scope.token == *token)
         .ok_or_else(|| failed("Browser callback scope identity mismatch"))?;
-    if !allow_sealed && (state.closed.is_some() || scope.sealed) {
+    if !allow_sealed && (state.closed.is_some() || scope.phase != ParentScopePhase::Accepting) {
         return Err(failed("Browser callback scope is sealed"));
     }
     Ok(scope)
@@ -1223,7 +1231,10 @@ fn effect_preparation_scope(
     Ok((scope, signal.scope_cancellation.clone(), invocation_id))
 }
 fn prune_parent(state: &mut ParentState, scope: u64) -> Option<ScopeToken> {
-    if state.scopes.get(&scope).is_some_and(|scope| scope.released)
+    if state
+        .scopes
+        .get(&scope)
+        .is_some_and(|scope| scope.phase == ParentScopePhase::ReleaseRequested)
         && !state.checks.keys().any(|(id, _)| *id == scope)
         && state
             .effects
@@ -1326,10 +1337,21 @@ enum PendingEffectWork {
 #[cfg(any(feature = "native-desktop", test))]
 struct PendingEffect {
     scope: Arc<RemoteScope>,
-    pending: Option<PendingEffectWork>,
-    rejected: Option<Rejected>,
-    admitted: bool,
-    uncertain: bool,
+    phase: EffectPhase,
+}
+#[cfg(any(feature = "native-desktop", test))]
+enum EffectPhase {
+    Queued {
+        work: PendingEffectWork,
+        rejected: Rejected,
+    },
+    Admitted {
+        uncertain: bool,
+    },
+    Retained {
+        _pending: HostEffectFuture,
+    },
+    TerminalUncertain,
 }
 #[cfg(any(feature = "native-desktop", test))]
 enum RetentionAck {
@@ -1356,10 +1378,15 @@ impl Future for RetentionFuture {
 #[cfg(any(feature = "native-desktop", test))]
 struct PendingRetention {
     scope: Arc<RemoteScope>,
-    pending: Option<RetentionFuture>,
+    work: RetentionWork,
     ack: RetentionAck,
-    done: bool,
     uncertain: Option<ToolError>,
+}
+#[cfg(any(feature = "native-desktop", test))]
+enum RetentionWork {
+    Running,
+    Completed,
+    Retained { _pending: RetentionFuture },
 }
 #[cfg(any(feature = "native-desktop", test))]
 struct NativePendingNotice {
@@ -1636,15 +1663,19 @@ impl WorkerCallbacks {
                         .effects
                         .get_mut(&(token.id, id))
                         .ok_or_else(|| failed("Browser effect admission identity mismatch"))?;
-                    if entry.admitted {
+                    if !matches!(entry.phase, EffectPhase::Queued { .. }) {
                         return Err(failed("Browser effect admitted twice"));
                     }
                     if entry.scope.sealed.load(Ordering::SeqCst) {
                         None
                     } else {
-                        entry.admitted = true;
-                        entry.rejected.take();
-                        entry.pending.take()
+                        let EffectPhase::Queued { work, .. } = std::mem::replace(
+                            &mut entry.phase,
+                            EffectPhase::Admitted { uncertain: false },
+                        ) else {
+                            unreachable!("queued admission checked above");
+                        };
+                        Some(work)
                     }
                 };
                 if let Some(pending) = pending {
@@ -1690,7 +1721,9 @@ impl WorkerCallbacks {
                         Ok(()) => RetentionAck::Accepted,
                         Err(error) => RetentionAck::Rejected(error.into()),
                     };
-                    if entry.done && matches!(entry.ack, RetentionAck::Accepted) {
+                    if matches!(entry.work, RetentionWork::Completed)
+                        && matches!(entry.ack, RetentionAck::Accepted)
+                    {
                         state.retained.remove(&(token.id, id))
                     } else {
                         None
@@ -1736,7 +1769,7 @@ impl WorkerCallbacks {
             let Some(entry) = state.effects.get(&(token.id, id)) else {
                 return Err(failed("Browser effect refusal identity mismatch"));
             };
-            if entry.admitted {
+            if !matches!(entry.phase, EffectPhase::Queued { .. }) {
                 return Err(uncertain(
                     "Host refusal arrived after browser effect admission",
                 ));
@@ -1745,10 +1778,11 @@ impl WorkerCallbacks {
             state.declined.insert((token.id, id));
             entry
         };
-        if let Some(rejected) = entry.rejected {
-            rejected(error.clone());
-        }
-        drop(entry.pending); // Unpolled: the Parent never admitted this future.
+        let EffectPhase::Queued { work, rejected } = entry.phase else {
+            unreachable!("unadmitted refusal checked above");
+        };
+        rejected(error.clone());
+        drop(work); // Unpolled: the Parent never admitted this future.
         if notify {
             (self.0.send)(WorkerMessage::EffectDeclined {
                 token: token.clone(),
@@ -1772,7 +1806,9 @@ impl WorkerCallbacks {
             state
                 .effects
                 .iter()
-                .filter(|((scope, _), entry)| *scope == token.id && !entry.admitted)
+                .filter(|((scope, _), entry)| {
+                    *scope == token.id && matches!(entry.phase, EffectPhase::Queued { .. })
+                })
                 .map(|((_, id), _)| *id)
                 .collect::<Vec<_>>()
         };
@@ -1826,13 +1862,15 @@ impl WorkerCallbacks {
             for entry in state.retained.values_mut() {
                 entry.uncertain.get_or_insert(error.clone());
             }
-            for entry in state.effects.values_mut().filter(|entry| entry.admitted) {
-                entry.uncertain = true;
+            for entry in state.effects.values_mut() {
+                if let EffectPhase::Admitted { uncertain } = &mut entry.phase {
+                    *uncertain = true;
+                }
             }
             let queued = state
                 .effects
                 .iter()
-                .filter(|(_, entry)| !entry.admitted)
+                .filter(|(_, entry)| matches!(entry.phase, EffectPhase::Queued { .. }))
                 .map(|(key, _)| *key)
                 .collect::<Vec<_>>();
             let queued = queued
@@ -1856,11 +1894,13 @@ impl WorkerCallbacks {
             let _ = reply.send(Err(uncertain(reason)));
         }
         for entry in queued {
-            if let Some(rejected) = entry.rejected {
-                rejected(failed(
-                    "Browser effect was not admitted before transport closed",
-                ));
-            }
+            let EffectPhase::Queued { work, rejected } = entry.phase else {
+                unreachable!("only queued effects are removed on disconnect");
+            };
+            rejected(failed(
+                "Browser effect was not admitted before transport closed",
+            ));
+            drop(work);
         }
         self.0.changed.notify_waiters();
     }
@@ -1894,7 +1934,9 @@ impl WorkerCallbacks {
                     match &entry.ack {
                         RetentionAck::Pending => waiting = true,
                         RetentionAck::Accepted => {}
-                        RetentionAck::Rejected(error) if entry.done => {
+                        RetentionAck::Rejected(error)
+                            if matches!(entry.work, RetentionWork::Completed) =>
+                        {
                             failure.get_or_insert(error.clone());
                         }
                         RetentionAck::Rejected(_) => waiting = true,
@@ -1910,7 +1952,7 @@ impl WorkerCallbacks {
                         .filter(|(_, entry)| {
                             &entry.scope.token.key.identity == identity
                                 && entry.scope.invocation_id == invocation_id
-                                && entry.done
+                                && matches!(entry.work, RetentionWork::Completed)
                         })
                         .map(|(key, _)| *key)
                         .collect::<Vec<_>>();
@@ -1936,10 +1978,10 @@ impl WorkerCallbacks {
             || !state.prepares.is_empty()
             || !state.checks.is_empty()
             || !state.effects.is_empty()
-            || state
-                .retained
-                .values()
-                .any(|entry| !entry.done || matches!(entry.ack, RetentionAck::Pending))
+            || state.retained.values().any(|entry| {
+                !matches!(entry.work, RetentionWork::Completed)
+                    || matches!(entry.ack, RetentionAck::Pending)
+            })
     }
 }
 #[cfg(any(feature = "native-desktop", test))]
@@ -2164,10 +2206,7 @@ impl RemoteScope {
                 (self.token.id, id),
                 PendingEffect {
                     scope,
-                    pending: Some(work),
-                    rejected: Some(rejected),
-                    admitted: false,
-                    uncertain: false,
+                    phase: EffectPhase::Queued { work, rejected },
                 },
             );
         }
@@ -2216,9 +2255,8 @@ impl RemoteScope {
                 (self.token.id, id),
                 PendingRetention {
                     scope,
-                    pending: Some(pending),
+                    work: RetentionWork::Running,
                     ack: RetentionAck::Pending,
-                    done: false,
                     uncertain: None,
                 },
             );
@@ -2227,31 +2265,15 @@ impl RemoteScope {
             token: self.token.clone(),
             id,
         }) {
-            let pending = self
-                .worker
+            self.worker
                 .0
                 .state
                 .lock()
                 .unwrap()
                 .retained
-                .remove(&(self.token.id, id))
-                .unwrap()
-                .pending
-                .unwrap();
+                .remove(&(self.token.id, id));
             return Err((error, pending));
         }
-        let pending = self
-            .worker
-            .0
-            .state
-            .lock()
-            .unwrap()
-            .retained
-            .get_mut(&(self.token.id, id))
-            .unwrap()
-            .pending
-            .take()
-            .unwrap();
         let worker = self.worker.clone();
         let token = self.token.clone();
         tokio::spawn(async move {
@@ -2287,7 +2309,8 @@ fn current_worker_effect(
             .effects
             .get(&(token.id, effect_id))
             .is_some_and(|effect| {
-                effect.admitted && !effect.uncertain && effect.scope.token == *token
+                matches!(effect.phase, EffectPhase::Admitted { uncertain: false })
+                    && effect.scope.token == *token
             })
     {
         return Err(failed("Remote Host effect preparation lifetime is closed"));
@@ -2408,7 +2431,7 @@ impl EffectCustody {
                     if let Some(entry) = state.effects.get_mut(&(self.token.id, self.id)) {
                         // Keep scope quarantine; actual native Session/Driver
                         // controllers retain physical custody independently.
-                        entry.uncertain = true;
+                        entry.phase = EffectPhase::TerminalUncertain;
                     }
                 } else {
                     state.effects.remove(&(self.token.id, self.id));
@@ -2436,8 +2459,7 @@ impl Drop for EffectCustody {
                 .effects
                 .get_mut(&(self.token.id, self.id))
             {
-                entry.pending = Some(PendingEffectWork::Future(pending));
-                entry.uncertain = true;
+                entry.phase = EffectPhase::Retained { _pending: pending };
             }
             let _ = (self.worker.0.send)(WorkerMessage::EffectUncertain {
                 token: self.token.clone(),
@@ -2469,7 +2491,7 @@ impl RetentionCustody {
             let retired = {
                 let mut state = self.worker.0.state.lock().unwrap();
                 if let Some(entry) = state.retained.get_mut(&(self.token.id, self.id)) {
-                    entry.done = true;
+                    entry.work = RetentionWork::Completed;
                     if matches!(entry.ack, RetentionAck::Accepted) {
                         state.retained.remove(&(self.token.id, self.id))
                     } else {
@@ -2511,7 +2533,7 @@ impl Drop for RetentionCustody {
                 .retained
                 .get_mut(&(self.token.id, self.id))
             {
-                entry.pending = Some(pending);
+                entry.work = RetentionWork::Retained { _pending: pending };
                 entry.uncertain = Some(error.clone());
             }
             let _ = (self.worker.0.send)(WorkerMessage::RetainedUncertain {

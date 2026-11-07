@@ -27,7 +27,7 @@ use std::{
 
 /// Runs only on the checkpoint's dedicated physical worker, never a Tokio executor thread.
 pub(super) struct Objects {
-    owner: Arc<root::RootOwner>,
+    pub(super) owner: Arc<root::RootOwner>,
     directory: PathBuf,
 }
 impl Objects {
@@ -46,6 +46,17 @@ impl Objects {
         File::open(&directory)?.sync_all()?;
         File::open(owner.canonical_path())?.sync_all()?;
         Ok(Self { owner, directory })
+    }
+    pub(super) fn existing(owner: Arc<root::RootOwner>) -> Result<Self, StoreError> {
+        if !cfg!(unix) {
+            return Err(invalid(
+                "history checkpoint file durability is not supported on this platform",
+            ));
+        }
+        let directory = owner.canonical_path().join("history-checkpoints");
+        let objects = Self { owner, directory };
+        objects.validate()?;
+        Ok(objects)
     }
     fn validate(&self) -> Result<(), StoreError> {
         self.owner.validate_current()?;
@@ -83,6 +94,37 @@ impl Objects {
         }
         self.validate()?;
         Ok(self.directory.join("objects").join(&reference.digest))
+    }
+    pub(super) fn has(&self, reference: &ObjectRef) -> Result<bool, StoreError> {
+        let path = self.path(reference)?;
+        match open_regular(&path) {
+            Ok(mut file) => {
+                if measure(&mut file)? != *reference {
+                    return Err(invalid("checkpoint object digest or size differs"));
+                }
+                Ok(true)
+            }
+            Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+    pub(super) fn link_staged(&self, path: &Path, reference: &ObjectRef) -> Result<(), StoreError> {
+        let destination = self.path(reference)?;
+        match fs::hard_link(path, destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.read(reference)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        self.owner.validate_current()?;
+        Ok(())
+    }
+    pub(super) fn sync_objects(&self) -> Result<(), StoreError> {
+        self.validate()?;
+        File::open(self.directory.join("objects"))?.sync_all()?;
+        self.owner.validate_current()?;
+        Ok(())
     }
     pub(super) fn read(&self, reference: &ObjectRef) -> Result<File, StoreError> {
         let path = self.path(reference)?;
@@ -127,7 +169,7 @@ impl Objects {
         Ok(serde_json::from_reader(file)?)
     }
     pub(super) fn cleanup(&self, request: &Request) -> Result<(), StoreError> {
-        for kind in ["bundle", "manifest"] {
+        for kind in ["bundle", "manifest", "workspace", "workspace-file"] {
             let path = self.staging(request, kind)?;
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_file() => fs::remove_file(path)?,
@@ -161,7 +203,7 @@ fn open_regular(path: &Path) -> Result<File, StoreError> {
     }
     Ok(file)
 }
-fn measure(file: &mut File) -> Result<ObjectRef, StoreError> {
+pub(super) fn measure(file: &mut File) -> Result<ObjectRef, StoreError> {
     let mut hash = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 65536];

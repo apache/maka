@@ -17,58 +17,195 @@
  * under the License.
  */
 
-//! The workbench in a window of NSH's AppKit backend, on macOS, opted into
-//! with [`ENABLE`]. It has one Host: the window does not follow a Host that
-//! stops, and refuses a UI reload rather than pausing its input for one.
+//! The AppKit workbench follows the Root's admitted Host. Utility windows
+//! belong to that connection and close before a replacement client is loaded.
+
+mod permissions;
 
 use crate::{
-    host::{self, Connection},
+    host::{self, Connection, Root},
     shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
-use maka_workbench::reload::{Request, UiReload};
+use maka_workbench::{
+    bindings::SystemPermissionWindow,
+    reload::{Request, UiReload},
+};
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
-use tokio::{runtime::Runtime, sync::watch};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::{
+    runtime::Runtime,
+    sync::{mpsc, watch},
+};
 
-/// Set and not empty, the shell opens this window instead of the GPUI one.
-pub const ENABLE: &str = "MAKA_APPKIT";
-
-pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
-    let Connection {
-        bindings,
-        config,
-        endpoint,
-        epoch,
-    } = first;
-    let directory = config
+pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String> {
+    let directory = first
+        .config
         .data_dir
         .as_ref()
         .expect("Host admission sets the client directory");
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
-    let reloading = config
-        .context
-        .get::<UiReload>()
-        .expect("the admitted workbench owns its UI reload channel")
-        .take_requests();
-    let config = shell.attach(config);
+    let config = shell.attach(first.config.clone());
     carry_out(requests, &runtime);
-    refuse_reloads(reloading, &runtime);
-    let options = AppOptions {
-        app_id: APP_ID.into(),
-        title: TITLE.into(),
-        size: SIZE,
-        min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
-        frame_autosave_name,
-        ..Default::default()
-    };
-    run_app_with_config(config, options, move |is_active| {
-        active.send_replace(is_active);
-    });
-    runtime.block_on(host::detach(bindings, &endpoint, epoch));
+    let windows = permission_requests(&first);
+    refuse_reloads(
+        first
+            .config
+            .context
+            .get::<UiReload>()
+            .expect("the admitted workbench owns its UI reload channel")
+            .take_requests(),
+        runtime.handle(),
+    );
+    let (quit, quitting) = watch::channel(false);
+    let following = runtime.spawn(follow(first, root, shell, windows, quitting));
+    run_app_with_config(
+        config,
+        AppOptions {
+            app_id: APP_ID.into(),
+            title: TITLE.into(),
+            size: SIZE,
+            min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
+            frame_autosave_name,
+            ..Default::default()
+        },
+        move |is_active| {
+            active.send_replace(is_active);
+        },
+    );
+    permissions::close_all();
+    quit.send_replace(true);
+    runtime
+        .block_on(following)
+        .map_err(|error| error.to_string())?;
     runtime.shutdown_background();
     Ok(())
+}
+
+fn permission_requests(connection: &Connection) -> mpsc::UnboundedReceiver<SystemPermissionWindow> {
+    let (send, receive) = mpsc::unbounded_channel();
+    connection.bindings.set_system_permission_windows(send);
+    receive
+}
+
+async fn follow(
+    current: Connection,
+    root: Root,
+    shell: Shell,
+    mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
+    mut quit: watch::Receiver<bool>,
+) {
+    let Connection {
+        bindings,
+        mut endpoint,
+        mut epoch,
+        config: mut configuration,
+    } = current;
+    let mut bindings = Some(bindings);
+    let mut pause = Duration::from_secs(1);
+    'connected: loop {
+        let reached = Instant::now();
+        let alive = Arc::new(AtomicBool::new(true));
+        let stopped = host::stopped(endpoint.clone(), epoch);
+        tokio::pin!(stopped);
+        let mut accepting_windows = true;
+        loop {
+            tokio::select! {
+                biased;
+                _ = quit.changed() => {
+                    alive.store(false, Ordering::Release);
+                    break 'connected;
+                }
+                _ = &mut stopped => break,
+                request = windows.recv(), if accepting_windows => {
+                    if let Some(request) = request {
+                        let alive = alive.clone();
+                        let configuration = configuration.clone();
+                        with_running_view(move |_| {
+                            if alive.load(Ordering::Acquire) { permissions::open(request, alive, &configuration); }
+                        });
+                    } else { accepting_windows = false; }
+                }
+            }
+        }
+        alive.store(false, Ordering::Release);
+        // Main-thread barrier: no old engine or drag source survives into the
+        // next connection. Quitting can end the standalone runner first.
+        let (closed, closing) = tokio::sync::oneshot::channel();
+        with_running_view(move |view| {
+            permissions::close_all();
+            view.stop();
+            let _ = closed.send(());
+        });
+        tokio::select! {
+            _ = quit.changed() => break,
+            _ = closing => {}
+        }
+        host::detach(
+            bindings.take().expect("a connected Host owns bindings"),
+            &endpoint,
+            epoch,
+        )
+        .await;
+        let mut wait = reached.elapsed() < Duration::from_secs(60);
+        if !wait {
+            pause = Duration::from_secs(1);
+        }
+        let next = loop {
+            if wait {
+                tokio::select! {
+                    _ = quit.changed() => break 'connected,
+                    _ = tokio::time::sleep(pause) => {}
+                }
+                pause = (pause * 2).min(Duration::from_secs(30));
+            }
+            if *quit.borrow() {
+                break 'connected;
+            }
+            wait = true;
+            // Finish an admitted attempt even when quitting; then detach it.
+            match root.connect(tokio::runtime::Handle::current()).await {
+                Ok(connection) => break connection,
+                Err(error) => eprintln!("maka-desktop-shell: reconnecting: {error}"),
+            }
+            if *quit.borrow() {
+                break 'connected;
+            }
+        };
+        windows = permission_requests(&next);
+        let Connection {
+            bindings: admitted,
+            config,
+            endpoint: reached_endpoint,
+            epoch: reached_epoch,
+        } = next;
+        bindings = Some(admitted);
+        endpoint = reached_endpoint;
+        epoch = reached_epoch;
+        if *quit.borrow() {
+            break;
+        }
+        let reloading = config
+            .context
+            .get::<UiReload>()
+            .expect("the admitted workbench owns its UI reload channel")
+            .take_requests();
+        refuse_reloads(reloading, &tokio::runtime::Handle::current());
+        configuration = shell.attach(config);
+        let config = configuration.clone();
+        with_running_view(move |view| view.load_with_config(config));
+    }
+    if let Some(bindings) = bindings {
+        host::detach(bindings, &endpoint, epoch).await;
+    }
 }
 
 fn carry_out(requests: Requests, runtime: &Runtime) {
@@ -109,7 +246,10 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
 }
 
-fn refuse_reloads(mut reloading: tokio::sync::mpsc::UnboundedReceiver<Request>, runtime: &Runtime) {
+fn refuse_reloads(
+    mut reloading: tokio::sync::mpsc::UnboundedReceiver<Request>,
+    runtime: &tokio::runtime::Handle,
+) {
     runtime.spawn(async move {
         while let Some(request) = reloading.recv().await {
             if let Request::Pause(ready) = request {

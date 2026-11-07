@@ -28,6 +28,11 @@ fn cancelled_stage_writer_retains_root_past_observer_runtime_and_root_close() {
     cancelled_stage_retains_root(false, true);
 }
 
+#[test]
+fn cancelled_stage_reader_retains_root_past_observer_runtime_and_root_close() {
+    cancelled_stage_retains_root(true, true);
+}
+
 fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
     let directory = tempfile::tempdir().unwrap();
     let root_path = directory.path().join("root");
@@ -79,15 +84,10 @@ fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
     drop(root);
     runtime.spawn(async move {
         if reading {
-            StagedBundle::reopen_owned(&task_path, stage_owner, move |db| {
-                Box::pin(async move {
-                    db.run_with_connection(move |_| {
-                        entered.send(()).unwrap();
-                        gate.recv_timeout(Duration::from_secs(30)).unwrap();
-                    })
-                    .await?;
-                    Ok(())
-                })
+            StagedBundle::reopen_owned(&task_path, stage_owner, move |_| {
+                entered.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(30)).unwrap();
+                Ok(())
             })
             .await
             .map(|_| ())
@@ -95,14 +95,12 @@ fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
             staged
                 .unwrap()
                 .persist_owned(&task_path, stage_owner, move |db| {
-                    Box::pin(async move {
-                        db.lock_handle().await?.set_commit_hook(move || {
-                            entered.send(()).unwrap();
-                            gate.recv_timeout(Duration::from_secs(30)).unwrap();
-                            true
-                        });
-                        Ok(())
-                    })
+                    db.commit_hook(Some(move || {
+                        entered.send(()).unwrap();
+                        gate.recv_timeout(Duration::from_secs(30)).unwrap();
+                        false
+                    }))?;
+                    Ok(())
                 })
                 .await
         }
@@ -167,12 +165,6 @@ fn cancelled_stage_retains_root(reading: bool, destroy_runtime: bool) {
 
 #[tokio::test]
 async fn stage_close_failure_fails_root_close_and_retains_original_authority() {
-    struct PanickingDrop;
-    impl Drop for PanickingDrop {
-        fn drop(&mut self) {
-            panic!("stage SQLite callback destructor failed");
-        }
-    }
     let directory = tempfile::tempdir().unwrap();
     let root_path = directory.path().join("root");
     let namespaces = crate::root::RootNamespaces {
@@ -186,18 +178,12 @@ async fn stage_close_failure_fails_root_close_and_retains_original_authority() {
         .stage_owner()
         .unwrap()
         .open(
-            sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(root_path.join("failed-stage.sqlite"))
-                .create_if_missing(true),
+            crate::connection::OpenOptions::file(root_path.join("failed-stage.sqlite"))
+                .create(true),
             |db| {
-                Box::pin(async move {
-                    let retained = PanickingDrop;
-                    db.lock_handle().await?.set_progress_handler(1, move || {
-                        let _retained = &retained;
-                        true
-                    });
-                    Ok(())
-                })
+                // An outstanding SQLite statement makes sqlite3_close return BUSY.
+                std::mem::forget(db.prepare("SELECT 1")?);
+                Ok(())
             },
         )
         .await

@@ -23,6 +23,7 @@
 mod attachment_paths;
 pub mod bindings;
 mod clipboard;
+mod composer_input;
 pub mod host;
 pub mod reload;
 
@@ -54,6 +55,20 @@ pub fn bootstrap_bundle() -> Bundle {
     )
 }
 
+/// The dedicated, trusted system-permission surface; it observes original interactions.
+fn system_permission_bundle() -> Bundle {
+    let mut capabilities = Capabilities::all();
+    capabilities.host = vec![
+        "computerPermissions.close".into(),
+        "appearance.textSize".into(),
+    ];
+    Bundle::source(include_str!(concat!(env!("OUT_DIR"), "/computer-permission-setup.js")).into())
+        .with_policy(Policy {
+            declared: Some(capabilities),
+            ..Policy::development()
+        })
+}
+
 /// Runs the UI bootstrap with the admitted Host bindings on `runtime`.
 /// The backend sets the viewport and environment it presents in.
 pub fn configuration(
@@ -67,5 +82,163 @@ pub fn configuration(
         network: Some(nsh_engine::net::network()),
         runtime: Some(runtime),
         ..EngineConfig::new(bootstrap_bundle())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{
+        Size,
+        element::Instance,
+        platform::{Environment, Os, Renderer},
+        prelude::px,
+    };
+
+    #[nsh_core::element::class]
+    struct CompletionHost;
+
+    #[nsh_core::element::class]
+    impl CompletionHost {
+        #[getter]
+        pub fn system_locale(&self) -> String {
+            "en".into()
+        }
+    }
+
+    #[test]
+    fn recycled_completion_cells_refresh_labels_and_press_actions() {
+        let mut registry = crate::bindings::ui_registry();
+        registry.value("host", || Instance::new(CompletionHost));
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/composer-completion.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(480.0), px(200.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                renderer: Renderer::Native,
+                ..Environment::default()
+            },
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+
+        app.wait_for("role:button[skill-00]").unwrap();
+        app.scroll("label:Skills", px(900.0)).unwrap();
+        app.wait_for("text:/Description of skill-15/").unwrap();
+        app.press("role:button[skill-15]").unwrap();
+        app.wait_for("text:/1:skill:skill-15/").unwrap();
+
+        app.press("id:refresh").unwrap();
+        app.press("role:button[skill-15]").unwrap();
+        app.wait_for("text:/2:skill:skill-15/").unwrap();
+    }
+
+    #[test]
+    fn skills_edit_as_units_and_sent_messages_preserve_copy_and_shortcuts() {
+        let mut registry = crate::bindings::ui_registry();
+        registry.value("host", || Instance::new(CompletionHost));
+        let sets = vec![nsh_base::registry(), registry];
+        let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+            entry: std::path::Path::new("tests/fixtures/skill-input.tsx")
+                .canonicalize()
+                .unwrap(),
+            minify: false,
+            split: false,
+            ui_sets: sets.iter().map(Into::into).collect(),
+        })
+        .unwrap();
+        let mut app = nsh_testing::Headless::start(nsh_engine::EngineConfig {
+            viewport: Size::new(px(640.0), px(480.0)),
+            environment: Environment {
+                os: Os::MacOs,
+                renderer: Renderer::Native,
+                ..Environment::default()
+            },
+            ui_sets: sets,
+            ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
+        })
+        .unwrap();
+        app.wait_for("text:Ready").unwrap();
+        app.type_text("label:Draft", "").unwrap();
+        for key in ["left", "left", "left", "shift+right", "mod+c"] {
+            app.press_key(key).unwrap();
+        }
+        assert_eq!(app.screen().clipboard(), Some("/skill:review"));
+        app.press_key("backspace").unwrap();
+        app.wait_for(r#"text:Draft "前😀  后""#).unwrap();
+        app.press_key("mod+z").unwrap();
+        app.wait_for(r#"text:Draft "前😀 /skill:review 后""#)
+            .unwrap();
+        app.press_key("mod+a").unwrap();
+        let mut paste = nsh_core::PasteEvent::new("a\nb");
+        paste.html = "<pre>a\nb</pre>".into();
+        app.paste("label:Draft", &paste).unwrap();
+        app.wait_for(r#"text:Draft "a\nb""#).unwrap();
+        let input = app
+            .screen()
+            .commands()
+            .iter()
+            .rev()
+            .find_map(|(id, command)| matches!(command, nsh_core::Command::Focus).then_some(*id))
+            .unwrap();
+        let compose = |app: &mut nsh_testing::Headless, active| {
+            app.engine().control().dispatch_event(
+                input,
+                nsh_core::EventKind::CompositionChange,
+                nsh_core::EventPayload::Map(vec![
+                    ("composing", nsh_core::PayloadValue::Bool(active)),
+                    ("text", nsh_core::PayloadValue::Str(String::new())),
+                ]),
+            );
+            app.wait_for(if active {
+                "text:Composing"
+            } else {
+                "text:Idle"
+            })
+            .unwrap();
+        };
+        compose(&mut app, true);
+        app.press_key("left").unwrap();
+        app.wait_for("text:IME key released").unwrap();
+        app.press("label:Reset").unwrap();
+        app.wait_for(r#"text:Draft """#).unwrap();
+        compose(&mut app, false);
+        app.press_key("mod+z").unwrap();
+        assert!(app.shows("Draft \"\""));
+        app.press_key("mod+i").unwrap();
+        app.wait_for(r#"text:Draft "/skill:fix ""#).unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for(r#"text:Submitted "/skill:fix ""#).unwrap();
+        app.press_key("mod+a").unwrap();
+        app.paste("label:Draft", &nsh_core::PasteEvent::new("ab"))
+            .unwrap();
+        compose(&mut app, true);
+        app.press("label:Reset").unwrap();
+        app.wait_for(r#"text:Draft """#).unwrap();
+        app.engine().control().dispatch_event(
+            input,
+            nsh_core::EventKind::ChangeText,
+            nsh_core::EventPayload::Text {
+                text: "文".into(),
+                count: 0,
+            },
+        );
+        compose(&mut app, false);
+        app.wait_for(r#"text:Draft "ab文""#).unwrap();
+        app.type_text("label:前😀 /skill:review 后", "").unwrap();
+        app.press_key("mod+a").unwrap();
+        app.press_key("mod+c").unwrap();
+        assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));
+        app.press_key("mod+n").unwrap();
+        app.wait_for("text:Shortcut received").unwrap();
     }
 }

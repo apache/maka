@@ -48,6 +48,33 @@ pub(crate) fn root() -> Option<Root> {
     root.map(|root| root())
 }
 
+/// The app's native components ([`set_components`]). Process-wide, as the
+/// UI sets of [`set_ui_sets`] are: only the hosts and runners nsh generates
+/// for an app's crate set it, so in an embedding app it stays `None` and
+/// each registry holds only what was registered on its own view.
+static COMPONENTS: RwLock<Option<fn(&crate::native::Components)>> = RwLock::new(None);
+
+/// Sets what registers the app's own native components (`nsh.json`
+/// `"rust"`, `#[native_components(linux)]`): every [`AppView`] calls it on
+/// its [`AppOptions::components`] when it is made, so the app's elements
+/// find them as an embedding app's. It runs before the code holding the
+/// view can register: a name registered on the view afterwards
+/// ([`AppView::register_component`]) replaces the crate's. The development
+/// host and release runner nsh generates for such an app call this before
+/// [`run_app`].
+pub fn set_components(register: fn(&crate::native::Components)) {
+    *COMPONENTS.write().unwrap_or_else(|e| e.into_inner()) = Some(register);
+}
+
+/// Registers the app's native components ([`set_components`]) on
+/// `components`.
+fn register_app_components(components: &crate::native::Components) {
+    let register = *COMPONENTS.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(register) = register {
+        register(components);
+    }
+}
+
 /// The UI sets engines serve.
 pub(crate) fn ui_sets() -> Vec<nsh_core::element::Registry> {
     UI_SETS
@@ -203,6 +230,7 @@ impl AppView {
         outer.append(&slot);
         outer.append(&overlay);
         crate::chrome::attach(&surface, &overlay, &slot);
+        register_app_components(&options.components);
         surface.native.set_components(options.components.clone());
         surface.native.set_app_id(&options.app_id);
         let view = Rc::new(AppView {
@@ -284,6 +312,7 @@ impl AppView {
             clipboard: None,
             host: options.host.clone(),
             picker: None,
+            speech: None,
         };
         crate::image::set_asset_base(&self.surface, options.asset_base.clone());
         self.surface

@@ -150,6 +150,9 @@ so only load it from your own app's files.
 - `AppOptions::limits` (or `AppView::set_limits`, for the apps loaded next) sets the VM limits: the JS heap, the
   stack, the time budgets and the node quota ([Sandbox and capabilities](./sandbox-and-capabilities.md)). Embedded apps get `Limits::default()` (a
   256 MB heap); the development host runs apps on its own, with `Limits::standalone()`.
+- `AppOptions::transparent` makes the view see-through: it draws no window background, and `open_app_window` /
+  `run_app` open a transparent window, so what the app leaves unpainted shows what is behind the window (desktop
+  widgets, overlays). False by default.
 - `AppView::connect_dev_server(url, cx)` (feature `dev`) loads the app from `nsh dev` and reloads it as you edit,
   with the error overlay over the view; `AppView::on_error` keeps hearing the app's errors.
 - `AppView::on_app_error(|error| …)` hears the app's errors: `error.kind` (the app failed to load, an uncaught

@@ -58,6 +58,8 @@ pub enum ProjectionError {
 pub struct Row {
     /// Original emitting fact and its full row ordinal, before UI filtering.
     pub position: RowPosition,
+    /// Chronological display anchor, independent of the committing fact.
+    pub order: RowPosition,
     pub message: Message,
 }
 
@@ -77,6 +79,7 @@ enum State {
 
 pub struct InvocationView {
     executor: Option<executor::Execution>,
+    executor_orders: std::collections::BTreeMap<String, RowPosition>,
     state: State,
     last_sequence: u64,
     tools: tools::Tools,
@@ -88,6 +91,7 @@ impl Default for InvocationView {
     fn default() -> Self {
         Self {
             executor: None,
+            executor_orders: Default::default(),
             state: State::Vacant,
             last_sequence: 0,
             tools: tools::Tools::new(),
@@ -230,21 +234,41 @@ impl InvocationView {
                         self.executor = Some(executor::Execution::new(event, ts, binding));
                     }
                     Fact::ExecutorObserved { output } => {
-                        messages.extend(
-                            self.executor
-                                .as_mut()
-                                .ok_or(ProjectionError::Invalid("executor output without start"))?
-                                .observe(event, ts, output)?,
-                        );
+                        if let maka_agent_facts::executor::Output::MessageStart { message_id } =
+                            output
+                        {
+                            self.executor_orders.insert(
+                                executor_message_id(&event.invocation.invocation_id, message_id),
+                                RowPosition {
+                                    source_sequence: stored.sequence,
+                                    item_index: 0,
+                                },
+                            );
+                        }
+                        let emitted = self
+                            .executor
+                            .as_mut()
+                            .ok_or(ProjectionError::Invalid("executor output without start"))?
+                            .observe(event, ts, output)?;
+                        if let maka_agent_facts::executor::Output::MessageEnd { message_id } =
+                            output
+                            && emitted.is_empty()
+                        {
+                            self.executor_orders.remove(&executor_message_id(
+                                &event.invocation.invocation_id,
+                                message_id,
+                            ));
+                        }
+                        messages.extend(emitted);
                     }
-                    Fact::ExecutorCompleted { text } => {
+                    Fact::ExecutorCompleted { message_id } => {
                         messages.extend(
                             self.executor
                                 .as_mut()
                                 .ok_or(ProjectionError::Invalid(
                                     "executor completion without start",
                                 ))?
-                                .complete(event, ts, text)?,
+                                .complete(event, ts, message_id.as_deref())?,
                         );
                     }
                     Fact::MessageSteered { message, .. } => {
@@ -456,7 +480,16 @@ impl InvocationView {
             }
         }
         self.last_sequence = stored.sequence;
-        rows(stored.sequence, messages)
+        let mut rows = rows(stored.sequence, messages)?;
+        for row in &mut rows {
+            if let Some(order) = self.executor_orders.remove(&row.message.id) {
+                row.order = order;
+            }
+        }
+        if matches!(self.state, State::Ended) {
+            self.executor_orders.clear();
+        }
+        Ok(rows)
     }
 
     /// Current executor output. Model preview is supplied by the active attempt,
@@ -481,7 +514,16 @@ fn rows(source_sequence: u64, messages: Vec<Message>) -> Result<Vec<Row>, Projec
             position
                 .validate()
                 .map_err(|_| ProjectionError::OutOfRange)?;
-            Ok(Row { position, message })
+            Ok(Row {
+                position,
+                order: position,
+                message,
+            })
         })
         .collect()
+}
+
+/// Native message IDs are local to one execution, unlike public presentation IDs.
+pub fn executor_message_id(invocation: &str, message: &str) -> String {
+    format!("executor:{}:{invocation}:{message}", invocation.len())
 }

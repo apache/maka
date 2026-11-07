@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{Callback, acp};
+use super::{Callback, Permission, PermissionChoice, PermissionKind};
 use maka_agent_facts::interaction::Decision;
 use maka_agent_facts::interaction::InteractionAnswer;
 use maka_agent_facts::interaction::InteractionRecord;
@@ -29,6 +29,18 @@ use maka_agent_facts::interaction::{
 use maka_sandbox::grant;
 
 pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::Error> {
+    use PermissionKind::{AllowAlways, AllowOnce, RejectOnce};
+    let choice = |id, name, kind| PermissionChoice { id, name, kind };
+    let mut offer = Permission {
+        session: snapshot.session_id.clone(),
+        request_id: snapshot.request_id.clone(),
+        title: String::new(),
+        description: None,
+        tool_id: None,
+        command: None,
+        input: serde_json::to_value(&snapshot.request)?,
+        options: Vec::new(),
+    };
     match &snapshot.request {
         InteractionRequest::ServiceApproval {
             tool_use_id,
@@ -36,88 +48,51 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             service,
             method,
             ..
-        } => Ok(Callback::Permission(
-            acp::RequestPermissionRequest::new(
-                acp::SessionId::new(snapshot.session_id.as_str()),
-                format!("Allow {tool_name}: {service} / {method}"),
-                vec![
-                    acp::PermissionOption::new(
-                        "allow_once",
-                        "Allow once",
-                        acp::PermissionOptionKind::AllowOnce,
-                    ),
-                    acp::PermissionOption::new(
-                        "reject_once",
-                        "Reject",
-                        acp::PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .subject(acp::RequestPermissionSubject::from(
-                acp::ToolCallUpdate::new(tool_use_id.clone())
-                    .raw_input(serde_json::to_value(&snapshot.request)?),
-            )),
-        )),
+        } => {
+            offer.title = format!("Allow {tool_name}: {service} / {method}");
+            offer.tool_id = Some(tool_use_id.clone());
+            offer.options = vec![
+                choice("allow_once", "Allow once", AllowOnce),
+                choice("reject_once", "Reject", RejectOnce),
+            ];
+        }
         InteractionRequest::Permissions {
             tool_use_id,
             request,
             ..
         } => {
-            let baseline = tool_use_id.is_none();
-            let title = if baseline {
+            offer.title = if tool_use_id.is_none() {
                 format!("{} (permission for this turn)", request.reason)
             } else {
                 request.reason.clone()
             };
-            let subject = if let Some(command) = &request.command {
-                Some(acp::RequestPermissionSubject::from(
-                    acp::CommandPermissionSubject::new(
-                        command.command.clone(),
-                        acp::AbsolutePath::new(command.cwd.clone()),
-                    )
-                    .tool_call_id(tool_use_id.as_deref().map(acp::ToolCallId::new)),
-                ))
-            } else if let Some(tool_use_id) = tool_use_id {
-                Some(acp::RequestPermissionSubject::from(
-                    acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
-                        .raw_input(serde_json::to_value(request)?),
-                ))
-            } else {
-                None
-            };
-            let params = acp::RequestPermissionRequest::new(
-                acp::SessionId::new(snapshot.session_id.as_str()),
-                title,
-                vec![
-                    acp::PermissionOption::new(
-                        "allow_once",
-                        if baseline {
-                            "Allow for this turn"
-                        } else {
-                            "Allow once"
-                        },
-                        acp::PermissionOptionKind::AllowOnce,
-                    ),
-                    acp::PermissionOption::new(
-                        "reject_once",
-                        "Reject",
-                        acp::PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .description(serde_json::to_string_pretty(request)?)
-            .subject(subject);
-            Ok(Callback::Permission(params))
+            offer.description = Some(serde_json::to_string_pretty(request)?);
+            offer.tool_id = tool_use_id.clone();
+            offer.command = request
+                .command
+                .as_ref()
+                .map(|command| (command.command.clone(), command.cwd.clone().into()));
+            offer.input = serde_json::to_value(request)?;
+            offer.options = vec![
+                choice(
+                    "allow_once",
+                    if tool_use_id.is_none() {
+                        "Allow for this turn"
+                    } else {
+                        "Allow once"
+                    },
+                    AllowOnce,
+                ),
+                choice("reject_once", "Reject", RejectOnce),
+            ];
         }
         InteractionRequest::ClientCapability {
             tool_use_id,
             target,
             ..
         } => {
-            let tool_call = acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
-                .raw_input(serde_json::to_value(target)?);
-            let title = if target.capability == GrantCapability::ComputerAudio {
-                "Allow computer output audio for this session".to_owned()
+            offer.title = if target.capability == GrantCapability::ComputerAudio {
+                "Allow computer output audio for this session".into()
             } else if let (
                 GrantCapability::BrowserHistory,
                 GrantScope::BrowserProfile { browser_id, .. },
@@ -138,25 +113,13 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                     target.server_id, target.tool_name
                 )
             };
-            let params = acp::RequestPermissionRequest::new(
-                acp::SessionId::new(snapshot.session_id.as_str()),
-                title,
-                vec![
-                    acp::PermissionOption::new(
-                        "allow_session",
-                        "Allow for this session",
-                        acp::PermissionOptionKind::AllowAlways,
-                    ),
-                    acp::PermissionOption::new(
-                        "reject_once",
-                        "Reject",
-                        acp::PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .description(serde_json::to_string_pretty(target)?)
-            .subject(acp::RequestPermissionSubject::from(tool_call));
-            Ok(Callback::Permission(params))
+            offer.tool_id = Some(tool_use_id.clone());
+            offer.input = serde_json::to_value(target)?;
+            offer.description = Some(serde_json::to_string_pretty(target)?);
+            offer.options = vec![
+                choice("allow_session", "Allow for this session", AllowAlways),
+                choice("reject_once", "Reject", RejectOnce),
+            ];
         }
         InteractionRequest::ComputerApp {
             tool_use_id,
@@ -191,102 +154,62 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 description.push('\n');
                 description.push_str(warning);
             }
-            let mut options = vec![
-                acp::PermissionOption::new(
-                    "allow_once",
-                    "Allow once",
-                    acp::PermissionOptionKind::AllowOnce,
-                ),
-                acp::PermissionOption::new(
-                    "allow_session",
-                    "Allow for this session",
-                    acp::PermissionOptionKind::AllowAlways,
-                ),
+            offer.title = format!("Allow computer access to {}", display.name);
+            offer.description = Some(description);
+            offer.tool_id = Some(tool_use_id.clone());
+            offer.options = vec![
+                choice("allow_once", "Allow once", AllowOnce),
+                choice("allow_session", "Allow for this session", AllowAlways),
             ];
             if *allow_always {
-                options.push(acp::PermissionOption::new(
-                    "allow_always",
-                    "Always allow",
-                    acp::PermissionOptionKind::AllowAlways,
-                ));
+                offer
+                    .options
+                    .push(choice("allow_always", "Always allow", AllowAlways));
             }
-            options.push(acp::PermissionOption::new(
-                "reject_once",
-                "Deny",
-                acp::PermissionOptionKind::RejectOnce,
-            ));
-            Ok(Callback::Permission(
-                acp::RequestPermissionRequest::new(
-                    acp::SessionId::new(snapshot.session_id.as_str()),
-                    format!("Allow computer access to {}", display.name),
-                    options,
-                )
-                .description(description)
-                .subject(acp::RequestPermissionSubject::from(
-                    acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
-                        .raw_input(serde_json::to_value(&snapshot.request)?),
-                )),
-            ))
+            offer
+                .options
+                .push(choice("reject_once", "Deny", RejectOnce));
         }
-        // The Host settles this itself once the operating-system grants exist,
-        // so the client is only told where to grant them and can only cancel.
         InteractionRequest::SystemPermission {
             tool_use_id,
-            grants,
             application,
+            grants,
             ..
         } => {
             let names = grants
                 .iter()
-                .map(|grant| match grant {
-                    SystemPermissionGrant::Accessibility => "Accessibility",
+                .map(|permission| match permission {
                     SystemPermissionGrant::ScreenRecording => "Screen Recording",
+                    SystemPermissionGrant::Accessibility => "Accessibility",
                 })
                 .collect::<Vec<_>>()
                 .join(" and ");
-            Ok(Callback::Permission(
-                acp::RequestPermissionRequest::new(
-                    acp::SessionId::new(snapshot.session_id.as_str()),
-                    format!("{application} needs {names}"),
-                    vec![acp::PermissionOption::new(
-                        "reject_once",
-                        "Cancel",
-                        acp::PermissionOptionKind::RejectOnce,
-                    )],
-                )
-                .description(format!(
-                    "Grant {names} to {application} in System Settings > Privacy & Security. \
-                     The tool call continues automatically once the access is granted."
-                ))
-                .subject(acp::RequestPermissionSubject::from(
-                    acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
-                        .raw_input(serde_json::to_value(&snapshot.request)?),
-                )),
-            ))
+            offer.title = format!("{application} needs {names}");
+            offer.description = Some(format!(
+                "Grant {names} to {application} in System Settings > Privacy & Security. The tool call continues automatically once the access is granted."
+            ));
+            offer.tool_id = Some(tool_use_id.clone());
+            offer.options = vec![choice("reject_once", "Cancel", RejectOnce)];
         }
-        _ => Err("Expected a permission interaction".into()),
+        _ => return Err("Expected a permission interaction".into()),
     }
+    Ok(Callback::Permission(offer))
 }
 pub(super) fn answer(
     snapshot: &InteractionRecord,
-    response: acp::RequestPermissionResponse,
+    response: Option<String>,
 ) -> Result<InteractionAnswer, crate::Error> {
     Ok(match &snapshot.request {
         InteractionRequest::ServiceApproval { .. } => {
-            let decision = match response.outcome {
-                acp::RequestPermissionOutcome::Cancelled => Decision::Deny,
-                acp::RequestPermissionOutcome::Selected(selected) => {
-                    match selected.option_id.0.as_ref() {
-                        "allow_once" => Decision::Allow,
-                        "reject_once" => Decision::Deny,
-                        _ => {
-                            return Err(
-                                "Client selected an unoffered service permission option".into()
-                            );
-                        }
+            let decision = match response {
+                None => Decision::Deny,
+                Some(selected) => match selected.as_str() {
+                    "allow_once" => Decision::Allow,
+                    "reject_once" => Decision::Deny,
+                    _ => {
+                        return Err("Client selected an unoffered service permission option".into());
                     }
-                }
-                _ => return Err("Unsupported ACP permission outcome".into()),
+                },
             };
             InteractionAnswer::ServiceApproval { decision }
         }
@@ -295,16 +218,13 @@ pub(super) fn answer(
             request,
             ..
         } => {
-            let allow = match response.outcome {
-                acp::RequestPermissionOutcome::Cancelled => false,
-                acp::RequestPermissionOutcome::Selected(selected) => {
-                    match selected.option_id.0.as_ref() {
-                        "allow_once" => true,
-                        "reject_once" => false,
-                        _ => return Err("Client selected an unoffered permission option".into()),
-                    }
-                }
-                _ => return Err("Unsupported ACP permission outcome".into()),
+            let allow = match response {
+                None => false,
+                Some(selected) => match selected.as_str() {
+                    "allow_once" => true,
+                    "reject_once" => false,
+                    _ => return Err("Client selected an unoffered permission option".into()),
+                },
             };
             InteractionAnswer::Permissions {
                 decision: if allow {
@@ -324,67 +244,57 @@ pub(super) fn answer(
             }
         }
         InteractionRequest::ClientCapability { .. } => {
-            let decision = match response.outcome {
-                acp::RequestPermissionOutcome::Cancelled => Decision::Deny,
-                acp::RequestPermissionOutcome::Selected(selected) => {
-                    match selected.option_id.0.as_ref() {
-                        "allow_session" => Decision::Allow,
-                        "reject_once" => Decision::Deny,
-                        _ => {
-                            return Err(
-                                "Client selected an unoffered capability permission option".into(),
-                            );
-                        }
+            let decision = match response {
+                None => Decision::Deny,
+                Some(selected) => match selected.as_str() {
+                    "allow_session" => Decision::Allow,
+                    "reject_once" => Decision::Deny,
+                    _ => {
+                        return Err(
+                            "Client selected an unoffered capability permission option".into()
+                        );
                     }
-                }
-                _ => return Err("Unsupported ACP permission outcome".into()),
+                },
             };
             InteractionAnswer::ClientCapability { decision }
         }
         InteractionRequest::ComputerApp { allow_always, .. } => {
-            let decision = match response.outcome {
-                acp::RequestPermissionOutcome::Cancelled => {
+            let decision = match response {
+                None => {
                     return Ok(InteractionAnswer::ComputerAppCancel {});
                 }
-                acp::RequestPermissionOutcome::Selected(selected) => {
-                    match selected.option_id.0.as_ref() {
-                        "allow_once" => ComputerAppDecision::Once,
-                        "allow_session" => ComputerAppDecision::Session,
-                        "allow_always" if *allow_always => ComputerAppDecision::Always,
-                        "reject_once" => ComputerAppDecision::Deny,
-                        _ => {
-                            return Err(
-                                "Client selected an unoffered computer application permission option"
-                                    .into(),
-                            );
-                        }
+                Some(selected) => match selected.as_str() {
+                    "allow_once" => ComputerAppDecision::Once,
+                    "allow_session" => ComputerAppDecision::Session,
+                    "allow_always" if *allow_always => ComputerAppDecision::Always,
+                    "reject_once" => ComputerAppDecision::Deny,
+                    _ => {
+                        return Err(
+                            "Client selected an unoffered computer application permission option"
+                                .into(),
+                        );
                     }
-                }
-                _ => return Err("Unsupported ACP permission outcome".into()),
+                },
             };
             InteractionAnswer::ComputerApp { decision }
         }
-        InteractionRequest::SystemPermission { .. } => match response.outcome {
-            acp::RequestPermissionOutcome::Cancelled => {
+        InteractionRequest::SystemPermission { .. } => match response {
+            None => InteractionAnswer::SystemPermissionCancel {},
+            Some(selected) if selected.as_str() == "reject_once" => {
                 InteractionAnswer::SystemPermissionCancel {}
             }
-            acp::RequestPermissionOutcome::Selected(selected)
-                if selected.option_id.0.as_ref() == "reject_once" =>
-            {
-                InteractionAnswer::SystemPermissionCancel {}
-            }
-            acp::RequestPermissionOutcome::Selected(_) => {
+            Some(_) => {
                 return Err("Client selected an unoffered system permission option".into());
             }
-            _ => return Err("Unsupported ACP permission outcome".into()),
         },
         _ => return Err("Expected a permission interaction".into()),
     })
 }
 #[cfg(test)]
 mod tests {
-    use super::super::{request, tests::snapshot};
+    use super::super::tests::{Callback, request, snapshot};
     use super::*;
+    use agent_client_protocol::v2::schema as acp;
     use maka_agent_facts::interaction::PermissionRequest;
     use maka_sandbox::Network;
     use serde_json::json;
@@ -392,7 +302,9 @@ mod tests {
         snapshot: &InteractionRecord,
         value: serde_json::Value,
     ) -> Result<InteractionAnswer, crate::Error> {
-        let response = super::super::Response::Permission(serde_json::from_value(value)?);
+        let response = super::super::Response::Permission(crate::transport::v2::permission_answer(
+            serde_json::from_value(value)?,
+        )?);
         super::super::answer(snapshot, response)
     }
 
@@ -664,9 +576,7 @@ mod tests {
 
     #[test]
     fn permission_rejects_an_elicitation_response() {
-        let response = super::super::Response::Elicitation(
-            serde_json::from_value(json!({"action":"cancel"})).unwrap(),
-        );
+        let response = super::super::Response::Elicitation(super::super::FormAnswer::Cancel);
         assert!(super::super::answer(&permission(Some("tool")), response).is_err());
     }
 
@@ -701,7 +611,9 @@ mod tests {
             (Some("tool"), grant::Scope::Once),
         ] {
             let snapshot = permission(tool);
-            let callback = request(&snapshot, &acp::ClientCapabilities::default()).unwrap();
+            let callback =
+                super::super::tests::request(&snapshot, &acp::ClientCapabilities::default())
+                    .unwrap();
             let Callback::Permission(typed) = callback else {
                 panic!("Expected permission callback")
             };
@@ -752,7 +664,7 @@ mod tests {
             request,
         });
         let callback =
-            super::super::request(&snapshot, &acp::ClientCapabilities::default()).unwrap();
+            super::super::tests::request(&snapshot, &acp::ClientCapabilities::default()).unwrap();
         let Callback::Permission(callback) = callback else {
             panic!("Expected permission callback")
         };

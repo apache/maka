@@ -21,7 +21,6 @@ use maka_agent_facts::shell_result::ShellOutput;
 use maka_agent_facts::shell_result::ShellSnapshot;
 use maka_agent_facts::shell_result::ShellStatus;
 use maka_agent_facts::tools::ToolError;
-use maka_agent_ports::preferences;
 use maka_capabilities::call;
 use maka_capabilities::filesystem;
 use maka_capabilities::http;
@@ -111,7 +110,6 @@ pub struct Report {
 pub struct Health {
     pub files: Arc<dyn filesystem::Files>,
     pub http: Arc<dyn http::Client>,
-    pub preferences: Arc<dyn preferences::Preferences>,
 }
 impl Health {
     pub async fn check(&self, parent: &call::Scope, input: Input) -> Result<Report, ToolError> {
@@ -150,21 +148,7 @@ impl Health {
                 let target = url::Url::parse(&url)
                     .map_err(|_| failed("Invalid health URL"))?
                     .to_string();
-                if self
-                    .preferences
-                    .read()
-                    .await
-                    .map_err(failed)?
-                    .privacy
-                    .incognito_active
-                {
-                    Endpoint::Unknown {
-                        target,
-                        error: "Endpoint probing is disabled in incognito mode".into(),
-                    }
-                } else {
-                    self.probe(parent, target).await?
-                }
+                self.probe(parent, target).await?
             }
         };
         Ok(Report { process, endpoint })
@@ -250,7 +234,6 @@ mod tests {
     use super::*;
     use futures_util::future::BoxFuture;
     use maka_agent_facts::tools::ToolError;
-    use maka_agent_ports::preferences;
     use maka_capabilities::call;
     use maka_capabilities::filesystem;
     use maka_capabilities::http;
@@ -282,24 +265,6 @@ mod tests {
                     return Err(ToolError::Failed("Session access denied".into()));
                 }
                 Ok(filesystem::Output::Value(self.snapshot.clone()))
-            })
-        }
-    }
-    #[derive(Default)]
-    struct Privacy(AtomicBool);
-    impl preferences::Preferences for Privacy {
-        fn read(&self) -> BoxFuture<'_, Result<preferences::Snapshot, maka_capabilities::Error>> {
-            Box::pin(async {
-                Ok(preferences::Snapshot {
-                    revision: 1,
-                    privacy: maka_agent_facts::configuration::policy::PrivacyPolicy {
-                        incognito_active: self.0.load(Ordering::SeqCst),
-                    },
-                    personalization: maka_agent_facts::configuration::policy::Personalization {
-                        display_name: String::new(),
-                    },
-                    workspace_instructions: false,
-                })
             })
         }
     }
@@ -383,23 +348,20 @@ mod tests {
         });
         body
     }
-    fn backend() -> (Health, Arc<Files>, Arc<Transport>, Arc<Privacy>) {
+    fn backend() -> (Health, Arc<Files>, Arc<Transport>) {
         let files = Arc::new(Files {
             denied: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
             snapshot: json!({"kind":"shell_run","ref":REFERENCE,"mode":"pipes","status":"failed","cwd":"/tmp","cmd":"test","startedAt":1,"updatedAt":2,"completedAt":2,"exitCode":3,"revision":2,"output":{"mode":"pipes","stdout":"private logs","stderr":"failed","stdoutTruncated":false,"stderrTruncated":false,"redacted":false}}),
         });
         let http = Arc::new(Transport::default());
-        let privacy = Arc::new(Privacy::default());
         (
             Health {
                 files: files.clone(),
                 http: http.clone(),
-                preferences: privacy.clone(),
             },
             files,
             http,
-            privacy,
         )
     }
     fn scope() -> call::Scope {
@@ -421,7 +383,7 @@ mod tests {
     }
     #[tokio::test]
     async fn process_and_endpoint_are_independent_logs_are_opt_in_and_bodies_are_discarded() {
-        let (health, _, http, _) = backend();
+        let (health, _, http) = backend();
         let scope = scope();
         let report =
             serde_json::to_value(health.check(&scope, input(false, false)).await.unwrap()).unwrap();
@@ -450,7 +412,7 @@ mod tests {
     }
     #[tokio::test]
     async fn redirects_are_observations_and_failed_settlement_is_not_a_health_result() {
-        let (health, _, http, _) = backend();
+        let (health, _, http) = backend();
         let scope = scope();
         for (status, expected) in [(302, "unknown"), (503, "unhealthy")] {
             reply(&http, status, false);
@@ -468,18 +430,13 @@ mod tests {
         scope.finish().await.unwrap();
     }
     #[tokio::test]
-    async fn unauthorized_resource_invalid_reference_and_privacy_do_not_probe() {
-        let (health, files, http, privacy) = backend();
+    async fn unauthorized_resource_and_invalid_reference_do_not_probe() {
+        let (health, files, http) = backend();
         let scope = scope();
         files.denied.store(true, Ordering::SeqCst);
         assert!(health.check(&scope, input(true, false)).await.is_err());
         assert!(http.calls.lock().unwrap().is_empty());
         files.denied.store(false, Ordering::SeqCst);
-        privacy.0.store(true, Ordering::SeqCst);
-        let report =
-            serde_json::to_value(health.check(&scope, input(true, false)).await.unwrap()).unwrap();
-        assert_eq!(report["endpoint"]["state"], "unknown");
-        assert!(http.calls.lock().unwrap().is_empty());
         let calls = files.calls.load(Ordering::SeqCst);
         for reference in [
             "/etc/passwd",
@@ -495,7 +452,7 @@ mod tests {
     }
     #[tokio::test]
     async fn cancellation_drains_probe_and_is_not_reported_as_unhealthy() {
-        let (health, _, http, _) = backend();
+        let (health, _, http) = backend();
         let parent = scope();
         let check = health.check(&parent, input(true, false));
         let cancel = async {

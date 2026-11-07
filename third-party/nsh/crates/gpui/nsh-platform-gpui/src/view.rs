@@ -475,6 +475,60 @@ impl NshView {
         }
     }
 
+    /// The part of this view (its coordinates, an axis-aligned box) that
+    /// the views clipping around it leave in sight: where a scroll view
+    /// taller or wider than the scroll view it is in draws its indicator
+    /// ([`ScrollState::thumb_within`]), so its bar stays in view. Its own
+    /// bounds when nothing clips it.
+    pub(crate) fn visible_bounds(&self) -> Bounds<Points> {
+        let size = self.state().frame.size;
+        let full = Bounds::new(Default::default(), size);
+        let (mut left, mut top) = (0.0f32, 0.0f32);
+        let (mut right, mut bottom) = (size.width.0, size.height.0);
+        // This view's coordinates to `view`'s.
+        let mut m = Mat4::new();
+        let mut view = self.clone();
+        while let Some(parent) = view.parent_view() {
+            {
+                let s = view.state();
+                let (x, y) = parent.state().child_origin(s.frame, s.shift);
+                let mut local = Mat4::new().translate(x, y);
+                if let Some(t) = s.transform() {
+                    local = Mat4::mul(&t, &local);
+                }
+                m = Mat4::mul(&m, &local);
+            }
+            let clip = {
+                let p = parent.state();
+                p.clips()
+                    .then_some((p.frame.size.width.0, p.frame.size.height.0))
+            };
+            if let Some((w, h)) = clip {
+                let mut min = (f32::MAX, f32::MAX);
+                let mut max = (f32::MIN, f32::MIN);
+                for (cx, cy) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+                    let Some((x, y)) = m.unproject(cx, cy) else {
+                        return full;
+                    };
+                    min = (min.0.min(x), min.1.min(y));
+                    max = (max.0.max(x), max.1.max(y));
+                }
+                left = left.max(min.0);
+                top = top.max(min.1);
+                right = right.min(max.0);
+                bottom = bottom.min(max.1);
+            }
+            view = parent;
+        }
+        Bounds::new(
+            nsh_core::geometry::point(Points(left), Points(top)),
+            nsh_core::geometry::size(
+                Points((right - left).max(0.0)),
+                Points((bottom - top).max(0.0)),
+            ),
+        )
+    }
+
     fn attached_root(&self, root: &NshView) -> bool {
         root.0.invalidate.borrow().is_some()
     }

@@ -18,7 +18,7 @@
  */
 
 //! Explicit session operations. Custody is acquired before dispatch and retained
-//! by the SQL job; no partition log or SQL callback is exposed to callers.
+//! by the SQL job; no raw log or SQL callback is exposed to callers.
 use super::SessionStore;
 use crate::archive::{PruneCandidates, PruneCursor};
 use crate::artifacts::{ArtifactChunk, ArtifactEntry, ArtifactReadScope, ImageChunk};
@@ -251,7 +251,7 @@ impl SessionStore {
         self.scoped().await?.session_projection(session_id).await
     }
 
-    /// Read the canonical partition-wide sequence under this Session's custody.
+    /// Read the canonical sequence under this Session's custody.
     pub async fn committed_sequence(&self) -> Result<u64, StoreError> {
         self.scoped().await?.committed_sequence().await
     }
@@ -963,14 +963,6 @@ impl SessionStore {
             .await?
             .change_session_archived(id, expected, archived, now)
             .await
-    }
-
-    pub async fn session_manager(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<maka_capabilities::storage::Namespace>, StoreError> {
-        self.check_session(session_id)?;
-        self.scoped().await?.session_manager(session_id).await
     }
 
     pub async fn admit_session_process_for(

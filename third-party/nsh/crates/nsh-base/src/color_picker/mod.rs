@@ -5,19 +5,27 @@
 //! (`gpui-base`'s `color_picker.rs`, the parts as React Aria's and ReUI's).
 //! The root holds the color; the parts inside it read and change it, laid
 //! out by the app.
+//!
+//! In a right-to-left layout a horizontal slider and the area run from the
+//! right, as `Slider` does (React Aria's color area and slider too): the
+//! smallest value (the area's least saturation) at the right, the thumb
+//! placed from there, the colors drawn so, a press picking the value under
+//! the pointer and Left and Right trading places
+//! ([`bind_while_directed`]). The direction is the surface's, read as it
+//! changes.
 
 mod model;
 
 use nsh_core::{
     AccessibilityActionDef, AccessibilityValue, Color,
-    element::{Style, input},
+    element::{Style, input, layout_rtl},
     geometry::{Along, Axis},
     prelude::*,
 };
 
 pub use self::model::{ColorChannel, ColorFormat, ColorSpace};
 use self::model::{Model, Spec, parse, resolve, segments, spec};
-use crate::keys::bind_while;
+use crate::keys::{bind_while, bind_while_directed};
 
 /// The most straight gradients a slider's track is drawn with
 /// ([`model::segments`]).
@@ -218,7 +226,9 @@ enum Nudge {
 }
 
 /// WAI-ARIA's slider keys (Right and Up raise, also on a vertical
-/// slider), Shift for steps of ten; arrows and pages repeat while held.
+/// slider; Left and Up on a horizontal one in a right-to-left layout,
+/// which has its smallest value at the right), Shift for steps of ten;
+/// arrows and pages repeat while held.
 const SLIDER_KEYS: &[(&str, bool, Nudge)] = &[
     ("right", true, Nudge::X(1.0)),
     ("up", true, Nudge::X(1.0)),
@@ -234,8 +244,9 @@ const SLIDER_KEYS: &[(&str, bool, Nudge)] = &[
     ("end", false, Nudge::Max),
 ];
 
-/// The area's keys: Left and Right the saturation, Up and Down the
-/// brightness, Shift for steps of ten.
+/// The area's keys: Left and Right the saturation (Right raises it, Left
+/// in a right-to-left layout), Up and Down the brightness, Shift for steps
+/// of ten.
 const AREA_KEYS: &[(&str, bool, Nudge)] = &[
     ("right", true, Nudge::X(1.0)),
     ("left", true, Nudge::X(-1.0)),
@@ -305,8 +316,9 @@ pub struct ColorAreaProps {
     /// What screen readers say for the thumb.
     pub accessibility_label: Prop<Option<SharedString>>,
     /// The Tailwind classes of the panel, filling the area: the colors of
-    /// the hue in saturation (left to right) and brightness (bottom to
-    /// top), clipped to its corners (`rounded-lg`).
+    /// the hue in saturation (left to right, right to left in a
+    /// right-to-left layout) and brightness (bottom to top), clipped to its
+    /// corners (`rounded-lg`).
     pub panel_class: Prop<Option<SharedString>>,
     /// The style of the panel, over `panelClass`.
     #[prop(default)]
@@ -323,13 +335,15 @@ pub struct ColorAreaProps {
     pub fill_thumb: Prop<bool>,
 }
 
-/// The colors of a hue: HSB's saturation from left to right, its
-/// brightness from bottom to top, in a [`ColorPicker`]. A press or a drag
-/// anywhere on it picks the color under the pointer (on touch screens too,
-/// kept from a scroll view around it); its thumb takes the keyboard focus,
-/// where the arrows change the saturation and the brightness (Shift by
-/// ten), and screen readers hear it as an adjustable control whose value is
-/// the color. The app sizes it with `class` and styles its panel and thumb.
+/// The colors of a hue: HSB's saturation from left to right (from right to
+/// left in a right-to-left layout), its brightness from bottom to top, in
+/// a [`ColorPicker`]. A press or a drag anywhere on it picks the color
+/// under the pointer (on touch screens too, kept from a scroll view around
+/// it); its thumb takes the keyboard focus, where the arrows change the
+/// saturation and the brightness (Shift by ten; Left and Right trade
+/// places in a right-to-left layout), and screen readers hear it as an
+/// adjustable control whose value is the color. The app sizes it with
+/// `class` and styles its panel and thumb.
 #[component]
 pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let picker = Picker::find("ColorArea");
@@ -337,11 +351,18 @@ pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement
     let size = stored(Size::<Points>::default());
     let drag = stored(None::<(f64, f64)>);
     let focused = signal(false);
+    // The saturation runs from the right in a right-to-left layout.
+    let mirrored = computed(layout_rtl);
     let place = move |x: f64, y: f64| {
         let Size { width, height } = size.get();
         if width.0 <= 0.0 || height.0 <= 0.0 {
             return;
         }
+        let x = if mirrored.get_untracked() {
+            f64::from(width.0) - x
+        } else {
+            x
+        };
         let s = (x / f64::from(width.0)).clamp(0.0, 1.0) * 100.0;
         let b = (1.0 - y / f64::from(height.0)).clamp(0.0, 1.0) * 100.0;
         let now = picker.now();
@@ -371,7 +392,7 @@ pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement
         ));
         picker.end();
     };
-    bind_while(move || focused.get(), AREA_KEYS, nudge);
+    bind_while_directed(move || focused.get(), AREA_KEYS, nudge);
     let release = move || {
         if drag.replace(None).is_some() {
             picker.end();
@@ -386,14 +407,16 @@ pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement
         .style_with(move |s| s.bg(AdaptiveColor::from(picker.get().hue_color())))
         .app_class(props.panel_class)
         .inline_style(props.panel_style)
-        .child(
-            view()
-                .absolute()
-                .inset_0()
-                .bg_linear_to_r()
-                .gradient_from(AdaptiveColor::from(white()))
-                .gradient_to(AdaptiveColor::from(white().alpha(0.0))),
-        )
+        .child(view().absolute().inset_0().style_with(move |s| {
+            // White at the least saturation's side.
+            let s = if mirrored.get() {
+                s.bg_linear_to_l()
+            } else {
+                s.bg_linear_to_r()
+            };
+            s.gradient_from(AdaptiveColor::from(white()))
+                .gradient_to(AdaptiveColor::from(white().alpha(0.0)))
+        }))
         .child(
             view()
                 .absolute()
@@ -410,7 +433,8 @@ pub fn ColorArea(props: ColorAreaProps, _cx: Scope<NoEvent>) -> impl IntoElement
             let m = picker.get();
             let s_ = m.channel(ColorSpace::Hsb, ColorChannel::Saturation) / 100.0;
             let b = m.channel(ColorSpace::Hsb, ColorChannel::Brightness) / 100.0;
-            let s = s.left(relative(s_ as f32)).top(relative((1.0 - b) as f32));
+            let x = if mirrored.get() { 1.0 - s_ } else { s_ };
+            let s = s.left(relative(x as f32)).top(relative((1.0 - b) as f32));
             if props.fill_thumb.get() {
                 s.bg(AdaptiveColor::from(m.opaque()))
             } else {
@@ -483,8 +507,9 @@ pub struct ColorSliderProps {
     #[prop(default)]
     pub channel: Prop<ColorChannel>,
     /// The direction of the track (default `"horizontal"`, the channel's
-    /// smallest value at the left); a vertical one has it at the bottom.
-    /// Read when the slider is made.
+    /// smallest value at the start: the left, the right in a right-to-left
+    /// layout, where Left raises the value and Right lowers it); a
+    /// vertical one has it at the bottom. Read when the slider is made.
     #[prop(default = Axis::Horizontal)]
     pub axis: Prop<Axis>,
     /// No pointer, keyboard or screen reader changes; `disabled:` styles
@@ -527,6 +552,9 @@ struct SliderCtl {
     space: Prop<ColorSpace>,
     channel: Prop<ColorChannel>,
     axis: Axis,
+    /// A horizontal slider in a right-to-left layout: the track runs from
+    /// the right.
+    mirrored: Memo<bool>,
     disabled: Prop<bool>,
     /// The track's frame in the slider.
     rail: Signal<Bounds<Points>>,
@@ -573,17 +601,23 @@ impl SliderCtl {
     }
 
     /// Points along the track from its start of `at`, a point in the
-    /// slider (bottom up on a vertical one).
+    /// slider (bottom up on a vertical one, right to left on a mirrored
+    /// one).
     fn along(self, at: Point<Points>) -> f64 {
         let rail = self.rail.get_untracked();
         f64::from(match self.axis {
+            Axis::Horizontal if self.mirrored.get_untracked() => {
+                (rail.origin.x + rail.size.width - at.x).0
+            }
             Axis::Horizontal => (at.x - rail.origin.x).0,
             Axis::Vertical => (rail.origin.y + rail.size.height - at.y).0,
         })
     }
 
+    /// How far a drag went toward the track's end.
     fn offset(self, e: &ResponderEvent) -> f64 {
         f64::from(match self.axis {
+            Axis::Horizontal if self.mirrored.get_untracked() => -e.gesture.delta.x.0,
             Axis::Horizontal => e.gesture.delta.x.0,
             Axis::Vertical => -e.gesture.delta.y.0,
         })
@@ -644,7 +678,9 @@ impl SliderCtl {
 /// rainbow). A press on the track picks the value under the pointer and a
 /// drag goes on from there (on touch screens too); its thumb takes the
 /// keyboard focus, with WAI-ARIA's slider keys (Shift for steps of ten),
-/// and screen readers hear it as an adjustable control. The app sizes it
+/// and screen readers hear it as an adjustable control. A horizontal one
+/// runs from the right in a right-to-left layout, where Left and Right
+/// trade places. The app sizes it
 /// with `class` (`h-6 justify-center px-2.5`: half a thumb free at each
 /// end keeps the thumb inside it, where it takes presses) and styles its
 /// track and thumb; an alpha slider's `checkerboardColor` draws what shows
@@ -656,6 +692,7 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
         space: props.color_space,
         channel: props.channel,
         axis: props.axis.get_untracked(),
+        mirrored: computed(move || props.axis.get_untracked() == Axis::Horizontal && layout_rtl()),
         disabled: props.disabled,
         rail: signal(Bounds::default()),
         drag: stored(None),
@@ -667,11 +704,20 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
         }
     });
     let focused = signal(false);
-    bind_while(move || focused.get(), SLIDER_KEYS, move |n| ctl.nudge(n));
     let axis = ctl.axis;
+    // A horizontal slider runs along the reading direction, a vertical one
+    // keeps Right raising (WAI-ARIA's keys).
+    match axis {
+        Axis::Horizontal => {
+            bind_while_directed(move || focused.get(), SLIDER_KEYS, move |n| ctl.nudge(n))
+        }
+        Axis::Vertical => bind_while(move || focused.get(), SLIDER_KEYS, move |n| ctl.nudge(n)),
+    }
     // The track's colors from its start to its end, computed once per
     // change of the color; a segment restyles only when its two stops
-    // change (dragging a channel leaves its own track as it was).
+    // change (dragging a channel leaves its own track as it was). The
+    // segments run left to right and top to bottom: a mirrored or vertical
+    // track's first is its end's.
     let stops = computed(move || {
         let (space, channel) = ctl.pair();
         let n = segments(space, channel);
@@ -685,8 +731,8 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
             stops.with(|stops| {
                 let n = stops.len() - 1;
                 (k < n).then(|| match axis {
-                    Axis::Horizontal => (stops[k], stops[k + 1]),
-                    Axis::Vertical => (stops[n - k - 1], stops[n - k]),
+                    Axis::Horizontal if !ctl.mirrored.get() => (stops[k], stops[k + 1]),
+                    _ => (stops[n - k - 1], stops[n - k]),
                 })
             })
         });
@@ -695,6 +741,7 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
                 return s.hidden();
             };
             let s = match axis {
+                Axis::Horizontal if ctl.mirrored.get() => s.bg_linear_to_l(),
                 Axis::Horizontal => s.bg_linear_to_r(),
                 Axis::Vertical => s.bg_linear_to_t(),
             };
@@ -705,6 +752,9 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
     let colors = view()
         .absolute()
         .inset_0()
+        // Its row runs left to right whatever the direction: the segments
+        // are ordered for it.
+        .direction(LayoutDirection::Ltr)
         .map(|v| match axis {
             Axis::Horizontal => v.flex_row(),
             Axis::Vertical => v.flex_col(),
@@ -729,6 +779,7 @@ pub fn ColorSlider(props: ColorSliderProps, _cx: Scope<NoEvent>) -> impl IntoEle
         .style_with(move |s| {
             let rail = ctl.rail.get();
             let f = ctl.fraction() as f32;
+            let f = if ctl.mirrored.get() { 1.0 - f } else { f };
             let s = match axis {
                 Axis::Horizontal => s
                     .left(px(rail.origin.x.0 + f * rail.size.width.0))

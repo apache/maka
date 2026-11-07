@@ -106,6 +106,7 @@ and the explicit import takes its place. For the system's alert or action sheet,
 |---|---|---|---|---|
 | `open` | in the view while open (`when(open, ..)`) | `boolean` | `true` | Shown while true. |
 | `animation` | `.animation(ModalAnimation::Fade)` | `"slide" \| "fade" \| "none"` | `"slide"` | How it comes in and goes. |
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | none | It comes in and goes through a WGSL shader in place of its `animation`: `shade(uv)` reads what is behind as `sample_from` and the dialog as `sample_to` while `nsh.progress` runs from 0 to 1 over `duration` milliseconds (350 by default), and from 1 back to 0 as it closes. When the system asks for less motion, it takes its own `animation`. See [Shader](./shader.md). |
 | `presentation` | `.presentation(ModalPresentation::PageSheet)` | `"fullScreen" \| "pageSheet" \| "formSheet"` | `"fullScreen"` | Its form on iOS: `fullScreen` covers the screen with a clear background; `pageSheet` and `formSheet` are system sheets that keep what is behind visible (`formSheet` is a smaller centered sheet on large screens). |
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape and the Android back button close it natively. |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | A press on the backdrop closes it. |

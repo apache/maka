@@ -132,7 +132,8 @@ pub struct Request {
 #[schemars(rename = "ExecutorOutcome")]
 pub enum Outcome {
     Completed {
-        text: String,
+        /// Final completed assistant message, or no answer for a tool-only turn.
+        message_id: Option<String>,
     },
     Cancelled {
         reason: Option<String>,

@@ -20,6 +20,12 @@ pub struct SwitchProps {
     /// What screen readers say: what the switch turns on, when its children
     /// have no text that says it.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A small switch (a track with no label) takes presses a
+    /// finger lands near it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The Tailwind classes of the track, the part the thumb moves along;
     /// `checked:` and `disabled:` follow the switch.
     pub track_class: Prop<Option<SharedString>>,
@@ -54,7 +60,8 @@ pub enum SwitchEvent {
 /// `style` style the switch, `trackClass` / `trackStyle` and `thumbClass` /
 /// `thumbStyle` the parts, and `checked:` and `disabled:` classes on each
 /// follow the switch's state (or `checkedStyle` and `disabledStyle` on the
-/// switch).
+/// switch). `hitSlop` widens where presses count past its bounds, as a
+/// view's does.
 #[component]
 pub fn Switch(props: SwitchProps, cx: Scope<SwitchEvent>) -> impl IntoElement {
     let part = || {
@@ -75,6 +82,7 @@ pub fn Switch(props: SwitchProps, cx: Scope<SwitchEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .checked_style(props.checked_style)
+        .hit_slop(props.hit_slop)
         .on_press(move |_: &()| cx.emit(SwitchEvent::Change(!props.checked.get_untracked())))
         .child(
             part()

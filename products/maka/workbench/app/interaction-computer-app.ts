@@ -32,11 +32,11 @@ export function computerAppOptions(request: ComputerAppRequest): Array<{
   answer: Answer;
 }> {
   return [
-    { label: uiMessage('Allow once'), answer: { kind: 'computer_app', decision: 'once' } },
     {
       label: uiMessage('Allow for this session'),
       answer: { kind: 'computer_app', decision: 'session' },
     },
+    { label: uiMessage('Allow once'), answer: { kind: 'computer_app', decision: 'once' } },
     ...(request.allowAlways
       ? [
           {

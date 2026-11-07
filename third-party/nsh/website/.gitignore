@@ -5,3 +5,5 @@ bun.lock
 bun.lockb
 # The WebAssembly player and demo bundles (`bun run play`).
 public/play/
+# Releases' builds and players (`bun run build:versions`).
+.versions/

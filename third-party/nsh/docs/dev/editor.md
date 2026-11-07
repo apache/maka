@@ -77,37 +77,22 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 
 ### The display map
 
-`DisplayMap` lays the text out in display rows: one vector of rows, with the first row of every line beside it, so
-line → row is an index and row → line a field. Tabs advance to the next stop; widths come from the editor's font,
-measured per char with the platform's text engine (`measure_text`) and cached, and summed along a row (exact for
-monospaced fonts, close for others). Without soft wrap a row is a line and nothing is measured while laying out (a
-row's width is measured when the scroll width first needs it; above 20 000 rows only the rows in view are measured,
-as they show, and the scroll width grows to the widest seen), so 200 000 lines lay out in about 30 ms. With
-`softWrap`, a line breaks after whitespace where the row would overflow, else between graphemes, and its continuation
-rows start at its indentation unless that is over half the width. A folded line shows as one row and the lines it
-hides as none. An edit lays out only the lines of its `LineSpan` and shifts the rows after them.
+`DisplayMap` (`display_map.rs`) lays the text out in display rows: tabs advance to the next stop, widths come from
+the editor's font measured with the platform's text engine, and large files lay out without measuring every row.
+With `softWrap`, a line breaks after whitespace where the row would overflow, else between graphemes, and its
+continuation rows start at its indentation unless that is over half the width. A folded line shows as one row and the
+lines it hides as none. An edit lays out only the lines it touched.
 
 ### Rendering and virtualization
 
 The view is a vertical `Scroll` of a row of the gutter and the text area (a horizontal `Scroll` without soft wrap).
-The scroll views hold the hit layer: boxes of the rows' size that take the wheel, the scroll bars, touches,
-presses and the pointer's cursor. The active-line backgrounds are drawn in these boxes, below the scroll indicators.
-The text and foreground decorations are the paint layer, drawn over the scroll views (`pointer_events(None)`)
-and moved by the offsets they report (`top(-scroll_y)`, `left(-scroll_x)`): the rows the offset needs and the offset
-itself come in the same commit, so a scroll bar dragged across a long file or a paste of many lines never shows a
-frame where the platform moved the content before the rows it needs were made. No view of the paint layer is a
-target, the rows' texts included: a finger or a wheel on a row's glyphs reaches the scroll views below it, as on blank
-space (a text that took the pointer would hold it outside them: no scrolling, and the finger's lift a tap). Only a
-folded row's text takes presses, for its placeholder. The paint layer's views keep the hit layer's handlers, so tests
-that press a row's text reach the same code. Only the rows in view are made, plus a
-viewport and a half (at least 16 rows) ahead in the way they scroll and half a viewport behind, and at least 40 rows'
-height before the viewport is known. That window (`window.rs`'s `RowWindow`, which the `DiffView` shares) stays put
-while it covers the rows in view with half a viewport to spare, so most scroll frames change no rows and commit
-nothing; the row list is a memo of the window, and `each` keeps the views of rows that stay in it. Each row is an absolutely placed view holding one `Text` whose spans are
-the row's runs of one token and one set of decorations (`State::row_content`). The rows' box draws, from back to
-front: the rulers, indent guides, search matches, selections, the matching brackets,
-the rows, the whitespace marks, diagnostics' marks, the placeholder, the carets and the composition. Each layer is a
-`dynamic` over the revisions it depends on.
+The scroll views take the wheel, the scroll bars, touches, presses and the pointer's cursor; the text and foreground
+decorations are drawn over them and take no input (only a folded row's text takes presses, for its placeholder), so a
+finger or a wheel on a row's glyphs scrolls as on blank space. Only the rows in view and a margin around them are made
+(`window.rs`'s `RowWindow`, which the `DiffView` shares); each row is an absolutely placed view holding one `Text`
+whose spans are the row's runs of one token and one set of decorations (`State::row_content`). The rows' box draws,
+from back to front: the rulers, indent guides, search matches, selections, the matching brackets, the rows, the
+whitespace marks, diagnostics' marks, the placeholder, the carets and the composition.
 
 `showWhitespaces` draws a `·` per space and a `→` per tab over the rows in view: one `Text` per run of spaces and per
 tab, placed and sized by the display map (`DisplayMap::whitespace`), so the row's own text and its measuring stay as
@@ -326,6 +311,22 @@ empty line a short line a space wide is drawn under the row (`diagnostic_rects`)
 bounds), its `lineClass` / `lineStyle` the rows of its lines behind the text. A row looks for its decorations by two
 binary searches over the marks (sorted by start): those starting from the longest mark's length before the row
 (`decoration_reach`) up to its end, so thousands of short ones (semantic tokens) cost a row only its own.
+
+A decoration's `gutter` and `overviewRuler` marks follow GPUI Kit's gutter and overview ruler decorations (#3704) on
+the decorations NSH already has, as Monaco puts both on one decoration: one list keeps one place for a range and its
+marks. The gutter's strip (`gutterDecorationsWidth`) is reserved while any decoration has a gutter mark, so the text
+does not move as marks come and go. Each painted gutter row asks for its marks with the same windowed search
+(`State::gutter_marks`): a row's lines are its fold's when folded, so a range or boundary inside a fold marks the
+fold's row; a non-empty range ending at a line's start leaves that line out; an empty range is a line across the top of
+its line's first row at a line start, across the bottom of its last row elsewhere (the end of a text without a final
+line break); that boundary is `placement: "before"`, and by default an empty range covers its line, as it does for
+`lineClass` (one decoration, one meaning of its range). Empty ranges are kept through edits (`adjust` collapses a deleted range to its boundary). The overview
+ruler (`view::overview_ruler`, the `overviewRuler` part, 14 points wide unless the part sets a width; its lanes are
+shares of that width, so a width the app's classes set moves them too) lies over the scroll view's right edge, receiving no pointer;
+its marks' display rows (`State::overview_ruler_marks`) are worked out again only when the text, folds, wrapping or
+decorations change (`text_rev`, `marks_rev`), and their places (`layout::ruler_place`: the rows scaled from the
+rows' box to the viewport's height, at least 6 points; `layout::ruler_lane`, Monaco's lanes) when the viewport does. GPUI Kit's folded
+color and the theme's status colors are left out: a mark's look is the app's `class` / `style`.
 
 A diagnostic is LSP's `Diagnostic` with names for its enums: `codeDescription` and `relatedInformation` are data the
 hover hands back (related ranges as the app gave them, as they may be in other documents), and `tags` style its text.

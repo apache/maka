@@ -19,7 +19,7 @@
 
 use super::*;
 pub(super) use crate::projection::v2::Projection;
-use agent_client_protocol::schema::v2 as acp;
+use agent_client_protocol::v2::schema as acp;
 
 impl Driver<'_> {
     pub(super) async fn connect_v2(
@@ -149,7 +149,14 @@ impl Driver<'_> {
         }
         if !self.context.cancellation.is_cancelled() {
             projection
-                .finish(self.context.output.as_ref(), result.is_ok())
+                .finish(
+                    self.context.output.as_ref(),
+                    result.is_ok()
+                        && matches!(
+                            projection.stop_reason.as_ref(),
+                            None | Some(acp::StopReason::EndTurn)
+                        ),
+                )
                 .await?;
         }
         result?;
@@ -163,7 +170,7 @@ impl Driver<'_> {
             .await?;
         Ok(match projection.stop_reason.as_ref() {
             None | Some(acp::StopReason::EndTurn) => executor::Outcome::Completed {
-                text: projection.text(),
+                message_id: projection.last_body_message_id(),
             },
             Some(acp::StopReason::Cancelled) => executor::Outcome::Cancelled {
                 reason: Some("agent cancelled the prompt".into()),

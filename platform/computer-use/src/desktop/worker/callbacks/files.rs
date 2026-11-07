@@ -315,7 +315,7 @@ impl ParentCallbacks {
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let scope = checked_scope(&state, &token, request.cleanup())?;
-            let result = if scope.sealed && !request.cleanup() {
+            let result = if scope.phase != ParentScopePhase::Accepting && !request.cleanup() {
                 Err(failed("File service scope is sealed"))
             } else {
                 Ok((

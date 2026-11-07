@@ -74,7 +74,7 @@ export function PendingMessage(props: {
             onPress={inputAction(session.retrySend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
             style={controlStyle}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
@@ -86,7 +86,7 @@ export function PendingMessage(props: {
             onPress={inputAction(session.checkSend, props.message.id)}
             disabled={!session.connected() || props.message.busy}
             style={controlStyle}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Check status')}</Text>
@@ -104,7 +104,7 @@ export function PendingMessage(props: {
               justifyContent: 'center',
               borderRadius: 16,
             }}
-            hoverStyle={{ backgroundColor: C.raised }}
+            hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.muted} />

@@ -2105,6 +2105,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cached_separators_keep_their_cell_owner() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.with_raw(|raw| {
+            // SAFETY: the host owns the live context for this closure.
+            let cx = unsafe { rquickjs::Ctx::from_raw(std::ptr::NonNull::new_unchecked(raw)) };
+            crate::reactive::install_globals(&cx);
+        });
+        host.eval_source(
+            r#"
+            import { List, signal, cleanup, effect } from "nsh";
+            import { text } from "nsh:rt";
+            const items = signal(["a", "b", "c", "d"].map(id => ({ id })));
+            const color = signal("red");
+            const state = globalThis.separators = { made: 0, cleaned: 0, colors: [], items, color };
+            state.dispose = __nsh_reactive.createRoot(dispose => {
+                List({
+                    get each() { return items(); },
+                    keyExtractor: item => item.id,
+                    children: item => text(item().id),
+                    separator: () => {
+                        const id = state.made++;
+                        cleanup(() => state.cleaned++);
+                        effect(() => { state.colors[id] = color(); });
+                        return text("-");
+                    },
+                });
+                return dispose;
+            });
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let list = ops
+            .iter()
+            .find_map(|op| match op {
+                nsh_core::Op::Create {
+                    id,
+                    tag: nsh_core::Tag::List,
+                } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        host.bind_list(list, &[(0, 0), (1, 1), (2, 2), (3, 3)]);
+        let check = |source| {
+            assert!(
+                host.eval_script("separator-lifetime", source).unwrap(),
+                "{source}"
+            )
+        };
+        check("separators.made === 3 && separators.cleaned === 0");
+        check(
+            "separators.items.set(separators.items().map(item => ({...item}))); separators.cleaned === 0",
+        );
+        check("separators.color.set('blue'); separators.colors.join() === 'blue,blue,blue'");
+        // Reordering and reusing a cell for the last row only hide its cached separator.
+        check("separators.items.set([...separators.items()].reverse()); separators.cleaned === 0");
+        host.bind_list(list, &[(0, 3), (1, 2), (2, 1), (3, 0)]);
+        check("separators.made === 4 && separators.cleaned === 0");
+        check("separators.items.set(separators.items().slice(0, 1)); separators.cleaned === 0");
+        check(
+            "separators.color.set('green'); separators.colors.join() === 'green,green,green,green'",
+        );
+        check(
+            "separators.items.set(['a', 'b', 'c', 'd'].map(id => ({id}))); separators.made === 4",
+        );
+        host.bind_list(list, &[(0, 0), (1, 1), (2, 2), (3, 3)]);
+        check("separators.made === 4 && separators.cleaned === 0");
+        check("separators.dispose(); separators.cleaned === 4");
+        check("separators.dispose(); separators.cleaned === 4");
+        check(
+            "separators.color.set('black'); separators.colors.join() === 'green,green,green,green'",
+        );
+    }
+
     /// A list's slots are its own: it makes each once and never passes
     /// them to its scroll view (as compiled JSX passes them: getters that
     /// make the slot's elements each time they are read).

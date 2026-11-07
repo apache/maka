@@ -68,17 +68,18 @@ use windows::{
                 DWRITE_TEXT_ALIGNMENT_JUSTIFIED, DWRITE_TEXT_ALIGNMENT_LEADING,
                 DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
                 DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                DWRITE_TRIMMING_GRANULARITY_NONE, DWRITE_UNDERLINE, DWRITE_WORD_WRAPPING_NO_WRAP,
-                DWRITE_WORD_WRAPPING_WRAP, IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection,
-                IDWriteFontCollection1, IDWriteFontFace, IDWriteFontFace2, IDWriteFontFile,
+                DWRITE_TRIMMING_GRANULARITY_NONE, DWRITE_UNDERLINE, DWRITE_UNICODE_RANGE,
+                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, IDWriteFactory2,
+                IDWriteFactory5, IDWriteFontCollection, IDWriteFontCollection1, IDWriteFontFace,
+                IDWriteFontFace2, IDWriteFontFallback, IDWriteFontFile,
                 IDWriteInMemoryFontFileLoader, IDWriteInlineObject, IDWriteInlineObject_Impl,
-                IDWritePixelSnapping_Impl, IDWriteTextFormat, IDWriteTextLayout,
-                IDWriteTextLayout1, IDWriteTextRenderer, IDWriteTextRenderer_Impl,
-                IDWriteTypography,
+                IDWritePixelSnapping_Impl, IDWriteTextFormat, IDWriteTextFormat1,
+                IDWriteTextLayout, IDWriteTextLayout1, IDWriteTextRenderer,
+                IDWriteTextRenderer_Impl, IDWriteTypography,
             },
         },
     },
-    core::{BOOL, HSTRING, IUnknown, Interface, Ref, implement},
+    core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, Ref, implement},
 };
 use windows_core::ComObjectInterface;
 use windows_numerics::Vector2;
@@ -250,17 +251,15 @@ pub(crate) fn ui_family() -> Arc<str> {
 /// list (DirectWrite takes one family: the first installed one is used).
 fn family_names(name: &str, ui: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for family in name.split(',') {
-        let family = family.trim().trim_matches(|c| c == '"' || c == '\'');
+    use nsh_core::FamilyName;
+    for family in nsh_core::font_families(name) {
         let family = match family {
-            "" => continue,
-            "system-ui" | "-apple-system" | "BlinkMacSystemFont" | "ui-sans-serif"
-            | "ui-rounded" | "sans-serif" => ui,
-            "ui-monospace" | "monospace" => "Consolas",
-            "ui-serif" | "serif" => "Times New Roman",
-            "cursive" => "Comic Sans MS",
-            "fantasy" => "Impact",
-            f => f,
+            FamilyName::Monospace => "Consolas",
+            FamilyName::Serif => "Times New Roman",
+            FamilyName::Named("cursive") => "Comic Sans MS",
+            FamilyName::Named("fantasy") => "Impact",
+            FamilyName::Named(f) => f,
+            _ => ui,
         };
         out.push(family.to_owned());
     }
@@ -354,6 +353,10 @@ struct Face {
     custom: bool,
     /// Its primary font's metrics.
     metrics: Metrics,
+    /// The other families of its `fontFamily` list the system has, which
+    /// characters the first lacks are taken from before the system's
+    /// fallback (`None`: the system's alone).
+    fallback: Option<IDWriteFontFallback>,
 }
 
 /// Metrics of a font a run is set in.
@@ -980,6 +983,7 @@ impl DWriteTextEngine {
                     name: name.into(),
                     custom: true,
                     metrics,
+                    fallback: None,
                 });
             }
             let metrics = find_font(self.system.as_ref()?, name, weight, italic)?;
@@ -987,9 +991,10 @@ impl DWriteTextEngine {
                 name: name.into(),
                 custom: false,
                 metrics,
+                fallback: None,
             })
         };
-        let face = names
+        let mut face = names
             .iter()
             .find_map(|n| find(n))
             .or_else(|| names.iter().find_map(|n| alias(n).and_then(find)))
@@ -1005,11 +1010,62 @@ impl DWriteTextEngine {
                     name: names[0].as_str().into(),
                     custom: false,
                     metrics,
+                    fallback: None,
                 }
             });
+        // The list's other families the system has, in order.
+        let mut others: Vec<(HSTRING, bool)> = Vec::new();
+        for found in names
+            .iter()
+            .filter_map(|n| find(n).or_else(|| alias(n).and_then(find)))
+        {
+            if found.name != face.name && !others.iter().any(|(n, _)| *n == found.name) {
+                others.push((found.name, found.custom));
+            }
+        }
+        face.fallback = self.fallback(&others, custom.as_ref());
         let face = Rc::new(face);
         self.faces.borrow_mut().insert(key, face.clone());
         face
+    }
+
+    /// A fallback that takes a character from the first of `families` (a
+    /// name, and whether it is registered) that has it, then from the
+    /// system's fallback; `None` without families.
+    fn fallback(
+        &self,
+        families: &[(HSTRING, bool)],
+        custom: Option<&IDWriteFontCollection>,
+    ) -> Option<IDWriteFontFallback> {
+        if families.is_empty() {
+            return None;
+        }
+        let everything = [DWRITE_UNICODE_RANGE {
+            first: 0,
+            last: 0x10_FFFF,
+        }];
+        // SAFETY: COM calls on live objects; the names outlive the calls.
+        unsafe {
+            let builder = self.factory.CreateFontFallbackBuilder().ok()?;
+            for (name, registered) in families {
+                let names = [name.as_ptr()];
+                let collection = if *registered { custom } else { None };
+                builder
+                    .AddMapping(
+                        &everything,
+                        &names,
+                        collection,
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        1.0,
+                    )
+                    .ok()?;
+            }
+            if let Ok(system) = self.factory.GetSystemFontFallback() {
+                let _ = builder.AddMappings(&system);
+            }
+            builder.CreateFontFallback().ok()
+        }
     }
 
     fn typography(&self, variant: nsh_core::FontVariant) -> Option<IDWriteTypography> {
@@ -1057,6 +1113,11 @@ impl DWriteTextEngine {
                     &HSTRING::new(),
                 )
                 .ok()?;
+            if let Some(fallback) = &face.fallback
+                && let Ok(format1) = format.cast::<IDWriteTextFormat1>()
+            {
+                let _ = format1.SetFontFallback(fallback);
+            }
             let (left, right) = if rtl {
                 (
                     DWRITE_TEXT_ALIGNMENT_TRAILING,
@@ -3238,6 +3299,10 @@ mod tests {
             ["Fira Code", "Consolas", "Consolas"]
         );
         assert_eq!(family_names(" , ", "X"), ["X"]);
+        assert_eq!(
+            family_names("'ACME, Inc', \"serif\"", "X"),
+            ["ACME, Inc", "serif"]
+        );
         assert_eq!(alias("Menlo"), Some("Consolas"));
     }
 
@@ -3612,6 +3677,31 @@ mod tests {
         assert!(x(&hebrew) < 1.0);
     }
 
+    /// A `fontFamily` list sets text in its first family the system has,
+    /// the others it has its fallback. (Registered families take part too:
+    /// `registered_fonts_lay_out`, as registering is process-wide.)
+    #[test]
+    fn a_family_list_falls_back_to_its_other_families() {
+        let engine = engine();
+        let style = |family: &str| ResolvedTextStyle {
+            font_family: Some(nsh_core::FontFamily::new(family)),
+            font_size: px(20.0),
+            ..Default::default()
+        };
+        let face = engine.face(&style("No Such Family, Consolas, Segoe UI"));
+        assert_eq!(face.name.to_string(), "Consolas");
+        assert!(!face.custom);
+        assert!(face.fallback.is_some());
+        assert!(engine.face(&style("Consolas")).fallback.is_none());
+        // Laid out with the fallback.
+        let t = text(&[(
+            "Consolas → 中文",
+            style("Consolas, Segoe UI, Microsoft YaHei"),
+        )]);
+        let size = engine.measure(&engine.prepare(&t), None);
+        assert!(size.width.0 > 0.0);
+    }
+
     #[test]
     fn registered_fonts_lay_out() {
         let engine = engine();
@@ -3631,6 +3721,17 @@ mod tests {
         assert!(engine.face(&style).custom);
         // Pacifico is tall: its lines are more than 1.5 ems.
         assert!(after.height > px(30.0), "{after:?}");
+        // A registered family in a list, with installed ones as its fallback.
+        let listed = ResolvedTextStyle {
+            font_family: Some(nsh_core::FontFamily::new(
+                "No Such Family, Pacifico, Consolas",
+            )),
+            ..style
+        };
+        let face = engine.face(&listed);
+        assert_eq!(face.name.to_string(), "Pacifico");
+        assert!(face.custom);
+        assert!(face.fallback.is_some());
     }
 
     #[test]

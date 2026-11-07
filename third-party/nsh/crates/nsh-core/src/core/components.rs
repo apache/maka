@@ -474,6 +474,15 @@ struct PendingFetch {
     answer: AnswerSlot<Result<crate::element::HttpResponse, String>>,
 }
 
+/// The speech recognition session running ([`crate::speech`]).
+struct SpeechSession {
+    id: u32,
+    /// Where its events go, to the app.
+    sink: crate::speech::SpeechSink,
+    /// The embedding app's recognizer's session; `None`: the platform's.
+    control: Option<Box<dyn crate::speech::SpeechControl>>,
+}
+
 /// The core's component state.
 pub(super) struct Components {
     registry: Registry,
@@ -513,9 +522,11 @@ pub(super) struct Components {
     /// While a view's slot content is matched: the nested component's host
     /// and the slot (its regions are the slot's).
     pub(super) filling: Option<(NodeId, &'static str)>,
-    /// A node moved in the tree since the order watches last looked
-    /// (`core/watch.rs`): an app's keyed reorder of their elements.
-    pub(super) moved: bool,
+    /// The parents nodes moved out of and into since the order watches
+    /// last looked (`core/watch.rs`), as an app's keyed reorder moves its
+    /// rows: only a watch whose elements share one of them (or an ancestor
+    /// of one) looks again.
+    pub(super) moved: Vec<NodeId>,
     /// The lists components place (the glue's, of `Items` props) -> the
     /// row function the component's view gave last, and the number of rows
     /// its wrappers last saw.
@@ -545,6 +556,8 @@ pub(super) struct Components {
         ),
     >,
     next_pick: u32,
+    /// The speech recognition session running, if any.
+    speech: Option<SpeechSession>,
     /// Calls of the embedding app's functions (`nsh/host`), by request id:
     /// their answers.
     host_calls: FxHashMap<u64, AnswerSlot<Result<crate::JsonValue, crate::element::JsError>>>,
@@ -644,7 +657,7 @@ impl Default for Components {
             styles: FxHashMap::default(),
             merges: FxHashMap::default(),
             filling: None,
-            moved: false,
+            moved: Vec::new(),
             lists: FxHashMap::default(),
             environment: Environment::default(),
             executor: Rc::new(Executor::default()),
@@ -664,6 +677,7 @@ impl Default for Components {
             next_clipboard_read: 1,
             picks: FxHashMap::default(),
             next_pick: 1,
+            speech: None,
             host_calls: FxHashMap::default(),
             next_host_call: 1,
             fetches: FxHashMap::default(),
@@ -794,6 +808,19 @@ impl<M: TextEngine> Core<M> {
         self.components.registry = registry;
     }
 
+    /// Replaces the components of a running core with `registry`, a
+    /// superset of what it had (a UI set registered after the app started:
+    /// a web runtime's late `nsh_part_*`). What is mounted from then on may
+    /// use the new components; the tokens stay the app's, and only the
+    /// setup functions the old sets did not bring run.
+    pub fn extend_components(&mut self, registry: Registry) {
+        {
+            let _entered = self.components.runtime.enter();
+            registry.run_setups_not_in(&self.components.registry);
+        }
+        self.components.registry = registry;
+    }
+
     /// `uiTheme` on the root: the app's theme file (`nsh.json`), which the
     /// UI set that reads themes makes tokens of.
     pub(super) fn set_ui_theme(&mut self, json: &str) {
@@ -853,7 +880,8 @@ impl<M: TextEngine> Core<M> {
                 .runtime
                 .set_tokens(self.components.tokens.clone());
         }
-        // The platform's own controls (menus) take their colors from them.
+        // The platform's own controls (menus, Android's alerts) take their
+        // colors from them.
         self.commands.push((
             crate::ROOT_ID,
             Command::Tokens(self.components.tokens.clone()),
@@ -930,6 +958,8 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn apply_environment(&mut self, environment: Environment) {
         let _entered = self.components.runtime.enter();
         let changed = self.components.environment != environment;
+        self.keyboard_moved |=
+            self.components.environment.keyboard_height != environment.keyboard_height;
         let ratio = self.components.environment.pixel_ratio;
         self.components.environment = environment;
         if ratio != environment.pixel_ratio {
@@ -1013,6 +1043,33 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// Runs the closures that waited for the app's answer to the events
+    /// handed to JS before this commit ([`crate::element::after_answer`]),
+    /// each under its owner; one whose owner went is dropped unrun.
+    pub(super) fn run_answers(&mut self) {
+        let _entered = self.components.runtime.enter();
+        for answer in self.components.executor.take_due_answers() {
+            let crate::element::AfterAnswer { owner, f } = answer;
+            let result = if owner == crate::element::Owner::detached() {
+                caught(f)
+            } else if owner.is_live() {
+                caught(|| owner.scope(f))
+            } else {
+                drop_caught(f);
+                continue;
+            };
+            if let Err(message) = result {
+                match self.host_of_owner(owner) {
+                    Some(host) => self.component_failed(host, message),
+                    None => {
+                        log::error!(target: "js", "a closure after the app's answer failed: {message}")
+                    }
+                }
+            }
+            self.apply_actions();
+        }
+    }
+
     /// Whether `id` is a component's host.
     pub(super) fn is_host(&self, id: NodeId) -> bool {
         self.components.instances.contains_key(&id)
@@ -1023,9 +1080,12 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn intercept(&mut self, op: Op) -> Result<Option<Op>, ApplyError> {
         // The app's elements that take a slot's props: their props combine
         // with the component's ([`super::slots`]).
+        // A component's host among them takes them from its view: JS's
+        // ops on it are its component's.
         if !self.components.adopted.is_empty()
             && let Op::SetProp { id, .. } | Op::Listen { id, .. } | Op::Release { id } = &op
             && self.components.adopted.contains_key(id)
+            && !self.is_host(*id)
         {
             return Ok(self.js_slot_op(op));
         }
@@ -1323,10 +1383,11 @@ impl<M: TextEngine> Core<M> {
                     .root
                     .as_ref()
                     .is_some_and(|r| r.events.contains(event));
+                let slot = self.target_listens(base, event, enabled || own);
                 Ok(Some(Op::Listen {
                     id,
                     event,
-                    enabled: enabled || own,
+                    enabled: enabled || own || slot,
                 }))
             }
             Op::Rust(op) => {
@@ -2211,7 +2272,9 @@ impl<M: TextEngine> Core<M> {
         let mut old_over = old_attrs.clone();
         (old_over.inset_padding, old_over.inset_margin) = inst.root_insets_applied;
         let old_over = with_test_id(old_over, &inst.root_test_id_applied);
-        self.apply_attrs_over(host, &attrs, &old_over, app);
+        if !self.apply_target_attrs(host, &attrs, &old_over, app) {
+            self.apply_attrs_over(host, &attrs, &old_over, app);
+        }
         inst.root_insets_applied = (attrs.inset_padding, attrs.inset_margin);
         inst.root_test_id_applied = test_id_of(&attrs);
         // Given an inline style or animated values while its own did not
@@ -3934,7 +3997,7 @@ impl<M: TextEngine> Core<M> {
                 children,
             };
         }
-        if !self.apply_target_attrs(id, &el.attrs, &old_attrs) {
+        if !self.apply_target_attrs(id, &el.attrs, &old_attrs, None) {
             self.apply_attrs(id, &el.attrs, &old_attrs);
         }
         let classes = self.apply_el_styles(
@@ -4482,6 +4545,8 @@ impl<M: TextEngine> Core<M> {
         let Some(mut inst) = self.components.instances.remove(&host) else {
             return;
         };
+        // The app's element in a slot: the holder takes the slot's props.
+        self.target_released(host);
         if self
             .components
             .parked_methods
@@ -4629,8 +4694,12 @@ impl<M: TextEngine> Core<M> {
             return true;
         }
         if self.is_host(id) {
-            // The component whose view makes the host's node handles them.
+            // The component whose view makes the host's node handles them,
+            // after the one whose slot's props it takes.
             let base = self.base_of(id);
+            if let Some(slot) = self.adopted_host(base) {
+                self.handle(slot, base, kind, payload);
+            }
             return self.handle(base, base, kind, payload);
         }
         // A component's own list reports its viewable rows as they settle.
@@ -4797,6 +4866,101 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// What a component or a task asked of the platform.
+    /// Applies a speech recognition session's request: through the
+    /// embedding app's recognizer when it gave one, else as commands on the
+    /// root the platform answers with [`EventKind::Speech`].
+    fn speech_action(&mut self, action: crate::element::SpeechAction) {
+        use crate::{
+            element::SpeechAction,
+            speech::{SpeechCommand, SpeechError},
+        };
+        match action {
+            SpeechAction::Available(answer) => {
+                let available = match &self.speech {
+                    Some(backend) => backend.available(),
+                    None => self.components.environment.speech,
+                };
+                answer.borrow_mut().deliver(available);
+            }
+            SpeechAction::Start { id, request, sink } => {
+                // One session at a time: the microphone is one.
+                if let Some(running) = self.components.speech.as_ref().map(|s| s.id) {
+                    self.speech_action(SpeechAction::Abort(running));
+                }
+                if !self.access.allows_speech() {
+                    sink.end(Some(SpeechError::NotAllowed));
+                    self.deny(
+                        "speech recognition is not granted: add `\"speech\": true` to \
+                         capabilities in nsh.json"
+                            .into(),
+                    );
+                    return;
+                }
+                if let Some(backend) = self.speech.clone() {
+                    let control = backend.start(request, sink.clone());
+                    self.components.speech = Some(SpeechSession {
+                        id,
+                        sink,
+                        control: Some(control),
+                    });
+                    return;
+                }
+                if !self.components.environment.speech {
+                    sink.end(Some(SpeechError::Unavailable));
+                    return;
+                }
+                self.components.speech = Some(SpeechSession {
+                    id,
+                    sink,
+                    control: None,
+                });
+                let _ = self.apply_op(Op::Command {
+                    id: crate::ROOT_ID,
+                    command: Command::Speech(SpeechCommand::Start { id, request }),
+                });
+            }
+            SpeechAction::Stop(id) => {
+                let Some(session) = self.components.speech.as_mut().filter(|s| s.id == id) else {
+                    return;
+                };
+                if session.sink.is_ended() {
+                    return;
+                }
+                match &mut session.control {
+                    Some(control) => control.stop(),
+                    None => {
+                        let _ = self.apply_op(Op::Command {
+                            id: crate::ROOT_ID,
+                            command: Command::Speech(SpeechCommand::Stop { id }),
+                        });
+                    }
+                }
+            }
+            SpeechAction::Abort(id) => {
+                if self.components.speech.as_ref().is_none_or(|s| s.id != id) {
+                    return;
+                }
+                let Some(mut session) = self.components.speech.take() else {
+                    return;
+                };
+                // Ended for the app now; what the recognizer reports
+                // after this is dropped.
+                if !session.sink.end(None) {
+                    return;
+                }
+                match &mut session.control {
+                    Some(control) => control.abort(),
+                    None => {
+                        let _ = self.apply_op(Op::Command {
+                            id: crate::ROOT_ID,
+                            command: Command::Speech(SpeechCommand::Abort { id }),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_action(&mut self, action: Action) {
         match action {
             Action::Command(id, command) => {
@@ -4956,6 +5120,12 @@ impl<M: TextEngine> Core<M> {
                 self.components.next_url_open = id.wrapping_add(1);
                 self.components.url_opens.insert(id, answer);
                 self.components.url_requests.push((id, url));
+            }
+            Action::Speech(action) => self.speech_action(action),
+            Action::WebInputAvailable(answer) => {
+                let available =
+                    self.components.environment.web_input && self.access.allows_web_input();
+                answer.borrow_mut().deliver(available);
             }
             Action::PickScreenColor(answer) => {
                 if !self.components.environment.screen_color {
@@ -5275,6 +5445,26 @@ impl<M: TextEngine> Core<M> {
                 self.answer_image_info(request as u32, size);
                 true
             }
+            EventKind::Speech if id == crate::ROOT_ID => {
+                let EventPayload::Speech { id: session, event } = payload else {
+                    return false;
+                };
+                let running = self
+                    .components
+                    .speech
+                    .as_ref()
+                    .is_some_and(|s| s.id == *session);
+                if running {
+                    let ended = matches!(event, crate::speech::SpeechEvent::End { .. });
+                    if let Some(s) = &self.components.speech {
+                        s.sink.send(event.clone());
+                    }
+                    if ended {
+                        self.components.speech = None;
+                    }
+                }
+                true
+            }
             EventKind::Pick if id == crate::ROOT_ID => {
                 let EventPayload::Picked { id: request, files } = payload else {
                     return false;
@@ -5519,12 +5709,34 @@ impl<M: TextEngine> Core<M> {
     /// The nodes whose padding or margin uses `env()` follow the
     /// environment: restyled where what their terms come to changed (a
     /// safe area, a page's insets, the keyboard, a move to another root
-    /// view). A change of the keyboard's height animates with the
-    /// keyboard, natively. Nothing to do without such nodes.
+    /// view). What a change of the keyboard's height moves (those terms,
+    /// or the styles an app derives from `keyboardFrame()` in the same
+    /// commit) animates with the keyboard, natively, unless the app
+    /// configured this commit's animation itself.
     pub(super) fn sync_env(&mut self) {
-        if self.env_styled.is_empty() {
-            return;
+        let mut keyboard_moved = std::mem::take(&mut self.keyboard_moved);
+        if !self.env_styled.is_empty() {
+            keyboard_moved |= self.restyle_env();
         }
+        let duration = self.components.environment.keyboard_duration;
+        if keyboard_moved && duration > 0.0 && self.layout_animation.is_none() {
+            use crate::props::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
+            self.layout_animation = Some(LayoutAnimation {
+                create: None,
+                update: Some(LayoutTransition {
+                    curve: LayoutCurve::Keyboard,
+                    property: LayoutProperty::Opacity,
+                    duration_ms: duration,
+                    delay_ms: 0.0,
+                }),
+                delete: None,
+            });
+        }
+    }
+
+    /// Restyles the nodes whose `env()` terms came to something else;
+    /// whether the keyboard moved one of them.
+    fn restyle_env(&mut self) -> bool {
         let mut ids = std::mem::take(&mut self.env_scratch);
         ids.extend(self.env_styled.iter().copied());
         let mut keyboard_moved = false;
@@ -5559,20 +5771,7 @@ impl<M: TextEngine> Core<M> {
         }
         ids.clear();
         self.env_scratch = ids;
-        let duration = self.components.environment.keyboard_duration;
-        if keyboard_moved && duration > 0.0 && self.layout_animation.is_none() {
-            use crate::props::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
-            self.layout_animation = Some(LayoutAnimation {
-                create: None,
-                update: Some(LayoutTransition {
-                    curve: LayoutCurve::Keyboard,
-                    property: LayoutProperty::Opacity,
-                    duration_ms: duration,
-                    delay_ms: 0.0,
-                }),
-                delete: None,
-            });
-        }
+        keyboard_moved
     }
 
     /// Applies what handlers, handles (element refs, animated values) and

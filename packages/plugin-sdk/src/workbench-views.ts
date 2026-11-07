@@ -100,6 +100,12 @@ export interface SettingsViewInput {
 
 export const settingsViewContract = defineUiViewContract<SettingsViewInput>('maka.settings');
 
+export interface SettingsPageAction {
+  label: string;
+  run(): void;
+  disabled?: boolean;
+}
+
 export interface SettingsPageNavigation {
   title(): string;
   nested(): boolean;
@@ -107,6 +113,8 @@ export interface SettingsPageNavigation {
   backLabel?(): string;
   back(): boolean;
   busy?(): boolean;
+  /** The page's one command, drawn beside its title. */
+  action?(): SettingsPageAction | null;
 }
 
 export interface SettingsPageInput {

@@ -249,6 +249,8 @@ final class Effects {
             case 14: type = PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW; break;
             case 15: type = PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW; break;
             case 16: type = PointerIcon.TYPE_NULL; break;
+            case 17: type = PointerIcon.TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW; break;
+            case 18: type = PointerIcon.TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW; break;
             default: type = PointerIcon.TYPE_ARROW;
         }
         v.setPointerIcon(PointerIcon.getSystemIcon(v.getContext(), type));

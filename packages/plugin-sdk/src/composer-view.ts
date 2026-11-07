@@ -44,6 +44,7 @@ import type { UiSubscription } from './workbench.js';
 
 export interface ComposerFocusHandle {
   focus(): void;
+  bindKey(key: string, action: () => void, options?: { fallback?: boolean }): () => void;
 }
 
 export interface ComposerCommand {
@@ -194,15 +195,17 @@ export interface ComposerPrediction {
 }
 
 export interface ComposerChecklistSource {
-  read(offset: number): Promise<AgentChecklist>;
+  read(offset: number, limit?: number): Promise<AgentChecklist>;
   watch(offset: number): Promise<UiSubscription<AgentChecklist>>;
 }
 
 export interface ComposerCompletionSource {
-  files(
-    query: string,
-    directory: WorkspacePath | null,
-  ): Promise<UiSubscription<AgentFileCandidates>>;
+  files:
+    | ((
+        query: string,
+        directory: WorkspacePath | null,
+      ) => Promise<UiSubscription<AgentFileCandidates>>)
+    | null;
   skills(input: {
     query: string;
     backend: AgentBackendPreference;
@@ -258,8 +261,11 @@ export interface ComposerViewInput<Element = unknown> {
   session(): ComposerSession<Element> | null;
   pending?(): {
     readonly id: string;
+    readonly completion: ComposerCompletionSource;
     draft(): string;
     workspace(): string;
+    backend(): ComposerBackend;
+    modelDetails(): ComposerModelDetails;
     permissions: PendingComposerPermissions;
     changeDraft(text: string): void;
     confirmation(): string;

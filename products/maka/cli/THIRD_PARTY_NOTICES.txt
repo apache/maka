@@ -831,6 +831,7 @@ profiling@1.0.18 (MIT OR Apache-2.0); authors declared by package: Philip Degarm
 rayon-core@1.13.0 (MIT OR Apache-2.0)
 rayon@1.12.0 (MIT OR Apache-2.0)
 regex-automata@0.4.18 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
+regex-lite@0.1.9 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 regex-syntax@0.8.11 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 regex@1.13.1 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 relative-path@2.0.3 (MIT OR Apache-2.0); authors declared by package: John-John Tedro <udoprog@tedro.se>
@@ -1085,6 +1086,7 @@ https://crates.io/api/v1/crates/postcard/1.1.3/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/rayon-core/1.13.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/rayon/1.12.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/regex-automata/0.4.18/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/regex-lite/0.1.9/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/regex-syntax/0.8.11/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/regex/1.13.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/relative-path/2.0.3/download :: LICENSE-APACHE
@@ -2129,13 +2131,12 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-agent-client-protocol-derive@3.5.0 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
-agent-client-protocol-schema@1.12.0 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
-agent-client-protocol@3.5.0 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
+agent-client-protocol-derive@5.0.0 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
+agent-client-protocol-schema@1.15.1 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
+agent-client-protocol@5.0.0 (Apache-2.0); authors declared by package: Zed <hi@zed.dev>
 
-https://crates.io/api/v1/crates/agent-client-protocol-derive/3.5.0/download :: LICENSE
-https://crates.io/api/v1/crates/agent-client-protocol/3.5.0/download :: LICENSE
-https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/e2d83349bc9e28a4059ea3acefa1c91c966f74e2/LICENSE
+https://raw.githubusercontent.com/agentclientprotocol/agent-client-protocol/0fc18323a9fdad4e5b4a20ec2f1645dde843fd9b/LICENSE
+https://raw.githubusercontent.com/agentclientprotocol/rust-sdk/1b1399ab4a281ea6fccbdc3722a64fe35c816399/LICENSE
 
 Apache License
                            Version 2.0, January 2004
@@ -2767,6 +2768,7 @@ alloc-no-stdlib@3.0.0 (BSD-3-Clause); authors declared by package: Daniel Reiter
 alloc-stdlib@0.2.4 (BSD-3-Clause); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>
 alloc-stdlib@0.3.0 (BSD-3-Clause); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>
 brotli-decompressor@4.0.3 (BSD-3-Clause/MIT); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors
+brotli-decompressor@5.0.3 (BSD-3-Clause/MIT); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors
 brotli-decompressor@6.0.1 (BSD-3-Clause/MIT); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors
 brotli@6.0.0 (BSD-3-Clause OR MIT); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors
 brotli@9.0.0 (BSD-3-Clause AND MIT); authors declared by package: Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors
@@ -2774,6 +2776,7 @@ brotli@9.0.0 (BSD-3-Clause AND MIT); authors declared by package: Daniel Reiter 
 https://crates.io/api/v1/crates/alloc-no-stdlib/2.0.4/download :: LICENSE
 https://crates.io/api/v1/crates/alloc-no-stdlib/3.0.0/download :: LICENSE
 https://crates.io/api/v1/crates/brotli-decompressor/4.0.3/download :: LICENSE
+https://crates.io/api/v1/crates/brotli-decompressor/5.0.3/download :: LICENSE
 https://crates.io/api/v1/crates/brotli-decompressor/6.0.1/download :: LICENSE
 https://crates.io/api/v1/crates/brotli/6.0.0/download :: LICENSE
 https://crates.io/api/v1/crates/brotli/9.0.0/download :: LICENSE.BSD-3-Clause
@@ -3450,7 +3453,7 @@ json-strip-comments@3.1.2 (Apache-2.0)
 khronos_api@3.1.0 (Apache-2.0); authors declared by package: Brendan Zabarauskas <bjzaba@yahoo.com.au>, Corey Richardson, Arseny Kapoulkine, Pierre Krieger <pierre.krieger1708@gmail.com>
 kurbo@0.13.1 (Apache-2.0 OR MIT)
 lru-slab@0.1.3 (MIT OR Apache-2.0 OR Zlib); authors declared by package: Benjamin Saunders <ben.e.saunders@gmail.com>
-nsh-js@0.3.0 (Apache-2.0)
+nsh-js@0.4.0 (Apache-2.0)
 ntapi@0.4.3 (Apache-2.0 OR MIT); authors declared by package: MSxDOS <melcodos@gmail.com>
 numtoa@0.2.4 (MIT OR Apache-2.0); authors declared by package: Michael Aaron Murphy <mmstickman@gmail.com>
 polycool@0.4.0 (MIT OR Apache-2.0)
@@ -6623,11 +6626,9 @@ SOFTWARE.
 
 bindgen@0.70.1 (BSD-3-Clause); authors declared by package: Jyun-Yan You <jyyou.tw@gmail.com>, Emilio Cobos Álvarez <emilio@crisal.io>, Nick Fitzgerald <fitzgen@gmail.com>, The Servo project developers
 bindgen@0.72.1 (BSD-3-Clause); authors declared by package: Jyun-Yan You <jyyou.tw@gmail.com>, Emilio Cobos Álvarez <emilio@crisal.io>, Nick Fitzgerald <fitzgen@gmail.com>, The Servo project developers
-bindgen@0.73.2 (BSD-3-Clause)
 
 https://crates.io/api/v1/crates/bindgen/0.70.1/download :: LICENSE
 https://crates.io/api/v1/crates/bindgen/0.72.1/download :: LICENSE
-https://crates.io/api/v1/crates/bindgen/0.73.2/download :: LICENSE
 
 BSD 3-Clause License
 
@@ -7015,6 +7016,7 @@ num-rational@0.4.2 (MIT OR Apache-2.0); authors declared by package: The Rust Pr
 num-traits@0.2.19 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers
 num@0.4.3 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers
 regex-automata@0.4.18 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
+regex-lite@0.1.9 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 regex-syntax@0.8.11 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 regex@1.13.1 (MIT OR Apache-2.0); authors declared by package: The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>
 relative-path@2.0.3 (MIT OR Apache-2.0); authors declared by package: John-John Tedro <udoprog@tedro.se>
@@ -7037,6 +7039,7 @@ https://crates.io/api/v1/crates/num-rational/0.4.2/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/num-traits/0.2.19/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/num/0.4.3/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/regex-automata/0.4.18/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/regex-lite/0.1.9/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/regex-syntax/0.8.11/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/regex/1.13.1/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/relative-path/2.0.3/download :: LICENSE-MIT
@@ -17312,11 +17315,13 @@ SOFTWARE.
 
 ================================================================================
 
+fancy-regex@0.14.0 (MIT); authors declared by package: Raph Levien <raph@google.com>, Robin Stocker <robin@nibor.org>
 fancy-regex@0.16.2 (MIT); authors declared by package: Raph Levien <raph@google.com>, Robin Stocker <robin@nibor.org>, Keith Hall <keith.hall@available.systems>
 fancy-regex@0.17.0 (MIT); authors declared by package: Raph Levien <raph@google.com>, Robin Stocker <robin@nibor.org>, Keith Hall <keith.hall@available.systems>
 fancy-regex@0.18.0 (MIT); authors declared by package: Raph Levien <raph@google.com>, Robin Stocker <robin@nibor.org>, Keith Hall <keith.hall@available.systems>
 fancy-regex@0.19.2 (MIT); authors declared by package: Raph Levien <raph@google.com>, Robin Stocker <robin@nibor.org>, Keith Hall <keith.hall@available.systems>
 
+https://crates.io/api/v1/crates/fancy-regex/0.14.0/download :: LICENSE
 https://crates.io/api/v1/crates/fancy-regex/0.16.2/download :: LICENSE
 https://crates.io/api/v1/crates/fancy-regex/0.17.0/download :: LICENSE
 https://crates.io/api/v1/crates/fancy-regex/0.18.0/download :: LICENSE
@@ -27411,17 +27416,17 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ================================================================================
 
-nsh-base@0.3.0 (Apache-2.0)
-nsh-bundler@0.3.0 (Apache-2.0)
-nsh-core@0.3.0 (Apache-2.0)
-nsh-engine@0.3.0 (Apache-2.0)
-nsh-gpui-terminal@0.3.0 (Apache-2.0)
-nsh-macros@0.3.0 (Apache-2.0)
-nsh-package@0.3.0 (Apache-2.0)
-nsh-platform-gpui@0.3.0 (Apache-2.0)
-nsh-platform-macos@0.3.0 (Apache-2.0)
-nsh-platform-tui@0.3.0 (Apache-2.0)
-nsh-platform-windows@0.3.0 (Apache-2.0)
+nsh-base@0.4.0 (Apache-2.0)
+nsh-bundler@0.4.0 (Apache-2.0)
+nsh-core@0.4.0 (Apache-2.0)
+nsh-engine@0.4.0 (Apache-2.0)
+nsh-gpui-terminal@0.4.0 (Apache-2.0)
+nsh-macros@0.4.0 (Apache-2.0)
+nsh-package@0.4.0 (Apache-2.0)
+nsh-platform-gpui@0.4.0 (Apache-2.0)
+nsh-platform-macos@0.4.0 (Apache-2.0)
+nsh-platform-tui@0.4.0 (Apache-2.0)
+nsh-platform-windows@0.4.0 (Apache-2.0)
 
 https://raw.githubusercontent.com/M4n5ter/nsh/de176695240d550f2b303643b8019146c7989e7f/LICENSE-APACHE
 
@@ -30289,6 +30294,7 @@ phf_codegen@0.13.1 (MIT); authors declared by package: Steven Fackler <sfackler@
 phf_generator@0.11.3 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
 phf_generator@0.13.1 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
 phf_generator@0.14.0 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
+phf_macros@0.11.3 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
 phf_macros@0.13.1 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
 phf_macros@0.14.0 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
 phf_shared@0.11.3 (MIT); authors declared by package: Steven Fackler <sfackler@gmail.com>
@@ -30305,6 +30311,7 @@ https://crates.io/api/v1/crates/phf_codegen/0.13.1/download :: LICENSE
 https://crates.io/api/v1/crates/phf_generator/0.11.3/download :: LICENSE
 https://crates.io/api/v1/crates/phf_generator/0.13.1/download :: LICENSE
 https://crates.io/api/v1/crates/phf_generator/0.14.0/download :: LICENSE
+https://crates.io/api/v1/crates/phf_macros/0.11.3/download :: LICENSE
 https://crates.io/api/v1/crates/phf_macros/0.13.1/download :: LICENSE
 https://crates.io/api/v1/crates/phf_macros/0.14.0/download :: LICENSE
 https://crates.io/api/v1/crates/phf_shared/0.11.3/download :: LICENSE
@@ -37430,6 +37437,143 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+================================================================================
+
+ratex-font@0.1.15 (MIT)
+ratex-layout@0.1.15 (MIT)
+ratex-lexer@0.1.15 (MIT)
+ratex-parser@0.1.15 (MIT)
+ratex-types@0.1.15 (MIT)
+
+https://raw.githubusercontent.com/erweixin/RaTeX/7d9f9a39218914bead8ffdf39b79028a01d12c22/LICENSE
+
+MIT License
+
+Copyright (c) erweixin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Third-party fonts bundled in this repository (KaTeX_* .ttf / .woff / .woff2)
+are not under the MIT License above. They are licensed under the SIL Open Font
+License, Version 1.1. See THIRD_PARTY_NOTICES.txt and the licenses/ directory.
+
+================================================================================
+
+ratex-font@0.1.15 (MIT)
+ratex-layout@0.1.15 (MIT)
+ratex-lexer@0.1.15 (MIT)
+ratex-parser@0.1.15 (MIT)
+ratex-types@0.1.15 (MIT)
+
+https://raw.githubusercontent.com/erweixin/RaTeX/7d9f9a39218914bead8ffdf39b79028a01d12c22/licenses/KaTeX-fonts-NOTICE.txt
+
+KaTeX Font Software — attribution and license notice
+========================================================
+
+This repository bundles the KaTeX mathematical fonts (files named KaTeX_* with
+extensions .ttf, .woff, or .woff2) for rendering. They are unmodified binaries
+from the KaTeX project: https://github.com/KaTeX/KaTeX
+
+These font files are NOT licensed under the MIT License in the repository root
+LICENSE file. They are licensed under the SIL Open Font License, Version 1.1.
+
+Locations in this repository (non-exhaustive; mirrors may exist per platform):
+
+  fonts/
+  platforms/web/fonts/
+  platforms/android/src/main/assets/fonts/
+  platforms/ios/Sources/Ratex/Fonts/
+  platforms/flutter/lib/fonts/
+  platforms/react-native/android/src/main/assets/fonts/
+
+Copyright and license notice (verbatim from font metadata; each face uses the
+same copyright holders and OFL reference, and names its own Reserved Font Name
+— e.g. KaTeX_Main, KaTeX_Math, KaTeX_AMS, KaTeX_Caligraphic — in the line below
+“Khan Academy”):
+
+  Copyright (c) 2009-2010, Design Science, Inc. (<www.mathjax.org>)
+  Copyright (c) 2014-2018 Khan Academy (<www.khanacademy.org>),
+  with Reserved Font Name KaTeX_Main.
+
+  This Font Software is licensed under the SIL Open Font License, Version 1.1.
+  This license available with a FAQ at:
+  http://scripts.sil.org/OFL
+
+Complete text of the SIL Open Font License, Version 1.1: see SIL-OFL-1.1.txt
+in this directory (reproduced from the SPDX license list).
+
+================================================================================
+
+ratex-font@0.1.15 (MIT)
+ratex-layout@0.1.15 (MIT)
+ratex-lexer@0.1.15 (MIT)
+ratex-parser@0.1.15 (MIT)
+ratex-types@0.1.15 (MIT)
+
+https://raw.githubusercontent.com/erweixin/RaTeX/7d9f9a39218914bead8ffdf39b79028a01d12c22/licenses/SIL-OFL-1.1.txt
+
+SIL OPEN FONT LICENSE
+
+Version 1.1 - 26 February 2007
+
+PREAMBLE
+
+The goals of the Open Font License (OFL) are to stimulate worldwide development of collaborative font projects, to support the font creation efforts of academic and linguistic communities, and to provide a free and open framework in which fonts may be shared and improved in partnership with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and redistributed freely as long as they are not sold by themselves. The fonts, including any derivative works, can be bundled, embedded, redistributed and/or sold with any software provided that any reserved names are not used by derivative works. The fonts and derivatives, however, cannot be released under any other type of license. The requirement for fonts to remain under this license does not apply to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+
+"Font Software" refers to the set of files released by the Copyright Holder(s) under this license and clearly marked as such. This may include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting, or substituting — in part or in whole — any of the components of the Original Version, by changing formats or by porting the Font Software to a new environment.
+
+"Author" refers to any designer, engineer, programmer, technical writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of the Font Software, to use, study, copy, merge, embed, modify, redistribute, and sell modified and unmodified copies of the Font Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components, in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled, redistributed and/or sold with any software, provided that each copy contains the above copyright notice and this license. These can be included either as stand-alone text files, human-readable headers or in the appropriate machine-readable metadata fields within text or binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font Name(s) unless explicit written permission is granted by the corresponding Copyright Holder. This restriction only applies to the primary font name as presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font Software shall not be used to promote, endorse or advertise any Modified Version, except to acknowledge the contribution(s) of the Copyright Holder(s) and the Author(s) or with their explicit written permission.
+
+5) The Font Software, modified or unmodified, in part or in whole, must be distributed entirely under this license, and must not be distributed under any other license. The requirement for fonts to remain under this license does not apply to any document created using the Font Software.
+
+TERMINATION
+
+This license becomes null and void if any of the above conditions are not met.
+
+DISCLAIMER
+
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ================================================================================
 
@@ -48650,6 +48794,33 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+================================================================================
+
+wuff@0.2.9 (MIT); authors declared by package: Nico Burns <nico@nicoburns.com>
+
+https://raw.githubusercontent.com/nicoburns/wuff/78e67f52713c0a2c36bd083fea18ba029565c9ec/LICENSE
+
+Copyright (c) 2013-2017 by the WOFF2 Authors.
+Copyright (c) 2025 by Nico Burns.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 ================================================================================
 

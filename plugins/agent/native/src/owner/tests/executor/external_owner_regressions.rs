@@ -51,20 +51,34 @@ async fn external_skills_candidates_steering_and_queue_edits_use_the_same_bridge
             let source = std::path::Path::new(&workspace.path).join(".maka/skills");
             skill(&source, "review", "FindGuide LoadGuide");
             skill(&source, "native-only", "NativePrepare");
-            let native = f.query("skillCandidates", json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
+            let native = f.query("skillCandidates", json!({"target":{"kind":"session","sessionId":session},"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
             assert!(native["skills"].as_array().unwrap().iter().any(|skill| skill["invocation"] == "/skill:native-only"),
                 "the non-bridged tool must actually be registered for native models: {native}");
-            let page = f.query("skillCandidates", json!({"sessionId":session,"backend":backend(runtime),"query":""})).await.unwrap();
+            let page = f.query("skillCandidates", json!({"target":{"kind":"session","sessionId":session},"backend":backend(runtime),"query":""})).await.unwrap();
             assert_eq!(page["skills"].as_array().unwrap().len(), 1, "{page}");
             assert_eq!(page["skills"][0]["invocation"], "/skill:review");
             let mut create = f.create_input("Narrow external skill ceiling").await;
             create["tools"] = json!(["FindGuide"]);
             let narrow = f.mutation(2, "create", create, Uuid::new_v4()).await.unwrap();
-            let page = f.query("skillCandidates", json!({"sessionId":narrow["session"]["id"],"backend":backend(runtime),"query":""})).await.unwrap();
+            let page = f.query("skillCandidates", json!({"target":{"kind":"session","sessionId":narrow["session"]["id"]},"backend":backend(runtime),"query":""})).await.unwrap();
             assert_eq!(page["skills"], json!([]), "autocomplete cannot grant LoadGuide");
+            let draft = f.query("skillCandidates", json!({
+                "target":{"kind":"draft","workspace":{"kind":"session","sessionId":narrow["session"]["id"]}},
+                "backend":backend(runtime),"query":""
+            })).await.unwrap();
+            assert_eq!(draft["skills"].as_array().unwrap().len(), 1, "a workspace donor does not narrow a new conversation: {draft}");
+            assert_eq!(draft["skills"][0]["invocation"], "/skill:review");
+            let native_draft = f.query("skillCandidates", json!({
+                "target":{"kind":"draft","workspace":{"kind":"session","sessionId":narrow["session"]["id"]}},
+                "backend":model_backend(&f.selection().await),"query":""
+            })).await.unwrap();
+            assert!(native_draft["skills"].as_array().unwrap().iter().any(|skill| skill["invocation"] == "/skill:native-only"), "{native_draft}");
             let first = f.mutation(2, "send", input_runtime(&session, runtime, "complete"), Uuid::new_v4()).await.unwrap();
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
-            packet(&mut control, "opened").await;
+            let opened = packet(&mut control, "opened").await;
+            let instructions = opened["request"]["instructions"].as_str().unwrap();
+            assert!(instructions.contains("FindGuide") && instructions.contains("LoadGuide"));
+            assert!(instructions.contains("review"));
             let denied = f.mutation(2, "send", json!({"sessionId":session,"message":"/skill:native-only inspect"}), Uuid::new_v4()).await.unwrap();
             assert_eq!(denied["kind"], "rejected", "native tools must not be implicitly bridged: {denied}");
             let mut input = input_runtime(&session, runtime, "queued");

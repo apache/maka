@@ -22,7 +22,7 @@
 use crate::{EventLog, StoreError};
 use maka_agent_facts::{attachment::AttachmentRef, history::RowPosition};
 use maka_agent_ports::session::history::Role;
-use rusqlite::{Connection as RawConnection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -310,10 +310,10 @@ impl Ranked {
 }
 
 const COLUMNS: &str =
-    "d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role";
+    "d.owner_key,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role";
 // Indexed candidates must drive scope checks, rather than probing FTS for every session document.
-const VISIBLE:&str="CROSS JOIN root_control.session_routes r ON r.session_id=s.id
-    WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(s.id,?2)=1
+const VISIBLE:&str="CROSS JOIN session_creations r ON r.session_id=s.id
+    WHERE r.ready=1 AND r.visible=1 AND instr(s.id,?1)=1
     AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)";
 
 fn hit(
@@ -350,7 +350,7 @@ fn hit(
     })
 }
 
-fn fence(db: &RawConnection) -> Result<u64, StoreError> {
+fn fence(db: &Connection) -> Result<u64, StoreError> {
     crate::sequence_number(
         db.prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
             .query_row([], |row| row.get(0))?,
@@ -375,8 +375,7 @@ fn invalid(reason: &str) -> StoreError {
 }
 
 fn search_on_handle(
-    db: &RawConnection,
-    partition: usize,
+    db: &Connection,
     prefix: &str,
     input: SearchQuery,
     through: u64,
@@ -387,20 +386,15 @@ fn search_on_handle(
     let mut gaps = Vec::new();
     let mut incomplete = BTreeSet::new();
     let mut failed = db.prepare_cached(
-        "SELECT f.session_id,f.source_sequence,f.category,COALESCE(f.reason,'source unavailable')
-         FROM transcript_failures f JOIN session_control s ON s.id=f.session_id
-         JOIN root_control.session_routes r ON r.session_id=s.id
-         WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(f.session_id,?2)=1
-           AND (?3 IS NULL OR f.session_id=?3) AND f.source_sequence<=?4
+        "SELECT f.owner_key,f.source_sequence,f.category,COALESCE(f.reason,'source unavailable')
+         FROM transcript_failures f JOIN session_control s ON s.id=f.owner_key
+         JOIN session_creations r ON r.session_id=s.id
+         WHERE r.ready=1 AND r.visible=1 AND instr(f.owner_key,?1)=1
+           AND (?2 IS NULL OR f.owner_key=?2) AND f.source_sequence<=?3
            AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)
-         ORDER BY f.session_id,f.source_sequence",
+         ORDER BY f.owner_key,f.source_sequence",
     )?;
-    let mut failures = failed.query(params![
-        partition as i64,
-        prefix,
-        input.session_id,
-        through_sql
-    ])?;
+    let mut failures = failed.query(params![prefix, input.session_id, through_sql])?;
     while let Some(row) = failures.next()? {
         check(cancellation)?;
         let session: String = row.get(0)?;
@@ -423,19 +417,18 @@ fn search_on_handle(
         .collect();
     let query = format!(
         "SELECT {COLUMNS}
-         FROM recall_terms CROSS JOIN transcript_directory d ON d.rowid=recall_terms.rowid CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
-         AND recall_terms MATCH ?3 AND (?4 IS NULL OR d.session_id=?4)
-         AND (?5 IS NULL OR d.timestamp>=?5) AND (?6 IS NULL OR d.timestamp<=?6)
-         AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,'') AND d.source_sequence>COALESCE(?9,0))
-         AND d.source_sequence<=?10
-         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.session_id=d.session_id AND f.source_sequence<=?10)
-         ORDER BY d.session_id,d.source_sequence,d.item_index"
+         FROM recall_terms CROSS JOIN transcript_directory d ON d.rowid=recall_terms.rowid CROSS JOIN session_control s ON s.id=d.owner_key {VISIBLE}
+         AND recall_terms MATCH ?2 AND (?3 IS NULL OR d.owner_key=?3)
+         AND (?4 IS NULL OR d.timestamp>=?4) AND (?5 IS NULL OR d.timestamp<=?5)
+         AND NOT(d.owner_key=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,'') AND d.source_sequence>COALESCE(?8,0))
+         AND d.source_sequence<=?9
+         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.owner_key=d.owner_key AND f.source_sequence<=?9)
+         ORDER BY d.owner_key,d.source_sequence,d.item_index"
     );
     let exclude = input.exclude.as_ref();
     let exclude_through = exclude.map(|x| number(x.covered_through)).transpose()?;
     let mut statement = db.prepare_cached(&query)?;
     let mut rows = statement.query(params![
-        partition as i64,
         prefix,
         expression(&terms),
         input.session_id,
@@ -499,8 +492,7 @@ fn search_on_handle(
 
 #[allow(clippy::too_many_arguments)]
 fn context_on_handle(
-    db: &RawConnection,
-    partition: usize,
+    db: &Connection,
     prefix: &str,
     session: &str,
     message: &str,
@@ -516,14 +508,13 @@ fn context_on_handle(
     if through > high_water {
         return Err(invalid("history context fence exceeds committed history"));
     }
-    if maintenance::visible_sessions(db, partition, prefix, Some(session), cancellation)?.is_empty()
-    {
+    if maintenance::visible_sessions(db, prefix, Some(session), cancellation)?.is_empty() {
         return Err(invalid("history context anchor is unavailable"));
     }
     crate::transcript::directory::ensure_on_handle(db, session, through)?;
     let through_sql = number(through)?;
     let failed: bool = db.prepare_cached(
-        "SELECT EXISTS(SELECT 1 FROM transcript_failures WHERE session_id=?1 AND source_sequence<=?2)"
+        "SELECT EXISTS(SELECT 1 FROM transcript_failures WHERE owner_key=?1 AND source_sequence<=?2)"
     )?.query_row(params![session,through_sql],|row|row.get(0))?;
     if failed {
         return Err(invalid("history context source is incomplete"));
@@ -531,16 +522,15 @@ fn context_on_handle(
     let exclusion = exclude.as_ref();
     let exclusion_through = exclusion.map(|x| number(x.covered_through)).transpose()?;
     let query = format!(
-        "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
-         CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
-         AND d.session_id=?3 AND d.message_id=?4 AND d.source_sequence<=?5
-         AND NOT(d.session_id=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,'') AND d.source_sequence>COALESCE(?8,0))"
+        "SELECT d.order_sequence,d.order_item,d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
+         CROSS JOIN session_control s ON s.id=d.owner_key {VISIBLE}
+         AND d.owner_key=?2 AND d.message_id=?3 AND d.source_sequence<=?4 AND d.order_sequence<=?4
+         AND NOT(d.owner_key=COALESCE(?5,'') AND d.turn_id=COALESCE(?6,'') AND d.source_sequence>COALESCE(?7,0))"
     );
-    let anchor: (i64, i64, String) = db
+    let anchor: (i64, i64, i64, i64, String) = db
         .prepare_cached(&query)?
         .query_row(
             params![
-                partition as i64,
                 prefix,
                 session,
                 message,
@@ -549,24 +539,33 @@ fn context_on_handle(
                 exclusion.map(|x| x.turn_id.as_str()),
                 exclusion_through,
             ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| invalid("history context anchor is unavailable"))?;
-    let mut selected = BTreeMap::from([((anchor.0, anchor.1), anchor.2)]);
+    let anchor_order = (anchor.0, anchor.1);
+    let mut selected = BTreeMap::from([((anchor.2, anchor.3), (anchor_order, anchor.4))]);
     let mut more = [false, false];
     for (side, count) in [before, after].into_iter().enumerate() {
         check(cancellation)?;
         let order = if side == 0 { "DESC" } else { "ASC" };
         let comparison = if side == 0 { "<" } else { ">" };
         let mut query = format!(
-            "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d INDEXED BY transcript_context_eligible
-             CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
-             AND d.session_id=?3 AND d.source_sequence<=?4
-             AND (d.source_sequence,d.item_index){comparison}(?5,?6)
-             AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,'') AND d.source_sequence>COALESCE(?9,0))
+            "SELECT d.order_sequence,d.order_item,d.source_sequence,d.item_index,d.message_id FROM transcript_directory d INDEXED BY transcript_context_eligible
+             CROSS JOIN session_control s ON s.id=d.owner_key {VISIBLE}
+             AND d.owner_key=?2 AND d.source_sequence<=?3 AND d.order_sequence<=?3
+             AND (d.order_sequence,d.order_item){comparison}(?4,?5)
+             AND NOT(d.owner_key=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,'') AND d.source_sequence>COALESCE(?8,0))
              AND d.context_eligible=1
-             ORDER BY d.source_sequence {order},d.item_index {order}"
+             ORDER BY d.order_sequence {order},d.order_item {order}"
         );
         // Select eligible positions, including one lookahead, before rendering bodies.
         write!(
@@ -577,12 +576,11 @@ fn context_on_handle(
         .expect("format history context query");
         let mut statement = db.prepare_cached(&query)?;
         let mut rows = statement.query(params![
-            partition as i64,
             prefix,
             session,
             through_sql,
-            anchor.0,
-            anchor.1,
+            anchor_order.0,
+            anchor_order.1,
             exclusion.map(|x| x.session_id.as_str()),
             exclusion.map(|x| x.turn_id.as_str()),
             exclusion_through,
@@ -595,14 +593,17 @@ fn context_on_handle(
                 break;
             }
             selected.insert(
-                (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?),
-                row.get::<_, String>(2)?,
+                (row.get::<_, i64>(2)?, row.get::<_, i64>(3)?),
+                (
+                    (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?),
+                    row.get::<_, String>(4)?,
+                ),
             );
             seen += 1;
         }
     }
     let document_query = format!(
-        "SELECT {COLUMNS} FROM transcript_directory d WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3"
+        "SELECT {COLUMNS} FROM transcript_directory d WHERE d.owner_key=?1 AND d.source_sequence=?2 AND d.item_index=?3"
     );
     let mut rendered = BTreeMap::new();
     let sources: BTreeSet<_> = selected.keys().map(|(source, _)| *source).collect();
@@ -614,7 +615,7 @@ fn context_on_handle(
                 number(row.position.source_sequence)?,
                 number(row.position.item_index)?,
             );
-            let Some(message_id) = selected.get(&key) else {
+            let Some((order_key, message_id)) = selected.get(&key) else {
                 continue;
             };
             if message_id != &row.message.id {
@@ -625,14 +626,14 @@ fn context_on_handle(
             let mut statement = db.prepare_cached(&document_query)?;
             let mut rows = statement.query(params![session, key.0, key.1])?;
             let found = rows.next()?.ok_or(StoreError::TranscriptConflict)?;
-            rendered.insert(key, hit(found, body, attachments, through)?);
+            rendered.insert(*order_key, hit(found, body, attachments, through)?);
         }
     }
     if rendered.len() != selected.len() {
         return Err(StoreError::TranscriptConflict);
     }
     let anchor = rendered
-        .remove(&(anchor.0, anchor.1))
+        .remove(&anchor_order)
         .ok_or(StoreError::TranscriptConflict)?;
     check(cancellation)?;
     Ok(SearchContext {
@@ -644,45 +645,32 @@ fn context_on_handle(
 }
 
 impl EventLog {
-    pub(crate) async fn search_history_partition(
+    pub(crate) async fn search_published_history(
         &self,
-        partition: usize,
         prefix: String,
         input: SearchQuery,
         cancellation: CancellationToken,
     ) -> Result<SearchBatch, StoreError> {
-        self.validate_root()?;
-        let operation =
-            self.search_partition_fenced(partition, prefix, input, cancellation.clone());
+        let operation = self.search_published_fenced(prefix, input, cancellation.clone());
         tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result}
     }
 
-    async fn search_partition_fenced(
+    async fn search_published_fenced(
         &self,
-        partition: usize,
         prefix: String,
         input: SearchQuery,
         cancellation: CancellationToken,
     ) -> Result<SearchBatch, StoreError> {
         let through = self
             .connection
-            .read_interruptible(|connection| {
-                Box::pin(async move {
-                    let sequence: i64 =
-                        sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
-                            .fetch_one(connection)
-                            .await?;
-                    crate::sequence_number(sequence)
-                })
-            })
+            .read_interruptible(|connection| fence(connection))
             .await?;
-        self.search_partition_through(partition, prefix, input, through, cancellation)
+        self.search_published_through(prefix, input, through, cancellation)
             .await
     }
 
-    pub(crate) async fn search_partition_through(
+    pub(crate) async fn search_published_through(
         &self,
-        partition: usize,
         prefix: String,
         input: SearchQuery,
         through: u64,
@@ -692,40 +680,27 @@ impl EventLog {
         let stop = cancellation.clone();
         let operation = self.connection.observe(move |connection| {
             crate::transcript::bodycache::run(connection, move |tx| {
-                Box::pin(async move {
-                    tx.run_on_worker(move |handle| {
-                        // SAFETY: the observation worker exclusively owns this callback-local handle.
-                        let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                        if through > fence(&db)? {
-                            return Err(invalid("history search fence exceeds committed history"));
-                        }
-                        for session in maintenance::visible_sessions(
-                            &db,
-                            partition,
-                            &prefix,
-                            input.session_id.as_deref(),
-                            &stop,
-                        )? {
-                            match maintenance::ensure_session(&db, &session, through, &stop) {
-                                Ok(()) | Err(StoreError::TranscriptSource { .. }) => {}
-                                Err(error) => return Err(error),
-                            }
-                        }
-                        search_on_handle(&db, partition, &prefix, input, through, &stop)
-                    })
-                    .await?
-                })
+                if through > fence(tx)? {
+                    return Err(invalid("history search fence exceeds committed history"));
+                }
+                for session in
+                    maintenance::visible_sessions(tx, &prefix, input.session_id.as_deref(), &stop)?
+                {
+                    match maintenance::ensure_session(tx, &session, through, &stop) {
+                        Ok(()) | Err(StoreError::TranscriptSource { .. }) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                search_on_handle(tx, &prefix, input, through, &stop)
             })
         });
         let result = tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result};
-        self.validate_root()?;
         result
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn history_context_partition(
+    pub(crate) async fn published_history_context(
         &self,
-        partition: usize,
         prefix: String,
         session: String,
         message: String,
@@ -735,21 +710,12 @@ impl EventLog {
         exclude: Option<ExcludedTurnTail>,
         cancellation: CancellationToken,
     ) -> Result<SearchContext, StoreError> {
-        self.validate_root()?;
         let stop = cancellation.clone();
         let read = self.connection.observe(move |db| {
             crate::transcript::bodycache::run(db, move |tx| {
-                Box::pin(async move {
-                    tx.run_on_worker(move |handle| {
-                        // SAFETY: callback-local exclusive borrow; all returned history values are owned.
-                        let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                        context_on_handle(
-                            &db, partition, &prefix, &session, &message, before, after, through,
-                            exclude, &stop,
-                        )
-                    })
-                    .await?
-                })
+                context_on_handle(
+                    tx, &prefix, &session, &message, before, after, through, exclude, &stop,
+                )
             })
         });
         tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=read=>result}

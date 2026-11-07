@@ -28,7 +28,7 @@ pub(super) struct Steering {
     commits: SessionSubscription,
     cancellation: CancellationToken,
     directories: Vec<PathBuf>,
-    readiness: Option<BoxFuture<'static, Result<(), Error>>>,
+    observed_idle: bool,
 }
 impl Steering {
     pub fn new(
@@ -46,38 +46,32 @@ impl Steering {
             commits,
             cancellation,
             directories: Vec::new(),
-            readiness: None,
+            observed_idle: false,
         })
     }
     // Only observations belong in select!: a losing branch must not consume an admission.
     pub async fn ready(&mut self) -> Result<(), Error> {
-        if self.readiness.is_none() {
-            let store = self.store.clone();
-            let invocation = self.invocation.clone();
-            let mut commits = self.commits.clone();
-            self.readiness = Some(Box::pin(async move {
-                loop {
-                    if store
-                        .has_pending_steering(&invocation)
-                        .await
-                        .map_err(|e| Error::Persistence(e.to_string()))?
-                    {
-                        return Ok(());
-                    }
-                    commits
-                        .changed()
-                        .await
-                        .map_err(|_| Error::Persistence("steering observation closed".into()))?;
-                }
-            }));
+        loop {
+            if self.observed_idle {
+                self.commits
+                    .changed()
+                    .await
+                    .map_err(|_| Error::Persistence("steering observation closed".into()))?;
+                self.observed_idle = false;
+            }
+            if self
+                .store
+                .has_pending_steering(&self.invocation)
+                .await
+                .map_err(|e| Error::Persistence(e.to_string()))?
+            {
+                return Ok(());
+            }
+            self.observed_idle = true;
         }
-        self.readiness
-            .as_mut()
-            .expect("pending steering observation")
-            .await
     }
     pub async fn take(&mut self) -> Result<Option<Value>, Error> {
-        self.readiness = None;
+        self.observed_idle = false;
         if self.cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }

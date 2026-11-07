@@ -2,9 +2,10 @@
 // of `nsh/base` on a phone, where its list is a sheet: an array value the
 // app owns, toggled with `multiple` while the list stays open
 // (`onChange({ value })`), confirmed as it closes (`onConfirm`), the app's
-// query (`query`, `onQueryChange`), the footer and its part, and a single
-// combobox whose choice replaces the value and closes. Its script checks
-// each.
+// query typed in its input (`query`, `onQueryChange`, `placeholder`), the
+// trigger button, the footer and its part, and a single combobox whose
+// input typing opens and whose choice replaces the value and closes. Its
+// script checks each.
 import { Text, View, signal } from "nsh";
 import { Combobox } from "nsh/base";
 
@@ -31,22 +32,22 @@ function App() {
         value={tags()}
         onChange={({ value }) => tags.set(value)}
         onConfirm={({ value }) => confirmed.set(`Confirmed: ${value.join(",")}`)}
-        searchable
-        searchPlaceholder="FindTag"
+        placeholder="FindTag"
         query={query()}
         onQueryChange={({ query: next }) => query.set(next)}
         accessibilityLabel="Tags"
         footerClass="h-[20px]"
         footerStyle={{ backgroundColor: "#ff0000" }}
         footer={<Text>TagFooter</Text>}
-        trigger={<View testID="tags" style={{ height: 30 }}><Text>TagsTrigger</Text></View>}
+        triggerButton={<View testID="tags" style={{ height: 30 }}><Text>TagsTrigger</Text></View>}
       />
       <Combobox
         items={TAGS}
         defaultValue={["blue"]}
         onChange={({ value }) => one.set(value)}
         accessibilityLabel="One"
-        trigger={<View testID="one" style={{ height: 30 }}><Text>OneTrigger</Text></View>}
+        placeholder="FindOne"
+        triggerButton={<View testID="one" style={{ height: 30 }}><Text>OneTrigger</Text></View>}
       />
     </View>
   );

@@ -40,7 +40,6 @@ fn owner(id: &str) -> PluginSession {
         session_id: id.into(),
         creator: Namespace::new("external.reader", Scope::Profile).unwrap(),
         fingerprint: format!("request-{id}"),
-        managed: false,
         authority_session_id: None,
     }
 }

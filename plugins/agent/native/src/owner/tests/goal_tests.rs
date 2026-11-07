@@ -341,7 +341,7 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
 }
 
 #[tokio::test]
-async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admission() {
+async fn goal_rechecks_revoked_session_before_original_outbox_admission() {
     use maka_capabilities::storage::Namespace;
     use maka_goal::goal::{Control, Repository};
     tokio::time::timeout(Duration::from_secs(45), async {
@@ -361,12 +361,6 @@ async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admiss
         }), Uuid::new_v4()).await.unwrap();
         assert_eq!(rejected["kind"], "rejected");
         assert!(current(&f, &session).await.is_null());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:true}).await.unwrap();
-        assert_eq!(create(&f,&session,true,None).await["reason"],"goal_incognito");
-        assert!(current(&f,&session).await.is_null());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:false}).await.unwrap();
         assert_eq!(create(&f,&session,false,None).await["kind"],"committed");
         f.app.shutdown().await.unwrap();
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.goal",maka_plugin_core::scope::Scope::Profile).unwrap()));
@@ -631,97 +625,4 @@ async fn provider_quota_deadlines_hold_continuation_until_a_different_model_is_s
         assert_eq!(wait_status(&f, &session, "achieved").await["id"], waiting["id"]);
         f.app.shutdown().await.unwrap();
     }).await.unwrap();
-}
-
-#[test]
-fn persisted_goals_upgrade_without_losing_the_original_execution_or_checkpoint() {
-    use maka_goal::goal::{Control, Goal, Meter, Pending, Status};
-    use serde_json::json;
-    let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch("CREATE TABLE plugin_data(package_id TEXT, scope_id TEXT, key TEXT, revision INTEGER, value_json TEXT);").unwrap();
-    for (state, report_status, expected) in [
-        ("active", "progress", Status::Active),
-        ("active", "achieved", Status::Achieved),
-        ("active", "waiting", Status::Blocked),
-        ("active", "impossible", Status::Blocked),
-        ("paused", "achieved", Status::Paused),
-        ("budget_unknown", "progress", Status::Paused),
-    ] {
-        let legacy = json!({
-            "id":"d638a182-a505-4d95-aeb5-057b859d3952", "sessionId":"session",
-            "arm":{"operationId":"d638a182-a505-4d95-aeb5-057b859d3952", "objective":"修复问题\n验证结果", "grant":{"model":"accepted-model"}, "maxIterations":1, "tokenBudget":100, "start":true},
-            "status":state, "iterations":1, "baseline":{"known":0,"missing":0}, "consumed":{"known":3,"missing":1},
-            "pending":if state == "active" { json!({"dispatched":true, "request":{"operationId":"goal-original-1", "sessionId":"session", "content":{"text":"original frozen request","displayText":null}}}) } else { serde_json::Value::Null },
-            "lastOperationId":null,"report":{"status":report_status,"note":"First checkpoint"}, "note":"First checkpoint", "authorityBlocked":false
-        });
-        db.execute("DELETE FROM plugin_data", []).unwrap();
-        db.execute(
-            "INSERT INTO plugin_data VALUES('maka.agent.goal','profile','session/key',7,?1)",
-            [legacy.to_string()],
-        )
-        .unwrap();
-        let receipt = json!({"session":"session","arm":legacy["arm"]});
-        db.execute(
-            "INSERT INTO plugin_data VALUES('maka.agent.goal','profile','arm/original',3,?1)",
-            [receipt.to_string()],
-        )
-        .unwrap();
-        db.execute_batch(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../platform/event-log/migrations/0015_goal_progress.sql"
-        )))
-        .unwrap();
-        let value: String = db
-            .query_row(
-                "SELECT value_json FROM plugin_data WHERE key LIKE 'session/%'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let unchanged: String = db
-            .query_row(
-                "SELECT value_json FROM plugin_data WHERE key='arm/original'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&unchanged).unwrap(), receipt);
-        let mut goal: Goal<serde_json::Value> = serde_json::from_str(&value).unwrap();
-        assert_eq!(goal.arm.objective, "修复问题\n验证结果");
-        assert_eq!(goal.arm.grant, json!({"model":"accepted-model"}));
-        assert_eq!(goal.note, "First checkpoint");
-        assert_eq!(goal.status, expected);
-        if state == "active" {
-            let Some(Pending::Dispatch {
-                request,
-                dispatched,
-            }) = &goal.pending
-            else {
-                panic!("original dispatch was lost")
-            };
-            assert_eq!(request.operation_id, "goal-original-1");
-            assert!(*dispatched);
-        }
-        if expected == Status::Paused {
-            goal.control(Control::Resume).unwrap();
-        }
-        goal.settled(
-            maka_agent_facts::event::InvocationOutcome::Completed,
-            Ok(Meter {
-                known: 6,
-                missing: 1,
-            }),
-        );
-        if matches!(expected, Status::Active | Status::Paused) {
-            assert!(goal.reserve().unwrap());
-            assert_eq!(goal.iterations, 2);
-            assert_eq!(goal.status, Status::Active);
-        } else {
-            assert_eq!(
-                goal.status, expected,
-                "settlement must retain the original completion or blocked report"
-            );
-            assert!(goal.pending.is_none());
-        }
-    }
 }

@@ -197,13 +197,34 @@ async fn serve(
         ..Default::default()
     })
     .map_err(|e| CellAbort::Internal(e.to_string()))?;
-    runtime.execute_script("maka:repl/bootstrap", format!(r#"(() => {{
-        const call = Deno.core.ops.op_maka_tool;
-        const emit = Deno.core.ops.op_maka_emit;
-        for (const name of ["Deno", "console", "Atomics", "SharedArrayBuffer", "WebAssembly", "__bootstrap"])
-            delete globalThis[name];
-        {bootstrap}
-    }})()"#)).map_err(|e| CellAbort::Internal(e.to_string()))?;
+    runtime
+        .execute_script(
+            "maka:repl/bootstrap",
+            format!(
+                r#"(() => {{
+        const [call, emit] = (() => {{
+            const opTool = Deno.core.ops.op_maka_tool;
+            const opEmit = Deno.core.ops.op_maka_emit;
+            const stringify = JSON.stringify;
+            const ErrorClass = Error;
+            for (const name of ["Deno", "console", "Atomics", "SharedArrayBuffer", "WebAssembly", "__bootstrap"])
+                delete globalThis[name];
+            return [
+                (name, input) => {{
+                    const json = input === undefined ? "null" : stringify(input);
+                    if (json === undefined) throw new ErrorClass("value is not JSON");
+                    return opTool(name, json);
+                }},
+                opEmit,
+            ];
+        }})();
+        {{
+            {bootstrap}
+        }}
+    }})()"#
+            ),
+        )
+        .map_err(|e| CellAbort::Internal(e.to_string()))?;
     runtime
         .v8_isolate()
         .set_promise_hook(retain_evaluation_promise);

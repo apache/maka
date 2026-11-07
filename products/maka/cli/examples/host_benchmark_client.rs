@@ -295,7 +295,11 @@ async fn send(client: &Client, args: &Value) -> Result<Value> {
                     let fact = &event["fact"];
                     match fact["kind"].as_str() {
                         Some("part_started") => { parts.insert((string(fact,"stepId")?.into(),string(fact,"partId")?.into()),fact["textKind"] == "text"); }
-                        Some("executor_started") => { parts.insert((invocation.clone(),"text".into()),true); parts.insert((invocation.clone(),"thinking".into()),false); }
+                        Some("executor_message_started") => {
+                            let step = string(fact, "messageId")?.to_owned();
+                            parts.insert((step.clone(), "text".into()), true);
+                            parts.insert((step, "thinking".into()), false);
+                        }
                         Some("delta") => {
                             let key = (string(fact,"stepId")?.to_owned(),string(fact,"partId")?.to_owned());
                             let visible = parts.get(&key).ok_or("stream delta missing original part")?;
@@ -502,10 +506,10 @@ async fn execute(state: &State, command: &Command) -> Result<Value> {
                 let roots = client
                     .query("agent", "directories", json!({"kind":"roots"}))
                     .await?;
-                let selection = roots["roots"][0]
-                    .get("selection")
+                let path = roots["roots"][0]
+                    .get("path")
                     .ok_or("no configured directory root; provide args.workspace")?;
-                json!({"kind":"directory","selection":selection})
+                json!({"kind":"directory","path":path})
             };
             let input = json!({"title":string(args,"name")?,"automaticTitle":false,"labels":[],"workspace":workspace,"tools":args.get("tools").cloned().unwrap_or(Value::Null)});
             commit(client.control(operation_id(args)?, "create", input).await?).await

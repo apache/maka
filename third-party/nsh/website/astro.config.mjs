@@ -19,16 +19,22 @@ const BASE = configuredBase === '/' ? '/' : `/${configuredBase.replace(/^\/+|\/+
 export default defineConfig({
   site: 'https://nsh.dev',
   base: BASE,
+  // `scripts/versions.js` writes each version into its place in one dist.
+  outDir: process.env.SITE_OUT_DIR || './dist',
   output: 'static',
   trailingSlash: 'never',
 
-  // The platform pages' former paths.
-  redirects: {
-    '/docs/embedding-ios': '/docs/ios',
-    '/docs/embedding-android': '/docs/android',
-    '/zh-CN/docs/embedding-ios': '/zh-CN/docs/ios',
-    '/zh-CN/docs/embedding-android': '/zh-CN/docs/android',
-  },
+  // The platform pages' former paths. Astro places each source below `base`
+  // but writes the destination as given, so it gets the base too (a version
+  // at /versions/<tag> would redirect into the root's version).
+  redirects: Object.fromEntries(
+    Object.entries({
+      '/docs/embedding-ios': '/docs/ios',
+      '/docs/embedding-android': '/docs/android',
+      '/zh-CN/docs/embedding-ios': '/zh-CN/docs/ios',
+      '/zh-CN/docs/embedding-android': '/zh-CN/docs/android',
+    }).map(([from, to]) => [from, `${BASE.replace(/\/$/, '')}${to}`]),
+  ),
 
   integrations: [pagefind()],
 

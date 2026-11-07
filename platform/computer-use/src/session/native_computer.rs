@@ -226,6 +226,7 @@ impl Session {
         pixels: bool,
         cancellation: &CancellationToken,
         language: Language,
+        #[cfg(target_os = "windows")] invocation: &crate::InvocationContext<'_>,
     ) -> Result<CallResult, ToolError> {
         Driver::invoke_raw_native(
             &self.native,
@@ -235,6 +236,8 @@ impl Session {
             cancellation,
             language,
             pixels,
+            #[cfg(target_os = "windows")]
+            invocation,
         )
         .await
     }
@@ -254,7 +257,13 @@ impl Session {
     ) -> Result<(WindowInfo, String), ToolError> {
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let windows = self
-            .windows(_invocation.session(), cancellation, language)
+            .windows(
+                _invocation.session(),
+                cancellation,
+                language,
+                #[cfg(target_os = "windows")]
+                _invocation,
+            )
             .await?;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         let windows = self.raw_linux_bindings(cancellation, language).await?;

@@ -74,9 +74,10 @@ event below:id:ada-dot onError message="not found"
 expect Ada: error
 expect AL
 style below:id:ada-dot opacity 0
-# Grace's fallback waits 300 ms while her image loads.
+# Grace's fallback waits 2 s while her image loads.
+tap id:show-grace
 absent GH
-wait 400
+wait 2000
 expect GH
 # Edsger has no image: the app's fallback at once, in place of the
 # initials, and the app's label.
@@ -91,8 +92,8 @@ expect AT
 expect BL
 absent CS
 expect +1
-prop label:1 more person accessibilityLabel 1 more person
-frame id:team 0 152 110 60
+prop label:"1 more person" accessibilityLabel 1 more person
+frame id:team 0 108 110 60
 # A group of the first two of four: the overflow stands for the others.
 expect DK
 expect FA
@@ -107,7 +108,7 @@ covers [props] Avatar.imageClass
 covers [props] Avatar.imageStyle
 covers [props] Avatar.fallbackClass
 covers [props] Avatar.fallbackStyle
-covers [props] Avatar.fallback
+covers [props] fallback
 covers [events] Avatar.onStatusChange
 covers [props] AvatarGroup.limit
 covers [props] AvatarGroup.total
@@ -160,7 +161,17 @@ tap text:Blocked
 expect Blocked presses: 1
 prop id:off accessibilityState disabled=true
 style id:off opacity 1
+# `hitSlop`: presses count this far outside the button, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:close hitSlop top=12 right=12 bottom=12 left=12
+tap id:close
+expect Presses: 111
+prop id:sides hitSlop {}
+tap text:Widen
+prop id:sides hitSlop top=4 left=2
+prop id:plain hitSlop {}
 covers [nsh/base] Button
+covers [props] hitSlop
 covers [props] role
 covers [props] accessibilityLabel
 covers [props] disabled
@@ -202,6 +213,12 @@ style id:archived opacity 1
 listens id:archived onPress
 tap text:Archived
 expect Log: open https://example.com/docs, press, route /orders/42, route /archive
+# `hitSlop`: presses count this far outside the link, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:help hitSlop top=12 right=12 bottom=12 left=12
+tap text:Help
+prop id:help hitSlop top=4 left=2
+prop id:docs hitSlop {}
 covers [nsh/base] Link
 covers [props] Link.href
 covers [props] accessibilityLabel
@@ -408,7 +425,7 @@ covers [events] NavPage.onBackPress
 covers [events] NavPage.onDismiss
 # base-nav-stack
 tap id:case-base-nav-stack
-# on screen headless (no platform hides the covered ones).
+# Only the top page is on screen; the controls sit outside the stack.
 expect Routes: home
 expect Depth: 1
 expect Renders: 1
@@ -424,7 +441,6 @@ expect Renders: 2
 tap text:Push
 expect Page p2 at 2
 expect Routes: home > p1 > p2
-expect Bumps of home: 1
 # pop: one page.
 tap text:Pop
 expect Routes: home > p1
@@ -434,7 +450,6 @@ expect Renders: 3
 # The same route twice is two pages; remove takes the topmost.
 tap text:Push twice
 expect Routes: home > p1 > twice > twice
-expect Page twice at 2
 expect Page twice at 3
 expect Renders: 5
 tap text:Remove twice
@@ -475,7 +490,6 @@ expect Cleanups: p1 p2 p3 p4 p5 twice twice
 # setRoutes: all pages.
 tap text:Set routes
 expect Routes: home > a > b
-expect Page a at 1
 expect Page b at 2
 absent Page swapped at 1
 # remove below: the pages above follow with their index.
@@ -621,7 +635,7 @@ covers [props] TextView.options
 covers [props] TextView.extensions
 covers [props] TextView.classes
 covers [props] TextView.styles
-covers [props] TextView.selectable
+covers [props] selectable
 covers [props] TextView.codeBlockScrollbar
 covers [props] TextView.tableScrollbar
 covers [props] TextView.streamingCaret
@@ -888,7 +902,7 @@ style parent:parent:id:sidebar-mark backgroundColor #222222ff
 # Disabled: dimmed for screen readers, `disabled:` on its indicator.
 prop id:minimap role menuitemcheckbox
 prop id:minimap accessibilityState disabled=true checked=false
-style parent:id:minimap-mark backgroundColor #333333ff
+style parent:parent:id:minimap-mark backgroundColor #333333ff
 # `role="menuitemradio"`: one choice of a group, the app checks one.
 prop id:sort-name role menuitemradio
 prop id:sort-name accessibilityState checked=true
@@ -954,6 +968,12 @@ frame text:Locked 32 4 47 17
 listens id:locked onPress
 tap text:Locked
 expect Changes: 12
+# `hitSlop`: presses count this far outside the switch, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:mute hitSlop top=12 right=12 bottom=12 left=12
+tap label:Mute
+prop id:mute hitSlop top=4 left=2
+prop id:wifi hitSlop {}
 covers [nsh/base] Switch
 covers [props] Switch.checked
 covers [props] disabled
@@ -1012,6 +1032,12 @@ frame text:Locked 28 2 47 17
 listens id:locked onPress
 tap text:Locked
 expect Changes: 12
+# `hitSlop`: presses count this far outside the checkbox, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:agree hitSlop top=12 right=12 bottom=12 left=12
+tap label:Agree
+prop id:agree hitSlop top=4 left=2
+prop id:all hitSlop {}
 covers [nsh/base] Checkbox
 covers [props] Checkbox.checked
 covers [props] Checkbox.indeterminate
@@ -1074,6 +1100,12 @@ tap label:Team plan
 expect Changes: 2
 expect Plan: team
 prop id:team accessibilityState selected=true checked=true
+# `hitSlop`: presses count this far outside the radio, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:solo hitSlop top=12 right=12 bottom=12 left=12
+tap label:Solo
+prop id:solo hitSlop top=4 left=2
+prop id:basic hitSlop {}
 covers [nsh/base] Radio
 covers [nsh/base] RadioGroup
 covers [props] Radio.checked
@@ -1199,12 +1231,21 @@ tap label:Underline text
 expect Changes: 3
 expect Marks: bold,underline
 # A disabled group disables every toggle in it: no stop of the focus.
+# The markers take `group-disabled:` (10 wide), save the pressed Bold's,
+# whose `group-aria-pressed:` comes later among Tailwind's variants and
+# wins (30 wide), as in a browser.
 tap id:lock
-frame text:Bold 18 2 31 17
+frame text:Bold 38 2 31 17
 frame text:Italic 18 2 47 17
 prop id:bold focusable false
 tap id:lock
 frame text:Bold 38 2 31 17
+# `hitSlop`: presses count this far outside the toggle, one number for
+# every side or the sides named, following a signal; none without it.
+prop id:pin hitSlop top=12 right=12 bottom=12 left=12
+tap label:Pin
+prop id:pin hitSlop top=4 left=2
+prop id:favorite hitSlop {}
 covers [nsh/base] Toggle
 covers [nsh/base] ToggleGroup
 covers [props] Toggle.pressed
@@ -1270,6 +1311,110 @@ covers [props] disabled
 covers [props] accessibilityLabel
 covers [events] onPress
 
+# base-tree
+tap id:case-base-tree
+expect Selected: none
+expect Changes: 0
+expect Acted: none
+# A tree of tree items for screen readers, named; `src` is expanded as the
+# app says, so its children show and `ui`'s do not.
+prop id:files role tree
+prop id:files accessibilityLabel Files
+prop label:src role treeitem
+prop label:src accessibilityState expanded=true
+prop label:ui accessibilityState expanded=false
+prop label:lib.rs role treeitem
+expect lib.rs
+absent tree.rs
+# A disabled item, dimmed: it shows what `expanded` says.
+prop label:docs accessibilityState disabled=true expanded=false
+absent guide.md
+# A press selects a row (`selected:`) and expands a folder: the app hears
+# the selection, the expanded items and the item expanded.
+tap label:ui
+expect Selected: src/ui
+expect Expanded: src,src/ui
+expect Heard: expand src/ui
+expect Changes: 1
+expect tree.rs
+prop label:ui accessibilityState selected=true expanded=true
+style label:ui backgroundColor #00ff00ff
+nostyle label:src backgroundColor
+# Again, later (not the second press of a double press): it collapses.
+wait 600
+tap label:ui
+expect Expanded: src
+expect Heard: collapse src/ui
+expect Changes: 2
+absent tree.rs
+# A leaf is selected only: a press acts on no item. (A double press and
+# Return act on it, `onAction`: this run's presses carry no click count
+# and its keys reach inputs only, so nsh-base's `tree` tests and the
+# gallery's check that.)
+tap label:lib.rs
+expect Selected: src/lib.rs
+expect Acted: none
+prop label:ui accessibilityState expanded=false
+nostyle label:ui backgroundColor
+style label:lib.rs backgroundColor #00ff00ff
+# The disabled item takes no press, so it is nothing to tap: the
+# selection stays.
+expect Selected: src/lib.rs
+expect Changes: 2
+absent guide.md
+# The list and each row as the app styles them.
+style scroll:label:src backgroundColor #0000ffff
+style scroll:label:src opacity 0.75
+style label:src borderRadius 3
+# The ref's `revealItem`: the collapsed item above it expands, reported
+# as a press's is.
+tap id:reveal
+expect Expanded: src,src/ui
+expect Heard: expand src/ui
+expect Changes: 3
+expect tree.rs
+# The ref's `focus`; with the tree's focus, the selected row shows
+# `focus:`, and stops when it leaves.
+tap id:focus
+event id:files onFocus
+style label:lib.rs opacity 0.5
+nostyle label:src opacity
+event id:files onBlur
+nostyle label:lib.rs opacity
+# The tree's own state, from `defaultExpanded` and `defaultSelected`;
+# `renderItem` draws the rows, given each item's depth.
+prop id:notes role tree
+expect +notes@0
+expect a.md@1
+expect todo.md@0
+prop label:a.md accessibilityState selected=true
+tap label:notes
+absent a.md@1
+prop label:notes accessibilityState selected=true expanded=false
+# `disabled`: read-only, every row dimmed and nothing to tap; the
+# folder stays closed.
+tap id:lock
+prop label:notes accessibilityState disabled=true selected=true expanded=false
+prop label:todo.md accessibilityState disabled=true
+absent a.md@1
+covers [nsh/base] Tree
+covers [props] Tree.items
+covers [props] Tree.expanded
+covers [props] Tree.defaultExpanded
+covers [props] Tree.selected
+covers [props] Tree.defaultSelected
+covers [props] Tree.itemClass
+covers [props] Tree.itemStyle
+covers [props] Tree.listClass
+covers [props] Tree.listStyle
+covers [props] Tree.renderItem
+covers [props] accessibilityLabel
+covers [props] disabled
+covers [events] Tree.onExpandedChange
+covers [events] Tree.onSelectedChange
+covers [events] Tree.onExpand
+covers [events] Tree.onCollapse
+
 # A collapsible: the summary always, the details only while the app's
 # `open` holds. Collapsed, the region is the trigger's 20 points.
 tap id:case-base-collapsible
@@ -1295,6 +1440,120 @@ frame id:region 0 20 390 54
 covers [nsh/base] Collapsible
 covers [props] Collapsible.open
 covers [props] Collapsible.content
+
+# base-carousel
+tap id:case-base-carousel
+# A region named by the app, a stop of the keyboard focus; each slide a
+# group; the controls and the pagination items buttons. The content lays
+# the slides 200 wide out in a row, 10 apart, after a runway of a period
+# (3 slides and 3 gaps: 630) less a gap, as the carousel loops seamlessly;
+# each slide is there once.
+expect Index: 0
+expect Changes: 0
+prop id:carousel role region
+prop id:carousel accessibilityLabel Colors
+prop id:carousel focusable true
+prop id:slide-0 role group
+prop id:slide-0 accessibilityLabel 1 of 3
+frame id:slide-0 630 0 200 100
+frame id:slide-1 840 0 200 100
+frame id:slide-2 1050 0 200 100
+prop id:previous role button
+prop id:previous accessibilityLabel Previous slide
+prop id:next role button
+prop id:dots role group
+prop id:dots accessibilityLabel Choose a slide
+prop id:dot-0 role button
+prop id:dot-0 accessibilityState selected=true
+style id:dot-0 backgroundColor #00ff00ff
+prop id:dot-1 accessibilityState {}
+nostyle id:dot-1 backgroundColor
+listens id:dot-1 onPress
+# The indicator, below the first item: on the item of the slide shown.
+frame below:id:dot-0 0 0 10 10
+style below:id:dot-0 backgroundColor #ff0000ff
+# Looping: previous on the first slide goes to the last; the app follows
+# `onChange` and the item of the slide shown is selected.
+tap id:previous
+expect Changes: 1
+expect Index: 2
+prop id:dot-2 accessibilityState selected=true
+style id:dot-2 backgroundColor #00ff00ff
+prop id:dot-0 accessibilityState {}
+frame below:id:dot-0 20 0 10 10
+# Past the last, the first again.
+tap id:next
+expect Changes: 2
+expect Index: 0
+# A pagination item goes to its slide; its own slide's reports nothing.
+tap id:dot-1
+expect Changes: 3
+expect Index: 1
+frame below:id:dot-0 10 0 10 10
+tap id:dot-1
+expect Changes: 3
+# A drag the app pauses its rotation for: `onDragStart`, then `onDragEnd`
+# where the content rests, on the third slide (its rest: 630 + 2 * 210),
+# which `onChange` reports.
+listens id:content onScrollDragStart
+listens id:content onScrollEnd
+event id:content onScrollDragStart x=840 y=0
+expect Events: dragStart
+event id:content onScrollEnd x=1050 y=0
+expect Events: dragStart,dragEnd
+expect Changes: 4
+expect Index: 2
+prop id:dot-2 accessibilityState selected=true
+# The keyboard focus coming into the carousel and leaving it, as the
+# platform reports it: on the carousel's view, then on a view in a slide
+# (still in it: nothing), then on none.
+listens id:carousel onFocus
+listens id:carousel onBlur
+state id:carousel focused
+expect Events: dragStart,dragEnd,focus
+state id:open focused
+state id:carousel none
+wait 50
+expect Events: dragStart,dragEnd,focus
+state id:open none
+expect Events: dragStart,dragEnd,focus,blur
+# Its own index from `defaultIndex`: the second slide's item is selected.
+# Along a vertical `axis`, the slides follow each other down the content.
+prop id:vertical role region
+prop id:v-dot-1 accessibilityState selected=true
+prop id:v-dot-0 accessibilityState {}
+frame id:v-slide-0 0 0 100 50
+frame id:v-slide-1 0 50 100 50
+# An app that keeps its `index`: a rest on the second slide asks for it
+# (`onChange`), and once the app has answered, its own slide shows again,
+# the content springing back to it.
+prop id:k-dot-0 accessibilityState selected=true
+listens id:kept-content onScrollEnd
+event id:kept-content onScrollEnd x=100 y=0
+expect Asks: 1
+prop id:k-dot-0 accessibilityState selected=true
+prop id:k-dot-1 accessibilityState {}
+covers [nsh/base] Carousel
+covers [nsh/base] CarouselContent
+covers [nsh/base] CarouselItem
+covers [nsh/base] CarouselPrevious
+covers [nsh/base] CarouselNext
+covers [nsh/base] CarouselPagination
+covers [nsh/base] CarouselPaginationItem
+covers [props] Carousel.index
+covers [props] Carousel.defaultIndex
+covers [props] Carousel.axis
+covers [props] Carousel.looping
+covers [props] CarouselPaginationItem.index
+covers [props] CarouselPagination.indicatorClass
+covers [props] CarouselPagination.indicatorStyle
+covers [props] selectedStyle
+covers [props] accessibilityLabel
+covers [events] onChange
+covers [events] Carousel.onDragStart
+covers [events] Carousel.onDragEnd
+covers [events] onFocus
+covers [events] onBlur
 
 # base-collapsible-reveal
 # With `reveal`: the clipping region is there while closed, zero high, so
@@ -1353,6 +1612,8 @@ frame id:item-a 0 0 390 50
 frame id:panel-a 0 20 390 30
 frame id:item-b 0 50 390 20
 frame id:faq 0 20 390 90
+tap id:details-a
+expect Taps a: 1
 # One open at a time: another item replaces it. The revealed panel's
 # frames are where its spring ends.
 tap text:Returns
@@ -1366,6 +1627,10 @@ absent Shipping details
 frame id:item-a 0 0 390 20
 frame id:item-b 0 20 390 50
 frame id:faq 0 20 390 90
+# The kept panel's content stays in the tree while closed, out of sight.
+listens id:details-a onPress
+tap id:details-b
+expect Taps b: 1
 # The open item's trigger closes it; the revealed panel springs shut and
 # its content leaves once it has.
 tap text:Returns
@@ -1381,6 +1646,9 @@ tap text:Shipping
 expect Open: b,a
 expect Shipping details
 expect Returns details
+# Either panel's content comes back as it was.
+expect Taps a: 1
+expect Taps b: 1
 frame id:faq 0 20 390 120
 tap text:Returns
 expect Open: a
@@ -1388,7 +1656,6 @@ absent Returns details
 # A disabled item takes no presses, dimmed for screen readers; it shows
 # what the app's value says.
 prop id:trigger-c accessibilityState disabled=true expanded=false
-tap text:Billing
 expect Changes: 6
 tap id:open-billing
 expect Billing details
@@ -1398,16 +1665,12 @@ covers [nsh/base] AccordionItem
 covers [nsh/base] AccordionHeader
 covers [nsh/base] AccordionTrigger
 covers [nsh/base] AccordionPanel
-covers [props] Accordion.value
 covers [props] Accordion.multiple
-covers [props] AccordionItem.value
-covers [props] AccordionItem.disabled
 covers [props] AccordionHeader.level
-covers [props] AccordionTrigger.expandedStyle
+covers [props] expandedStyle
 covers [props] AccordionPanel.reveal
 covers [props] AccordionPanel.keepMounted
 covers [props] accessibilityLabel
-covers [events] Accordion.onChange
 
 # base-otp-input
 tap id:case-base-otp-input
@@ -1431,6 +1694,9 @@ prop label:Own accessibilityState disabled=true
 type label:Code 12a
 expect Code [12]
 prop label:Code value 12
+# The cells that hold a digit have `data-filled` (`data-filled:`).
+style parent:text:1 opacity 0.5
+style parent:text:2 opacity 0.5
 # The focus: the caret (50 high, 4 below the cell's top) in the cell that
 # takes the next digit; it stays while it blinks (its opacity moves
 # natively), so the layout holds still.
@@ -1445,6 +1711,7 @@ expect Code [1234]
 expect Done [1234]
 prop label:Code value 1234
 style parent:text:4 backgroundColor #00ff00ff
+style parent:text:4 opacity 0.5
 # Two groups of two cells: the last cell 2 + 30 + 4 into the second group,
 # which is 10 after the first (2 + 30 + 4 + 30 + 2 wide).
 frame parent:text:4 36 4 30 20
@@ -1458,9 +1725,9 @@ expect Code []
 absent 4
 covers [nsh/base] OtpInput
 covers [props] OtpInput.length
-covers [props] OtpInput.value
-covers [props] OtpInput.defaultValue
-covers [props] OtpInput.masked
+covers [props] value
+covers [props] defaultValue
+covers [props] masked
 covers [props] disabled
 covers [props] OtpInput.groups
 covers [props] accessibilityLabel
@@ -1470,10 +1737,10 @@ covers [props] OtpInput.groupClass
 covers [props] OtpInput.groupStyle
 covers [props] OtpInput.caretClass
 covers [props] OtpInput.caretStyle
-covers [events] OtpInput.onChange
+covers [events] onChange
 covers [events] OtpInput.onComplete
-covers [events] OtpInput.onFocus
-covers [events] OtpInput.onBlur
+covers [events] onFocus
+covers [events] onBlur
 # base-pagination
 tap id:case-base-pagination
 # A navigation landmark named by `accessibilityLabel`; page 5 of 20 with
@@ -1521,13 +1788,12 @@ tap label:Previous
 expect Log: 6, 7, 6
 expect Page 6 of 20
 # On the last page Next is disabled (`disabled:` applies): it takes no
-# press.
+# press, so it is nothing to tap.
 tap text:20
 expect Page 20 of 20
 prop label:Next accessibilityState disabled=true
 style label:Next opacity 0.5
 prop label:Previous accessibilityState {}
-tap label:Next
 expect Log: 6, 7, 6, 20
 # `compact`: Previous, the children and Next only.
 tap id:compact
@@ -1610,10 +1876,10 @@ prop label:Quantity accessibilityValue min=0 max=10 now=2 text=2
 prop label:Quantity value 2
 frame label:Quantity 30 0 100 30
 style label:Quantity backgroundColor #eeeeeeff
-frame parent:text:Less 0 0 30 30
-style parent:text:Less backgroundColor #ff0000ff
-frame parent:text:More 130 0 30 30
-style parent:text:More backgroundColor #00ff00ff
+frame parent:parent:text:Less 0 0 30 30
+style parent:parent:text:Less backgroundColor #ff0000ff
+frame parent:parent:text:More 130 0 30 30
+style parent:parent:text:More backgroundColor #00ff00ff
 # A screen reader's increment, then the buttons: a step of 0.5 each, which
 # the app passes back and the field shows.
 event label:Quantity onAccessibilityAction actionName=increment
@@ -1636,9 +1902,9 @@ expect kg
 # the field 100): `flex: 1` takes what is left, a percentage is of the row.
 frame id:weight-prefix 0 0 170 10
 frame id:weight-suffix 0 0 30 10
-frame parent:text:Up 0 0 30 15
-frame parent:text:Down 0 15 30 15
-style parent:parent:text:Up backgroundColor #0000ffff
+frame parent:parent:text:Up 0 0 30 15
+frame parent:parent:text:Down 0 15 30 15
+style parent:parent:parent:text:Up backgroundColor #0000ffff
 event label:Amount onFocus
 type label:Amount 0
 expect Amount 40
@@ -1653,12 +1919,12 @@ expect Amount 9
 # `disabled`: dimmed for screen readers, `disabled:` on its buttons (20
 # wide). `readonly`: its field read-only.
 prop label:Locked accessibilityState disabled=true
-frame parent:text:"Locked less" 0 0 20 30
-frame parent:text:"Locked more" 120 0 20 30
+frame parent:parent:text:"Locked less" 0 0 20 30
+frame parent:parent:text:"Locked more" 120 0 20 30
 prop label:Fixed readonly true
 covers [nsh/base] NumberInput
 covers [props] value
-covers [props] NumberInput.defaultValue
+covers [props] defaultValue
 covers [props] NumberInput.min
 covers [props] NumberInput.max
 covers [props] NumberInput.step
@@ -1685,73 +1951,161 @@ covers [events] onBlur
 covers [events] onSubmit
 # base-combobox
 tap id:case-base-combobox
-# The trigger is a combobox whose value is the selected titles.
+# The input is a combobox whose value is the selected titles.
 prop label:Tags role combobox
 prop label:Tags accessibilityValue text=Red
 prop label:One accessibilityValue text=Blue
-# With `multiple`, a press toggles the item and the list stays open; the
-# footer shows below the rows, in the app's look.
+# The trigger button opens the list. With `multiple`, a press toggles the
+# item and the list stays open; the footer shows below the rows, in the
+# app's look.
 tap id:tags
 expect TagFooter
-style parent:text:TagFooter backgroundColor #ff0000ff
-frame parent:text:TagFooter 0 0 390 20
+style parent:parent:text:TagFooter backgroundColor #ff0000ff
+frame parent:parent:text:TagFooter 0 51 390 20
 tap label:Green
 expect Tags: red,green
 expect TagFooter
 prop label:Green accessibilityState selected=true
 tap label:Red
 expect Tags: green
-# The app's query: typing is reported, and the app's query filters.
-type text:FindTag bl
+# The app's query: typing in the input is reported, and the app's query
+# filters.
+type label:Tags bl
 expect Query: bl
-absent label:Green
-# Closing confirms the value as it is.
-event label:FindTag onCancel
+absent Green
+# Closing (the trigger button again) confirms the value as it is.
+tap id:tags
 expect Confirmed: green
 absent TagFooter
-# Without `multiple`, a choice replaces the value and closes the list.
-tap id:one
+# Without `multiple`, typing in the input opens the list, and a choice
+# replaces the value and closes it.
+type label:One re
+expect Red
 tap label:Red
 expect One: red
-absent label:Green
+absent Green
 covers [nsh/base] Combobox
 covers [props] Combobox.items
 covers [props] Combobox.multiple
 covers [props] value
 covers [props] defaultValue
-covers [props] Combobox.searchable
-covers [props] Combobox.searchPlaceholder
+covers [props] placeholder
 covers [props] Combobox.query
 covers [props] Combobox.footer
 covers [props] Combobox.footerClass
 covers [props] Combobox.footerStyle
-covers [props] Combobox.trigger
+covers [props] Combobox.triggerButton
 covers [props] accessibilityLabel
 covers [events] onChange
 covers [events] Combobox.onConfirm
 covers [events] Combobox.onQueryChange
+# base-command
+tap id:case-base-command
+# The app's header, search bar (its prefix beside the field) and footer;
+# the items under their sections' headers (the app's rows and headers): a
+# list box of options, a disabled one dimmed, a checked one checked.
+expect PaletteHeader
+expect PaletteFooter
+expect Find:
+expect [Suggestions]
+expect [Settings]
+prop scroll:label:Calendar role listbox
+prop scroll:label:Calendar accessibilityLabel Commands
+style scroll:label:Calendar backgroundColor #0000ffff
+prop label:Calendar role option
+prop label:"Search Emoji" accessibilityState disabled=true
+prop label:"Dark Theme" accessibilityState checked=true
+style label:"Dark Theme" backgroundColor #00ff00ff
+nostyle label:Profile backgroundColor
+# `renderItem` gets the shortcut as shown here.
+expect New File +key
+expect Calendar
+# The first enabled item is highlighted (`focus:`, 40 high), and the app
+# hears it; a disabled row takes `disabled:` (24).
+expect Lit: new
+frame label:"New File" 0 0 390 40
+frame label:Calendar 0 0 390 30
+frame label:"Search Emoji" 0 0 390 24
+absent NoCommands
+# A press chooses; a disabled item takes none, so it is nothing to tap.
+expect Chosen: none
+tap label:Profile
+expect Chosen: profile
+# The app's query: typing is reported, the app's query filters by label,
+# empty sections go, and its first match is highlighted.
+type label:Commands cal
+expect Query: cal
+absent New File +key
+absent [Settings]
+expect [Suggestions]
+expect Lit: calendar
+# The row under its section's header.
+frame label:Calendar 0 0 390 40
+tap label:Calendar
+expect Chosen: calendar
+# Nothing matches: the app's `empty`.
+type label:Commands zz
+expect Query: calzz
+expect NoCommands
+expect Lit: none
+# The field's own query starts from `defaultQuery`, and filters; the
+# field has its own name for screen readers.
+expect Remote Two
+absent Remote One
+prop label:SearchRemote placeholder FindRemote
+# A search the app answers: its query filters nothing, and while it is
+# `loading` the list is busy and `empty` waits.
+expect Server A
+expect Server B
+absent ServerEmpty
+prop scroll:label:"Server A" accessibilityState busy=true
+# Without a search field every item shows.
+expect Gamma
+absent text:NoField
+covers [nsh/base] Command
+covers [props] Command.items
+covers [props] Command.query
+covers [props] Command.defaultQuery
+covers [props] Command.searchAccessibilityLabel
+covers [props] Command.filterable
+covers [props] Command.loading
+covers [props] placeholder
+covers [props] Command.listClass
+covers [props] Command.itemClass
+covers [props] Command.header
+covers [props] Command.footer
+covers [props] Command.empty
+covers [props] Command.searchPrefix
+covers [props] Command.renderItem
+covers [props] Command.renderGroup
+covers [props] accessibilityLabel
+covers [events] Command.onSelect
+covers [events] Command.onHighlightChange
+covers [events] Command.onQueryChange
 # base-scrollbar
 tap id:case-base-scrollbar
 # Always shown, where the app places its track; a press in its middle
-# puts the thumb's middle there (the thumb 40 long: 200 of 1000 shown on
-# 200), half its travel: 400 of 800; a drag 40 down goes on from there,
-# 40 of the thumb's 160 of travel: 200 more.
+# puts the thumb's middle there (the thumb 48 long, `minThumbLength`'s
+# default, over the 40 of 200 of 1000 shown on 200), half its travel: 400
+# of 800; a drag 38 down goes on from there, 38 of the thumb's 152 of
+# travel: 200 more.
 style label:Pages pointerEvents auto
 frame label:Pages 290 0 10 200
 touch start label:Pages 5 100
 prop id:pages contentOffset y=400
-touch move 5 140
+touch move 5 138
 prop id:pages contentOffset y=600
 touch end
 # While scrolling: hidden (taking no presses) until the target scrolls,
 # then until `motion.idle` after. Its thumb no shorter than 30 (10 of
-# 100): a press at 50 puts its start at 35 of 70, half of 900.
+# 100): a press at 22 puts its middle there and its start at 7 of its 70
+# of travel, a tenth: 90 of 900.
 style label:Feed pointerEvents none
 scroll id:feed 0 100
 style label:Feed pointerEvents auto
-touch start label:Feed 5 50
+touch start label:Feed 5 22
 touch end
-prop id:feed contentOffset y=450
+prop id:feed contentOffset y=90
 wait 400
 style label:Feed pointerEvents none
 # Along a horizontal scroll view: the thumb 50 long (200 of 800 shown on
@@ -1801,10 +2155,12 @@ expect Open: true triggerPress
 prop label:Due accessibilityState expanded=true
 expect M10
 expect Y2026
-expect D9*
+expect D10.9
 prop label:2026-10-09 role button
 prop label:2026-10-09 accessibilityState selected=true
-frame label:2026-10-05 0 0 20 20
+# On a phone the calendar spans the sheet: a day is a seventh of its
+# width, the app's 20 high.
+frame label:2026-10-05 0 0 56 20
 # Weekends take no press (`disabledMatcher`).
 prop label:2026-10-10 accessibilityState disabled=true
 prop label:2026-10-11 accessibilityState disabled=true
@@ -1849,20 +2205,30 @@ covers [props] DatePicker.clearButtonAccessibilityLabel
 covers [events] onChange
 covers [events] DatePicker.onOpenChange
 # A range of the picker's own (`defaultValue`), heard as its ends; two
-# months side by side (`numberOfMonths`), the days inside the range in
-# it, its ends selected.
+# months side by side (`numberOfMonths`), every day of the range selected
+# for screen readers, its start, middle and end styled by the item's
+# `data-range-start:`, `data-range-middle:` and `data-range-end:`
+# classes, a middle day's content by `group-data-range-middle:`, and the
+# days of the months around by `data-outside:`.
 prop label:Trip accessibilityValue text=2026/10/05 - 2026/10/07
 tap id:trip
 expect M10
 expect M11
-expect D5*~
-expect D6~
-expect D7*~
+prop label:2026-10-05 accessibilityState selected=true
+prop label:2026-10-06 accessibilityState selected=true
+prop label:2026-10-07 accessibilityState selected=true
+style label:2026-10-05 backgroundColor #ff0000ff
+style label:2026-10-06 backgroundColor #00ff00ff
+style label:2026-10-07 backgroundColor #0000ffff
+style text:D10.6 color #00ff00ff
+style label:2026-09-27 opacity 0.5
 # The first press starts a range, shown but not reported until the
-# second ends it; then the popup closes.
+# second ends it; then the popup closes. Half a range is its start,
+# selected, with no range marked.
 tap label:2026-10-12
-expect D12*
-absent D6~
+prop label:2026-10-12 accessibilityState selected=true
+nostyle label:2026-10-12 backgroundColor
+nostyle label:2026-10-06 backgroundColor
 expect Trip: none
 tap label:2026-10-14
 expect Trip: ["2026-10-12","2026-10-14"]
@@ -1881,6 +2247,7 @@ absent Week
 covers [props] defaultValue
 covers [props] DatePicker.range
 covers [props] DatePicker.numberOfMonths
+covers [props] DatePicker.itemClass
 covers [props] DatePicker.presets
 covers [props] DatePicker.presetsStyle
 covers [props] DatePicker.presetStyle
@@ -1893,7 +2260,7 @@ expect TimeLabel
 expect S09
 expect S30
 expect SAM
-style parent:text:S09 backgroundColor #ff0000ff
+style parent:parent:parent:text:S09 backgroundColor #ff0000ff
 # On a touch screen (as here) a tap on a day picks it at its time and
 # closes the sheet; the desktops keep the popup open for the time until
 # the selected day is pressed again.
@@ -1969,31 +2336,33 @@ absent Apple
 expect Fruit: Cherry
 prop label:Fruit accessibilityValue text=Cherry
 prop label:Fruit accessibilityState expanded=false
-# Opening again highlights the chosen item (`focus:`, 40 high; the
-# renderer's `highlighted`), which is selected for screen readers.
+# Opening again highlights the chosen item (`focus:`, 40 high; its
+# content's `group-focus:` color: `renderItem` draws what the item is, the
+# row's state its classes), which is selected for screen readers.
 tap id:fruit
-expect >Cherry ✓
+expect Cherry
+style text:Cherry color #ff0000ff
 prop label:Cherry accessibilityState selected=true
 frame label:Cherry 0 0 390 40
 frame label:Apple 0 0 390 30
 # Choosing the chosen item again closes the list and reports no change.
 tap label:Cherry
 expect Open: false select
-absent >Cherry ✓
+absent Cherry
 expect Changed: cherry 1
 # The app opens it (`open`); Escape or back is heard, and closes it.
 tap text:ShowFruit
-expect >Cherry ✓
+expect Cherry
 event label:Cherry onCancel
 expect Heard: cancel
 expect Open: false cancel
-absent >Cherry ✓
+absent Cherry
 # The backdrop closes it too.
 tap id:fruit
-expect >Cherry ✓
+expect Cherry
 tap below:parent:scroll:label:Cherry
 expect Open: false backdropPress
-absent >Cherry ✓
+absent Cherry
 covers [nsh/base] Select
 covers [props] Select.items
 covers [props] value
@@ -2059,14 +2428,15 @@ covers [props] Select.clearButtonAccessibilityLabel
 # `disabled`: dimmed for screen readers.
 prop label:Locked accessibilityState disabled=true expanded=false
 covers [props] disabled
-# `searchable`: a field above the items (its placeholder and look the
-# app's; on a phone the keyboard comes when it is pressed) filters them by
-# title, ignoring case, and a section without a match goes; `empty` shows
-# in the list's place while none matches.
+# `searchable`: a field above the items (its placeholder, name for screen
+# readers and look the app's; on a phone the keyboard comes when it is
+# pressed) filters them by title, ignoring case, and a section without a
+# match goes; `empty` shows in the list's place while none matches.
 tap id:find
 expect Find: true triggerPress
 expect Apple
 prop below:scroll:label:Apple placeholder Find food
+prop below:scroll:label:Apple accessibilityLabel FindField
 prop below:scroll:label:Apple autoFocus false
 style below:scroll:label:Apple backgroundColor #abcdefff
 style below:scroll:label:Apple borderRadius 4
@@ -2091,6 +2461,7 @@ expect Find: false backdropPress
 absent Apple
 covers [props] Select.searchable
 covers [props] Select.searchPlaceholder
+covers [props] Select.searchAccessibilityLabel
 covers [props] Select.searchClass
 covers [props] Select.searchStyle
 covers [props] Select.empty
@@ -2099,21 +2470,23 @@ covers [props] Select.empty
 tap id:case-base-color-picker
 # The parts as the app laid them out: the area 200 by 100, its thumb on
 # the color (full saturation and brightness: the top right corner), its
-# panel under it; each slider's track in the slider, the thumb centered on
-# the value (the hue at 0, the vertical alpha at its top).
+# panel under it; each slider's track in the slider, the thumb on the
+# value (the hue at 0, the vertical alpha at its top). A thumb's frame is
+# laid out with its top left corner on its point; a transform of half its
+# size centers it there.
 expect Color #ff0000
 frame id:area 0 0 200 100
-frame label:Area 195 -5 10 10
+frame label:Area 200 0 10 10
 style label:Area borderWidth 2
 style label:Area backgroundColor #ff0000ff
 style below:label:Area opacity 0.5
 style below:label:Area borderRadius 8
-frame label:Hue -5 5 10 10
+frame label:Hue 0 10 10 10
 frame below:label:Hue 0 5 200 10
 style below:label:Hue borderRadius 5
 style label:Hue borderWidth 1
 style label:Hue backgroundColor #ff0000ff
-frame label:Alpha 5 -5 10 10
+frame label:Alpha 10 0 10 10
 frame below:label:Alpha 5 0 10 100
 # Adjustable controls for screen readers: the area's value is the color,
 # a slider's its channel's.
@@ -2131,7 +2504,7 @@ prop label:Red value 255
 # app's content over both; selected while it is the picker's color. The
 # other swatch, without a color, shows the picker's, named by it.
 prop label:Blue role button
-prop label:Blue accessibilityState selected=false
+prop label:Blue accessibilityState {}
 nostyle label:Blue borderWidth
 drawing below:below:id:check fillStyle #ccccccff
 drawing below:below:id:check fillRect 0 0 10 10
@@ -2171,7 +2544,7 @@ touch move 55 5
 expect Color #00ffffff
 touch end
 expect end rgb(0 255 255)
-frame label:Hue 95 5 10 10
+frame label:Hue 100 10 10 10
 # A press on the area picks the color under it, a drag goes on from there.
 touch start id:area 100 50
 touch move 50 75
@@ -2248,6 +2621,10 @@ style label:Volume backgroundColor #0000ffff
 frame parent:label:Volume 0 8 200 4
 style parent:label:Volume backgroundColor #ccccccff
 frame parent:parent:label:Volume 0 0 200 20
+# The range from the start to the thumb, in the app's look.
+frame below:label:Volume 0 0 80 4
+style below:label:Volume backgroundColor #00ff00ff
+style below:label:Volume borderRadius 9999
 # A drag of the thumb: a value per step of 5, which the app passes back,
 # then the change's end.
 touch start label:Volume 5 5
@@ -2272,6 +2649,8 @@ prop label:"Min price" accessibilityValue min=0 max=750 now=200 text=200
 # Its own value, on a logarithmic scale along a vertical axis: a screen
 # reader's increment steps it by 1.
 prop label:Zoom accessibilityValue min=1 max=1000 now=10 text=10
+# A third of the way up the track (log 10 of log 1000).
+frame label:Zoom 2 100 10 10
 event label:Zoom onAccessibilityAction actionName=increment
 expect zoom 11
 prop label:Zoom accessibilityValue min=1 max=1000 now=11 text=11
@@ -2291,7 +2670,7 @@ touch end
 expect Locked 70
 covers [nsh/base] Slider
 covers [props] value
-covers [props] Slider.defaultValue
+covers [props] defaultValue
 covers [props] Slider.min
 covers [props] Slider.max
 covers [props] Slider.step
@@ -2455,9 +2834,19 @@ expect slice null
 tap id:hole
 event id:pie onMouseMove position.x=57 position.y=53
 expect slice 0
-# The gauge's corners are round (`cornerRadius`): its outline starts on
-# its first corner, inside the rim, rather than on the rim at 12 o'clock.
-nodrawing id:gauge fill path(arc 50 50 48 -1.5707964...
+# The gauge's corners are round (`cornerRadius`): its outline starts with
+# an arc of 3 round its first corner, inside the rim.
+drawing id:gauge arc 53 5.1 3 -3.142 -1.504
+# The slices' corners too (2): the first slice's outline starts with an
+# arc of 2 round its corner.
+drawing id:slices arc animated animated 2 -1.571 0.063
+# A band's bottom edge comes back along its `y0` field (the rows' `avg`),
+# not along the plot's bottom edge.
+drawing id:band-low lineTo 100 8
+# Two bars in one stack: the second stands on the first (its label at
+# 30, its top 10 + 20 up), in the same band.
+frame parent:text:sa10 20 50 0 0
+frame parent:text:sb20 20 30 0 0
 covers [nsh/base/plot] Pie
 covers [nsh/base/plot] Arc
 covers [props] Pie.startAngle
@@ -2481,8 +2870,12 @@ absent south
 drawing below:parent:text:east strokeStyle #ff0000ff
 drawing below:parent:text:west strokeStyle #0000ffff
 drawing below:parent:text:east lineWidth 2
-drawing below:parent:text:east stroke path(moveTo 80 50, lineTo 90 50...
-drawing below:parent:text:west stroke path(moveTo 20 50, lineTo 10 50...
+drawing below:parent:text:east moveTo 80 50
+drawing below:parent:text:east lineTo 90 50
+drawing below:parent:text:east stroke
+drawing below:parent:text:west moveTo 20 50
+drawing below:parent:text:west lineTo 10 50
+drawing below:parent:text:west stroke
 covers [props] Pie.label
 covers [props] Pie.labelClass
 covers [props] Pie.labelStyle
@@ -2561,17 +2954,21 @@ frame below:parent:parent:parent:text:m0i0 175 100 0 0
 frame below:below:parent:parent:parent:text:m0i0 25 100 0 0
 frame below:below:below:parent:parent:parent:text:m0i0 0 100 200 0
 # Left of it: d3's text of the app's values, each against the edge,
-# centered on its tick, the ends' kept within the plot's top and bottom.
-frame parent:parent:parent:text:50 0 0 0 100
-frame parent:parent:text:50 -20 0 20 100
-frame parent:text:50 0 45 20 10
-frame parent:parent:text:100 -20 0 20 0
-frame parent:text:100 0 0 20 10
-frame parent:text:0 0 -10 20 10
+# centered on its tick in room as tall as the plot either way; the
+# plot keeps half a label (5) inside its top and bottom edges, so the
+# scale runs from 95 up to 5 and the ends' labels sit on their ticks
+# within it.
+frame parent:parent:parent:text:50 0 -50 0 200
+frame parent:parent:text:50 -20 0 20 200
+frame parent:text:50 0 95 20 10
+frame parent:parent:parent:text:100 0 -95 0 200
+frame parent:text:100 0 95 20 10
+frame parent:parent:parent:text:0 0 -5 0 200
+frame parent:text:0 0 95 20 10
 # Its tick marks (a style) at 100, 50 and 0, its line (classes).
-frame below:parent:parent:parent:text:0 0 0 0 0
+frame below:parent:parent:parent:text:0 0 5 0 0
 frame below:below:parent:parent:parent:text:0 0 50 0 0
-frame below:below:below:parent:parent:parent:text:0 0 100 0 0
+frame below:below:below:parent:parent:parent:text:0 0 95 0 0
 frame below:below:below:below:parent:parent:parent:text:0 0 0 0 100
 # Inside the right edge: above its grid line, against the edge.
 frame parent:parent:parent:text:in50 200 0 0 50
@@ -2598,6 +2995,156 @@ drawing below:parent:text:r10 fillStyle #00ff00ff
 drawing below:parent:text:r10 fillStyle #ff0000ff
 covers [props] Plot.colorScale
 covers [props] Bar.color
+# Candles: each body spans its open to its close, its label at the
+# close, above the first (growing up from 20 to 40), below the second
+# (growing down from 40 to 30).
+expect c40
+frame parent:text:c40 50 60 0 0
+frame text:c40 -10 -10 20 10
+frame parent:text:c30 150 70 0 0
+frame text:c30 -10 0 20 10
+# Each wick from its low to its high in the middle of its band, green
+# up and red down.
+drawing id:wicks moveTo 50 90
+drawing id:wicks lineTo 50 50
+drawing id:wicks moveTo 150 75
+drawing id:wicks lineTo 150 25
+drawing id:wicks strokeStyle #00ff00ff
+drawing id:wicks strokeStyle #ff0000ff
+# Over the first candle the second's wick fades to `inactiveOpacity`.
+expect candle null
+event id:candles onMouseMove position.x=50 position.y=50
+expect candle 0
+animated id:wicks slot.0 1
+animated id:wicks slot.1 0.25
+event id:candles onMouseLeave
+expect candle null
+covers [nsh/base/plot] Rule
+covers [props] Rule.base
+covers [props] Rule.color
+covers [props] Rule.inactiveOpacity
+# Bubbles: the bigger one (cap 400, radius 20) drawn first, the other a
+# quarter of its cap, half its radius; each filled by its sector.
+drawing id:dots arc 150 60 20 0 6.283
+drawing id:dots arc 50 80 10 0 6.283
+drawing id:dots fillStyle #00ff00ff
+drawing id:dots fillStyle #ff0000ff
+# Over the big bubble, off its center: the small one fades to
+# `inactiveOpacity`.
+expect bubble null
+event id:bubbles onMouseMove position.x=140 position.y=70
+expect bubble 1
+animated id:dots slot.0 1
+animated id:dots slot.1 0.25
+# 15 past the small one's edge, within `hitRadius`; far from both, none.
+event id:bubbles onMouseMove position.x=75 position.y=80
+expect bubble 0
+event id:bubbles onMouseMove position.x=100 position.y=5
+expect bubble null
+covers [nsh/base/plot] Dot
+covers [props] Dot.r
+covers [props] Dot.rScale
+covers [props] Dot.color
+covers [props] Dot.inactiveOpacity
+covers [props] Dot.hitRadius
+# Dual axes on the app's domains: the line, the area's top edge, the
+# rule, the bar's end, the grid line, the label and the right axis's
+# tick on the second scale (y2 0 to 40 from 100 up to 5: the right
+# axis's one label, on the top tick, keeps half its height inside the
+# top edge).
+expect b12
+drawing id:dual-line moveTo 50 71.5
+drawing id:dual-line lineTo 150 35.875
+drawing id:dual-area lineTo 150 35.875
+drawing id:dual-rule moveTo 50 100
+drawing id:dual-rule lineTo 50 71.5
+drawing id:dual-dots arc 50 71.5 3 0 6.283
+frame parent:text:b12 50 72 0 0
+drawing id:dual-grid moveTo 0 52.5
+frame parent:text:y2-label 50 53 0 0
+frame parent:parent:parent:text:y2-r40 200 -95 0 200
+# Automatic domains aligned in two steps of each: y 0 to 200, y2 10 to
+# 30; the right axis ticks every step, the grid d3's ticks of 0 to 200.
+drawing id:aligned-line moveTo 50 86
+drawing id:aligned-line lineTo 150 18.5
+expect p10
+expect p20
+expect p30
+drawing id:aligned-grid moveTo 0 27.5
+# Not aligned: y2 is 12 to 27.
+drawing id:own-line moveTo 50 100
+drawing id:own-line lineTo 150 0
+covers [props] Plot.y2Scale
+covers [props] Plot.alignTicks
+covers [props] Line.scale
+covers [props] Area.scale
+covers [props] Rule.scale
+covers [props] Bar.scale
+covers [props] Dot.scale
+covers [props] Grid.scale
+covers [props] Grid.ticks
+covers [props] PlotLabel.scale
+covers [props] PlotAxis.scale
+# Heatmaps: four cells of 100 by 50, `col-b` left of `col-a` (the x
+# scale's `domain`), `row-a` over `row-b` (the order the cells name them),
+# each label's box its cell's; the axes write the bands' categories.
+expect col-a
+expect col-b
+expect row-a
+expect row-b
+frame parent:text:v-15 150 25 0 0
+frame parent:text:v5 50 25 0 0
+frame parent:text:v45 150 75 0 0
+frame parent:text:vnone 50 75 0 0
+# Round corners (the canvas: the sibling below the first label). Colors
+# along the diverging ramp over -15 to 25: -15 at its dark red end, 5 at
+# its white middle (`pivot`), 45 past the domain at its dark green end,
+# the row without a value navy (`unknown`).
+drawing below:parent:text:v-15 roundRect 100 0 100 50 4 4 4 4
+drawing below:parent:text:v-15 roundRect 0 50 100 50 4 4 4 4
+drawing below:parent:text:v-15 fillStyle #990000ff
+drawing below:parent:text:v-15 fillStyle #ffffffff
+drawing below:parent:text:v-15 fillStyle #006600ff
+drawing below:parent:text:v-15 fillStyle #000080ff
+# The labels: black, white on the dark cells (`data-dark`), 9 points.
+style text:v5 color #000000ff
+style text:v-15 color #ffffffff
+style text:v45 color #ffffffff
+style text:vnone color #ffffffff
+style text:v5 fontSize 9
+# Over the first cell: the others' labels fade to `inactiveOpacity`.
+expect cell null
+event id:heat onMouseMove position.x=150 position.y=25
+expect cell 0
+animated parent:text:v-15 opacity 1
+animated parent:text:v5 opacity 0.25
+event id:heat onMouseMove position.x=50 position.y=75
+expect cell 3
+event id:heat onMouseLeave
+expect cell null
+# Cells colored by category through an ordinal scale, square, the x
+# scale's bands in the order the cells name them.
+frame parent:text:tag-a 50 25 0 0
+frame parent:text:tag-b 150 25 0 0
+drawing below:parent:text:tag-a rect 0 0 100 50
+drawing below:parent:text:tag-a fillStyle #00ff00ff
+drawing below:parent:text:tag-a fillStyle #ff0000ff
+# Along a sequential ramp over 0 to 20: 0 white, 10 gray, 40 past the
+# domain black, the row without a value magenta (`unknown`).
+frame parent:text:lv-c 125 10 0 0
+drawing below:parent:text:lv-a fillStyle #ffffffff
+drawing below:parent:text:lv-a fillStyle #808080ff
+drawing below:parent:text:lv-a fillStyle #000000ff
+drawing below:parent:text:lv-a fillStyle #ff00ffff
+covers [nsh/base/plot] Cell
+covers [props] Cell.x
+covers [props] Cell.y
+covers [props] Cell.color
+covers [props] Cell.cornerRadii
+covers [props] Cell.inactiveOpacity
+covers [props] Cell.label
+covers [props] Cell.labelClass
+covers [props] Cell.labelStyle
 # Reversed scales: bands from the right edge (middles 250, 150 and 50)
 # and a y scale of 0 to 40 from the top edge (2 points a value), so the
 # bars hang from the top, each label below its bar's end.
@@ -2649,8 +3196,10 @@ event id:radar onMouseLeave
 expect axis null
 # The grids: a circular ring at 5 (20 out of 40) from 3 o'clock, and a
 # spoke per row from 6 out to 40, the first at 12 o'clock.
-drawing id:rings stroke path(moveTo 70 50, arc 50 50 20 0...
-drawing id:spokes stroke path(moveTo 50 44, lineTo 50 10...
+drawing id:rings moveTo 70 50
+drawing id:rings arc 50 50 20 0 4.712
+drawing id:spokes moveTo 50 44
+drawing id:spokes lineTo 50 10
 covers [nsh/base/plot] RadialLine
 covers [nsh/base/plot] RadialGrid
 covers [props] RadialLine.radius
@@ -2686,12 +3235,42 @@ covers [props] PlotLabel.texts
 # Each node is labelled with its value (its most in or out, 100 for
 # `visits`) over its name. New flows move in; their labels follow. A
 # plot whose links make a cycle lays out as any other, drawing nothing.
+# The labels come after the nodes, the nodes after the ribbons, the
+# ribbons after their backgrounds: below the first label is the last
+# node, `paid`. Each node is a rectangle 8 wide with corners of 2, its
+# row's fill, outlined white; its height the square root of what goes
+# through it, the nodes of a column 10 apart; `gone`, which nothing
+# leaves, stays next to its source (`nodeAlign="left"`).
+drawing below:parent:parent:text:visits roundRect 192 34.009 8 31.982 2 2 2 2
+drawing below:parent:parent:text:visits fillStyle #ffaa00ff
+drawing below:parent:parent:text:visits strokeStyle #ffffffff
+drawing below:below:parent:parent:text:visits roundRect 96 59.546 8 40.454 2 2 2 2
+# A ribbon is outlined by `linkClass`, at `linkStyle`'s opacity; one
+# thinner than `minLinkWidth` (trials to paid, 32 at `paid`) is drawn
+# that thick, 32 to 68, its canvas reaching past the plot by half of it
+# more; its background, a gradient from its source's color shown inside
+# it, at `linkBackgroundStyle`'s.
+drawing below:below:below:below:below:parent:parent:text:visits strokeStyle #ddddddff
+drawing below:below:below:below:below:parent:parent:text:visits lineTo 192 68
+drawing below:below:below:below:below:parent:parent:text:visits translate 26 26
+style below:below:below:below:below:parent:parent:text:visits opacity 0.8
+drawing id:sankey fillStyle createLinearGradient(8, 27.273, 96, 27.273) addColorStop(0, #3366ff66)...
+style below:below:below:below:below:below:below:below:parent:parent:text:visits opacity 0.9
+# The labels: the part padded by `nodeLabelClass`, its texts sized by
+# `nodeLabelStyle`, the values semibold and colored by their own.
+frame text:visits 4 12 33 12
+style text:visits fontSize 10
+style text:v100 fontWeight 600
+style text:v100 color #333333ff
 prop id:flows role image
 prop id:flows accessibilityLabel Flows
 frame id:sankey 0 0 200 100
 expect flow null
 event id:flows onMouseMove position.x=4 position.y=50
 expect flow 0
+# The ribbons away from the hovered node fade by `hoverDim`: trials to
+# paid, the last, to 0.4.
+animated below:below:below:below:below:parent:parent:text:visits opacity 0.4
 event id:flows onMouseMove position.x=30 position.y=50
 expect flow null
 event id:flows onMouseLeave
@@ -2711,8 +3290,14 @@ tap id:more-flows
 expect v70
 expect v35
 prop id:cycle accessibilityLabel Cycle
+# Unrelaxed (`iterations={0}`), the nodes of the second column stay
+# where the layout first puts them, its room shared out around them:
+# `ry` is not drawn down level with `rc`, its source.
+drawing below:parent:parent:text:ra rect 76 69.333 24 28
 covers [nsh/base/plot] Sankey
 covers [props] Sankey.links
+covers [props] Sankey.nodeLabel
+covers [props] Sankey.valueLabel
 covers [props] Sankey.nodeWidth
 covers [props] Sankey.nodePadding
 covers [props] Sankey.nodeAlign
@@ -2726,35 +3311,120 @@ covers [props] Sankey.linkClass
 covers [props] Sankey.linkStyle
 covers [props] Sankey.linkBackgroundClass
 covers [props] Sankey.linkBackgroundStyle
-covers [props] Sankey.hoverDim
-covers [props] Sankey.nodeLabel
-covers [props] Sankey.valueLabel
 covers [props] Sankey.nodeLabelClass
 covers [props] Sankey.nodeLabelStyle
 covers [props] Sankey.valueLabelClass
 covers [props] Sankey.valueLabelStyle
-# A plot inside a `PlotAppearScope`: it draws in (its line clipped to the
-# appear) the first time it is shown; made again once that finished, it
-# is whole at once. A new `appearGeneration` draws it in again, and so
-# does a new `id` of the scope, which forgets what it saw.
+covers [props] Sankey.hoverDim
+# A treemap fills its plot: `Grow` (80 of 100) left, `Hold` right of a
+# gap of 4 (`paddingInner`'s first level), their corners on whole points;
+# each with a band of 20 (`paddingTop`) for its name, its leaves 2 apart
+# (the second level) inside a padding of 1 (`paddingOuter`), `Ant` (50)
+# over `Bee` (30) at `ratio` 4 (side by side at the default). The labels come after the canvases: the
+# leaves' (by their classes: `Bee` and `Cat` outlined blue, `Ant` black),
+# then the groups' (`groupClass`'s fill, `groupStyle`'s opacity). Each
+# leaf is colored by its change (`colorValue`) on the plot's diverging
+# scale, its corners `cornerRadii`; `Zed` (0) takes no area.
+drawing below:parent:parent:text:Grow roundRect 1 71 237 28 3 3 3 3
+drawing below:parent:parent:text:Grow roundRect 244 21 55 78 3 3 3 3
+drawing below:parent:parent:text:Grow fillStyle #ff0000ff
+drawing below:parent:parent:text:Grow fillStyle #ffffffff
+drawing below:parent:parent:text:Grow strokeStyle #0000ffff
+style below:parent:parent:text:Grow opacity 0.9
+drawing below:below:parent:parent:text:Grow roundRect 1 21 237 48 3 3 3 3
+drawing below:below:parent:parent:text:Grow fillStyle #00ff00ff
+drawing below:below:parent:parent:text:Grow strokeStyle #000000ff
+drawing below:below:below:parent:parent:text:Grow roundRect 0 0 239 100 3 3 3 3
+drawing below:below:below:parent:parent:text:Grow roundRect 243 0 57 100 3 3 3 3
+drawing below:below:below:parent:parent:text:Grow fillStyle #eeeeeeff
+style below:below:below:parent:parent:text:Grow opacity 0.5
+absent Zed
+# The labels: a leaf's box as big as it, padded by `labelClass`, its
+# name and value (`valueLabel`, of its value) centered in it; a group's
+# name in its band (a group writes no value).
+frame parent:parent:text:Ant 1 21 237 48
+frame parent:parent:text:Grow 0 0 239 20
+style text:Ant fontSize 10
+style text:t50 fontWeight 600
+style text:t50 color #333333ff
+style text:Grow fontSize 9
+expect Hold
+prop id:tree accessibilityLabel Tree
+frame id:treemap 0 0 300 100
+# The pointer over `Ant` reports its row, and the other nodes' labels
+# fade to `inactiveOpacity`; in `Grow`'s band, the group.
+expect node null
+event id:tree onMouseMove position.x=50 position.y=50
+expect node 2
+animated parent:parent:text:Bee opacity 0.25
+animated parent:parent:text:Ant opacity 1
+event id:tree onMouseMove position.x=50 position.y=10
+expect node 0
+event id:tree onMouseLeave
+expect node null
+# `Bee` grows to 60 and moves to its new box; its label follows.
+tap id:grow-tree
+expect t60
+absent t30
+# The rows' order (`sort="data"`), colored by kind (`color`): `Grow`'s
+# leaves in its fill, `Hold`'s in the other.
+expect d-Ant
+expect d-Cat
+covers [nsh/base/plot] Treemap
+covers [props] Treemap.id
+covers [props] Treemap.parent
+covers [props] Treemap.ratio
+covers [props] Treemap.paddingInner
+covers [props] Treemap.paddingOuter
+covers [props] Treemap.paddingTop
+covers [props] Treemap.cornerRadii
+covers [props] Treemap.colorValue
+covers [props] Treemap.leafClass
+covers [props] Treemap.leafStyle
+covers [props] Treemap.groupClass
+covers [props] Treemap.groupStyle
+covers [props] Treemap.inactiveOpacity
+covers [props] Treemap.label
+covers [props] Treemap.valueLabel
+covers [props] Treemap.labelClass
+covers [props] Treemap.labelStyle
+covers [props] Treemap.valueLabelClass
+covers [props] Treemap.valueLabelStyle
+covers [props] Treemap.groupLabel
+covers [props] Treemap.groupLabelStyle
+# A plot inside a `PlotAppearScope`, shown and taken away, its period
+# and the scope's `id` changed. Its line's clip is read as the animation
+# graph runs it: 100 wide once drawn in, 0 at the start of an appear of
+# an hour easing in (`scope-slow`).
 tap id:scope-toggle
 expect scoped true 1D watch
-drawing id:scoped-line clip...
-wait 300
-nodrawing id:scoped-line clip...
+drawing id:scoped-line clip
+drawing id:scoped-line stroke
+animated id:scoped-line slot.0 100
+# Made again inside the scope, a generation that finished there shows
+# whole at once, even with the slow appear: its line is not clipped.
 tap id:scope-toggle
 expect scoped false 1D watch
+tap id:scope-slow
 tap id:scope-toggle
 expect scoped true 1D watch
-nodrawing id:scoped-line clip...
+drawing id:scoped-line stroke
+nodrawing id:scoped-line clip
+# Another `appearGeneration` draws in again.
 tap id:scope-period
 expect scoped true 1W watch
-drawing id:scoped-line clip...
-wait 300
-nodrawing id:scoped-line clip...
+animated id:scoped-line slot.0 0
+# That one never finished, so made again it draws in again (fast).
+tap id:scope-toggle
+tap id:scope-slow
+tap id:scope-toggle
+expect scoped true 1W watch
+animated id:scoped-line slot.0 100
+# Another scope `id`: the scope forgets, and the plot draws in afresh.
+tap id:scope-slow
 tap id:scope-rename
 expect scoped true 1W hot
-drawing id:scoped-line clip...
+animated id:scoped-line slot.0 0
 covers [nsh/base/plot] PlotAppearScope
 covers [props] PlotAppearScope.id
 covers [props] Plot.appearGeneration
@@ -3053,6 +3723,10 @@ wait 100
 frame id:grow 0 0 300 60
 # The app's fold ranges (the outer one shorter than the indentation's):
 # level 2 folds the inner block alone.
+# The gutter's strip of decorations' marks is `gutterDecorationsWidth`
+# wide, before the line numbers and the fold markers: the gutter is
+# 12 + 4 + 15 + 20 + 4 wide.
+frame below:parent:parent:parent:parent:span:c(); 0 0 55 200
 tap id:fold-level
 expect Folded: 1-2
 # Folding the outer block recursively keeps the inner one folded, so
@@ -3149,6 +3823,7 @@ covers [events] Editor.onCompletionAccept
 covers [events] Editor.onInlineCompletionRequest
 covers [props] Editor.diagnostics
 covers [props] Editor.styles
+covers [props] Editor.gutterDecorationsWidth
 covers [events] Editor.onDefinitionRequest
 covers [events] Editor.onCodeActionRequest
 
@@ -3215,6 +3890,27 @@ absent BETA
 tap id:file-0
 expect Toggled: a.ts false
 expect BETA
+# The second file header follows the wrapped rows of the first file.
+frame parent:parent:parent:id:file-1 0 100 390 20
+tap id:wrap-files
+wait 100
+frame parent:parent:parent:id:file-1 0 140 390 20
+tap id:wrap-files
+expect BETA
+frame parent:parent:parent:id:file-1 0 100 390 20
+# A longer diff of every line reports where its rows are once laid out:
+# 30 rows of 20 points, as wide as its 390 × 100 viewport, at the top.
+expect Scrolled: 0 0 390x600 390x100
+# Where each change's row is in them, reported and as the ref gives it.
+expect Moved: 0@0,80 390x20 1@0,480 390x20
+tap id:marks
+expect Marks: 0@0,80 390x20 1@0,480 390x20
+# The ref scrolls them to an offset, reported.
+tap id:scroll-to
+expect Scrolled: 0 470 390x600 390x100
+tap id:read-offset
+expect Offset: 0 470
+expect line TWENTY-FIVE
 covers [props] DiffView.softWrap
 covers [props] DiffView.annotations
 covers [props] DiffView.renderAnnotation
@@ -3230,6 +3926,8 @@ covers [props] DiffView.renderSeparator
 covers [props] DiffView.renderHunkActions
 covers [props] DiffView.renderFileHeader
 covers [events] DiffView.onFileToggle
+covers [events] DiffView.onHunkBoundsChange
+covers [props] DiffView.expandAll
 
 # base-data-table
 tap id:case-base-data-table
@@ -3298,7 +3996,7 @@ expect Filter: true
 expect Decorations: set
 expect State: text string true false
 expect Attr: true
-expect Split: true 2
+expect Split: true 3
 expect Content: Plain line **b**
 expect Insert: xyb
 expect Dispatch: all xy
@@ -3437,7 +4135,7 @@ tap id:case-base-rich-editor-kit
 tap text:RunKit
 expect Kit: true true true
 expect Configure: false true unknown
-expect Extension: bold mark 100
+expect Extension: bold mark 100 true
 expect Extend: 200 underline true
 expect Define: HEY extension xHI
 expect Named: text threw
@@ -3489,3 +4187,70 @@ expect BubbleMenu
 covers [props] RichEditor.bubbleMenu
 expect CellA
 expect CellD
+# base-transition-shader
+tap id:case-base-transition-shader
+# Pages and a dialog with a `transitionShader` come and go as without one:
+# the headless runtime presents nothing and renders no pixels. Each prop
+# reaches the core, which warns of the uniform its program does not
+# declare.
+expect Page home
+tap text:Push details
+expect Page details
+log uniform `pageTint`
+tap text:Open dialog
+expect Shader dialog
+log uniform `dialogTint`
+tap text:Close dialog
+absent Shader dialog
+tap text:Pop
+expect Page home
+absent Page details
+covers [props] transitionShader
+# base-hover-card
+tap id:case-base-hover-card
+# `defaultOpen`: open at first; a press outside closes it.
+expect OwnCard
+touch start text:Elsewhere 5 5
+touch end
+absent OwnCard
+# A phone has no pointer to rest: a press on the trigger opens it, above
+# the trigger (20, 300), 6 points away, lined up by its start but kept 30
+# points from the edge; the app's class and style.
+tap id:mention
+expect AdaCard
+expect Log: card true triggerPress
+expect Life: card open
+expect Side: top
+frame parent:text:AdaCard 30 254 120 40
+style parent:text:AdaCard backgroundColor #123456ff
+# The trigger again closes it.
+tap id:mention
+absent AdaCard
+expect Log: card false triggerPress
+expect Life: card closed
+# A press outside closes it, and so do Escape and back.
+tap id:mention
+expect AdaCard
+touch start text:Elsewhere 5 5
+touch end
+absent AdaCard
+expect Log: card false pressOutside
+tap id:mention
+expect AdaCard
+event text:AdaCard onCancel
+absent AdaCard
+expect Log: card false cancel
+covers [nsh/base] HoverCard
+covers [props] HoverCard.open
+covers [props] HoverCard.defaultOpen
+covers [props] HoverCard.placement
+covers [props] HoverCard.align
+covers [props] HoverCard.offset
+covers [props] HoverCard.margin
+covers [props] HoverCard.popupClass
+covers [props] HoverCard.popupStyle
+covers [props] HoverCard.trigger
+covers [events] HoverCard.onOpenChange
+covers [events] HoverCard.onOpen
+covers [events] HoverCard.onClose
+covers [events] HoverCard.onPosition

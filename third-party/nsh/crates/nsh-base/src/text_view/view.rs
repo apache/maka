@@ -354,6 +354,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
     let count =
         computed(move || document.with(|d| d.blocks.len() + usize::from(!d.footnotes.is_empty())));
     let plugins = Rc::new(plugins);
+    let math_loaded = signal(false);
     dynamic(move || {
         parsed.track_source();
         // User choices belong to the source, not to a recycled list cell.
@@ -381,7 +382,14 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
             let plugins = row_plugins.clone();
             let choices = choices.clone();
             each(rows, DocumentRow::key, move |item, _| {
-                let cx = Cx::read(&props, cx, plugins.clone(), parsed, choices.clone());
+                let cx = Cx::read(
+                    &props,
+                    cx,
+                    plugins.clone(),
+                    parsed,
+                    choices.clone(),
+                    math_loaded,
+                );
                 // A cell follows Position. This owner instead follows the
                 // logical block, so its old callbacks cannot address a row
                 // that the cell starts showing later.
@@ -681,6 +689,8 @@ struct Cx {
     render_math: Option<Renderer<TextViewMath>>,
     render_image: Option<Renderer<TextViewImageContext>>,
     plugins: Rc<MarkdownPlugins>,
+    /// Set when the formula typesetter finished loading (`formula.rs`).
+    math_loaded: Signal<bool>,
     typed: TextViewParts,
     /// Whether the caret is placed in this run.
     caret_placed: Rc<std::cell::Cell<bool>>,
@@ -705,6 +715,7 @@ impl Cx {
         plugins: Rc<MarkdownPlugins>,
         source: DocumentState,
         choices: BlockChoices,
+        math_loaded: Signal<bool>,
     ) -> Self {
         Self {
             selectable: props.selectable.get(),
@@ -720,6 +731,7 @@ impl Cx {
             render_math: props.render_math.get(),
             render_image: props.render_image.get(),
             plugins,
+            math_loaded,
             typed: use_context::<TextViewParts>().unwrap_or_default(),
             highlighter: use_context::<CodeHighlighter>(),
             caret_placed: Rc::default(),
@@ -729,6 +741,14 @@ impl Cx {
             links: props.links.get(),
             scope,
         }
+    }
+
+    /// `tex` typeset, when it can be now.
+    fn formula(&self, tex: &str, display: bool, size: f32) -> Option<AnyElement> {
+        if !super::formula::ready(self.math_loaded) {
+            return None;
+        }
+        super::formula::formula(tex, display, size)
     }
 
     /// What a press on a link to `url` does: reported, and opened outside
@@ -907,6 +927,7 @@ impl Cx {
                 cx.plugins.clone(),
                 cx.source,
                 cx.choices.clone(),
+                cx.math_loaded,
             );
             current.list_depth = std::cell::Cell::new(cx.list_depth.get());
             current.line = std::cell::Cell::new(cx.line.get());
@@ -1347,8 +1368,27 @@ impl Cx {
                         .into_element(),
                     source,
                 ),
-                // Its TeX in a box as a code block's, as gpui-kit shows a
-                // formula it has no renderer for.
+                // Typeset, centered, scrolling sideways when wider than
+                // the view.
+                None if let Some(formula) = self.formula(tex, true, BODY_SIZE * 1.1) => self
+                    .attachment(
+                        self.part(
+                            scroll().horizontal().scrollbar(false).child(
+                                view()
+                                    .flex_row()
+                                    .justify_center()
+                                    .min_w(relative(1.0))
+                                    .py(px(BODY_SIZE * 0.25))
+                                    .label(tex.clone())
+                                    .child(formula),
+                            ),
+                            Part::MathBlock,
+                        )
+                        .into_element(),
+                        source,
+                    ),
+                // TeX it cannot read: in a box as a code block's, as gpui-kit
+                // shows a formula it has no renderer for.
                 None => self
                     .part(
                         view()
@@ -1485,6 +1525,7 @@ impl Cx {
                 cx.plugins.clone(),
                 cx.source,
                 cx.choices.clone(),
+                cx.math_loaded,
             );
             let code = code.get();
             let body = match &cx.highlighter {
@@ -1882,7 +1923,9 @@ impl Cx {
                     .underline()
                     .text_decoration_color(move || theme().primary.opacity(0.4))
                     .text_decoration_thickness(px(1.0))
-                    .underline_offset(px(3.0))
+                    // No offset of its own: the native backends clip a
+                    // decoration to the text's box, so a fixed one below a
+                    // tight line's box hides the underline (#447).
                     .role(AccessibilityRole::Link)
                     .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
@@ -1903,9 +1946,22 @@ impl Cx {
                         },
                     )
                     .into_element(),
-                None => self
-                    .part(code_span(text(tex.clone())), Part::Math)
-                    .into_element(),
+                // Typeset in the line, its middle on the text's.
+                None => match self.formula(tex, false, BODY_SIZE) {
+                    Some(formula) => self
+                        .part(
+                            view()
+                                .flex_row()
+                                .align_middle()
+                                .label(tex.clone())
+                                .child(formula),
+                            Part::Math,
+                        )
+                        .into_element(),
+                    None => self
+                        .part(code_span(text(tex.clone())), Part::Math)
+                        .into_element(),
+                },
             },
             Inline::Break => text("\n").into_element(),
             Inline::FootnoteReference { label, index } => {

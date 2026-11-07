@@ -30,7 +30,7 @@ use maka_agent_ports::session::history::Page;
 use maka_agent_ports::session::history::Position;
 use maka_agent_ports::session::history::Role;
 use maka_agent_ports::session::history::{HistoryField, HistoryView};
-use sqlx::{Row, sqlite::SqliteWorkerConnection};
+use rusqlite::OptionalExtension;
 
 // Text windows and exact source reads retain material labels in their body.
 pub(super) const BODY: &str = "COALESCE(CASE json_extract(payload, '$.type')
@@ -104,60 +104,66 @@ impl EventLog {
         view: HistoryView,
         limits: crate::transcript::HistoryLimits,
     ) -> Result<Page, StoreError> {
+        crate::sessions::validate_id(session)?;
+        self.history_view_owned(
+            super::HistoryOwner::Session(session.to_owned()),
+            through,
+            position,
+            include_thinking,
+            view,
+            limits,
+        )
+        .await
+    }
+
+    pub(crate) async fn history_view_owned(
+        &self,
+        owner: super::HistoryOwner,
+        through: u64,
+        position: Position,
+        include_thinking: bool,
+        view: HistoryView,
+        limits: crate::transcript::HistoryLimits,
+    ) -> Result<Page, StoreError> {
         let crate::transcript::HistoryLimits {
             max_bytes,
             max_chunks,
             max_json_bytes,
         } = limits;
-        self.validate_root()?;
-        if !(4..=128 * 1024).contains(&max_bytes)
-            || max_chunks == Some(0)
-            || !(1024..=1024 * 1024).contains(&max_json_bytes)
-        {
+        if max_bytes < 4 || max_chunks == Some(0) || max_json_bytes == 0 {
             return Err(invalid("invalid history window limits"));
         }
-        crate::sessions::validate_id(session)?;
         let fence = through;
         sql_number(fence)?;
         // A serialized chunk occupies at least one byte. The delivery budget
         // therefore bounds rows even when a caller needs no item-count limit.
         let max_chunks = max_chunks.unwrap_or(max_json_bytes).min(max_json_bytes);
-        let session = session.to_owned();
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
-                    Box::pin(async move {
-                        super::directory::ensure(tx, &session, fence).await?;
-                        crate::connection::worker_query(tx, move |worker| {
-                            Box::pin(async move {
-                                read_page(
-                                    worker,
-                                    &session,
-                                    through,
-                                    position,
-                                    include_thinking,
-                                    view,
-                                    max_bytes,
-                                    max_chunks,
-                                    max_json_bytes,
-                                )
-                                .await
-                            })
-                        })
-                        .await
-                    })
+                    super::directory::ensure_owner(tx, owner.clone(), fence)?;
+                    read_page(
+                        tx,
+                        &owner,
+                        through,
+                        position,
+                        include_thinking,
+                        view,
+                        max_bytes,
+                        max_chunks,
+                        max_json_bytes,
+                    )
                 })
             })
             .await
     }
 }
 
-// Execute one bounded page with the original SQLx statement cache and row
-// decoders. bodycache::run still owns transaction completion and maintenance.
+// bodycache::run owns transaction completion and maintenance for this page.
 #[allow(clippy::too_many_arguments)]
-async fn read_page(
-    tx: &mut SqliteWorkerConnection<'_>,
-    session: &str,
+fn read_page(
+    tx: &rusqlite::Connection,
+    owner: &super::HistoryOwner,
     through: u64,
     position: Position,
     include_thinking: bool,
@@ -166,17 +172,10 @@ async fn read_page(
     max_chunks: usize,
     max_json_bytes: usize,
 ) -> Result<Page, StoreError> {
+    let session = owner.key();
     let fence = through;
     let through_sql = sql_number(through)?;
     let mut final_outputs = std::collections::HashMap::new();
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_control WHERE id = ?)")
-            .bind(session)
-            .fetch_one(&mut *tx)
-            .await?;
-    if !exists {
-        return Err(invalid("Session no longer exists"));
-    }
     let target = if let Position::Row { position, field } = position {
         if position.validate().is_err()
             || position.source_sequence > fence
@@ -184,10 +183,10 @@ async fn read_page(
         {
             return Err(invalid("history row exceeds its fence"));
         }
-        materialize(tx, session, position, view, through_sql).await?;
+        materialize(tx, owner, position, view, through_sql)?;
         // Header lookup requires the actual field; a tool Body cannot
         // impersonate a Thinking field that was never recorded.
-        header(tx, session, position, field, view, through_sql).await?;
+        header(tx, session, position, field, view, through_sql)?;
         Some((position, field))
     } else {
         None
@@ -200,7 +199,7 @@ async fn read_page(
                 return Err(invalid("history cursor exceeds its fence"));
             }
             sql_number(cursor.offset)?;
-            materialize(tx, session, cursor.position, view, through_sql).await?;
+            materialize(tx, owner, cursor.position, view, through_sql)?;
             let row = header(
                 tx,
                 session,
@@ -208,8 +207,7 @@ async fn read_page(
                 cursor.field,
                 view,
                 through_sql,
-            )
-            .await?;
+            )?;
             if cursor.offset > row.total {
                 return Err(invalid("history offset exceeds message"));
             }
@@ -222,8 +220,7 @@ async fn read_page(
                     cursor,
                     1,
                     view == HistoryView::Conversation && row.role == "user",
-                )
-                .await?
+                )?
             };
             if byte.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
                 return Err(invalid("history offset splits UTF-8"));
@@ -261,38 +258,71 @@ async fn read_page(
             )
         }
     };
-    let query = match (reverse, boundary.is_some(), inclusive) {
+    let boundary_order = if let Some(boundary) = boundary {
+        let pair: Option<(i64, i64)> = if let Position::Event { sequence } = position {
+            tx.prepare_cached("SELECT order_sequence,order_item FROM transcript_directory WHERE owner_key=?1 AND source_sequence=?2 ORDER BY order_sequence,order_item LIMIT 1")?.query_row( rusqlite::params![session, sql_number(sequence)?], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?
+        } else {
+            tx.prepare_cached(super::read::ORDER)?
+                .query_row(
+                    rusqlite::params![
+                        session,
+                        sql_position(boundary)?.0,
+                        sql_position(boundary)?.1
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+        };
+        Some(match pair {
+            Some(pair) => pair,
+            None if matches!(position, Position::Event { .. }) => sql_position(boundary)?,
+            None => return Err(invalid("history cursor was not found")),
+        })
+    } else {
+        None
+    };
+    let query = match (reverse, boundary_order.is_some(), inclusive) {
         (true, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence DESC,item_index DESC LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (true, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<=(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (true, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>=(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (false, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
     };
-    let mut query = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(query)).bind(session);
-    // A validated reverse anchor already implies the raw fence. Keep the
-    // cursor pair as the sole upper bound so SQLite seeks directly to it.
-    if !(reverse && boundary.is_some()) {
-        query = query.bind(through_sql);
-    }
-    query = query.bind((max_chunks + 1) as i64);
-    if let Some(boundary) = boundary {
-        let (source, item) = sql_position(boundary)?;
-        query = query.bind(source).bind(item);
-    }
-    let rows = query.fetch_all(&mut *tx).await?;
+    let rows = {
+        let mut statement = tx.prepare_cached(query)?;
+        let decode = |row: &rusqlite::Row<'_>| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?));
+        let rows = if let Some((sequence, item)) = boundary_order {
+            statement.query_map(
+                rusqlite::params![
+                    session,
+                    through_sql,
+                    (max_chunks + 1) as i64,
+                    sequence,
+                    item
+                ],
+                decode,
+            )?
+        } else {
+            statement.query_map(
+                rusqlite::params![session, through_sql, (max_chunks + 1) as i64],
+                decode,
+            )?
+        };
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
     let mut chunks = Vec::new();
     let mut chunks_json_bytes = 0;
     let mut bytes = 0;
@@ -309,10 +339,8 @@ async fn read_page(
         let locator = row_position(locator.0, locator.1)?;
         // Materialize only actually visited rows, never a long message's
         // following rows. One oversized first row still progresses.
-        projected += materialize(tx, session, locator, view, through_sql).await?;
-        let has_thinking: bool = include_thinking && sqlx::query_scalar(
-        "SELECT has_thinking FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-    ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+        projected += materialize(tx, owner, locator, view, through_sql)?;
+        let has_thinking: bool = include_thinking && tx.prepare_cached("SELECT has_thinking FROM transcript_directory WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3")?.query_row( rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1], |row| row.get(0))?;
         let mut fields = vec![HistoryField::Body];
         if include_thinking && has_thinking {
             fields.insert(0, HistoryField::Thinking);
@@ -327,7 +355,7 @@ async fn read_page(
             if target == Some((locator, HistoryField::Body)) && field == HistoryField::Thinking {
                 continue;
             }
-            let row = header(tx, session, locator, field, view, through_sql).await?;
+            let row = header(tx, session, locator, field, view, through_sql)?;
             let exact_target = target == Some((locator, field));
             if let Some((cursor, _)) = &anchor
                 && cursor.position == locator
@@ -367,8 +395,7 @@ async fn read_page(
                     },
                     end - start,
                     view == HistoryView::Conversation && row.role == "user",
-                )
-                .await?
+                )?
             };
             let text = if reverse {
                 let skip = fragment
@@ -416,13 +443,11 @@ async fn read_page(
                 Some(ending)
             };
             let (attachments, has_references) = if start == 0 && row.role == "user" {
-                let (encoded, has_references): (Option<String>, bool) = sqlx::query_as(
-                    "SELECT json_extract(payload, '$.attachments'),
+                let (encoded, has_references): (Option<String>, bool) = tx.prepare_cached("SELECT json_extract(payload, '$.attachments'),
                         COALESCE(json_array_length(payload, '$.quotes'), 0) > 0
                         OR COALESCE(json_array_length(payload, '$.directoryReferences'), 0) > 0
                         OR COALESCE(json_array_length(payload, '$.inlineReferences'), 0) > 0
-                     FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-                ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+                     FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3")?.query_row( rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1], |row| Ok((row.get(0)?, row.get(1)?,)))?;
                 (
                     encoded
                         .map(|value| serde_json::from_str::<Vec<maka_agent_facts::attachment::AttachmentRef>>(&value))
@@ -450,16 +475,13 @@ async fn read_page(
                     _ => return Err(invalid("invalid history text role")),
                 };
                 let tool = if matches!(role, Role::ToolCall | Role::ToolResult) {
-                    Some(tool_metadata(tx, session, locator, through_sql).await?)
+                    Some(tool_metadata(tx, session, locator, through_sql)?)
                 } else {
                     None
                 };
-                let timing =
-                    super::timing::read_on_worker(tx, session, &row.turn, through_sql).await?;
+                let timing = super::timing::read_on_worker(tx, session, &row.turn, through_sql)?;
                 let compaction = if role == Role::Compaction {
-                    let duration: i64 = sqlx::query_scalar(
-                "SELECT json_extract(payload, '$.durationMs') FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-            ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
+                    let duration: i64 = tx.prepare_cached("SELECT json_extract(payload, '$.durationMs') FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3")?.query_row( rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1], |row| row.get(0))?;
                     Some(maka_agent_ports::session::history::Compaction {
                         duration_ms: sequence_number(duration)?,
                     })
@@ -469,18 +491,17 @@ async fn read_page(
                 let (model, final_output) = if role == Role::Assistant {
                     let output = match final_outputs.entry(row.turn.clone()) {
                         std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
-                            super::final_output::resolve_on_worker(
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(super::final_output::resolve_on_worker(
                                 tx,
                                 session,
                                 &row.turn,
                                 through_sql,
-                            )
-                            .await?,
-                        ),
+                            )?)
+                        }
                     };
                     let metadata =
-                        super::model::resolve_on_worker(tx, session, locator, through_sql).await?;
+                        super::model::resolve_on_worker(tx, session, locator, through_sql)?;
                     let final_output = field == HistoryField::Body
                         && row.total > 0
                         && metadata
@@ -491,12 +512,9 @@ async fn read_page(
                 } else {
                     (None, false)
                 };
-                let part: Option<(String, i64)> = sqlx::query_as(
-                    "SELECT p.step_id, p.ordinal FROM model_part_records p
+                let part: Option<(String, i64)> = tx.prepare_cached("SELECT p.step_id, p.ordinal FROM model_part_records p
                      WHERE p.owner_session_id = (SELECT event_session FROM runtime_events WHERE sequence = ?1)
-                       AND p.message_id = ?2 AND p.ordinal IS NOT NULL AND p.source_sequence <= ?3",
-                ).bind(sql_number(locator.source_sequence)?).bind(&row.message).bind(through_sql)
-                    .fetch_optional(&mut *tx).await?;
+                       AND p.message_id = ?2 AND p.ordinal IS NOT NULL AND p.source_sequence <= ?3")?.query_row( rusqlite::params![sql_number(locator.source_sequence)?, &row.message, through_sql], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
                 let model_part = part
                     .map(|(step_id, ordinal)| {
                         Ok::<_, StoreError>(ModelPartIdentity {
@@ -505,7 +523,17 @@ async fn read_page(
                         })
                     })
                     .transpose()?;
+                let (order_sequence, order_item): (i64, i64) =
+                    tx.prepare_cached(super::read::ORDER)?.query_row(
+                        rusqlite::params![
+                            session,
+                            sql_position(locator)?.0,
+                            sql_position(locator)?.1
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
                 let chunk = Chunk {
+                    order: row_position(order_sequence, order_item)?,
                     model_part,
                     has_references,
                     field,
@@ -538,8 +566,7 @@ async fn read_page(
                 include_thinking,
                 candidate_left,
                 candidate_right,
-            )
-            .await?;
+            )?;
             // The empty envelope includes []; each chunk adds its exact
             // encoded bytes, plus commas between elements. Cursor changes
             // still count even when this boundary emits no chunk.
@@ -575,14 +602,11 @@ async fn read_page(
             left = Some(cursor);
             right = Some((cursor, row.total));
         } else if matches!(position, Position::Event { .. }) {
-            let last: Option<(i64,i64)> = sqlx::query_as(
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 ORDER BY source_sequence DESC,item_index DESC LIMIT 1"
-        ).bind(session).bind(through_sql).fetch_optional(&mut *tx).await?;
+            let last: Option<(i64,i64)> = tx.prepare_cached("SELECT source_sequence,item_index FROM transcript_directory WHERE owner_key = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1")?.query_row( rusqlite::params![session, through_sql], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
             if let Some(locator) = last {
                 let locator = row_position(locator.0, locator.1)?;
-                materialize(tx, session, locator, view, through_sql).await?;
-                let row =
-                    header(tx, session, locator, HistoryField::Body, view, through_sql).await?;
+                materialize(tx, owner, locator, view, through_sql)?;
+                let row = header(tx, session, locator, HistoryField::Body, view, through_sql)?;
                 let cursor = Cursor {
                     field: HistoryField::Body,
                     position: locator,
@@ -593,8 +617,7 @@ async fn read_page(
             }
         }
     }
-    let (before, after) =
-        boundaries(tx, session, through_sql, include_thinking, left, right).await?;
+    let (before, after) = boundaries(tx, session, through_sql, include_thinking, left, right)?;
 
     Ok(Page::Ready {
         through,
@@ -604,8 +627,8 @@ async fn read_page(
     })
 }
 
-async fn boundaries(
-    tx: &mut SqliteWorkerConnection<'_>,
+fn boundaries(
+    tx: &rusqlite::Connection,
     session: &str,
     through: i64,
     include_thinking: bool,
@@ -615,7 +638,7 @@ async fn boundaries(
     let before = match left {
         Some(cursor)
             if cursor.offset > 0
-                || neighbor(tx, session, through, cursor, include_thinking, true).await? =>
+                || neighbor(tx, session, through, cursor, include_thinking, true)? =>
         {
             Some(cursor)
         }
@@ -624,7 +647,7 @@ async fn boundaries(
     let after = match right {
         Some((cursor, total))
             if cursor.offset < total
-                || neighbor(tx, session, through, cursor, include_thinking, false).await? =>
+                || neighbor(tx, session, through, cursor, include_thinking, false)? =>
         {
             Some(cursor)
         }
@@ -642,8 +665,8 @@ struct Header {
     hidden: bool,
     total: u64,
 }
-async fn header(
-    tx: &mut SqliteWorkerConnection<'_>,
+fn header(
+    tx: &rusqlite::Connection,
     session: &str,
     locator: RowPosition,
     field: HistoryField,
@@ -652,53 +675,49 @@ async fn header(
 ) -> Result<Header, StoreError> {
     if view == HistoryView::Conversation
         && field == HistoryField::Body
-        && let Some(row) = conversation_tool(tx, session, locator, through).await?
+        && let Some(row) = conversation_tool(tx, session, locator, through)?
     {
         return Ok(row);
     }
-    let row = sqlx::query(
-        "SELECT source.message_id, source.turn_id, source.timestamp, source.role,
+    let (message, turn, timestamp, role, total, origin) = tx.prepare_cached("SELECT source.message_id, source.turn_id, source.timestamp, source.role,
             CASE WHEN source.role = 'turn_state' AND source.state_status IS NOT 'failed' AND ?4 = 'body'
                 THEN 0 ELSE length(cached.body) END,
             CASE WHEN source.role = 'user' THEN source.user_origin END
             FROM transcript_directory source LEFT JOIN temp.transcript_text cached
-                ON cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence
+                ON cached.owner_key = source.owner_key AND cached.source_sequence = source.source_sequence
                 AND cached.item_index = source.item_index AND cached.field = ?4
-            WHERE source.session_id = ?1 AND source.source_sequence = ?2 AND source.item_index = ?3
+            WHERE source.owner_key = ?1 AND source.source_sequence = ?2 AND source.item_index = ?3
                 AND (cached.field IS NOT NULL OR
-                    (source.role = 'turn_state' AND source.state_status IS NOT 'failed' AND ?4 = 'body'))"
-    ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).bind(field_name(field)).fetch_one(&mut *tx).await?;
+                    (source.role = 'turn_state' AND source.state_status IS NOT 'failed' AND ?4 = 'body'))")?.query_row(
+        rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1, field_name(field)],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, Option<String>>(5)?)),
+    )?;
     let mut header = Header {
-        origin: row
-            .try_get::<Option<String>, _>(5)?
+        origin: origin
             .map(|value| serde_json::from_str(&value))
             .transpose()?,
-        message: row.try_get(0)?,
-        turn: row.try_get(1)?,
-        timestamp: sequence_number(row.try_get(2)?)?,
-        role: row.try_get(3)?,
+        message,
+        turn,
+        timestamp: sequence_number(timestamp)?,
+        role,
         hidden: false,
-        total: sequence_number(row.try_get(4)?)?,
+        total: sequence_number(total)?,
     };
     if view == HistoryView::Conversation && field == HistoryField::Body && header.role == "user" {
         let query = format!(
             "SELECT length(CAST({CONVERSATION_USER} AS BLOB)) FROM temp.transcript_rows
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
         );
-        header.total = sequence_number(
-            sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
-                .bind(session)
-                .bind(sql_position(locator)?.0)
-                .bind(sql_position(locator)?.1)
-                .fetch_one(tx)
-                .await?,
-        )?;
+        header.total = sequence_number(tx.prepare_cached(query.as_str())?.query_row(
+            rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1],
+            |row| row.get(0),
+        )?)?;
     }
     Ok(header)
 }
 
-async fn fragment(
-    tx: &mut SqliteWorkerConnection<'_>,
+fn fragment(
+    tx: &rusqlite::Connection,
     session: &str,
     cursor: Cursor,
     bytes: u64,
@@ -707,49 +726,60 @@ async fn fragment(
     let query = if conversation_user {
         format!(
             "SELECT substr(CAST({CONVERSATION_USER} AS BLOB), ?4, ?5) FROM temp.transcript_rows
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3"
         )
     } else {
         "SELECT substr(body, ?4, ?5) FROM temp.transcript_text
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3 AND field = ?6"
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3 AND field = ?6"
             .into()
     };
-    let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
-        .bind(session)
-        .bind(sql_position(cursor.position)?.0)
-        .bind(sql_position(cursor.position)?.1)
-        .bind(sql_number(cursor.offset)? + 1)
-        .bind(sql_number(bytes)?);
-    if !conversation_user {
-        query = query.bind(field_name(cursor.field));
-    }
-    Ok(query.fetch_one(tx).await?)
+    let mut statement = tx.prepare_cached(&query)?;
+    let (sequence, item) = sql_position(cursor.position)?;
+    let start = sql_number(cursor.offset)? + 1;
+    let bytes = sql_number(bytes)?;
+    let fragment = if conversation_user {
+        statement.query_row(
+            rusqlite::params![session, sequence, item, start, bytes],
+            |row| row.get(0),
+        )?
+    } else {
+        statement.query_row(
+            rusqlite::params![
+                session,
+                sequence,
+                item,
+                start,
+                bytes,
+                field_name(cursor.field)
+            ],
+            |row| row.get(0),
+        )?
+    };
+    Ok(fragment)
 }
 
-async fn conversation_tool(
-    tx: &mut SqliteWorkerConnection<'_>,
+fn conversation_tool(
+    tx: &rusqlite::Connection,
     session: &str,
     locator: RowPosition,
     through: i64,
 ) -> Result<Option<Header>, StoreError> {
-    let row = sqlx::query(
-        "SELECT row.message_id, row.turn_id, row.timestamp,
+    let row = tx.prepare_cached("SELECT row.message_id, row.turn_id, row.timestamp,
             row.role, row.tool_origin,
             COALESCE(row.tool_name, call.tool_name),
             COALESCE(row.is_error, 0)
         FROM transcript_directory row LEFT JOIN transcript_directory call
-            ON call.session_id = row.session_id AND call.turn_id = row.turn_id
+            ON call.owner_key = row.owner_key AND call.turn_id = row.turn_id
             AND call.message_id = row.tool_use_id
             AND call.role = 'tool_call' AND call.source_sequence <= ?4
-        WHERE row.session_id = ?1 AND row.source_sequence = ?2 AND row.item_index = ?3 AND row.source_sequence <= ?4
-            AND row.role IN ('tool_call', 'tool_result')"
-    ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).bind(through).fetch_optional(tx).await?;
-    let Some(row) = row else {
+        WHERE row.owner_key = ?1 AND row.source_sequence = ?2 AND row.item_index = ?3 AND row.source_sequence <= ?4
+            AND row.role IN ('tool_call', 'tool_result')")?.query_row(
+        rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1, through],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, bool>(6)?)),
+    ).optional()?;
+    let Some((message, turn, timestamp, role, origin, name, error)) = row else {
         return Ok(None);
     };
-    let origin: Option<String> = row.try_get(4)?;
-    let name: Option<String> = row.try_get(5)?;
-    let error: bool = row.try_get(6)?;
     let internal = !error
         && (matches!(
             (origin.as_deref(), name.as_deref()),
@@ -758,17 +788,17 @@ async fn conversation_tool(
         ));
     Ok(Some(Header {
         origin: None,
-        message: row.try_get(0)?,
-        turn: row.try_get(1)?,
-        timestamp: sequence_number(row.try_get(2)?)?,
-        role: row.try_get(3)?,
+        message,
+        turn,
+        timestamp: sequence_number(timestamp)?,
+        role,
         hidden: internal,
         total: 0,
     }))
 }
 
-async fn neighbor(
-    tx: &mut SqliteWorkerConnection<'_>,
+fn neighbor(
+    tx: &rusqlite::Connection,
     session: &str,
     through: i64,
     cursor: Cursor,
@@ -780,66 +810,63 @@ async fn neighbor(
             return Ok(true);
         }
         if before && cursor.field == HistoryField::Body {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT has_thinking FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-            ).bind(session).bind(sql_position(cursor.position)?.0).bind(sql_position(cursor.position)?.1).fetch_one(&mut *tx).await?;
+            let exists: bool = tx.prepare_cached("SELECT has_thinking FROM transcript_directory WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3")?.query_row( rusqlite::params![session, sql_position(cursor.position)?.0, sql_position(cursor.position)?.1], |row| row.get(0))?;
             if exists {
                 return Ok(true);
             }
         }
     }
-    // A predecessor of a validated cursor is already within its fence. Keep
-    // the pair as the sole upper bound, as in reverse anchored pagination.
+    let (sequence, item): (i64, i64) = tx.prepare_cached(super::read::ORDER)?.query_row(
+        rusqlite::params![
+            session,
+            sql_position(cursor.position)?.0,
+            sql_position(cursor.position)?.1
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     let query = if before {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id = ?1 AND (source_sequence,item_index) < (?2,?3))"
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?3,?4))"
     } else {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 AND (source_sequence,item_index) > (?3,?4))"
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE owner_key=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
     };
-    let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(query)).bind(session);
-    if !before {
-        query = query.bind(through);
-    }
-    Ok(query
-        .bind(sql_position(cursor.position)?.0)
-        .bind(sql_position(cursor.position)?.1)
-        .fetch_one(tx)
-        .await?)
+    Ok(tx
+        .prepare_cached(query)?
+        .query_row(rusqlite::params![session, through, sequence, item], |row| {
+            row.get(0)
+        })?)
 }
-async fn materialize(
-    tx: &mut SqliteWorkerConnection<'_>,
-    session: &str,
+fn materialize(
+    tx: &rusqlite::Connection,
+    owner: &super::HistoryOwner,
     locator: RowPosition,
     view: HistoryView,
     through: i64,
 ) -> Result<usize, StoreError> {
+    let session = owner.key();
     if view == HistoryView::Conversation
-        && conversation_tool(tx, session, locator, through)
-            .await?
-            .is_some()
+        && conversation_tool(tx, session, locator, through)?.is_some()
     {
         return Ok(0);
     }
     // Non-failed turn states have no text under BODY. Their immutable directory
     // identity is sufficient for cursor progress; replaying their producer only
     // to cache an empty body repeats the completed invocation's evidence.
-    let empty_state: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory
-            WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+    let empty_state: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM transcript_directory
+            WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                 AND role = 'turn_state' AND state_status IS NOT 'failed')",
-    )
-    .bind(session)
-    .bind(sql_position(locator)?.0)
-    .bind(sql_position(locator)?.1)
-    .fetch_one(&mut *tx)
-    .await?;
+        )?
+        .query_row(
+            rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1],
+            |row| row.get(0),
+        )?;
     if empty_state {
         return Ok(0);
     }
-    super::bodycache::ensure_on_worker(tx, session, locator).await?;
-    let source: Option<(i64, bool)> = sqlx::query_as(
-        "SELECT total_bytes, EXISTS(SELECT 1 FROM temp.transcript_text cached WHERE cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
-            FROM temp.transcript_rows source WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
-    ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_optional(&mut *tx).await?;
+    super::bodycache::ensure_for_owner_on_worker(tx, owner, locator)?;
+    let source: Option<(i64, bool)> = tx.prepare_cached("SELECT total_bytes, EXISTS(SELECT 1 FROM temp.transcript_text cached WHERE cached.owner_key = source.owner_key AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
+            FROM temp.transcript_rows source WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3")?.query_row( rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
     let Some((bytes, cached)) = source else {
         return Err(invalid("history row was not found"));
     };
@@ -848,21 +875,19 @@ async fn materialize(
     }
     let query = format!(
         "INSERT INTO temp.transcript_text
-            SELECT session_id, source_sequence, item_index, 'body', json_extract(payload, '$.ts'), json_extract(payload, '$.type'),
+            SELECT owner_key, source_sequence, item_index, 'body', json_extract(payload, '$.ts'), json_extract(payload, '$.type'),
                 CAST({BODY} AS BLOB)
-            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
             UNION ALL
-            SELECT session_id, source_sequence, item_index, 'thinking', json_extract(payload, '$.ts'), 'assistant',
+            SELECT owner_key, source_sequence, item_index, 'thinking', json_extract(payload, '$.ts'), 'assistant',
                 CAST(json_extract(payload, '$.thinking.text') AS BLOB)
-            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE owner_key = ?1 AND source_sequence = ?2 AND item_index = ?3
                 AND json_extract(payload, '$.type') = 'assistant' AND json_type(payload, '$.thinking.text') = 'text'"
     );
-    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
-        .bind(session)
-        .bind(sql_position(locator)?.0)
-        .bind(sql_position(locator)?.1)
-        .execute(tx)
-        .await?;
+    tx.execute(
+        query.as_str(),
+        rusqlite::params![session, sql_position(locator)?.0, sql_position(locator)?.1],
+    )?;
     usize::try_from(sequence_number(bytes)?)
         .map_err(|_| invalid("history source exceeds address space"))
 }
@@ -880,46 +905,32 @@ fn field_name(field: HistoryField) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use serde_json::json;
-    use sqlx::{Connection, SqliteConnection};
-    async fn neighbor(
-        tx: &mut SqliteConnection,
+    fn neighbor(
+        tx: &Connection,
         session: &str,
         through: i64,
         cursor: Cursor,
         include_thinking: bool,
         before: bool,
     ) -> Result<bool, StoreError> {
-        let session = session.to_owned();
-        crate::connection::worker_query(tx, move |worker| {
-            Box::pin(async move {
-                super::neighbor(worker, &session, through, cursor, include_thinking, before).await
-            })
-        })
-        .await
+        super::neighbor(tx, session, through, cursor, include_thinking, before)
     }
 
-    async fn conversation_tool(
-        tx: &mut SqliteConnection,
+    fn conversation_tool(
+        tx: &Connection,
         session: &str,
         locator: RowPosition,
         through: i64,
     ) -> Result<Option<Header>, StoreError> {
-        let session = session.to_owned();
-        crate::connection::worker_query(tx, move |worker| {
-            Box::pin(
-                async move { super::conversation_tool(worker, &session, locator, through).await },
-            )
-        })
-        .await
+        super::conversation_tool(tx, session, locator, through)
     }
 
-    #[tokio::test]
-    async fn conversation_retains_trace_parents_and_hides_transport_helpers() {
-        let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        crate::transcript::bodycache::initialize(&mut db)
-            .await
-            .unwrap();
+    #[test]
+    fn conversation_retains_trace_parents_and_hides_transport_helpers() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::transcript::bodycache::initialize(&db).unwrap();
         let rows = [
             json!({"type":"tool_call","origin":"provider","toolName":"exec"}),
             json!({"type":"tool_call","origin":"code_mode","toolName":"code_cell"}),
@@ -931,10 +942,7 @@ mod tests {
         ];
         for (i, mut value) in rows.into_iter().enumerate() {
             value["ts"] = json!(1);
-            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result')")
-                .bind((i+1) as i64).bind((i+1).to_string()).bind(serde_json::to_vec(&value).unwrap())
-                .execute(&mut db)
-                .await
+            db.execute("INSERT INTO transcript_directory (owner_key,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible,order_sequence,order_item) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result'),?1,0", rusqlite::params![(i+1) as i64, (i+1).to_string(), serde_json::to_vec(&value).unwrap()])
                 .unwrap();
         }
         for (locator, visible) in [
@@ -947,7 +955,7 @@ mod tests {
             (7, true),
         ] {
             let row = conversation_tool(
-                &mut db,
+                &db,
                 "a",
                 RowPosition {
                     source_sequence: locator,
@@ -955,7 +963,6 @@ mod tests {
                 },
                 7,
             )
-            .await
             .unwrap()
             .unwrap();
             assert_eq!(!row.hidden, visible, "locator {locator}");
@@ -964,7 +971,7 @@ mod tests {
         // A parent without a child at the requested fence remains visible.
         assert_eq!(
             conversation_tool(
-                &mut db,
+                &db,
                 "a",
                 RowPosition {
                     source_sequence: 4,
@@ -972,7 +979,6 @@ mod tests {
                 },
                 4
             )
-            .await
             .unwrap()
             .unwrap()
             .role,
@@ -980,23 +986,24 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn predecessor_seek_work_is_bounded_by_cursor_not_following_history() {
+    #[test]
+    fn predecessor_seek_work_is_bounded_by_cursor_not_following_history() {
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         };
 
-        async fn probe(db: &mut SqliteConnection, through: i64) -> usize {
+        fn probe(db: &mut Connection, through: i64) -> usize {
             let steps = Arc::new(AtomicUsize::new(0));
             let observed = steps.clone();
-            db.lock_handle()
-                .await
-                .unwrap()
-                .set_progress_handler(1, move || {
+            db.progress_handler(
+                1,
+                Some(move || {
                     observed.fetch_add(1, Ordering::Relaxed);
-                    true
-                });
+                    false
+                }),
+            )
+            .unwrap();
             let found = neighbor(
                 db,
                 "a",
@@ -1011,28 +1018,21 @@ mod tests {
                 },
                 false,
                 true,
-            )
-            .await;
-            db.lock_handle().await.unwrap().remove_progress_handler();
+            );
+            db.progress_handler(0, None::<fn() -> bool>).unwrap();
             assert!(!found.unwrap(), "the first row has no predecessor");
             steps.load(Ordering::Relaxed)
         }
 
-        let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        crate::transcript::bodycache::initialize(&mut db)
-            .await
-            .unwrap();
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::transcript::bodycache::initialize(&db).unwrap();
         let mut measurements = Vec::new();
         for (first, last) in [(1_i64, 64_i64), (65, 4096)] {
             // Use the production directory schema/indexes. Setup is outside the
             // handler; count only the real neighbor function, not a SQL copy.
-            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1 FROM n")
-                .bind(first)
-                .bind(last)
-                .execute(&mut db)
-                .await
+            db.execute("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(owner_key,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible,order_sequence,order_item) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1,value,0 FROM n", rusqlite::params![first, last])
                 .unwrap();
-            measurements.push(probe(&mut db, last).await);
+            measurements.push(probe(&mut db, last));
         }
         let [small, large] = measurements.as_slice() else {
             unreachable!()
@@ -1055,15 +1055,9 @@ mod tests {
             field: HistoryField::Body,
             offset: 0,
         };
+        assert!(neighbor(&db, "a", 4096, first, false, false).unwrap());
         assert!(
-            neighbor(&mut db, "a", 4096, first, false, false)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !neighbor(&mut db, "a", 1, first, false, false)
-                .await
-                .unwrap(),
+            !neighbor(&db, "a", 1, first, false, false).unwrap(),
             "a successor beyond the frozen fence must not appear"
         );
     }

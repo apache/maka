@@ -31,7 +31,6 @@ fn owner(id: &str) -> PluginSession {
         session_id: id.into(),
         creator: Namespace::new("import.fixture", Scope::Profile).unwrap(),
         fingerprint: format!("original-{id}"),
-        managed: false,
         authority_session_id: None,
     }
 }
@@ -250,7 +249,7 @@ async fn second_record_sql_failure_rolls_back_the_complete_import_and_allows_ret
         )
         .await;
     assert!(
-        matches!(result,Err(StoreError::Sqlx(error)) if error.as_database_error().and_then(|error|error.code()).as_deref()==Some("1811"))
+        matches!(result.as_ref().map_err(StoreError::underlying),Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))) if error.extended_code == 1811)
     );
     assert_eq!(*notices.borrow(), through);
     assert!(!notices.has_changed().unwrap());
@@ -368,7 +367,7 @@ fn import_state(db: &rusqlite::Connection) -> (Vec<(i64, Vec<u8>)>, String) {
               FROM (SELECT * FROM session_control ORDER BY id)),
            (SELECT json_group_array(json_array(session_id,source_json,configuration,created_at,state,records,bytes,conversation))
               FROM (SELECT * FROM session_imports ORDER BY session_id)),
-           (SELECT json_group_array(json_array(session_id,package_id,scope_id,fingerprint,managed,authority_session_id))
+           (SELECT json_group_array(json_array(session_id,package_id,scope_id,fingerprint,authority_session_id))
               FROM (SELECT * FROM plugin_sessions ORDER BY session_id)),
            (SELECT json_group_array(json_array(sequence,ordinal,session_id,message_at,preview,message_id))
               FROM (SELECT * FROM catalog_messages ORDER BY sequence,ordinal)),

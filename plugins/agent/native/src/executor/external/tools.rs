@@ -78,7 +78,6 @@ impl Tools {
         tools
             .catalog
             .bind_request(maka_tools::request::BindingRequest {
-                behavior: None,
                 model: None,
                 invocation: request.invocation.clone(),
                 execution: Some(execution),

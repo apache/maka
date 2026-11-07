@@ -18,8 +18,8 @@
  */
 
 use super::{EventLog, MAX_SAFE_INTEGER, StoreError, invalid, validate_id};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use sqlx::{Connection, Row, SqliteConnection};
 use std::collections::BTreeSet;
 
 /// A frozen lifecycle plan; only Host-owned lineage and authority dependencies
@@ -37,50 +37,6 @@ pub enum RemoveFamilyResult {
     RevisionConflict { expected: u64, actual: u64 },
 }
 
-/// Host-issued authority, checked against every directly removed family member
-/// in the commit transaction. Dependency archival is a consequence of retirement.
-pub enum RemovalAuthority {
-    Unmanaged,
-    Granted {
-        namespace: maka_capabilities::storage::Namespace,
-        sessions: BTreeSet<String>,
-    },
-}
-
-impl RemovalAuthority {
-    async fn check(
-        &self,
-        connection: &mut SqliteConnection,
-        plan: &RemovalPlan,
-    ) -> Result<(), StoreError> {
-        for session in &plan.remove {
-            let manager: Option<(String, String)> = sqlx::query_as(
-                "SELECT package_id,scope_id FROM plugin_sessions WHERE session_id=? AND managed=1",
-            )
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
-            let allowed = match self {
-                Self::Unmanaged => manager.is_none(),
-                Self::Granted {
-                    namespace,
-                    sessions,
-                } => {
-                    sessions.contains(session)
-                        && manager.is_none_or(|(package, scope)| {
-                            package == namespace.package()
-                                && scope == String::from(namespace.scope().clone())
-                        })
-                }
-            };
-            if !allowed {
-                return Err(StoreError::SessionConflict);
-            }
-        }
-        Ok(())
-    }
-}
-
 pub(super) enum Action {
     Remove,
     Archive,
@@ -92,30 +48,30 @@ impl EventLog {
         &self,
         session: &str,
     ) -> Result<Option<RemovalPlan>, StoreError> {
-        self.validate_root()?;
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    receipt(&mut tx, &session).await
-                })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                receipt(&tx, &session)
             })
             .await
     }
 
     /// Preview is advisory; commit recomputes this plan inside its CAS transaction.
     pub async fn preview_session_removal(&self, session: &str) -> Result<RemovalPlan, StoreError> {
-        self.validate_root()?;
         validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    read(&mut tx, &session).await
-                })
+            .read(move |connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                read(&tx, &session)
             })
             .await
     }
@@ -126,9 +82,8 @@ impl EventLog {
         &self,
         session: &str,
         expected: u64,
-        authority: RemovalAuthority,
     ) -> Result<RemoveFamilyResult, StoreError> {
-        self.remove_session_family_guarded(session, expected, std::sync::Arc::new(authority), None)
+        self.remove_session_family_guarded(session, expected, None)
             .await?
             .ok_or_else(|| invalid("unguarded removal changed plan"))
     }
@@ -137,10 +92,8 @@ impl EventLog {
         &self,
         session: &str,
         expected: u64,
-        authority: std::sync::Arc<RemovalAuthority>,
         locked_plan: Option<RemovalPlan>,
     ) -> Result<Option<RemoveFamilyResult>, StoreError> {
-        self.validate_root()?;
         validate_id(session)?;
         if expected == 0 || expected > MAX_SAFE_INTEGER {
             return Err(invalid("invalid expected Session revision"));
@@ -149,69 +102,67 @@ impl EventLog {
         let commits = self.commits.notice();
         self.connection
             .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    if let Some(plan) = receipt(&mut tx, &session).await? {
-                        return Ok(Some(RemoveFamilyResult::Accepted(plan)));
-                    }
-                    super::require_mutable(&mut tx, &session).await?;
-                    let actual =
-                        crate::workspace_bindings::current_session_revision(&mut tx, &session)
-                            .await?
-                            .ok_or(StoreError::SessionNotFound)?;
-                    if actual != expected {
-                        return Ok(Some(RemoveFamilyResult::RevisionConflict {
-                            expected,
-                            actual,
-                        }));
-                    }
-                    let plan = read(&mut tx, &session).await?;
-                    if locked_plan.as_ref().is_some_and(|locked| locked != &plan) {
-                        tx.rollback().await?;
-                        return Ok(None);
-                    }
-                    authority.check(&mut tx, &plan).await?;
-                    let mut approval_revoked = false;
-                    for target in &plan.remove {
-                        approval_revoked |= fence(&mut tx, target, Action::Remove).await?;
-                    }
-                    for target in &plan.archive {
-                        approval_revoked |= fence(&mut tx, target, Action::Archive).await?;
-                    }
-                    sqlx::query("INSERT INTO session_removal_receipts VALUES (?,?)")
-                        .bind(&session)
-                        .bind(serde_json::to_string(&plan)?)
-                        .execute(&mut *tx)
-                        .await?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    if approval_revoked {
-                        commits.activations();
-                    }
-                    commits
-                        .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))
-                        .metadata();
-                    Ok(Some(RemoveFamilyResult::Accepted(plan)))
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                if let Some(plan) = receipt(&tx, &session)? {
+                    return Ok(Some(RemoveFamilyResult::Accepted(plan)));
+                }
+                super::require_mutable(&tx, &session)?;
+                let actual = crate::workspace_bindings::current_session_revision(&tx, &session)?
+                    .ok_or(StoreError::SessionNotFound)?;
+                if actual != expected {
+                    return Ok(Some(RemoveFamilyResult::RevisionConflict {
+                        expected,
+                        actual,
+                    }));
+                }
+                let plan = read(&tx, &session)?;
+                if locked_plan.as_ref().is_some_and(|locked| locked != &plan) {
+                    tx.rollback()?;
+                    return Ok(None);
+                }
+                let mut approval_revoked = false;
+                for target in &plan.remove {
+                    approval_revoked |= fence(&tx, target, Action::Remove)?;
+                }
+                for target in &plan.archive {
+                    approval_revoked |= fence(&tx, target, Action::Archive)?;
+                }
+                tx.execute(
+                    "INSERT INTO session_removal_receipts VALUES (?,?)",
+                    params![&session, serde_json::to_string(&plan)?],
+                )?;
+                tx.commit().map_err(StoreError::CommitUnknown)?;
+                if approval_revoked {
+                    commits.activations();
+                }
+                commits
+                    .for_sessions(plan.remove.iter().chain(&plan.archive).map(String::as_str))
+                    .metadata();
+                Ok(Some(RemoveFamilyResult::Accepted(plan)))
             })
             .await
     }
 }
 
-async fn receipt(
-    connection: &mut SqliteConnection,
+fn receipt(
+    connection: &rusqlite::Connection,
     session: &str,
 ) -> Result<Option<RemovalPlan>, StoreError> {
-    let receipt: Option<String> =
-        sqlx::query_scalar("SELECT plan_json FROM session_removal_receipts WHERE session_id=?")
-            .bind(session)
-            .fetch_optional(&mut *connection)
-            .await?;
+    let receipt: Option<String> = connection
+        .query_row(
+            "SELECT plan_json FROM session_removal_receipts WHERE session_id=?",
+            params![session],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(receipt) = receipt {
         return Ok(Some(serde_json::from_str(&receipt)?));
     }
     // Another member's removal may already have retired this identity.
-    Ok(super::read(connection, session)
-        .await?
+    Ok(super::read(connection, session)?
         .filter(|state| state.removes())
         .map(|_| RemovalPlan {
             remove: vec![session.to_owned()],
@@ -220,9 +171,10 @@ async fn receipt(
         }))
 }
 
-async fn read(connection: &mut SqliteConnection, session: &str) -> Result<RemovalPlan, StoreError> {
-    let rows = sqlx::query(
-        "WITH RECURSIVE families AS (
+fn read(connection: &rusqlite::Connection, session: &str) -> Result<RemovalPlan, StoreError> {
+    let rows = connection
+        .prepare_cached(
+            "WITH RECURSIVE families AS (
             SELECT s.id, s.archived, COALESCE(c.state,'committed') AS copy_state,
                 CASE WHEN json_extract(c.lineage_json,'$.kind')='revision'
                      THEN json_extract(c.lineage_json,'$.root_session_id') ELSE s.id END AS family,
@@ -240,10 +192,16 @@ async fn read(connection: &mut SqliteConnection, session: &str) -> Result<Remova
           FROM families f JOIN dependents d ON f.id=d.id
           WHERE f.copy_state<>'preparing' OR f.id=?1
           ORDER BY removes DESC, f.id",
-    )
-    .bind(session)
-    .fetch_all(connection)
-    .await?;
+        )?
+        .query_map(params![session], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     if rows.is_empty() {
         return Err(StoreError::SessionNotFound);
     }
@@ -254,13 +212,13 @@ async fn read(connection: &mut SqliteConnection, session: &str) -> Result<Remova
     };
     let mut archived_families = BTreeSet::new();
     for row in rows {
-        let id: String = row.try_get("id")?;
-        if row.try_get::<bool, _>("removes")? {
+        let id: String = row.0;
+        if row.3 {
             plan.remove.push(id);
         } else {
             plan.archive.push(id);
-            if !row.try_get::<bool, _>("archived")? {
-                archived_families.insert(row.try_get::<String, _>("family")?);
+            if !row.2 {
+                archived_families.insert(row.1);
             }
         }
     }
@@ -268,12 +226,12 @@ async fn read(connection: &mut SqliteConnection, session: &str) -> Result<Remova
     Ok(plan)
 }
 
-pub(super) async fn fence(
-    connection: &mut SqliteConnection,
+pub(super) fn fence(
+    connection: &rusqlite::Connection,
     session: &str,
     action: Action,
 ) -> Result<bool, StoreError> {
-    if let Some(previous) = super::read(connection, session).await? {
+    if let Some(previous) = super::read(connection, session)? {
         match action {
             Action::Archive => return Ok(false),
             Action::Remove if previous.removes() => return Ok(false),
@@ -281,42 +239,35 @@ pub(super) async fn fence(
         }
     }
     let remove = matches!(action, Action::Remove);
-    sqlx::query(
+    connection.execute(
         "INSERT INTO session_retirements(session_id,remove_session) VALUES (?,?)
         ON CONFLICT(session_id) DO UPDATE SET remove_session=excluded.remove_session, completed=0",
-    )
-    .bind(session)
-    .bind(remove)
-    .execute(&mut *connection)
-    .await?;
+        params![session, remove],
+    )?;
     if !remove {
-        sqlx::query("UPDATE session_control SET archived=1 WHERE id=?")
-            .bind(session)
-            .execute(&mut *connection)
-            .await?;
+        connection.execute(
+            "UPDATE session_control SET archived=1 WHERE id=?",
+            params![session],
+        )?;
     }
     let approval_revoked = crate::native_approvals::revoke_for_session(
         connection,
         session,
         crate::native_approvals::now_millis()?,
-    )
-    .await?;
+    )?;
     // Accepted queue identities and payload deletion share the lifecycle commit.
-    sqlx::query(
+    connection.execute(
         "INSERT INTO message_cancellations(session_id,message_id,cancellation_id)
         SELECT session_id,message_id,?1 FROM message_admissions WHERE session_id=?1",
-    )
-    .bind(session)
-    .execute(&mut *connection)
-    .await?;
-    let cancelled = sqlx::query("DELETE FROM message_admissions WHERE session_id=?")
-        .bind(session)
-        .execute(&mut *connection)
-        .await?
-        .rows_affected();
+        params![session],
+    )?;
+    let cancelled = connection.execute(
+        "DELETE FROM message_admissions WHERE session_id=?",
+        params![session],
+    )?;
     if cancelled > 0 {
-        crate::message_queue::bump(connection, session).await?;
+        crate::message_queue::bump(connection, session)?;
     }
-    super::super::advance_revision(connection, session).await?;
+    super::super::advance_revision(connection, session)?;
     Ok(approval_revoked)
 }

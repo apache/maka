@@ -1239,7 +1239,10 @@ impl Surface {
                 MountItem::Overflow { .. } | MountItem::LayoutDirection { .. } => {}
                 // A terminal has no GPU layer: a shader view shows its
                 // background and children.
-                MountItem::Shader { .. } => {}
+                MountItem::Shader { .. }
+                | MountItem::ShaderTransition { .. }
+                | MountItem::ShaderInput { .. }
+                | MountItem::NavShader { .. } => {}
             }
         }
         if !finished.is_empty() {

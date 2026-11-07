@@ -29,7 +29,6 @@ use maka_agent_facts::model::ToolInput;
 use maka_agent_facts::model::{ModelPart, recorded::ModelObservation};
 use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ProjectionPart;
-use sqlx::{Connection, SqliteConnection};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContextUsage {
@@ -45,33 +44,31 @@ impl EventLog {
         &self,
         session: &str,
     ) -> Result<(LatestMainContext, Option<ContextUsage>), StoreError> {
-        self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
             .read(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    let selected = latest_main::read(&mut tx, &session).await?;
-                    let usage = match &selected {
-                        LatestMainContext::Selected(basis) => {
-                            match additions(&mut tx, &session, basis).await? {
-                                Some(usage) => Some(usage),
-                                None => last_known(&mut tx, &session, basis).await?,
-                            }
-                        }
-                        _ => None,
-                    };
-                    tx.commit().await?;
-                    Ok((selected, usage))
-                })
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Deferred,
+                )?;
+                let selected = latest_main::read(&tx, &session)?;
+                let usage = match &selected {
+                    LatestMainContext::Selected(basis) => match additions(&tx, &session, basis)? {
+                        Some(usage) => Some(usage),
+                        None => last_known(&tx, &session, basis)?,
+                    },
+                    _ => None,
+                };
+                tx.commit()?;
+                Ok((selected, usage))
             })
             .await
     }
 }
 
-async fn last_known(
-    connection: &mut SqliteConnection,
+fn last_known(
+    connection: &rusqlite::Connection,
     session: &str,
     basis: &AcceptedMainContext,
 ) -> Result<Option<ContextUsage>, StoreError> {
@@ -83,15 +80,15 @@ async fn last_known(
     }
     // A checkpoint replaces the prompt baseline; its predecessor is no longer
     // a meaningful reading of the active context, even as a last-known value.
-    let reset: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence>?1
+    let reset: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence>?1
          AND json_extract(event_header,'$.invocation.session_id')=?2
          AND kind='context_checkpoint_recorded')",
-    )
-    .bind(basis.sequence as i64)
-    .bind(session)
-    .fetch_one(connection)
-    .await?;
+        )?
+        .query_row(rusqlite::params![basis.sequence as i64, session], |row| {
+            row.get(0)
+        })?;
     Ok((!reset).then_some(ContextUsage {
         tokens: input.saturating_add(output).min(9_007_199_254_740_991),
         approximate: output != 0,
@@ -99,8 +96,8 @@ async fn last_known(
     }))
 }
 
-async fn additions(
-    connection: &mut SqliteConnection,
+fn additions(
+    connection: &rusqlite::Connection,
     session: &str,
     basis: &AcceptedMainContext,
 ) -> Result<Option<ContextUsage>, StoreError> {
@@ -114,8 +111,7 @@ async fn additions(
     // arrived after its source cut, even if they precede response completion.
     // Retained items from a later interrupted request also invalidate this
     // display estimate. Until fresh usage, only the last-known reading is valid.
-    let unobserved_progress: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events c JOIN runtime_events r
+    let unobserved_progress: bool = connection.prepare_cached("SELECT EXISTS(SELECT 1 FROM runtime_events c JOIN runtime_events r
          ON r.invocation_id=c.invocation_id AND r.operation_id=c.operation_id AND r.kind='model_requested'
          JOIN runtime_events n ON n.invocation_id=c.invocation_id
          WHERE c.sequence=?1 AND n.sequence>json_extract(r.event_header,'$.fact.source_high_water') AND n.sequence<c.sequence
@@ -129,15 +125,15 @@ async fn additions(
            JOIN runtime_events o ON o.invocation_id=i.invocation_id AND o.kind='model_observed'
              AND json_extract(o.event_header,'$.fact.step_id')=i.operation_id AND o.sequence<i.sequence
            WHERE i.kind='model_interrupted' AND i.sequence>?1 AND json_extract(i.event_header,'$.invocation.session_id')=?2
-             AND json_extract(o.event_header,'$.fact.event.kind')='part')",
-    ).bind(basis.sequence as i64).bind(session).fetch_one(&mut *connection).await?;
+             AND json_extract(o.event_header,'$.fact.event.kind')='part')")?.query_row(rusqlite::params![basis.sequence as i64,session], |row| row.get(0))?;
     if unobserved_progress {
         return Ok(None);
     }
     // A changed system/tool/plugin surface or provider route is not a text
     // addition. Reuse the already-frozen composition identities; never rerun it.
-    let changed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
+    let changed: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(
           SELECT 1 FROM runtime_events c
           JOIN runtime_events base ON base.invocation_id=c.invocation_id
             AND base.operation_id=c.operation_id AND base.kind='model_requested'
@@ -149,11 +145,10 @@ async fn additions(
           WHERE c.sequence=?1 AND (rc.digest IS NULL OR bc.digest IS NULL
             OR rc.digest!=bc.digest OR json_extract(r.event_header,'$.fact.route_identity')
                 !=json_extract(base.event_header,'$.fact.route_identity')))",
-    )
-    .bind(basis.sequence as i64)
-    .bind(session)
-    .fetch_one(&mut *connection)
-    .await?;
+        )?
+        .query_row(rusqlite::params![basis.sequence as i64, session], |row| {
+            row.get(0)
+        })?;
     if changed {
         return Ok(None);
     }
@@ -163,8 +158,9 @@ async fn additions(
     const FILTER: &str = "
         e.sequence > ?1 AND (e.event_header IS NOT NULL AND e.event_session=?2)
         AND e.kind IN ('invocation_opened','message_steered','model_requested',
-            'model_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
+            'model_observed','executor_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
             'context_checkpoint_recorded','tool_result_archived')
+        AND (e.kind!='executor_observed' OR json_extract(e.event_header,'$.fact.output.type')='message_end')
         AND (e.kind NOT IN ('tool_settled','tool_rejected') OR
             json_extract(e.event_header,'$.fact.call.origin.kind')='provider' OR
             EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=e.invocation_id
@@ -178,28 +174,23 @@ async fn additions(
                 AND NOT EXISTS(SELECT 1 FROM runtime_events c
                     WHERE c.invocation_id=r.invocation_id AND c.operation_id=r.operation_id
                     AND c.kind IN ('model_completed','model_interrupted'))))";
-    let (count, bytes): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let (count, bytes): (i64, i64) = connection.prepare_cached(&format!(
         "SELECT COUNT(*),COALESCE(SUM(e.canonical_bytes),0) FROM runtime_events e WHERE {FILTER}"
-    )))
-    .bind(basis.sequence as i64)
-    .bind(session)
-    .fetch_one(&mut *connection)
-    .await?;
+    ))?.query_row(rusqlite::params![basis.sequence as i64,session], |row| Ok((row.get(0)?,row.get(1)?,)))?;
     if count > 4096 || bytes > 1024 * 1024 {
         return Ok(None);
     }
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT e.event_header,{} FROM runtime_events e {} WHERE {FILTER} ORDER BY e.sequence",
-        crate::canonical::COLUMNS,
-        crate::canonical::JOINS
-    )))
-    .bind(basis.sequence as i64)
-    .bind(session)
-    .fetch_all(connection)
-    .await?;
+    let mut rows_statement = connection.prepare_cached(
+        &(format!(
+            "SELECT e.event_header,{} FROM runtime_events e {} WHERE {FILTER} ORDER BY e.sequence",
+            crate::canonical::COLUMNS,
+            crate::canonical::JOINS
+        )),
+    )?;
+    let mut rows = rows_statement.query(rusqlite::params![basis.sequence as i64, session])?;
     let mut units = 0_u64;
-    for row in rows {
-        let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
+    while let Some(row) = rows.next()? {
+        let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(row)?)?;
         let Some(added) = increment(&event.fact, basis) else {
             return Ok(None);
         };
@@ -291,7 +282,10 @@ fn increment(fact: &Fact, basis: &AcceptedMainContext) -> Option<u64> {
                     .as_deref()
                     .map_or(0, text_units)
         }
-        Fact::ExecutorCompleted { .. } => return None,
+        Fact::ExecutorCompleted { .. }
+        | Fact::ExecutorObserved {
+            output: maka_agent_facts::executor::Output::MessageEnd { .. },
+        } => return None,
         _ => 0,
     })
 }
@@ -411,12 +405,7 @@ mod tests {
             "a different model cannot inherit the old count"
         );
         assert_eq!(
-            increment(
-                &Fact::ExecutorCompleted {
-                    text: "opaque executor".into()
-                },
-                &basis
-            ),
+            increment(&Fact::ExecutorCompleted { message_id: None }, &basis),
             None
         );
     }

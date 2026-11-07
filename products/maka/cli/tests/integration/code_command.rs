@@ -37,7 +37,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
         json!({"path":file_path, "content":"hello from Rust"}),
         json!({"path":file_path})
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let mut child = Command::new(crate::maka_executable())
         .current_dir(directory.path())
         .args(["code", "--root"])
         .arg(&log_path)
@@ -133,7 +133,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
     assert!(configuration.workspace_binding.is_some());
     assert!(configuration.model.is_none());
     root.close().await.unwrap();
-    let inspect = Command::new(env!("CARGO_BIN_EXE_maka"))
+    let inspect = Command::new(crate::maka_executable())
         .args(["inspect", "--root"])
         .arg(&log_path)
         .args(["--session", session_id])
@@ -147,7 +147,7 @@ async fn binary_runs_journaled_file_tools_and_reconstructs_the_invocation_after_
     std::fs::write(&foreign, b"not a Maka database").unwrap();
     assert!(matches!(
         EventLog::open(&foreign).await,
-        Err(StoreError::Sqlx(_))
+        Err(error) if matches!(error.underlying(), StoreError::Sqlite(_))
     ));
     assert_eq!(std::fs::read(foreign).unwrap(), b"not a Maka database");
 }
@@ -170,7 +170,7 @@ fn code_presets_protect_metadata_and_only_explicit_bypass_disables_both_protecti
         (1, vec!["--ask-for-approval", "never"], false),
         (2, vec!["--dangerously-bypass-approvals-and-sandbox"], true),
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_maka"))
+        let mut child = Command::new(crate::maka_executable())
             .current_dir(directory.path())
             .args(["code", "--root"])
             .arg(directory.path().join(format!("root-{index}")))

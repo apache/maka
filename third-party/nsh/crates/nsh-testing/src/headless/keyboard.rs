@@ -206,11 +206,12 @@ impl Headless {
         }
     }
 
-    /// A view's `focus:` state, which follows the keyboard focus.
+    /// A view's or an input's `focus:` state, which follows the keyboard
+    /// focus: reported whatever the view tracks, as the platforms report
+    /// it (`nsh_core::input::reported_states`; the core works out
+    /// `focus-within` from it).
     pub(super) fn set_focused_state(&mut self, id: NodeId, on: bool) {
-        if self.screen.input(id).is_none()
-            && let Some(states) = self.screen.set_state(id, FOCUSED, on)
-        {
+        if let Some(states) = self.screen.set_state(id, FOCUSED, on) {
             self.engine.control().set_states(id, states);
         }
     }

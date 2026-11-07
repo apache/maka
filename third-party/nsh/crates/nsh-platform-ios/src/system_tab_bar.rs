@@ -14,7 +14,9 @@ use objc2::{
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
-use objc2_ui_kit::{UIImage, UIResponder, UITabBar, UITabBarDelegate, UITabBarItem, UIView};
+use objc2_ui_kit::{
+    UIColor, UIImage, UIResponder, UITabBar, UITabBarDelegate, UITabBarItem, UIView,
+};
 
 use crate::component::{ComponentContext, ComponentFactory, NativeComponent};
 
@@ -211,6 +213,15 @@ fn parse_items(items: &[JsonValue]) -> Vec<Tab> {
         .collect()
 }
 
+/// The `tint` prop: the theme's `primary` as the core's hex (`None`: the
+/// system's).
+fn parse_tint(value: Option<&JsonValue>) -> Option<nsh_core::Color> {
+    let hex = value?.as_str()?;
+    nsh_core::Hsla::parse_hex(hex)
+        .ok()
+        .map(nsh_core::Color::from)
+}
+
 /// Shows `items` on `bar`, with `selected` chosen.
 fn show(bar: &UITabBar, items: &[Retained<UITabBarItem>], selected: usize) {
     if items.is_empty() {
@@ -327,6 +338,16 @@ impl NativeComponent for SystemTabBar {
                 self.bar
                     .setSelectedItem(items.get(selected).map(|item| &**item));
             }
+            ("tint", value) => {
+                // The bar draws its selected item in its `tintColor`.
+                let tint = parse_tint(value).map(|c| {
+                    let (r, g, b, a) = c.to_f64();
+                    UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+                });
+                // SAFETY: a plain setter on the main thread; `None` restores
+                // the inherited tint.
+                unsafe { self.bar.setTintColor(tint.as_deref()) };
+            }
             _ => {}
         }
     }
@@ -355,7 +376,7 @@ pub(crate) fn factory() -> ComponentFactory {
 mod tests {
     use serde_json::json;
 
-    use super::{Tab, parse_items};
+    use super::{Tab, parse_items, parse_tint};
 
     /// Each tab carries its own title and icon; a tab without an icon has
     /// none.
@@ -378,5 +399,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The core's hex is the tint; anything else is none (the system's).
+    #[test]
+    fn the_tint_is_the_cores_hex_color() {
+        assert_eq!(
+            parse_tint(Some(&json!("#26251E"))),
+            Some(nsh_core::Color(0x26251eff))
+        );
+        assert_eq!(
+            parse_tint(Some(&json!("#EDECE600"))),
+            Some(nsh_core::Color(0xedece600))
+        );
+        assert_eq!(parse_tint(Some(&json!(null))), None);
+        assert_eq!(parse_tint(Some(&json!("primary"))), None);
+        assert_eq!(parse_tint(None), None);
     }
 }

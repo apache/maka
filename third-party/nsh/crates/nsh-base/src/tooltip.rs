@@ -32,7 +32,8 @@ pub struct TooltipProps {
     #[prop(default = Points(4.0))]
     pub margin: Prop<Points>,
     /// Milliseconds the pointer rests on the trigger before it shows
-    /// (default 500).
+    /// (default 500). `Infinity`: never by itself, only when the app
+    /// opens it.
     #[prop(default = 500.0)]
     pub delay: Prop<f64>,
     /// No tooltip: it neither shows nor asks to.
@@ -72,6 +73,23 @@ pub enum TooltipEvent {
     Close,
 }
 
+/// The longest a timer waits: 2^31 - 1 milliseconds (about 24.8 days),
+/// as the web's `setTimeout`.
+const LONGEST: Duration = Duration::from_millis(i32::MAX as u64);
+
+/// `ms` milliseconds as the pointer's delay: zero for a negative or NaN
+/// one, none (it never ends) for `Infinity` or one longer than
+/// [`LONGEST`].
+fn delay(ms: f64) -> Option<Duration> {
+    if ms.is_nan() || ms <= 0.0 {
+        Some(Duration::ZERO)
+    } else if ms > f64::from(i32::MAX) {
+        None
+    } else {
+        Some(Duration::from_secs_f64(ms / 1000.0))
+    }
+}
+
 /// A hint about an element, given as the element's `tooltip`
 /// (`<View tooltip={<Tooltip>…</Tooltip>}>`, Rust
 /// `.tooltip(tooltip().child(..))`), as GPUI's `.tooltip(..)`: shown on top
@@ -86,8 +104,10 @@ pub enum TooltipEvent {
 #[component]
 pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
+    // A delay that never ends: the pointer never asks.
+    let endless = move || delay(props.delay.get_untracked()).is_none();
     let change = move |next: bool| {
-        if next && props.disabled.get_untracked() {
+        if next && (props.disabled.get_untracked() || endless()) {
             return;
         }
         open.request(next, || {
@@ -113,9 +133,10 @@ pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement
         move || cx.emit(TooltipEvent::Close),
     );
     // The core follows the pointer on the trigger and asks; the tooltip's
-    // state decides.
+    // state decides. An endless delay waits the longest a timer can, and
+    // its end asks nothing.
     overlay()
-        .hint(move || Duration::from_secs_f64(props.delay.get().max(0.0) / 1000.0))
+        .hint(move || delay(props.delay.get()).unwrap_or(LONGEST))
         .hint_open(move || Some(presence.mounted()))
         .placement(props.placement)
         .align(props.align)

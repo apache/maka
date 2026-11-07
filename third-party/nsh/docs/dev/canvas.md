@@ -36,32 +36,12 @@
   into the `drawRect:` context, keeping its own transform and path in view space; Android `CanvasBox.java` interprets an `int[]` (`encode.rs`). Not
   supported: `getImageData` / `putImageData`, filters.
 
-**Partial redraws.** While animated values animate, iOS (`setNeedsDisplayInRect:`) and macOS (`NshView::redraw_rect`:
-`setNeedsDisplayInRect:` on the content layer) redraw only what changes: `nsh_core::canvas::DamageScan` replays the
-operations for their geometry (transform with `save` / `restore`, bounds of the current path and of `Path2D`s, line
-width / joins / caps, shadows) and adds up the bounds of the painting operations that read a slot whose value changed,
-through their own numbers or the state they paint with (transform, current path, `globalAlpha`, paint, line width,
-dash offset). The platform scans with the old values and the new ones and invalidates the union, inflated for
-anti-aliasing (2 pt) and rounded out to whole points; the platform then replays the whole drawing clipped to it
-(`drawRect:` on iOS, the content layer's `drawLayer:inContext:` on macOS; Core Graphics skips what falls outside), so
-the pixels are those of a full redraw (on macOS also with `drawsAsynchronously`: checked against a full redraw by
-screen capture). Bounds are conservative: curves by their control points, arcs by their circle, strokes by half the
-width under the transform's largest scale times the miter limit (miter joins) or √2 (square caps), shadows by twice
-their blur past their offset, text by 1.5 em per character and 1.5 em above and below the baseline (no text engine at
-hand). The scan falls back to a full redraw (`Damage::All`) for a clip that reads a changed value, a painting
-operation that reads one under a composite operation other than `source-over` (`copy`, `source-in`, ... change pixels
-outside the shape), an image at its natural size and bounds that are not finite. A scan allocates nothing (its save
-stack is kept); two per changed frame cost microseconds next to the replay. Linux rasterizes each canvas into an
-image surface at the surface's scale, shown as textures of 256 pixel tiles (`canvas.rs` `Raster`): an animation
-clears the damaged area and replays the drawing clipped to it, and only the tiles it touches become new textures
-(GSK keeps the others on the GPU). There, what the operations before the first one reading a slot painted
-(`canvas::first_animated`) is kept from the last full replay and copied back into the area, so only the painting from
-that operation on runs again (the operations before it still set the state; their path ops are skipped too when the
-animated part begins a path of its own). macOS keeps that part too, as a `CGLayer` (`canvas.rs` `Prefix`), when it
-is long (128 operations or more: drawing a layer costs about what replaying a sparkline does) and the drawing has been
-painted unchanged 30 times (a drawing that keeps changing would rasterize it on the main thread more often than it
-draws from it); such a canvas draws at once, where its layer is made. Other canvases draw at once too unless they
-paint 10 times a second or more (`canvas.rs` `Cadence`), when Core Animation replays them on its threads
+**Partial redraws.** While animated values animate, iOS and macOS (`NshView::redraw_rect`) redraw only the area the
+changed values affect: `nsh_core::canvas::DamageScan` finds it from the recorded operations, falling back to a full
+redraw (`Damage::All`) when it cannot bound the change, and the platform replays the whole drawing clipped to it, so
+the pixels are those of a full redraw. Linux rasterizes each canvas into tiled textures (`canvas.rs` `Raster`) and
+replays only the damaged area; Linux and macOS (`canvas.rs` `Prefix`) also keep what is painted before the first
+animated operation, for long drawings; canvases macOS repaints often are replayed by Core Animation on its threads (`canvas.rs` `Cadence`)
 (`docs/dev/macos.md`). On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
 drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the

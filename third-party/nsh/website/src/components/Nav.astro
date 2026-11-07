@@ -5,6 +5,7 @@ import ThemeSwitch from './ThemeSwitch.astro';
 import Button from './ui/Button.astro';
 import { BASE, GPUI_KIT_URL, REPO_URL, url, type Lang } from '../lib/site';
 import { SECTIONS, sectionHrefs } from '../lib/sections';
+import { currentVersion, isLatestVersion, latestVersion, siteVersions, versionHref, versionPath } from '../lib/versions';
 
 export interface Props {
   lang?: Lang;
@@ -23,6 +24,14 @@ const switchHref = langHref ?? url(isZh ? '' : 'zh-CN');
 // The section is the path segment after the base and the optional locale.
 const rest = currentPath.startsWith(BASE) ? currentPath.slice(BASE.length) : currentPath.replace(/^\/+/, '');
 const activeSection = rest.replace(/^zh-CN(\/|$)/, '').split('/')[0];
+
+// The same page in each version. App Stories are only the latest's: the
+// catalog changes apart from releases.
+const pagePath = versionPath(currentPath, BASE);
+const currentLabel = siteVersions.find((version) => version.id === currentVersion)?.label ?? currentVersion;
+const appsHref = isLatestVersion ? url(isZh ? 'zh-CN/apps' : 'apps') : isZh ? '/zh-CN/apps' : '/apps';
+// App Stories are the same in every version: the menu there stays on them.
+const onApps = /^\/(zh-CN\/)?apps(\/|$)/.test(pagePath);
 ---
 
 <header class="site-nav">
@@ -75,7 +84,7 @@ const activeSection = rest.replace(/^zh-CN(\/|$)/, '').split('/')[0];
         {isZh ? '示例应用' : 'Gallery'}
       </a>
       <a
-        href={url(isZh ? 'zh-CN/apps' : 'apps')}
+        href={appsHref}
         class:list={['site-nav__link', { active: activeSection === 'apps' }]}
         aria-current={activeSection === 'apps' ? 'true' : undefined}
       >
@@ -84,6 +93,28 @@ const activeSection = rest.replace(/^zh-CN(\/|$)/, '').split('/')[0];
     </nav>
 
     <div class="site-nav__actions">
+      {siteVersions.length > 1 && (
+        <details class="site-nav__versions">
+          <summary title={isZh ? '文档版本' : 'Documentation version'}>
+            {currentLabel}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="site-nav__versions-menu" aria-label={isZh ? '版本' : 'Versions'}>
+            {siteVersions.map((version) => (
+              <a
+                href={onApps ? pagePath : versionHref(version, pagePath)}
+                data-version-link
+                data-version-home={versionHref(version, isZh ? '/zh-CN' : '/')}
+                class:list={{ 'is-current': version.id === currentVersion }}
+                aria-current={version.id === currentVersion ? 'page' : undefined}
+              >
+                {version.label}
+                {version.id === latestVersion && <span>{isZh ? '最新' : 'latest'}</span>}
+              </a>
+            ))}
+          </div>
+        </details>
+      )}
       <DocSearch lang={lang} />
       <Button variant="ghost" size="sm" href={switchHref} class="site-nav__lang-btn" hreflang={isZh ? 'en' : 'zh-CN'} lang={isZh ? 'en' : 'zh-CN'} title={isZh ? 'English' : '中文'}>
         {isZh ? 'EN' : '中文'}
@@ -101,10 +132,23 @@ const activeSection = rest.replace(/^zh-CN(\/|$)/, '').split('/')[0];
 </header>
 
 <script>
-  const projects = document.querySelector<HTMLDetailsElement>('.site-nav__projects');
+  const menus = document.querySelectorAll<HTMLDetailsElement>('.site-nav__projects, .site-nav__versions');
   document.addEventListener('click', (event) => {
-    if (projects?.open && !projects.contains(event.target as Node)) projects.open = false;
+    for (const menu of menus) if (menu.open && !menu.contains(event.target as Node)) menu.open = false;
   });
+  // The same page may not be in another version (added later, or App
+  // Stories, the latest's alone): that version's home then.
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-version-link]')) {
+    link.addEventListener('click', async (event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+      event.preventDefault();
+      let found = false;
+      try {
+        found = (await fetch(link.href, { method: 'HEAD' })).ok;
+      } catch {}
+      location.href = found ? link.href : (link.dataset.versionHome ?? link.href);
+    });
+  }
   const burger = document.getElementById('nav-burger');
   const links = document.getElementById('site-nav-links');
   const setOpen = (open: boolean) => {

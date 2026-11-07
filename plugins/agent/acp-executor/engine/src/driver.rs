@@ -24,7 +24,7 @@ use crate::{
     projection::Projection,
     transport::{Connection, Event, Peer},
 };
-use agent_client_protocol::{self as sdk, schema::v1 as acp};
+use agent_client_protocol::{self as sdk, v1::schema as acp};
 use maka_agent_ports::executor;
 
 use std::time::Duration;
@@ -189,7 +189,14 @@ impl<'a> Driver<'a> {
             live.options = options;
         }
         if !self.context.cancellation.is_cancelled() {
-            projection.finish(self.context.output.as_ref()).await?;
+            projection
+                .finish(
+                    self.context.output.as_ref(),
+                    result.as_ref().is_ok_and(|response: &acp::PromptResponse| {
+                        response.stop_reason == acp::StopReason::EndTurn
+                    }),
+                )
+                .await?;
         }
         let response = result?;
         journal
@@ -202,7 +209,7 @@ impl<'a> Driver<'a> {
             .await?;
         Ok(match response.stop_reason {
             acp::StopReason::EndTurn => executor::Outcome::Completed {
-                text: projection.text(),
+                message_id: projection.last_body_message_id(),
             },
             acp::StopReason::Cancelled => executor::Outcome::Cancelled {
                 reason: Some("agent cancelled the prompt".into()),

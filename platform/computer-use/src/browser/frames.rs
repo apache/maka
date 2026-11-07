@@ -175,8 +175,9 @@ impl Tab {
         params: Value,
     ) -> Result<NodeIdentity, ToolError> {
         let json = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .observe_metadata_in(session, CdpMetadataRead::DescribeNode, params)
             .await?;
@@ -191,8 +192,9 @@ impl Tab {
         params: Value,
     ) -> Result<Vec<PropertyHandle>, ToolError> {
         let json = self
-            .socket
+            .connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .observe_metadata_in(session, CdpMetadataRead::GetProperties, params)
             .await?;
@@ -207,8 +209,9 @@ impl Tab {
         method: &str,
         params: Value,
     ) -> Result<Value, ToolError> {
-        self.socket
+        self.connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .observe_in(session, method, params)
             .await
@@ -219,8 +222,9 @@ impl Tab {
         method: &str,
         params: Value,
     ) -> Result<Value, ToolError> {
-        self.socket
+        self.connection
             .as_ref()
+            .map(TabConnection::socket)
             .ok_or_else(|| failed("tab connection unavailable"))?
             .request_in(session, method, params)
             .await
@@ -228,7 +232,12 @@ impl Tab {
 
     pub(super) async fn attach_frames(&mut self) -> Result<(), ToolError> {
         if self.frames.events.is_none() {
-            let connection = &self.socket.as_ref().unwrap().connection;
+            let connection = &self
+                .connection
+                .as_ref()
+                .map(TabConnection::socket)
+                .unwrap()
+                .connection;
             self.frames.events = Some(connection.subscribe());
         }
         if !self.frames.enabled {

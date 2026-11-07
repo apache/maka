@@ -64,7 +64,7 @@ pub(super) enum Command {
     SetRecentWorkspace {
         owner: String,
         path: String,
-        workspace: Option<Value>,
+        remember: bool,
     },
     SaveDraft {
         key: DraftKey,
@@ -121,8 +121,8 @@ impl Command {
             Self::SetRecentWorkspace {
                 owner,
                 path,
-                workspace,
-            } => super::workspaces::set(connection, owner, path, workspace)
+                remember,
+            } => super::workspaces::set(connection, owner, path, remember)
                 .await
                 .map(Output::RecentWorkspaces),
             Self::SaveDraft {

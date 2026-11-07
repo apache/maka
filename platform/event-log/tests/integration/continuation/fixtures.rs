@@ -46,7 +46,6 @@ pub(crate) fn opening(id: &str, claim: Option<ContinuationClaim>) -> RuntimeEven
                 ),
                 sandbox_mode: SandboxMode::ReadOnly,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
                 model: None,

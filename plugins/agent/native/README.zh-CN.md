@@ -21,16 +21,18 @@
 
 [English](README.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
+[`CheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
 和原 `RecoveryRef` 绑定到 Root 持有的历史捕获与恢复流程。
 [服务适配层](src/owner/checkpoints.rs)通过 Host 准入、原操作回执授权和有界订阅读取提供显式管理方法。
 领域回执可确认 checkpoint 成功，但不伪造通用 Host 的清理确认。
 参见 [API 工作流](../api/README.zh-CN.md#历史-checkpoint-管理)和[手动性能基线](src/owner/tests/checkpoints/benchmark.rs)。
-Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
+模型工具和跨 Root 恢复激活不在此 API 范围内；Workspace 与同 Root 恢复见下文。
+
+[检查适配层](src/owner/checkpoints/load.rs)通过相同 Host 管理边界提供精确加载及有界历史、Artifact 查询。加载的历史保留原 ID，放在隔离存储中，不向本 Owner 的执行或消息恢复注册。响应未知时使用原操作及原输入查询 `historyCheckpointLoadReceipt`。Workspace 发布与显式的同 Root 目录恢复分别见 [Session 适配器](src/owner/checkpoints/session.rs)和[恢复适配器](src/owner/checkpoints/restore.rs)。这两者保留条件一致性提示，要求明确的目标权限与模型，不自动发起消息。跨 Root 恢复及系统级外部停写仍未提供，详见 [API 支持范围](../api/README.zh-CN.md#workspace-发布与本地继续执行)。
 
 `agent.fork` 捕获源会话版本和显式 `position`：`end`、带逻辑 Turn ID 的 `through_turn` 或 `before_turn`，以及表示空历史的 `start`。`before_turn` 排除目标完整轮次，指定第一轮可创建空对话。Host 在复制事务中从规范历史计算边界，客户端无需寻找上一轮或依赖采样的历史导航点。返回的分支保留该位置，源会话保持不变。
 
-将 Agent 执行暴露为原生应用服务。`provide` 注册工厂，`executor` 和 `workhub` 连接执行与协调领域。包声明和产品组合决定激活哪些工厂，以及如何绑定导入。
+将 Agent 执行暴露为原生应用服务。`provide` 注册工厂，`executor` 连接执行领域。包声明和产品组合决定激活哪些工厂，以及如何绑定导入。
 
 服务管理自己的激活，并委托 `maka-agent-engine` 执行运行。会话历史、控制和工具调用使用获准作用域与原始操作回执。文件、进程、技能等服务都是通过组合显式选择的依赖。
 
@@ -41,6 +43,8 @@ Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
 Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-server daemon start`，再通过 `codex app-server proxy` 建立 WebSocket 连接。已有 daemon 不重启，多个会话与轮次共用服务；Maka 只拥有本轮连接、thread/turn 和 Host 工具桥接，不停止共享 daemon。取消仅中断对应 turn 并等待关联终态；proxy 退出不能解除已提交轮次的栅栏。CLI 必须支持原生 daemon/proxy，不回退到私有 app-server。每轮 MCP 凭证通过 thread 配置的 `http_headers` 刷新，不依赖 daemon 的环境变量。
 
 内置 `external` executor 通过 `maka_process` 直接接入 agy 原生 `--print= --input-format stream-json --output-format stream-json`、Codex 共享 app-server daemon 或真正的 Claude Code 交互式 PTY。在 `external.runtimes` 中逐项启用，并选择必填的原生 ID：`antigravity`、`codex`、`claude`。`external.commands` 可覆盖普通可执行文件、参数和环境设置；Codex 已有 daemon 保留它启动时的环境，覆盖不会改写运行中的共享服务。请通过原生 CLI 安装及登录；发现接口不安装软件，也不编造认证或模型能力。Claude 仅提供原生默认模型选项，不启动 print 模式辅助进程。
+
+原生 assistant 输出保留 agy 的 `step_index`、Codex item ID 和 Claude API 的 `message.id`（不是每行 JSONL UUID）。显式消息开始／结束边界让阶段说明、工具和后续回答在实时显示、刷新及取消后保持原生顺序。完成回执只指向最后完成的非空正文消息，不再用整轮聚合文本覆盖此前输出。Codex 推理正文／摘要和 Claude thinking 单独保留为思考内容，不抢占最终答复。当前已公开的 agy headless stream 未暴露思考文本，token 计数和 effort 设置不能替代它。
 
 每次 invocation 只有一个 journal 和 Host bridge 所有者；agy/Claude 拥有本轮进程，Codex 只拥有本轮代理连接。agy 每次 new/resume 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用提前持久化的 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；Maka 说明通过独立普通 user 消息传入，不覆盖原生系统提示词；原生接入初始化只做一次，已交付说明摘要持久化，内容不变时不重复提交，变更或清空时明确替代旧说明。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
 
@@ -64,13 +68,13 @@ agy 发现直接读取原生 `agy models` TSV，保留 Gemini、Claude、GPT-OSS
 
 外部运行时只获得已捕获的安全 Host catalog：Skills、结构化提问、支持的 Session 编排、插件管理及符合条件的 Recall 工具。调用保留实时 Maka 身份、授权、审批、ToolJournal 和原操作回执。取消时先关闭准入、请求取消并等待全部已准入副作用结算，再结算原生进程和输出流。Session 工具列表只约束这一 Host catalog；CLI 保留原生工具和完整权限模式。
 
-桥接的 Files `Read` 只接受 Session 附件和归档结果资源，包括有界的 `page.next` 分页；拒绝工作区文件、任务资源和图片输出。较大的 Host 结果仍可通过相同的归档资源路径读取。此桥接不开放 CUA、Session 元数据／归档／删除、Graph／Swarm、Goal 和定时执行工具，也不自动转发第三方 MCP 配置。
+桥接的 Files `Read` 只接受 Session 附件和归档结果资源，包括有界的 `page.next` 分页；拒绝工作区文件、任务资源和图片输出。较大的 Host 结果仍可通过相同的归档资源路径读取。此桥接不开放 CUA、Session 元数据／归档／删除、Goal 和定时执行工具，也不自动转发第三方 MCP 配置。
 
 Windows 命令须选择原生 `.exe`，或显式使用 `node.exe` 加 CLI 脚本参数。`.cmd`／`.bat` 启动脚本会给出明确诊断，不隐式交给 shell 执行。
 
 Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保持地址和私有配置路径稳定。每轮捕获不可变工具定义。本轮工具选择收紧时可保留公开定义以复用缓存，但不可用调用仍会被拒绝；新增工具或定义变化只在上一轮结算后刷新目录，不因描述或插件更新丢失原生会话身份。每个 invocation 使用新 bearer 和隔离的 MCP transport session，不共享调用权限。Codex 刷新 thread 级 `http_headers`；Claude 和 agy 在原配置路径原子刷新凭据。已关闭的凭据和旧 transport session 不能借用下一轮权限；已接受调用在取消或断连后仍归原 invocation 和原操作回执。空闲会话仅保留 endpoint、目录和配置，删除会话及 Host 关闭会在物理结算后释放。Host 重启会创建新 listener 和私有目录，并捕获当前目录，同时保留原生身份、已完成的初始化标记与说明交付摘要。凭据不出现在 argv 或日志中。
 
-启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。其他全局和项目指令文件放在后面。指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
+启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。内置模型会话还会在后面追加其他全局和项目指令文件。外部 Codex、Claude 和 agy 会话只接收 Maka 身份、选中的全局偏好和 Maka 工具／技能说明（以及已配置的 Maka 角色）。CLI 自己发现并加载其原生全局和项目规则；Maka 不再将这些文件复制进注入块，也不关闭原生发现。工作区指令开关只控制 Maka 的采集，不控制 CLI 原生加载。Maka 指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。
 
 新指令按业务 Root 保存的语言偏好、组合配置语言、原生环境的顺序选择英文、简体中文或繁体中文；显式「自动」使用原生环境。一次策略快照同时决定内置指令、技能包装、默认摘要及运行指引的语言。工具 schema 保持英文，用户、自定义及外部内容保留原文。
 
@@ -84,7 +88,7 @@ Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保
 cargo nextest run -p maka-cli --bin maka -E 'test(independent_public_agent_client_reconnects_history_watch_and_pending_interaction)'
 ```
 
-Agent 接收消息时保存模型的 Code Mode 默认值或显式 `codeMode` 覆盖设置；排队消息和恢复运行保留原模式。服务工具可以通过 `nestable: true` 允许代码内调用，仍执行与直接调用相同的权限检查、操作回执和清理流程。JavaScript 收到声明的业务结果，持久日志保留原生操作的原始回执。省略该字段时仅允许直接调用。Maka 默认组合为文件、进程、Web 和 Skills 工具启用嵌套调用。
+Agent 接收消息时保存模型的 Code Mode 默认值或显式 `codeMode` 覆盖设置；排队消息和恢复运行保留原模式。服务工具可以通过 `nestable: true` 允许代码内调用，仍执行与直接调用相同的权限检查、操作回执和清理流程。JavaScript 收到声明的业务结果，持久日志保留原生操作的原始回执。省略该字段时仅允许直接调用。Maka 默认组合为文件、进程、Web、Skills、部署与 UI 插件管理以及 Session／Model 协调工具启用嵌套调用，内置的清单、Goal、Recall、定时任务和 Bot `SendUser` 同样支持代码内调用；由模型提供方远程执行的工具、结束轮次的工具（`sleep`）、Computer Use REPL 工具和 `AskUserQuestion` 保持仅直接调用。
 
 模型设置通过 `codeModeLanguage: "javascript" | "python"` 独立选择语言，`codeMode` 控制是否启用，默认语言仍为 JavaScript。Python 使用随包提供的 Monty 解释器，支持顶层 await、`asyncio.gather`、JSON 工具参数和相同的输出/存储辅助函数。消息接收时固定语言，排队和恢复运行沿用原选择；修改只影响新提交的消息。该设置不改变 `maka code`、插件 JavaScript 或 Computer Use REPL。
 
@@ -98,7 +102,7 @@ Shell 工具默认接受模型生成的可选 `title`。助手偏好可关闭后
 
 Maka 默认组合启用 `todo`：`todo_read` 和 `todo_write` 维护当前会话的持久清单，也可用于 Code Mode 和只读工作区。写入会校验版本并替换整个列表。UI 显示已报告的进度和只读「清单」面板，以有界分页浏览最多 200 项。清单完成状态是模型报告的进度，不代表操作已成功的执行证据。
 
-Maka 默认组合启用 `bot`，即 Bot 模式。`openBot` 返回本安装唯一的 Bot 会话：首次使用或上一个已归档时，在指定工作区中创建。创建会话之前先认领登记记录，所以并发和重试的打开请求都会收敛到同一个会话。这条登记记录是判断 Bot 身份的唯一依据：工具授予、恢复和 `SendUser` 都以它为准，因此 fork 出来的会话和从 Bot 派生的会话都是普通会话。Bot 会话创建时只带 Agent 自带的协调类工具（定时任务、目标、历史检索、清单、WorkHub 委派和技能），`SendUser` 和 `sleep` 由身份授予，不依赖这份工具列表；普通创建不能申请它们。`sleep` 没有参数也没有时长：它结束本轮，之后由用户消息、WorkHub 结果或到点的定时事件各自开启新一轮来唤醒 Bot。只有当排队消息已经注定在运行中调用的下一步送达时才会拒绝休眠，并且必须单独调用，不能和 `SendUser` 放在同一步。每次调用都把消息写入由 Host 持有、与 Run 状态分开的存储，每次调用、每条消息各一条记录：同一 `messageId` 且内容相同视为重复，不会再次记录；同一 id 但内容不同会被拒绝；什么都不发也是合法结果。调用记录不会被淘汰，所以复用的 id 总能被识别。`botOutbox` 按序号游标从旧到新分页读取消息，`watchBotOutbox` 在消息头变化时发出通知。Bot 会话排队的唤醒，包括定时和 WorkHub 来源的消息，在工具结果未知后仍会继续：告知模型，而不是重放工具；普通会话保持更严格的规则。
+Maka 默认组合启用 `bot`，即 Bot 模式。`openBot` 返回本安装唯一的 Bot 会话：首次使用或上一个已归档时，在指定工作区中创建。创建会话之前先认领登记记录，所以并发和重试的打开请求都会收敛到同一个会话。这条登记记录是判断 Bot 身份的唯一依据：工具授予、恢复和 `SendUser` 都以它为准，因此 fork 出来的会话和从 Bot 派生的会话都是普通会话。Bot 会话创建时只带 Agent 自带的协调类工具（定时任务、目标、历史检索、清单、会话委派／读取和技能），`SendUser` 和 `sleep` 由身份授予，不依赖这份工具列表；普通创建不能申请它们。`sleep` 没有参数也没有时长：它结束本轮，之后由用户消息、后台 worker 结果或到点的定时事件各自开启新一轮来唤醒 Bot。只有当排队消息已经注定在运行中调用的下一步送达时才会拒绝休眠，并且必须单独调用，不能和 `SendUser` 放在同一步。每次调用都把消息写入由 Host 持有、与 Run 状态分开的存储，每次调用、每条消息各一条记录：同一 `messageId` 且内容相同视为重复，不会再次记录；同一 id 但内容不同会被拒绝；什么都不发也是合法结果。调用记录不会被淘汰，所以复用的 id 总能被识别。`botOutbox` 按序号游标从旧到新分页读取消息，`watchBotOutbox` 在消息头变化时发出通知。Bot 会话排队的唤醒，包括定时和 worker 来源的消息，在工具结果未知后仍会继续：告知模型，而不是重放工具；普通会话保持更严格的规则。
 
 Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建的会话在首条消息获准后，使用该消息选定的模型发起一次有界、独立计费的标题请求。显式命名、手动改名（包括保留原占位名称）、归档及托管会话保留原名称。重试和 Host 重启不会重复已接收的标题尝试；Host 关闭会等待请求实际清理完成。
 
@@ -108,17 +112,9 @@ Maka 默认组合启用 `automaticTitles`。通过 `automaticTitle: true` 创建
 
 每个逻辑请求按当前模型观测解析上下文总容量和独立输入上限；排队和重启后继续保留接收时的用户覆盖参数。未显式设置压缩阈值时，使用已知输入容量的 85%；输出预留仍由引擎单独计算。
 
-默认组合启用 `recaps`。「会话回顾」命令读取缓存；生成新回顾前需明确确认所选模型及可能产生的费用。每次最多扫描 256 个有界历史页，保留不超过 32 KiB 的历史文本，输出上限为 1,024 token，生成限时 30 秒。读取缓存也检查隐私模式和会话访问范围。刷新和原始操作恢复不会重新生成；结果未知的请求在重启后仍保留为待定。辅助用量归属于原始应用操作，关闭时等待模型请求实际清理完成。
+默认组合启用 `recaps`。「会话回顾」命令读取缓存；生成新回顾前需明确确认所选模型及可能产生的费用。每次最多扫描 256 个有界历史页，保留不超过 32 KiB 的历史文本，输出上限为 1,024 token，生成限时 30 秒。读取缓存也检查会话访问范围。刷新和原始操作恢复不会重新生成；结果未知的请求在重启后仍保留为待定。辅助用量归属于原始应用操作，关闭时等待模型请求实际清理完成。
 
-默认组合启用 `goals`。`/goal` 或输入框加号菜单打开目标面板；`/goal 目标内容` 直接开始。目标复用现有会话队列自动续跑，不设迭代上限。`CreateGoal`、`GetGoal` 和 `GoalStatus` 可从 Direct 和 Code Mode 调用；每次模型请求都携带当前目标、进度和预算，压缩后仍可读取。模型创建的目标将当前轮作为第一轮。暂停停止当前工作，继续使用所选模型与设置，取消只作用于此目标。临时执行失败允许恢复。Token 预算为可选的跨轮调度阈值；缺失计量如实显示为用量不完整，不会因此停工，用户可以调整预算。读取提供实时用量、剩余预算和累计执行时间；完成并清理后，用量不再随普通聊天增长。重启保留原始操作身份与回执，Host 交接沿封存的后继执行恢复，避免重放操作。隐私模式、归档会话或执行前提变更时，需要用户处理后继续。
-
-WorkHub 协调会话可以选择 Graph 或 Swarm。Graph 决策与原 WorkHub 任务记录原子提交；原任务所有者继续负责派发、依赖输入捕获、控制回执和清理。五个 Graph 工具提供已发布目标、工作／结果／历史的有界读取、更新和让出执行。Swarm 在需要处理或整批工作结束时唤醒协调者。跨轮次输入必须引用较早已完成轮次选定的最终结果；输入采用 16 KiB 结果预览，完整结果仍可分页读取。停止、排队和重启后仍检查原会话、轮次和权限边界。
-
-WorkHub 任务和 Graph 通知在历史中保留其记录的来源，并使用独立的消息标签。
-
-WorkHub 任务按受理时间从新到旧排列。任务详情包含记录的标题和受理时间，状态变化和重启不会改变它们。分页游标保留实时列表中的位置；刷新首页可查看较新的任务。
-
-可复用的 WorkHub 预设保存明确的连接和模型。普通及 Graph 新任务按当前设置解析该目标，无关的连接编辑不会使预设失效。已受理任务保留接收时的模型选择和工具，修改或禁用预设不会重写它们。新路由在受理前明确报告预设、连接或模型不可用。
+默认组合启用 `goals`。`/goal` 或输入框加号菜单打开目标面板；`/goal 目标内容` 直接开始。目标复用现有会话队列自动续跑，不设迭代上限。`CreateGoal`、`GetGoal` 和 `GoalStatus` 可从 Direct 和 Code Mode 调用；每次模型请求都携带当前目标、进度和预算，压缩后仍可读取。模型创建的目标将当前轮作为第一轮。暂停停止当前工作，继续使用所选模型与设置，取消只作用于此目标。临时执行失败允许恢复。Token 预算为可选的跨轮调度阈值；缺失计量如实显示为用量不完整，不会因此停工，用户可以调整预算。读取提供实时用量、剩余预算和累计执行时间；完成并清理后，用量不再随普通聊天增长。重启保留原始操作身份与回执，Host 交接沿封存的后继执行恢复，避免重放操作。归档会话或执行前提变更时，需要用户处理后继续。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 

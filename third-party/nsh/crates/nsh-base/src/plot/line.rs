@@ -7,7 +7,7 @@ use nsh_core::{
 };
 
 use super::{
-    PlotContext, STROKE_ROOM, layer, mark_canvas, reach,
+    PlotContext, STROKE_ROOM, ValueScale, layer, mark_canvas, reach,
     series::{self, HoverDot, Series},
 };
 
@@ -103,6 +103,11 @@ pub struct LineProps {
     /// What it draws (`gpui-base`'s `y`): a field name, or a function of the
     /// row and its index; the plot's `y` without.
     pub y: Prop<Option<RowAccessor>>,
+    /// The y scale its values go along: `"y"` (the default, the plot's
+    /// `yScale`) or `"y2"` (its second one, `y2Scale`: a dual-axis chart's
+    /// right-hand scale).
+    #[prop(default)]
+    pub scale: Prop<ValueScale>,
     /// How it connects its points: `"natural"` (the default, a smooth
     /// curve, as `gpui-base`'s), `"linear"` or `"stepAfter"`.
     #[prop(default)]
@@ -160,7 +165,7 @@ pub fn Line(props: LineProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         style: props.hover_dot_style,
     };
     let series = plot.map(|plot| {
-        let series = Series::new(plot, props.data, props.x, props.y, || None);
+        let series = Series::new(plot, props.data, props.x, props.y, props.scale, || None);
         series.join(plot, || None, hover_dot);
         series
     });
@@ -203,7 +208,7 @@ pub fn Line(props: LineProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                     return p;
                 };
                 let p = plot.clip(p, bleed).begin_path();
-                plot.traced(p, true, true, |p| {
+                plot.traced(p, true, Some(series.scale.get()), |p| {
                     trace(p.move_to(first.x, first.y), &points, curve.get())
                 })
                 .stroke()
@@ -212,17 +217,27 @@ pub fn Line(props: LineProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         .child(when(
             move || dot.get() && series.is_some(),
             move || {
-                let (plot, points) = (plot.expect("a plot"), series.expect("a series").points);
+                let series = series.expect("a series");
+                let (plot, points, scale) = (plot.expect("a plot"), series.points, series.scale);
+                // Keyed by the scale too: a dot moves with its scale's
+                // domain.
                 each(
-                    move || (0..points.get().len()).collect::<Vec<usize>>(),
+                    move || {
+                        let scale = scale.get();
+                        (0..points.get().len())
+                            .map(|i| (i, scale))
+                            .collect::<Vec<_>>()
+                    },
                     |i| *i,
-                    move |i, _| {
+                    move |item, _| {
+                        let (i, scale) = item.get_untracked();
+                        let y_tween = plot.y_tween_of(scale);
                         // Its point, while the scales' domains move: the
                         // dot moves with them from where the layout puts it.
                         let at = point(animated_value(0.0), animated_value(0.0));
                         effect(move || {
-                            let moving = plot.x_tween.moving.get() || plot.y_tween.moving.get();
-                            let p = points.with(|ps| ps.get(i.get()).copied());
+                            let moving = plot.x_tween.moving.get() || y_tween.moving.get();
+                            let p = points.with(|ps| ps.get(i).copied());
                             if let Some(p) = p.filter(|_| moving) {
                                 at.x.set(p.x.0);
                                 at.y.set(p.y.0);
@@ -235,12 +250,12 @@ pub fn Line(props: LineProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                             .items_center()
                             .justify_center()
                             .pointer_events(PointerEvents::None)
-                            .style_with(move |s| match points.get().get(i.get()) {
+                            .style_with(move |s| match points.get().get(i) {
                                 Some(p) => s.left(p.x).top(p.y),
                                 None => s,
                             })
                             .bind_translate_x(&plot.x_tween.moved(&at.x))
-                            .bind_translate_y(&plot.y_tween.moved(&at.y))
+                            .bind_translate_y(&y_tween.moved(&at.y))
                             .child(
                                 view()
                                     .flex_none()

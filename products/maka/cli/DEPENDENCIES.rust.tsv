@@ -12,9 +12,9 @@ aes-gcm@0.11.1		X										X
 aes-kw@0.3.1		X										X						
 aes@0.8.4		X										X						
 aes@0.9.3		X										X						
-agent-client-protocol-derive@3.5.0		X																
-agent-client-protocol-schema@1.12.0		X																
-agent-client-protocol@3.5.0		X																
+agent-client-protocol-derive@5.0.0		X																
+agent-client-protocol-schema@1.15.1		X																
+agent-client-protocol@5.0.0		X																
 ahash@0.8.12		X										X						
 aho-corasick@1.1.5												X					X	
 alacritty_terminal@0.26.0		X																
@@ -80,7 +80,6 @@ base64@0.23.1		X										X
 base64ct@1.8.3		X										X						
 bincode@1.3.3												X						
 bindgen@0.72.1					X													
-bindgen@0.73.2					X													
 bit_field@0.10.3		X										X						
 bit-set@0.10.0		X										X						
 bit-set@0.8.0		X										X						
@@ -101,6 +100,7 @@ blocking@1.7.0		X										X
 borrow-or-share@0.2.4													X					
 boxed_error@0.2.3												X						
 brotli-decompressor@4.0.3					X							X						
+brotli-decompressor@5.0.3					X							X						
 brotli-decompressor@6.0.1					X							X						
 brotli@6.0.0					X							X						
 brotli@9.0.0					X							X						
@@ -288,6 +288,7 @@ event-listener@5.4.2		X										X
 exr@1.74.2					X													
 fallible-iterator@0.3.0		X										X						
 fallible-streaming-iterator@0.1.9		X										X						
+fancy-regex@0.14.0												X						
 fancy-regex@0.16.2												X						
 fancy-regex@0.17.0												X						
 fancy-regex@0.18.0												X						
@@ -597,7 +598,6 @@ maka-external-agent@0.2.0		X
 maka-files-native@0.2.0		X																
 maka-fs-tools@0.2.0		X																
 maka-goal@0.2.0		X																
-maka-graph@0.2.0		X																
 maka-host-js@0.2.0		X																
 maka-host-runtime@0.2.0		X																
 maka-interactions-api@0.2.0		X																
@@ -687,18 +687,18 @@ nonmax@0.5.5		X										X
 notify-rust@4.18.2		X										X						
 notify-types@2.1.0		X										X						
 notify@8.2.1								X										
-nsh-base@0.3.0		X																
-nsh-bundler@0.3.0		X																
-nsh-core@0.3.0		X																
-nsh-engine@0.3.0		X																
-nsh-gpui-terminal@0.3.0		X																
-nsh-js@0.3.0		X																
-nsh-macros@0.3.0		X																
-nsh-package@0.3.0		X																
-nsh-platform-gpui@0.3.0		X																
-nsh-platform-macos@0.3.0		X																
-nsh-platform-tui@0.3.0		X																
-nsh-platform-windows@0.3.0		X																
+nsh-base@0.4.0		X																
+nsh-bundler@0.4.0		X																
+nsh-core@0.4.0		X																
+nsh-engine@0.4.0		X																
+nsh-gpui-terminal@0.4.0		X																
+nsh-js@0.4.0		X																
+nsh-macros@0.4.0		X																
+nsh-package@0.4.0		X																
+nsh-platform-gpui@0.4.0		X																
+nsh-platform-macos@0.4.0		X																
+nsh-platform-tui@0.4.0		X																
+nsh-platform-windows@0.4.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
 num_cpus@1.17.0		X										X						
@@ -803,6 +803,7 @@ phf_codegen@0.13.1												X
 phf_generator@0.11.3												X						
 phf_generator@0.13.1												X						
 phf_generator@0.14.0												X						
+phf_macros@0.11.3												X						
 phf_macros@0.13.1												X						
 phf_macros@0.14.0												X						
 phf_shared@0.11.3												X						
@@ -882,6 +883,11 @@ ratatui-crossterm@0.1.2												X
 ratatui-image@11.1.0												X						
 ratatui-widgets@0.3.2												X						
 ratatui@0.30.2												X						
+ratex-font@0.1.15												X						
+ratex-layout@0.1.15												X						
+ratex-lexer@0.1.15												X						
+ratex-parser@0.1.15												X						
+ratex-types@0.1.15												X						
 raw-cpuid@11.6.0												X						
 raw-window-handle@0.6.2		X										X						X
 raw-window-metal@1.1.0		X										X						
@@ -895,6 +901,7 @@ ref-cast@1.0.27		X										X
 referencing@0.46.10												X						
 referencing@0.60.1												X						
 regex-automata@0.4.18		X										X						
+regex-lite@0.1.9		X										X						
 regex-syntax@0.8.11		X										X						
 regex@1.13.1		X										X						
 regorus@0.10.1		X			X							X						
@@ -1288,6 +1295,7 @@ wio@0.2.2		X										X
 wl-clipboard-rs@0.9.4		X										X						
 wnaf@0.14.1		X										X						
 writeable@0.6.4															X			
+wuff@0.2.9												X						
 wyz@0.5.1												X						
 x11@2.21.0												X						
 x11rb-protocol@0.13.2		X										X						

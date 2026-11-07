@@ -129,13 +129,12 @@ impl Web {
     }
     async fn capture(&self) -> Result<Capture, String> {
         let snapshot = self.repository.snapshot().await.map_err(message)?;
-        let policy = self.configuration.runtime_policy().await.map_err(message)?;
         Ok(Capture {
             basis: Basis {
                 revision: snapshot.revision,
                 credential_revision: snapshot.credential.revision,
             },
-            available: snapshot.settings.enabled && !policy.policy.privacy.incognito_active,
+            available: snapshot.settings.enabled,
             source: snapshot.settings.source,
             credential_configured: snapshot.credential.configured,
         })
@@ -185,24 +184,6 @@ impl Handler for Service {
                 "probe" => {
                     let input: maka_web_api::probe::Input =
                         serde_json::from_value(input).map_err(message)?;
-                    let target = input.target()?;
-                    if owner
-                        .configuration
-                        .runtime_policy()
-                        .await
-                        .map_err(message)?
-                        .policy
-                        .privacy
-                        .incognito_active
-                    {
-                        return encode(ResultValue::Completed {
-                            value: serde_json::to_value(maka_web_api::probe::Endpoint::Unknown {
-                                target,
-                                error: "Endpoint probing is disabled in incognito mode".into(),
-                            })
-                            .map_err(message)?,
-                        });
-                    }
                     let authority = network::Access::health(owner, context.scope())?;
                     let client = Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority)));
                     match crate::probe::probe(client, context.scope(), input).await {

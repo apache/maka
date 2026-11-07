@@ -211,3 +211,78 @@ expect Ticks: 0
 tap id:runtime-tick
 wait 20
 expect Ticks: 1
+# base-hover-card-desktop
+tap id:case-base-hover-card-desktop
+# Open once the pointer rested on the trigger for `openDelay`.
+event text:SlowMention onMouseEnter
+wait 1000
+absent SlowCard
+wait 1200
+expect SlowCard
+expect Log: card true hover
+# Off the trigger and onto the card within `closeDelay`: it stays.
+event text:SlowMention onMouseLeave
+event parent:text:SlowCard onMouseEnter
+wait 1000
+expect SlowCard
+# Off the card: closed `closeDelay` later.
+event parent:text:SlowCard onMouseLeave
+wait 1000
+expect SlowCard
+wait 1500
+absent SlowCard
+expect Log: card false hover
+# Escape closes it at once.
+event text:SlowMention onMouseEnter
+wait 2200
+expect SlowCard
+event parent:text:SlowCard onCancel
+absent SlowCard
+expect Log: card false cancel
+event text:SlowMention onMouseLeave
+covers [props] HoverCard.openDelay
+covers [props] HoverCard.closeDelay
+# Made with its starting looks, its own from its first frame on; closed,
+# it stays with its ending looks through its 300 ms, then it is gone.
+event text:LooksMention onMouseEnter
+expect LooksCard
+style parent:text:LooksCard opacity 0
+style parent:text:LooksCard backgroundColor #ff0000ff
+wait 100
+nostyle parent:text:LooksCard opacity
+nostyle parent:text:LooksCard backgroundColor
+expect Life: card open
+event text:LooksMention onMouseLeave
+wait 100
+style parent:text:LooksCard opacity 0.5
+style parent:text:LooksCard backgroundColor #0000ffff
+expect LooksCard
+wait 600
+absent LooksCard
+expect Life: card closed
+covers [props] HoverCard.popupStartingClass
+covers [props] HoverCard.popupStartingStyle
+covers [props] HoverCard.popupEndingClass
+covers [props] HoverCard.popupEndingStyle
+# base-popup-anchors-desktop
+tap id:case-base-popup-anchors-desktop
+# A trigger its popover's column stretches (20, 300, 200 × 30 around a
+# 20-point box): the popup is centered 4 points below the whole trigger,
+# not below the box around its content (which would put it at 20).
+tap id:stretched-trigger
+expect StretchBody
+frame parent:text:StretchBody 100 334 40 20
+covers [props] Popover.trigger
+covers [props] Popover.offset
+tap id:stretched-trigger
+absent StretchBody
+# An icon trigger 40 points wide by its minWidth (20, 338) around a
+# 16-point icon: the menu starts at the trigger's start (`align` "start"),
+# not the icon's (which would put it at 32).
+tap id:icon-trigger
+expect IconItem
+frame parent:parent:text:IconItem 20 372 90 40
+covers [props] Menu.trigger
+covers [props] Menu.offset
+tap id:icon-trigger
+absent IconItem

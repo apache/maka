@@ -1,7 +1,9 @@
-//! `fetch` routed through the engine's network, for a test session: the
-//! test's routes answer what the app asks (`open(..., { network })`) and
-//! record it (`app.requests()`), as nsh-js' fetch does for QuickJS. The
-//! realm builds its requests and responses with the browser's own classes
+//! `fetch` routed through the engine's network: in every session for the
+//! app's own files (`asset:/`), which the engine reads as it does on every
+//! platform, and in a test session for HTTP too, where the test's routes
+//! answer what the app asks (`open(..., { network })`) and record it
+//! (`app.requests()`), as nsh-js' fetch does for QuickJS. The realm builds
+//! its requests and responses with the browser's own classes
 //! (`testing.js`); only the request's parts cross, and the engine's events
 //! come back to its listener.
 use std::cell::{Cell, RefCell};

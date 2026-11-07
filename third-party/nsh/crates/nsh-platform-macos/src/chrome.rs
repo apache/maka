@@ -164,6 +164,7 @@ fn full_screen(window: &NSWindow) -> bool {
 /// Tells the app the hidden title bar's area (after a style change, a
 /// resize, full screen).
 pub(crate) fn update_area(surface: &Surface) {
+    sync_toolbar_visibility(surface);
     let area = match window(surface) {
         Some(window)
             if surface.chrome.style.get() == TitleBarStyle::Hidden && !full_screen(&window) =>
@@ -179,8 +180,14 @@ pub(crate) fn update_area(surface: &Surface) {
             // A toolbar's native height is determined by AppKit, not the
             // requested height that selected its style. Include a host's
             // toolbar too, so the app reserves its actual obscured area.
+            // The title bar view that holds the window's buttons and the
+            // toolbar has that height whatever the window's: the content
+            // layout rectangle is only laid out for the new frame later,
+            // so read during a resize it gives the old one's.
             let height = if window.toolbar().is_some() {
-                toolbar_height(frame.size.height, window.contentLayoutRect(), natural)
+                title_bar_view_height(&window).unwrap_or_else(|| {
+                    toolbar_height(frame.size.height, window.contentLayoutRect(), natural)
+                })
             } else {
                 natural
             };
@@ -210,6 +217,31 @@ pub(crate) fn update_area(surface: &Surface) {
         env.title_bar = area;
         surface.set_environment(env);
     }
+}
+
+/// Hides our empty toolbar in full screen and shows it again outside it.
+/// Full screen keeps a visible toolbar on screen as an opaque strip over the
+/// app's content; without one, AppKit reveals the title bar on hover instead.
+fn sync_toolbar_visibility(surface: &Surface) {
+    let Some(window) = window(surface) else {
+        return;
+    };
+    let owned = surface.chrome.toolbar.borrow();
+    let Some(owned) = owned.as_ref().filter(|t| t.is_installed(&window)) else {
+        return;
+    };
+    let visible = !full_screen(&window);
+    if owned.toolbar.isVisible() != visible {
+        owned.toolbar.setVisible(visible);
+    }
+}
+
+/// The height of the title bar view around the window's buttons (with a
+/// toolbar, the toolbar's row too), when the window has one.
+fn title_bar_view_height(window: &NSWindow) -> Option<f32> {
+    let button = window.standardWindowButton(NSWindowButton::CloseButton)?;
+    let height = crate::view::superview(&button)?.frame().size.height;
+    (height.is_finite() && height > 0.0).then_some(height as f32)
 }
 
 /// The unobscured rectangle is in window coordinates, including its origin.
@@ -783,8 +815,22 @@ pub(crate) fn close_open_menu() -> Result<(), String> {
 
 /// Shows a context menu at `at` (root coordinates) or at the mouse.
 fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>) {
-    let root = surface.root.ns();
     let menu = menu(surface, "", items);
+    track_menu(surface, &menu, at);
+    // The app's `Menu.popup` promise settles.
+    surface.event(
+        ROOT_ID,
+        EventKind::Menu,
+        EventPayload::Map(vec![
+            ("id", PayloadValue::Number(0.0)),
+            ("closed", PayloadValue::Bool(true)),
+        ]),
+    );
+}
+
+/// Shows a native context menu and lets the test agent choose from it.
+pub(crate) fn track_menu(surface: &Rc<Surface>, menu: &NSMenu, at: Option<(f32, f32)>) {
+    let root = surface.root.ns();
     // The root view is flipped: y goes down, as the app's. Without a
     // place, where the root's pointer events put the mouse: the hardware
     // cursor's place only when they put it nowhere, as synthesized input
@@ -799,7 +845,7 @@ fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>)
         }
     };
     #[cfg(feature = "dev")]
-    OPEN_MENU.with(|open| *open.borrow_mut() = Some(menu.clone()));
+    OPEN_MENU.with(|open| *open.borrow_mut() = Some(Retained::from(menu)));
     // Returns once the menu closed (the chosen item's action sent).
     menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(root));
     #[cfg(feature = "dev")]
@@ -807,15 +853,6 @@ fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>)
     // A menu opened during a press (`onPressDown`, a long press) took its
     // release: the press ends here, or the view would stay pressed.
     crate::input::cancel_pointer(surface);
-    // The app's `Menu.popup` promise settles.
-    surface.event(
-        ROOT_ID,
-        EventKind::Menu,
-        EventPayload::Map(vec![
-            ("id", PayloadValue::Number(0.0)),
-            ("closed", PayloadValue::Bool(true)),
-        ]),
-    );
 }
 
 /// The root view moved to a window, or the window changed: a hidden title

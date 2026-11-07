@@ -60,6 +60,7 @@ mod protocol_processes;
 mod terminal;
 
 mod interactions;
+mod system_permission;
 
 mod catalog;
 
@@ -74,7 +75,6 @@ mod executor;
 
 mod prompt_language;
 mod session_context;
-mod workhub;
 
 mod queue;
 
@@ -99,7 +99,8 @@ mod scheduler_tests;
 mod workspaces;
 
 use super::*;
-use crate::{EXPORT, ModelSelection, contract, service::Agent};
+use crate::{EXPORT, contract, service::Agent};
+use maka_agent_api::ModelSelection;
 use maka_agent_facts::configuration::*;
 use maka_capabilities::call::Attachments;
 use maka_capabilities::call::Identity;
@@ -401,11 +402,6 @@ fn bundled_catalog() -> Arc<maka_providers::catalog::Catalog> {
 type FixtureCapture =
     Arc<StdMutex<Option<(Arc<Owner>, maka_host_runtime::application::NativeServices)>>>;
 
-enum FixtureApplication {
-    Agent,
-    Workhub(workhub::Setup),
-}
-
 struct Fixture {
     services: maka_host_runtime::application::NativeServices,
     _dir: tempfile::TempDir,
@@ -435,13 +431,7 @@ impl Fixture {
     }
 
     fn runtime_databases(&self) -> Vec<std::path::PathBuf> {
-        (0..8)
-            .map(|partition| {
-                self.root
-                    .join("runtime-partitions")
-                    .join(format!("{partition:02}.sqlite"))
-            })
-            .collect()
+        vec![self.root.join(maka_event_log::root::ROOT_DATABASE)]
     }
 
     fn runtime_database_containing(&self, query: &str, id: &str) -> std::path::PathBuf {
@@ -467,22 +457,8 @@ impl Fixture {
         matching.into_iter().next().unwrap()
     }
 
-    fn session_database(&self, id: &str) -> std::path::PathBuf {
-        let control = rusqlite::Connection::open_with_flags(
-            self.root.join(maka_event_log::root::ROOT_DATABASE),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let partition: u32 = control
-            .query_row(
-                "SELECT partition FROM session_routes WHERE session_id=?",
-                [id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        self.root
-            .join("runtime-partitions")
-            .join(format!("{partition:02}.sqlite"))
+    fn session_database(&self, _id: &str) -> std::path::PathBuf {
+        self.root.join(maka_event_log::root::ROOT_DATABASE)
     }
 
     async fn prefix(
@@ -534,6 +510,13 @@ impl Fixture {
     ) -> Self {
         Self::configured_provider(base, model, peer, tooling, configure, "openai-compatible").await
     }
+    async fn configured_with_temp_home(
+        base: &str,
+        configure: impl FnOnce(&mut Configuration),
+    ) -> Self {
+        Self::configured_application(base, None, None, None, configure, "openai-compatible", true)
+            .await
+    }
     async fn configured_provider(
         base: &str,
         model: Option<ModelExecutor>,
@@ -542,35 +525,8 @@ impl Fixture {
         configure: impl FnOnce(&mut Configuration),
         provider_name: &str,
     ) -> Self {
-        Self::configured_application(
-            base,
-            model,
-            peer,
-            tooling,
-            configure,
-            provider_name,
-            FixtureApplication::Agent,
-        )
-        .await
-    }
-    async fn workhub(base: &str, setup: workhub::Setup) -> Self {
-        Self::workhub_configured(base, setup, |_| {}).await
-    }
-    async fn workhub_configured(
-        base: &str,
-        setup: workhub::Setup,
-        configure: impl FnOnce(&mut Configuration),
-    ) -> Self {
-        Self::configured_application(
-            base,
-            None,
-            None,
-            None,
-            configure,
-            "openai-compatible",
-            FixtureApplication::Workhub(setup),
-        )
-        .await
+        Self::configured_application(base, model, peer, tooling, configure, provider_name, false)
+            .await
     }
     async fn configured_application(
         base: &str,
@@ -579,7 +535,7 @@ impl Fixture {
         tooling: Option<service_tools::Setup>,
         configure: impl FnOnce(&mut Configuration),
         provider_name: &str,
-        application: FixtureApplication,
+        use_temp_home: bool,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
@@ -649,7 +605,6 @@ impl Fixture {
             assistant: None,
             scheduled_tasks: false,
             goals: false,
-            plans: false,
             todo: false,
             bot: false,
             automatic_titles: false,
@@ -684,10 +639,7 @@ impl Fixture {
         if let Some(tooling) = &tooling {
             settings.tools = tooling.selections();
         }
-        let (mut input, mut packages) = match &application {
-            FixtureApplication::Agent => input(&settings),
-            FixtureApplication::Workhub(setup) => setup.composition(&settings),
-        };
+        let (mut input, mut packages) = input(&settings);
         if let Some(tooling) = &tooling {
             tooling.install(&mut input, &mut packages);
         }
@@ -703,75 +655,65 @@ impl Fixture {
         if let Some(tooling) = &tooling {
             tooling.provide(&mut native);
         }
-        match &application {
-            FixtureApplication::Workhub(setup) => setup.provide(&mut native, captured.clone()),
-            FixtureApplication::Agent => {
-                let capture = captured.clone();
-                let replacement = Arc::new(StdMutex::new(model));
-                // Actual Host NativeContext and original NativeOwner; only the model
-                // implementation is controlled in failure tests, never Root/admission.
-                native
-                    .insert(
-                        IMPLEMENTATION.into(),
-                        Arc::new(move |context, configuration| {
-                            let capture = capture.clone();
-                            let catalog = catalog.clone();
-                            let replacement = replacement.lock().unwrap().take();
-                            Box::pin(async move {
-                                let services = context.services();
-                                let mut owner =
-                                    Owner::open(context, configuration, catalog).await.unwrap();
-                                if let Some(model) = replacement {
-                                    Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
-                                        model,
-                                        maka_tools::CodeExecutor::new(Default::default()).unwrap(),
-                                    )
-                                    .unwrap();
-                                }
-                                *capture.lock().unwrap() = Some((owner.clone(), services));
-                                let service = Arc::new(Agent(owner));
-                                NativeActivation {
-                                    owner: service.clone(),
-                                    exports: Ok(BTreeMap::from([(
-                                        EXPORT.into(),
-                                        maka_plugin_core::runtime::Published {
-                                            contract: contract(),
-                                            value: service
-                                                as Arc<dyn maka_host_runtime::application::Handler>,
-                                        },
-                                    )])),
-                                }
-                            })
-                        }),
-                    )
-                    .unwrap();
+        let capture = captured.clone();
+        let replacement = Arc::new(StdMutex::new(model));
+        let temp_home = use_temp_home.then(|| dir.path().to_path_buf());
+        // Actual Host NativeContext and original NativeOwner; only the model
+        // implementation is controlled in failure tests, never Root/admission.
+        native
+            .insert(
+                IMPLEMENTATION.into(),
+                Arc::new(move |context, configuration| {
+                    let capture = capture.clone();
+                    let catalog = catalog.clone();
+                    let replacement = replacement.lock().unwrap().take();
+                    let temp_home = temp_home.clone();
+                    Box::pin(async move {
+                        let services = context.services();
+                        let mut owner = Owner::open(context, configuration, catalog).await.unwrap();
+                        if let Some(home) = temp_home {
+                            Arc::get_mut(&mut owner).unwrap().home = Some(home);
+                        }
+                        if let Some(model) = replacement {
+                            Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
+                                model,
+                                maka_tools::CodeExecutor::new(Default::default()).unwrap(),
+                            )
+                            .unwrap();
+                        }
+                        *capture.lock().unwrap() = Some((owner.clone(), services));
+                        let service = Arc::new(Agent(owner));
+                        NativeActivation {
+                            owner: service.clone(),
+                            exports: Ok(BTreeMap::from([(
+                                EXPORT.into(),
+                                maka_plugin_core::runtime::Published {
+                                    contract: contract(),
+                                    value: service
+                                        as Arc<dyn maka_host_runtime::application::Handler>,
+                                },
+                            )])),
+                        }
+                    })
+                }),
+            )
+            .unwrap();
+        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match peer {
+            Some(peer) => (peer.issuer(), peer),
+            None => {
+                let native = tooling
+                    .as_ref()
+                    .map(service_tools::Setup::policy)
+                    .or_else(|| {
+                        (!settings.tools.is_empty())
+                            .then(|| Arc::new(maka_transport::transport::PeerPolicy::default()))
+                    });
+                let issuer = native
+                    .as_ref()
+                    .map(|policy| policy.issuer())
+                    .unwrap_or_default();
+                (issuer.clone(), Arc::new(Grant(issuer, native)))
             }
-        }
-        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match &application {
-            FixtureApplication::Workhub(setup) => {
-                let issuer = Issuer::default();
-                (
-                    issuer.clone(),
-                    Arc::new(Grant(issuer, Some(setup.policy()))),
-                )
-            }
-            FixtureApplication::Agent => match peer {
-                Some(peer) => (peer.issuer(), peer),
-                None => {
-                    let native = tooling
-                        .as_ref()
-                        .map(service_tools::Setup::policy)
-                        .or_else(|| {
-                            (!settings.tools.is_empty())
-                                .then(|| Arc::new(maka_transport::transport::PeerPolicy::default()))
-                        });
-                    let issuer = native
-                        .as_ref()
-                        .map(|policy| policy.issuer())
-                        .unwrap_or_default();
-                    (issuer.clone(), Arc::new(Grant(issuer, native)))
-                }
-            },
         };
         let app = Application::start_from_store(
             store.clone(),
@@ -865,7 +807,7 @@ impl Fixture {
             .query("directories", json!({"kind":"roots"}))
             .await
             .unwrap();
-        json!({"title":title, "labels":[], "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})
+        json!({"title":title, "labels":[], "workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})
     }
     async fn selection(&self) -> ModelSelection {
         let row = self.config.catalog().await.unwrap().connections.remove(0);
@@ -1355,7 +1297,7 @@ async fn cleanup_case(panic: bool) {
             "resources_retained",
         )
     } else {
-        ("queue_advance_failed", "store_sqlx", "operation_failed")
+        ("queue_advance_failed", "store_sqlite", "operation_failed")
     };
     let event = log
         .lines()
@@ -1436,11 +1378,6 @@ fn catalog_interaction(
 }
 
 fn provide_all(registry: &mut NativeRegistry) -> Result<(), String> {
-    provide_without_workhub(registry)?;
-    crate::workhub::provide(registry, bundled_catalog())?;
-    Ok(())
-}
-fn provide_without_workhub(registry: &mut NativeRegistry) -> Result<(), String> {
     crate::provide(registry, bundled_catalog())?;
     maka_acp_native::provide(registry)?;
     maka_files_native::provide(registry)?;

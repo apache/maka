@@ -591,6 +591,55 @@ impl JsValue for crate::geometry::Bounds<crate::geometry::Points> {
     }
 }
 
+/// A length on each side, in points, as a host element's `hitSlop` takes
+/// it (TS `number | Partial<Edges>`): one number for every side, or the
+/// sides named, each left out 0. A Rust component's prop of the host
+/// prop's meaning (`Button`'s `hitSlop`) takes the same values. To JS it
+/// is the four sides.
+impl JsValue for crate::geometry::Edges<crate::geometry::Points> {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "number | Partial<Edges>".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        use crate::geometry::Points;
+        let length = |n: Option<f64>| match n {
+            Some(n) if n.is_finite() => Ok(Points(n as f32)),
+            _ => Err(value.expected("a number or `{ top?, right?, bottom?, left? }`")),
+        };
+        if let Some(n) = value.as_number() {
+            return length(Some(n)).map(Self::all);
+        }
+        if value.kind() != JsKind::Object {
+            return Err(value.expected("a number or `{ top?, right?, bottom?, left? }`"));
+        }
+        let side = |key: &str| -> Result<Points, PropError> {
+            let field = value.field(key)?;
+            let field = field.get();
+            match field.is_nullish() {
+                true => Ok(Points(0.0)),
+                false => length(field.as_number()),
+            }
+        };
+        Ok(Self {
+            top: side("top")?,
+            right: side("right")?,
+            bottom: side("bottom")?,
+            left: side("left")?,
+        })
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let owned = JsOwned::new(host, host.new_object()?);
+        let object = owned.get().raw();
+        host.set_field(object, "top", self.top.to_js(host)?.into_raw())?;
+        host.set_field(object, "right", self.right.to_js(host)?.into_raw())?;
+        host.set_field(object, "bottom", self.bottom.to_js(host)?.into_raw())?;
+        host.set_field(object, "left", self.left.to_js(host)?.into_raw())?;
+        Ok(owned)
+    }
+}
+
 /// The modifier keys held: TS's `Modifiers` (`{ control, alt, shift,
 /// platform }`, GPUI's names), as press events carry them. A missing key
 /// is not held.

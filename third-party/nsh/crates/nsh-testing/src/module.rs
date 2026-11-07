@@ -410,7 +410,10 @@ pub struct OpenOptions {
     /// The platform the app believes it runs on headless (`"ios"`; a
     /// desktop's: `"macos"`, `"windows"`, `"linux"`, `"web"`). With
     /// `--target`, the app runs on the target's platform: a desktop's runs
-    /// on any desktop and the web, `"ios"` and `"android"` on their own,
+    /// on any desktop and the web, always as a desktop (on the web the page
+    /// starts in the desktop idiom at any width, `platform.os` staying
+    /// `"web"`; without a `platform`, or with `"web"`, the page measures
+    /// its idiom as a browser does), `"ios"` and `"android"` on their own,
     /// and another rejects with `ERR_NSH_TEST_UNSUPPORTED`.
     pub platform: Option<Platform>,
     /// A manual clock for the app (none: the system's): its time moves only
@@ -645,6 +648,28 @@ impl From<ColorScheme> for nsh_core::platform::ColorScheme {
     }
 }
 
+/// Whether the app is in use (`lifecycle()`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PropEnum)]
+pub enum Lifecycle {
+    /// In the foreground and taking input.
+    #[default]
+    Active,
+    /// Visible without the focus.
+    Inactive,
+    /// Not visible.
+    Background,
+}
+
+impl From<Lifecycle> for nsh_core::platform::Lifecycle {
+    fn from(state: Lifecycle) -> Self {
+        match state {
+            Lifecycle::Active => nsh_core::platform::Lifecycle::Active,
+            Lifecycle::Inactive => nsh_core::platform::Lifecycle::Inactive,
+            Lifecycle::Background => nsh_core::platform::Lifecycle::Background,
+        }
+    }
+}
+
 /// The platform a headless app is opened as.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PropEnum)]
 pub enum Platform {
@@ -711,6 +736,25 @@ impl From<&nsh_core::picker::PickRequest> for PickRequest {
                 _ => "compatible",
             }
             .into(),
+        }
+    }
+}
+
+/// A speech recognition session the app started (`Speech.start`), as a
+/// test reads it.
+#[derive(Debug, Clone, PartialEq, JsObject)]
+pub struct SpeechRequest {
+    /// The language asked for (`"en-US"`); `null`: the user's.
+    pub lang: Option<String>,
+    /// Whether results come while the user speaks.
+    pub interim: bool,
+}
+
+impl From<&nsh_core::speech::SpeechRequest> for SpeechRequest {
+    fn from(request: &nsh_core::speech::SpeechRequest) -> Self {
+        SpeechRequest {
+            lang: request.lang.clone(),
+            interim: request.interim,
         }
     }
 }
@@ -1807,6 +1851,45 @@ impl App {
         self.with(|app| Ok(app.picks()?.iter().map(PickRequest::from).collect()))
     }
 
+    /// The speech recognition sessions the app started (`Speech.start`),
+    /// in order. Headless apps recognize speech: a session listens at once
+    /// (its `start`), and `hear` speaks for the user. Headless runs only.
+    pub fn speech_requests(&self) -> Result<Vec<SpeechRequest>, JsError> {
+        self.with(|app| {
+            Ok(app
+                .speech_requests()?
+                .iter()
+                .map(SpeechRequest::from)
+                .collect())
+        })
+    }
+
+    /// The user says `text`, the whole transcript so far, to the speech
+    /// session listening: the app gets it as a `result` that is not final.
+    /// Then waits until the app is quiet. Rejects when no session listens.
+    /// Headless runs only.
+    pub async fn hear(this: Instance<Self>, text: String) -> Result<(), JsError> {
+        step(&this, move |app| app.hear(&text)).await
+    }
+
+    /// Ends the speech session listening: with `error` (`"no-speech"`,
+    /// `"not-allowed"`, `"audio-capture"`, `"network"`,
+    /// `"language-not-supported"`, `"unavailable"`, `"failed"`), or without
+    /// one as when the user stops talking: the transcript as the final
+    /// `result`, then `end` (`no-speech` when nothing was heard). Then
+    /// waits until the app is quiet. Rejects when no session listens.
+    /// Headless runs only.
+    pub async fn end_speech(this: Instance<Self>, error: Option<String>) -> Result<(), JsError> {
+        let error = match error {
+            None => None,
+            Some(name) => Some(
+                nsh_core::speech::SpeechError::from_name(&name)
+                    .ok_or_else(|| JsError::Type(format!("no speech error {name:?}")))?,
+            ),
+        };
+        step(&this, move |app| app.end_speech(error)).await
+    }
+
     /// The dialogs the app showed, in order.
     pub fn dialogs(&self) -> Result<Vec<Dialog>, JsError> {
         self.with(|app| Ok(app.dialogs()?.iter().map(Dialog::from).collect()))
@@ -1910,6 +1993,13 @@ impl App {
         scheme: ColorScheme,
     ) -> Result<(), JsError> {
         step(&this, move |app| app.set_color_scheme(scheme.into())).await
+    }
+
+    /// Moves the app to `state`, as the system does when the user leaves it
+    /// (`"background"`), switches to another app or window (`"inactive"`)
+    /// and comes back (`"active"`); `lifecycle()` follows. Headless only.
+    pub async fn set_lifecycle(this: Instance<Self>, state: Lifecycle) -> Result<(), JsError> {
+        step(&this, move |app| app.set_lifecycle(state.into())).await
     }
 
     /// The text on the clipboard now, `null` when it holds none.

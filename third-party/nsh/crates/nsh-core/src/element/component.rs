@@ -1159,6 +1159,20 @@ impl Registry {
         }
     }
 
+    /// Runs the setup functions of this set that `old` does not have
+    /// (`Core::extend_components`).
+    pub(crate) fn run_setups_not_in(&self, old: &Registry) {
+        for setup in self.setups.iter() {
+            let known = old
+                .setups
+                .iter()
+                .any(|o| std::ptr::addr_eq(Arc::as_ptr(o), Arc::as_ptr(setup)));
+            if !known {
+                setup();
+            }
+        }
+    }
+
     /// The tokens of theme file `json` (`None`: the defaults), by the
     /// source a set brings ([`Registry::tokens_from`]; `None`: no set
     /// does).

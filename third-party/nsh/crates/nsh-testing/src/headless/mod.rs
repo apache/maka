@@ -21,14 +21,15 @@
 //! itself runs (so steps finish animations without waiting for them),
 //! [`Headless::wait`] and a long press move the clock by their time, and
 //! [`Headless::run_for`] / [`Headless::fast_forward`] move it as a test
-//! says. A wait for what the app shows ([`Headless::wait_until`],
-//! [`Headless::wait_for`]) moves it too, a display frame at a time,
-//! looking after each frame, by its timeout at most, and fails once that
-//! much real time passed too; what a step waits for (its quiet) stays real
-//! time. Native animations that
-//! loop forever (a spinner) run in the background on either clock: their
-//! values move with the app's time, and no step or wait waits for them
-//! (nor moves a manual clock for them).
+//! says. A step there settles as soon as the engine says it is idle
+//! ([`EngineControl::flush`]), without waiting for a quiet window unless a
+//! request is in flight or work keeps coming. A wait for what the app shows
+//! ([`Headless::wait_until`], [`Headless::wait_for`]) moves the clock a
+//! display frame at a time, looking after each frame, by its timeout at
+//! most; it also waits that long in real time for work from outside the app.
+//! Native animations that loop forever (a spinner) run in the background on
+//! either clock: their values move with the app's time, and no step or wait
+//! waits for them (nor moves a manual clock for them).
 //!
 //! `nsh test` runs apps this way (feature `js`: [`crate::run_file`]),
 //! printing the batches under their steps with `--trace`; so do Rust tests
@@ -41,6 +42,7 @@ mod live;
 mod menus;
 mod net;
 mod pointer;
+mod speech;
 mod stub;
 
 use std::{
@@ -241,7 +243,8 @@ const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 /// belong to it), then names itself the step of the batches that follow:
 /// what [`Headless::observe`] sees. Steps that act on the app return once
 /// it rendered nothing for 100 ms and no native animation runs that ends
-/// by itself (2 s at most), and fail when the app threw meanwhile (an exception that
+/// by itself (2 s at most; on a manual clock, once the engine is idle,
+/// [`Headless::settle`]), and fail when the app threw meanwhile (an exception that
 /// escaped a callback, a bundle that did not load, a VM that was stopped)
 /// or asked what only a real platform answers (an image from the
 /// clipboard).
@@ -277,6 +280,9 @@ pub struct Headless {
     /// The path the user chooses in the save dialog
     /// ([`Headless::on_pick_save_path`]).
     save_path: Option<std::path::PathBuf>,
+    /// The recognizer the test speaks into; `None` when the config gave
+    /// its own (`EngineConfig::speech`).
+    speech: Option<speech::FakeSpeech>,
     step: String,
     applied: u64,
     /// The app left (`process.exit`, `Command::ExitApp`): no more batches
@@ -303,7 +309,11 @@ pub struct Headless {
 
 impl Headless {
     /// Starts `config`'s app ([`start`]).
-    pub fn start(config: EngineConfig) -> std::io::Result<Headless> {
+    pub fn start(mut config: EngineConfig) -> std::io::Result<Headless> {
+        let speech = config.speech.is_none().then(speech::FakeSpeech::default);
+        if let Some(speech) = &speech {
+            config.speech = Some(Arc::new(speech.clone()));
+        }
         let environment = config.environment;
         let viewport = config.viewport;
         let clock = config.clock.clone();
@@ -330,6 +340,7 @@ impl Headless {
             screen_color: None,
             picked_paths: Vec::new(),
             save_path: None,
+            speech,
             step: "open".to_owned(),
             applied: 0,
             exited: false,
@@ -401,6 +412,22 @@ impl Headless {
         // to move would wait for good.
         if let Err(crossbeam_channel::RecvTimeoutError::Disconnected) = rx.recv_timeout(MAX_IDLE) {
             panic!("the engine stopped (its thread panicked?): the manual clock cannot move");
+        }
+    }
+
+    /// Has the engine run everything sent to it and due now, its batches
+    /// sent ([`EngineControl::flush`]): whether it is idle, nothing left to
+    /// run and no request in flight. False if it took until `deadline`.
+    fn flush(&self, deadline: Instant) -> bool {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.engine.control().flush(move |idle| {
+            let _ = tx.send(idle);
+        });
+        match rx.recv_deadline(deadline) {
+            Ok(idle) => idle,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => false,
+            // A gone engine sends nothing more.
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => true,
         }
     }
 
@@ -612,6 +639,44 @@ impl Headless {
             EventPayload::Picked { id, files },
         );
         Ok(())
+    }
+
+    /// What the app's speech recognition sessions (`Speech.start`) asked
+    /// for so far, in order. Headless apps recognize speech: a session
+    /// listens at once (its `start`), and the test speaks for the user
+    /// ([`Headless::hear`]).
+    pub fn speech_requests(&self) -> Vec<nsh_core::speech::SpeechRequest> {
+        self.speech
+            .as_ref()
+            .map(speech::FakeSpeech::requests)
+            .unwrap_or_default()
+    }
+
+    /// The user says `text` (the whole transcript so far) to the session
+    /// listening, which reports it as a result that is not final; then
+    /// waits until the app is quiet. Fails when no session listens.
+    pub fn hear(&mut self, text: &str) -> Result<(), String> {
+        self.fake_speech()?.hear(text)?;
+        self.done()
+    }
+
+    /// Ends the session listening: with `error` (`no-speech`,
+    /// `not-allowed`, ...), or (`None`) as when the user stops talking: the
+    /// transcript as the final result, then the end (`no-speech` when
+    /// nothing was heard). Then waits until the app is quiet. The app's
+    /// `stop()` ends it the same way.
+    pub fn end_speech(
+        &mut self,
+        error: Option<nsh_core::speech::SpeechError>,
+    ) -> Result<(), String> {
+        self.fake_speech()?.end(error)?;
+        self.done()
+    }
+
+    fn fake_speech(&self) -> Result<speech::FakeSpeech, String> {
+        self.speech
+            .clone()
+            .ok_or_else(|| "the app recognizes speech with EngineConfig::speech".to_owned())
     }
 
     /// Sends the app's `nsh/host` calls (the root's `Command::HostCall`) to
@@ -893,11 +958,60 @@ impl Headless {
         }
     }
 
-    /// Applies batches until none comes for 100 ms and no native animation
-    /// that ends by itself runs, or for 2 s at most (an app updating all
-    /// the time never goes quiet): false if the limit ended it.
+    /// On a manual clock: applies batches until the app is idle, or for
+    /// `limit` at most (of real time, and of the clock's while frames move
+    /// it): false if the limit ended it. Idle is asked, not waited for:
+    /// the engine ran everything sent to it and due now, its batches came
+    /// and were applied, it wants no frame and no native animation that
+    /// ends by itself runs. While a request is in flight (its answer comes
+    /// from elsewhere) or work keeps coming, it waits for the batches to
+    /// stop for [`QUIET`], as on the system's clock.
+    fn idle_on_manual_clock(&mut self, limit: Duration) -> bool {
+        let end = Instant::now() + limit;
+        let clock_end = self.clock.now() + limit;
+        loop {
+            if self.exited || !self.errors.is_empty() {
+                return true;
+            }
+            if self.clock.now() >= clock_end || Instant::now() >= end {
+                return false;
+            }
+            if self.wants_frames() {
+                self.frame(FRAME);
+                self.drain();
+                continue;
+            }
+            let applied = self.applied;
+            let idle = self.flush(end);
+            self.drain();
+            if self.applied != applied || self.wants_frames() || !self.errors.is_empty() {
+                continue;
+            }
+            if idle {
+                return true;
+            }
+            // What comes from elsewhere comes in real time.
+            match self.pump((Instant::now() + QUIET).min(end)) {
+                Pumped::Batch => {}
+                Pumped::Error | Pumped::Exited => return true,
+                // Nothing came for `QUIET` (no frame was wanted).
+                Pumped::Timeout => return Instant::now() < end,
+            }
+        }
+    }
+
+    /// Applies batches until the app is done with a step, or for 2 s at
+    /// most (an app updating all the time never is): false if the limit
+    /// ended it. On the system's clock it is done when no batch came for
+    /// 100 ms and no native animation that ends by itself runs; on a
+    /// manual clock, as soon as the engine says it is idle
+    /// ([`EngineControl::flush`]), without waiting.
     pub fn settle(&mut self) -> bool {
-        self.quiet(QUIET, SETTLE)
+        if self.clock.is_manual() {
+            self.idle_on_manual_clock(SETTLE)
+        } else {
+            self.quiet(QUIET, SETTLE)
+        }
     }
 
     /// The step `idle`: applies batches until none comes for `quiet`, or
@@ -1640,6 +1754,7 @@ impl Headless {
             self.engine
                 .control()
                 .set_focus_path(self.screen.focus_path());
+            self.set_focused_state(id, false);
             self.send(id, EventKind::Blur, EventPayload::None);
         }
     }
@@ -1949,6 +2064,52 @@ mod tests {
         // run, no longer runs, and the new run's learns the width.
         app.press("Grow").unwrap();
         app.wait_for("wide true inner 200").unwrap();
+    }
+
+    /// A press whose task finishes a turn later, with no time passing.
+    #[component]
+    fn Deferred() -> impl IntoElement {
+        let presses = signal(0_u32);
+        let done = signal(0_u32);
+        view()
+            .child(text(move || format!("Done: {}", done.get())))
+            .child(
+                view()
+                    .on_press(move || presses.update(|p| *p += 1))
+                    .child(text("Go")),
+            )
+            .child(dynamic(move || {
+                let pressed = presses.get();
+                spawn(async move {
+                    timer(Duration::ZERO).await;
+                    done.set(pressed);
+                });
+                view()
+            }))
+    }
+
+    #[test]
+    fn on_a_manual_clock_a_step_returns_once_the_app_is_idle() {
+        const STEPS: u32 = 20;
+        let mut config = EngineConfig::new(Root::of::<Deferred>());
+        config.clock = Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        assert!(app.shows("Done: 0"));
+        let started = Instant::now();
+        for step in 1..=STEPS {
+            app.press("Go").unwrap();
+            // The task the press started ran before the step returned.
+            assert!(
+                app.shows(&format!("Done: {step}")),
+                "{:?}",
+                app.screen().texts()
+            );
+        }
+        // No step waited for a quiet window: with one each, the steps take
+        // `QUIET` each at least.
+        let took = started.elapsed();
+        assert!(took < QUIET * STEPS, "{took:?}");
     }
 
     #[test]

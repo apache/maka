@@ -161,6 +161,10 @@ export interface UiContributionProps {
   readonly tool?: Omit<UiToolProps, 'context'>;
 }
 
+export interface UiViewRenderOptions {
+  readonly loading?: boolean;
+}
+
 /** The shared catalog and components; the selected root owns their presentation. */
 export interface UiRuntime<Element = unknown> {
   source(): DeploymentRef | null;
@@ -171,7 +175,12 @@ export interface UiRuntime<Element = unknown> {
   settings(): readonly UiContributionRef[];
   renderer(presentation: string | null | undefined): UiContributionRef | undefined;
   view<Input>(target: UiTarget, contract: UiViewContract<Input>): UiContributionRef;
-  renderView<Input>(target: UiTarget, contract: UiViewContract<Input>, input: Input): Element;
+  renderView<Input>(
+    target: UiTarget,
+    contract: UiViewContract<Input>,
+    input: Input,
+    options?: UiViewRenderOptions,
+  ): Element;
   render(contribution: UiContributionRef, props: UiContributionProps): Element;
   openPanel(target: UiTarget, input?: unknown): void;
   commandEnabled(contribution: UiContributionRef, context: UiCommandContext): boolean;

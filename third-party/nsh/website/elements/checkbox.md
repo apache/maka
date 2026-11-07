@@ -83,6 +83,7 @@ the checkbox.
 | `role` | `.role(..)` | `AccessibilityRole` | `"checkbox"` | What it is for screen readers, when it is something more specific (a checked menu item: `"menuitem"`). |
 | `indicatorClass`, `indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The indicator, the box that shows the value. |
 | `indicator` | `.indicator(..)` | `JSX.Element` | none | The content of the indicator: the mark (a check, a dash), which the app shows by its value. |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content after the indicator: a label, which screen readers say. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The checkbox itself: the row around the indicator and the label. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The checkbox's style while pressed, hovered, focused or disabled, as the `<state>:` classes. |
@@ -150,6 +151,22 @@ its indicator apply, over their `checked:` and `indeterminate:` ones:
 >
   <Text>Share usage data</Text>
 </Checkbox>
+```
+
+## A small target with hitSlop
+
+A checkbox with no label beside it (a row's selection box) can be smaller than a finger. `hitSlop` makes presses that
+land near it count, in points past each side, without changing its layout or its look: one number for every side, or the
+sides named (`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presses-and-feedback) takes them.
+
+```tsx
+<Checkbox
+  checked={selected()}
+  hitSlop={12}
+  accessibilityLabel="Select row"
+  onChange={({ checked }) => selected.set(checked)}
+  indicatorClass="size-4 rounded border border-border checked:bg-primary"
+/>
 ```
 
 ## Accessibility

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, effect, keymap, signal, untracked, type JSX } from 'nsh';
+import { cleanup, effect, keymap, lifecycle, signal, untracked, type JSX } from 'nsh';
 import type { UiModule, UiViewProps } from '../../../packages/plugin-sdk/src/workbench.js';
 import type {
   SettingsPageInput,
@@ -55,6 +55,7 @@ import {
 } from '../../../products/maka/workbench/app/pluginSettingsState';
 import { createSettingsOperations } from '../../../products/maka/workbench/app/settingsOperations';
 import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { providerLabel } from '../../../products/maka/workbench/app/settingsLabels';
 import { appearance, initializeAppearance } from '../../../products/maka/workbench/app/appearance';
 import {
   initializeUiScale,
@@ -79,6 +80,8 @@ type PageOwner = {
   deactivate(): void;
   navigation(): string;
   back(): boolean;
+  /** Reads the page's data again unless a draft is open. */
+  refresh?(): void;
 };
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
@@ -120,7 +123,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   );
   const externalAgents = createExternalAgentSettings(
     host,
-    context.services.agents,
     operations,
     active('external-agents'),
     changed,
@@ -145,6 +147,12 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     owner.activate();
     const parent = (props.input as SettingsPageInput | undefined)?.settings;
     if (parent) cleanup(parent.attach(navigation));
+    let foreground = untracked(lifecycle) === 'active';
+    effect(() => {
+      const now = lifecycle() === 'active';
+      if (now && !foreground) untracked(() => owner.refresh?.());
+      foreground = now;
+    });
     cleanup(() => {
       const remaining = (mounted.get(id) ?? 1) - 1;
       if (remaining === 0) mounted.delete(id);
@@ -275,14 +283,35 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             connections,
             props,
             {
-              title: () =>
-                ({
-                  connections: tr('Connections & models'),
-                  providers: tr('Add connection'),
-                  connection: tr('Connection settings'),
-                  models: tr('Connection models'),
-                  model: tr('Model settings'),
-                })[connections.page()],
+              title: () => {
+                const editor = connections.editor();
+                const model = connections.model();
+                switch (connections.page()) {
+                  case 'connections':
+                    return tr('Connections & models');
+                  case 'providers':
+                    return tr('Add connection');
+                  case 'connection':
+                    return (
+                      editor?.baseline?.name ??
+                      providerLabel(editor?.provider.descriptor.label ?? '')
+                    );
+                  case 'advanced':
+                    return tr('Advanced');
+                  case 'model':
+                    return model?.originalId === null
+                      ? tr('Add model')
+                      : model?.label.trim() || model?.originalId || '';
+                }
+              },
+              action: () =>
+                connections.page() === 'connections' && !connections.confirmation()
+                  ? {
+                      label: tr('Add connection'),
+                      run: connections.newConnection,
+                      disabled: connections.loading(),
+                    }
+                  : null,
               nested: () => connections.page() !== 'connections' || !!connections.confirmation(),
               navigation: connections.navigation,
               back: connections.back,
@@ -304,8 +333,12 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                 skills.screen() === 'add'
                   ? tr('Add skills')
                   : skills.screen() === 'detail'
-                    ? tr('Skill details')
+                    ? (skills.document()?.entry.name ?? tr('Skill details'))
                     : tr('Skills'),
+              action: () =>
+                skills.screen() === 'library' && !skills.deleting() && skills.page()?.writable
+                  ? { label: tr('Add skills'), run: skills.add, disabled: skills.loading() }
+                  : null,
               nested: () => skills.screen() !== 'library' || !!skills.deleting(),
               navigation: skills.navigation,
               back: skills.back,
@@ -328,6 +361,14 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                     ? tr('Edit MCP server')
                     : tr('Add MCP server')
                   : tr('MCP servers'),
+              action: () =>
+                !mcp.editor() && !mcp.deleting()
+                  ? {
+                      label: tr('Add MCP server'),
+                      run: () => mcp.open(null),
+                      disabled: mcp.loading() || !mcp.inventory()?.locations.length,
+                    }
+                  : null,
               nested: () => !!mcp.editor() || !!mcp.deleting(),
               navigation: mcp.navigation,
               back: mcp.back,
@@ -391,8 +432,18 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     },
     async prepareReload(): Promise<Snapshot> {
       do {
-        await Promise.all([operations.whenIdle(), plugins.rootUi.whenIdle(), uiScale.whenIdle()]);
-      } while (operations.busy() || plugins.rootUi.busy() || uiScale.saving());
+        await Promise.all([
+          operations.whenIdle(),
+          plugins.rootUi.whenIdle(),
+          uiScale.whenIdle(),
+          appearance.whenIdle(),
+        ]);
+      } while (
+        operations.busy() ||
+        plugins.rootUi.busy() ||
+        uiScale.saving() ||
+        appearance.saving()
+      );
       return {
         route: route(),
         connections: connections.snapshot(),

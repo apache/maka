@@ -1,12 +1,12 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
-import { Combobox, type OpenChangeReason, type SelectGroup, type SelectItemState } from "nsh/base";
-import { button, CheckMark, desktop, Icon, Log, Panel, size, Split, tint, ui } from "./palette";
+import { Combobox, type OpenChangeReason, type SelectEntry, type SelectGroup } from "nsh/base";
+import { CheckMark, desktop, Icon, Log, Panel, size, Split, ui } from "./palette";
 
 // Two comboboxes in a card: labels for an issue, several picked in one go
 // from a searchable list with sections, a clear button and a footer; and
-// an assignee, one person replacing the last. The trigger is the shared
-// button look with what is selected and a chevron that turns while the
-// list is open; the list is a popup at the trigger with a pointer, a sheet
+// an assignee, one person replacing the last. The trigger is the
+// field: the input typing filters the list with, and a chevron that
+// turns while the list is open; the list is a popup at the trigger with a pointer, a sheet
 // on a touch screen. Selected rows show a check in its own lane.
 
 const LABELS = [
@@ -44,62 +44,52 @@ const surface = () =>
 
 const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
 
-/** The trigger: the shared button's look, what is selected at the start and a chevron in a lane as wide as it. */
-function Trigger(props: { title?: string; placeholder: string; open: boolean; clearable?: boolean }) {
-  const look = button("secondary", {
-    style: () => ({
-      flexDirection: "row",
-      justifyContent: "space-between",
-      gap: 8,
-      ...(desktop ? { width: 260 } : {}),
-      ...(props.open ? { borderColor: ui().faint } : {}),
-    }),
-  });
+/** The field: a bordered box around the input, the clear button and the chevron. */
+const fieldStyle = (open: boolean) => ({
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  minHeight: size.control,
+  paddingLeft: 10,
+  paddingRight: 4,
+  borderRadius: 8,
+  borderWidth: 1,
+  borderColor: open ? ui().faint : ui().border,
+  backgroundColor: ui().card.backgroundColor,
+  ...(desktop ? { width: 260 } : {}),
+});
+const inputClass = () => `${desktop ? "text-sm" : "text-base"} placeholder:text-[${ui().faint}] text-[${ui().text}]`;
+const inputStyle = { flex: 1, minWidth: 40, height: size.control - 2 };
+
+/** The trigger button: a chevron that turns while the list is open. */
+function Chevron(props: { open: boolean }) {
   return (
-    <View {...look}>
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().muted }}>
-        {props.title ?? props.placeholder}
-      </Text>
-      {/* With a clear button over the end (`cleanable`), an empty lane as wide as the button in place of the chevron. */}
-      <View
-        class="transition-transform duration-150 motion-reduce:transition-none"
-        style={{
-          width: props.clearable ? 20 : 10,
-          height: 20,
-          alignItems: "center",
-          justifyContent: "center",
-          opacity: props.clearable ? 0 : 1,
-          transform: [{ rotate: props.open ? "270deg" : "90deg" }],
-        }}
-      >
-        <Text style={{ fontSize: 18, color: ui().muted }}>›</Text>
-      </View>
+    <View
+      class="transition-transform duration-150 motion-reduce:transition-none"
+      style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center", transform: [{ rotate: props.open ? "270deg" : "90deg" }] }}
+    >
+      <Text style={{ fontSize: 18, color: ui().muted }}>›</Text>
     </View>
   );
 }
 
-/** A row: the title, the check in its own lane. */
-function Row(props: { item: SelectItemState }) {
+/**
+ * A row's look, on the row itself (`itemClass`): the accent tint while
+ * highlighted (the keys or the pointer, as the menus' rows), dimmed while
+ * disabled. The states are the row's classes (`group`), so the list draws a
+ * row's content once per item and the highlight moves without drawing.
+ */
+const rowClass =
+  "group rounded-lg border border-transparent transition-colors duration-100 motion-reduce:transition-none " +
+  "focus:border-brand/30 focus:bg-brand-tint active:opacity-70 disabled:opacity-40";
+
+/** A row's content: the title, the check in its own lane (`group-selected:`). */
+function Row(props: { item: SelectEntry }) {
   return (
-    <View
-      style={{
-        height: size.rowSm,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 8,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: "transparent",
-        opacity: props.item.disabled ? 0.4 : 1,
-        ...(props.item.highlighted ? { backgroundColor: tint(ui().accent, 0.08), borderColor: tint(ui().accent, 0.24) } : {}),
-      }}
-    >
+    // The row's 1-point border on each side.
+    <View style={{ height: size.rowSm - 2, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 7 }}>
       <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: ui().text }}>{props.item.title}</Text>
-      <View style={{ width: 16 }}>
-        <If when={props.item.selected}>
-          <CheckMark size={16} tint={ui().accent} />
-        </If>
+      <View class="opacity-0 group-selected:opacity-100" style={{ width: 16 }}>
+        <CheckMark size={16} tint={ui().accent} />
       </View>
     </View>
   );
@@ -170,21 +160,21 @@ function App() {
               onConfirm={({ value }) => log(`Confirmed ${value.length} labels`)}
               onOpenChange={opened((next) => labelsOpen.set(next))}
               accessibilityLabel="Labels"
-              searchable
-              searchPlaceholder="Filter labels"
-              searchClass={`${desktop ? "text-sm" : "text-base"} placeholder:text-[${ui().faint}] text-[${ui().text}]`}
-              searchStyle={{ ...ui().inset, borderRadius: 8, height: size.control, paddingHorizontal: 8, marginBottom: 4 }}
+              style={fieldStyle(labelsOpen())}
+              placeholder={labelTitle() ?? "Add labels"}
+              inputClass={inputClass()}
+              inputStyle={inputStyle}
+              triggerButton={<Chevron open={labelsOpen()} />}
               empty={<Text style={{ paddingVertical: 20, textAlign: "center", fontSize: 13, color: ui().muted }}>No label matches</Text>}
               offset={4}
               margin={8}
               popupStyle={surface()}
               backdropStyle={backdrop}
-              itemClass="active:opacity-70"
-              style={desktop ? { width: 260 } : undefined}
+              itemClass={rowClass}
               cleanable
               clearButtonAccessibilityLabel="Clear the labels"
-              clearButtonClass="absolute items-center justify-center rounded-full enabled:hover:opacity-70"
-              clearButtonStyle={{ top: (size.control - 20) / 2, right: 10, width: 20, height: 20 }}
+              clearButtonClass="items-center justify-center rounded-full enabled:hover:opacity-70"
+              clearButtonStyle={{ width: 20, height: 20 }}
               clearButton={<Icon name="close" size={14} tint={ui().muted} />}
               footerStyle={{ borderTopWidth: 1, borderColor: ui().border, marginTop: 4, paddingTop: 4 }}
               footer={
@@ -192,7 +182,6 @@ function App() {
                   <Text style={{ fontSize: 12, color: ui().muted }}>{`${labels().length} selected`}</Text>
                 </View>
               }
-              trigger={<Trigger title={labelTitle()} placeholder="Add labels" open={labelsOpen()} clearable={labels().length > 0} />}
               renderItem={(item) => <Row item={item} />}
               renderGroup={(group) => <Header group={group} />}
             />
@@ -211,8 +200,12 @@ function App() {
               margin={8}
               popupStyle={surface()}
               backdropStyle={backdrop}
-              itemClass="active:opacity-70"
-              trigger={<Trigger title={titlesOf(PEOPLE, assignee())[0]} placeholder="Assign someone" open={assigneeOpen()} />}
+              itemClass={rowClass}
+              style={fieldStyle(assigneeOpen())}
+              placeholder="Assign someone"
+              inputClass={inputClass()}
+              inputStyle={inputStyle}
+              triggerButton={<Chevron open={assigneeOpen()} />}
               renderItem={(item) => <Row item={item} />}
             />
           </Field>

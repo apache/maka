@@ -486,13 +486,18 @@ pub(crate) const IOS_TYPES: &str = r#"export interface InputAccessoryViewProps {
 }
 "#;
 
-/// `nsh`'s `WebView`.
+/// `nsh`'s `WebView`: the web view element as a component carrying the
+/// functions of the runtime's module (`inputAvailable`).
 pub(crate) const WEBVIEW_EXPORTS: &[Item] = &[(
     "WebView",
-    Export::Value(|cx| dom::host_component(cx, "webview", false)),
+    Export::Value(|cx| {
+        let webview = dom::host_component(cx, "webview", false);
+        crate::components::add_runtime_functions(cx, webview, "nsh", "WebView");
+        webview
+    }),
     Ts::value(
-        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)` and `postMessage(data)`.",
-        "(props: WebViewProps) => JSX.Element",
+        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)`, `postMessage(data)` and `sendInput(input)`;\n`WebView.inputAvailable()` says whether `sendInput` works here.",
+        "((props: WebViewProps) => JSX.Element) & WebViewModule",
     ),
 )];
 

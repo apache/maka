@@ -21,11 +21,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   canRegenerateFromText,
+  historyFollowPosition,
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
   updateHistoryMetadata,
 } from '../app/history.ts';
+import { hasSkillToken, skillTextGroups } from '../app/skillTokenText.ts';
 import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
 
 const user = (text, turnId, sequence) => ({
@@ -36,11 +38,13 @@ const user = (text, turnId, sequence) => ({
   text,
   turnId,
   position: { sourceSequence: sequence, itemIndex: 0 },
+  order: { sourceSequence: sequence, itemIndex: 0 },
 });
 
 test('unchanged history pages retain rows while fragments and fenced metadata still advance', () => {
   const first = {
     position: { sourceSequence: 10, itemIndex: 0 },
+    order: { sourceSequence: 10, itemIndex: 0 },
     messageId: 'message',
     turnId: 'turn',
     timestamp: 100,
@@ -83,6 +87,7 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   const reply = {
     ...first,
     position: { sourceSequence: 11, itemIndex: 0 },
+    order: { sourceSequence: 11, itemIndex: 0 },
     messageId: 'reply',
     role: 'assistant',
     text: 'reply',
@@ -114,6 +119,41 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   const advanced = updateHistoryMetadata(updated, [refreshed, completed], 23);
   assert.equal(advanced[0].metadataThrough, 23);
   assert.equal(advanced[0].text, '界🙂');
+});
+
+test('canonical order sorts MessageEnd-sourced text before earlier-source tools without changing cursor identity', () => {
+  const chunk = (messageId, source, anchor, text) => ({
+    messageId,
+    position: { sourceSequence: source, itemIndex: 0 },
+    order: { sourceSequence: anchor, itemIndex: 0 },
+    field: 'body',
+    role: 'assistant',
+    offset: 0,
+    totalBytes: Buffer.byteLength(text),
+    text,
+  });
+  const rows = mergeChunks(
+    [],
+    [chunk('tool', 5, 5, 'tool'), chunk('A', 7, 2, 'before'), chunk('C', 12, 8, 'after')],
+    false,
+    12,
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.text, row.position, row.order]),
+    [
+      ['before', { sourceSequence: 7, itemIndex: 0 }, { sourceSequence: 2, itemIndex: 0 }],
+      ['tool', { sourceSequence: 5, itemIndex: 0 }, { sourceSequence: 5, itemIndex: 0 }],
+      ['after', { sourceSequence: 12, itemIndex: 0 }, { sourceSequence: 8, itemIndex: 0 }],
+    ],
+  );
+  assert.deepEqual(historyFollowPosition(rows.at(-1), []), {
+    kind: 'after',
+    cursor: { position: { sourceSequence: 12, itemIndex: 0 }, field: 'body', offset: 0 },
+  });
+  assert.deepEqual(historyFollowPosition(rows.at(-1), [], [3, 9], 5), {
+    kind: 'event',
+    sequence: 9,
+  });
 });
 
 test('replay cursor preserves the earliest complete part and tool seed without argument limits', () => {
@@ -186,6 +226,7 @@ test('early open model text retains its ordinal seat across later canonical tool
     role: 'user',
     text: 'go',
     position: { sourceSequence: 1, itemIndex: 0 },
+    order: { sourceSequence: 1, itemIndex: 0 },
   };
   const early = {
     messageId: 'early',
@@ -201,6 +242,7 @@ test('early open model text retains its ordinal seat across later canonical tool
     role: 'tool_call',
     text: '{}',
     position: { sourceSequence: 20, itemIndex: 0 },
+    order: { sourceSequence: 20, itemIndex: 0 },
     modelPart: { stepId: 'step', ordinal: 1 },
   };
   const later = {
@@ -219,6 +261,7 @@ test('early open model text retains its ordinal seat across later canonical tool
     ...early,
     preview: undefined,
     position: { sourceSequence: 25, itemIndex: 0 },
+    order: { sourceSequence: 25, itemIndex: 0 },
   };
   assert.deepEqual(
     orderProcessRows([user, tool, canonicalEarly, later]).map((row) => row.messageId),
@@ -229,6 +272,7 @@ test('early open model text retains its ordinal seat across later canonical tool
 test('a message the Host wrote keeps its origin so the Bot Chat can tell it from the user', () => {
   const chunk = (origin) => ({
     position: { sourceSequence: 1, itemIndex: 0 },
+    order: { sourceSequence: 1, itemIndex: 0 },
     field: 'body',
     role: 'user',
     offset: 0,
@@ -275,4 +319,17 @@ test('a script is shown as the tools it ran, and as itself only when it fails', 
   assert.deepEqual(failed.toolIds, ['exec', 'read']);
   assert.equal(failed.key, running.key, 'showing the script keeps the group open');
   assert.deepEqual(group(tool('exec', 1, [], { isError: false })).toolIds, ['exec']);
+});
+
+test('skill messages preserve adjacent UTF-8 chunks and do not join across unloaded gaps', () => {
+  const groups = skillTextGroups([
+    { offset: 0, text: '前😀 /ski' },
+    { offset: 12, text: 'll:review 后' },
+    { offset: 100, text: '/skill:partial' },
+  ]);
+  assert.deepEqual(groups, [
+    { offset: 0, text: '前😀 /skill:review 后' },
+    { offset: 100, text: '/skill:partial' },
+  ]);
+  assert.deepEqual(groups.map(hasSkillToken), [true, false]);
 });

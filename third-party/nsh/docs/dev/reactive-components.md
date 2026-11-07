@@ -77,44 +77,10 @@ Non-goals (for now):
 
 ## The reactive graph in `nsh-core`
 
-`nsh-js/src/reactive.rs` (1,959 lines) is about 530 lines of Solid's algorithm written over node indices (`run_updates`
-through `dispose`, lines 242–774) and about 900 lines of QuickJS plumbing (classes, GC marks, finalizers, natives,
-exceptions). The algorithm moves to `nsh_core::reactive`, generic over a host:
-
-```rust
-/// What a graph stores and runs. JS: `JsValue`s and JS functions; Rust:
-/// boxed Rust values and closures.
-pub trait Host: 'static {
-    type Value;                       // a signal's or memo's value
-    type Func: Clone;                 // a computation (cloned out before it runs: it re-enters)
-    type Equals;                      // how a write or a memo compares
-    type Error;                       // what a computation can fail with
-    fn run(&self, f: &Self::Func, prev: Option<&Self::Value>) -> Result<Self::Value, Self::Error>;
-    fn changed(&self, eq: &Self::Equals, old: &Self::Value, new: &Self::Value) -> bool;
-    fn release(&self, held: Held<Self>);  // values leave the graph before they are freed
-}
-
-pub struct Graph<H: Host> { /* nodes: Vec<Node<H>>, free list, generations,
-                              listener, owner, update and effect queues, ... */ }
-```
-
-- Storage stays an arena of nodes with generations and two-way edges, as today (`alloc`, `track`, swap-remove
-  unlinking). No `Rc` per node.
-- The rules that make re-entry safe stay: nothing holds a borrow of the graph across a call into a computation or a
-  release; values are taken out of a node before they are freed (`Held`).
-- `nsh-js` instantiates `Graph<JsHost>`: `Value = JsValue`, `Func` a JS function, `Equals` `Strict | Never |
-  Custom(JsValue) | Truthiness`, errors are exceptions. Its classes, `gc_mark`, `finalize`, `signal_call` and the
-  natives stay in `nsh-js`; they call the generic graph.
-- Rust instantiates `Graph<RustHost>`: `Value = Box<dyn Any>` (or a small-value optimization for `Copy` types up to 16
-  bytes), `Func = Rc<dyn Fn(Option<&dyn Any>) -> Box<dyn Any>>`, `Equals` a comparison function taken from
-  `PartialEq` where the type has it, errors are panics caught at the computation (as Rust components' renders are
-  caught today).
-- Monomorphization keeps JS at today's speed. The bar is the benchmarks in `docs/dev/performance.md` (a counter tap
-  ~47 µs, a list rebind ~4 µs per frame) and `nsh-engine`'s `bench_gallery_scroll`; the extraction lands only if they
-  hold.
-
-The extraction is its own step with no behavior change: `reactive.rs`'s 265 lines of tests move with the algorithm and
-run against both hosts; the engine tests and the TSX gallery's tests are the safety net.
+The reactive graph (Solid's model: signals, memos, effects, owners) lives in `nsh_core::reactive`, generic over a host,
+so JS (`nsh-js` instantiates it with JS values and functions) and Rust components (Rust values and closures) run the
+same graph. It moved there as its own step with no behavior change; its tests run against both hosts, and the
+benchmarks in `docs/dev/performance.md` and `nsh-engine`'s `bench_gallery_scroll` are the bar for any change to it.
 
 ## The Rust API
 

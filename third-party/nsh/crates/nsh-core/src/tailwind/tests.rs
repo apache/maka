@@ -212,6 +212,7 @@ fn widths_without_a_color_are_current_color() {
         let mut style = Style::default();
         list.apply_with(
             &cx,
+            &no_data,
             &theme,
             current,
             DEFAULT_CH,
@@ -853,6 +854,38 @@ fn effects_and_interaction() {
 }
 
 #[test]
+fn diagonal_resize_cursors_keep_their_axes() {
+    use crate::style::StyleValue;
+
+    for (name, expected) in [
+        ("nwse-resize", Cursor::NwseResize),
+        ("nw-resize", Cursor::NwseResize),
+        ("se-resize", Cursor::NwseResize),
+        ("nesw-resize", Cursor::NeswResize),
+        ("ne-resize", Cursor::NeswResize),
+        ("sw-resize", Cursor::NeswResize),
+        ("ew-resize", Cursor::ColResize),
+        ("ns-resize", Cursor::RowResize),
+        ("move", Cursor::Move),
+    ] {
+        let mut inline = Style::default();
+        inline.set("cursor", StyleValue::Str(name)).unwrap();
+        assert_eq!(inline.view.cursor, expected, "inline {name}");
+        assert_eq!(
+            styled(&format!("cursor-{name}")).view.cursor,
+            expected,
+            "{name}"
+        );
+        assert_eq!(
+            styled(&format!("cursor-[{name}]")).view.cursor,
+            expected,
+            "arbitrary {name}"
+        );
+        assert_eq!(Cursor::parse(expected.name()), Some(expected));
+    }
+}
+
+#[test]
 fn transitions_and_animations() {
     let s = styled("transition-colors duration-300 ease-out delay-75");
     let t = s.view.transition.unwrap();
@@ -1198,6 +1231,106 @@ fn expanded_variants() {
         pressed,
     );
     assert_eq!(s.view.background_color, Color(0x0000_00ff));
+}
+
+/// Applies `classes` to a node with the `data-*` attributes `own`, inside
+/// a group (unnamed) with `group`, in `states`.
+fn styled_data(classes: &str, own: &[&str], group: &[&str], states: u16) -> Style {
+    let theme = themed();
+    let list = parse(&theme, classes);
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    let mut style = Style::default();
+    let mut props = ClassProps::default();
+    let groups = |_: &str| 0;
+    let data = |g: Option<&str>, name: &str| match g {
+        None => own.contains(&name),
+        Some("") => group.contains(&name),
+        Some(_) => false,
+    };
+    let context = Context {
+        env: ClassEnvironment::default(),
+        window: crate::geometry::size_pt(390.0, 844.0),
+        rtl: false,
+        states,
+        position: 0,
+        group: &groups,
+    };
+    list.apply_with(
+        &context,
+        &data,
+        &theme,
+        CurrentColor::default(),
+        DEFAULT_CH,
+        &mut style,
+        &mut props,
+        |_| {},
+    );
+    style
+}
+
+/// `data-<name>:` and `group-data-<name>:` as Tailwind v4 has them in their
+/// boolean form (`&[data-range-start]`, `:where(.group)[data-range-start]
+/// &`): the attributes a component's part shows (`project_data`), ordered
+/// after the `aria-*` variants and by their names.
+#[test]
+fn data_variants() {
+    let theme = themed();
+    let list = parse(
+        &theme,
+        "data-range-start:bg-black data-range-end:rounded-r-md group-data-range-middle:opacity-50 \
+         group-data-today/day:font-bold data-a1-b2:p-1",
+    );
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    assert!(list.deps() & deps::DATA != 0 && list.deps() & deps::GROUP != 0);
+    // Not a state: nothing for the platform to report.
+    assert_eq!(list.tracked_states(), 0);
+    // Only the boolean form: a value (`data-[state=open]:`), an empty or an
+    // upper case name are unknown.
+    let unknown = parse(
+        &theme,
+        "data-[state=open]:bg-black data-:bg-black data-Open:bg-black group-data-[x]:p-1",
+    );
+    assert_eq!(unknown.unknown().len(), 4, "{:?}", unknown.unknown());
+    // A view's own.
+    let s = styled_data(
+        "bg-white data-range-start:bg-black",
+        &["range-start"],
+        &[],
+        0,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    let s = styled_data("bg-white data-range-start:bg-black", &["range-end"], &[], 0);
+    assert_eq!(s.view.background_color, Color(0xffff_ffff));
+    // Two: both are needed.
+    let both = "bg-white data-range-start:data-range-end:bg-black";
+    let s = styled_data(both, &["range-start"], &[], 0);
+    assert_eq!(s.view.background_color, Color(0xffff_ffff));
+    let s = styled_data(both, &["range-end", "range-start"], &[], 0);
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    // The group's, not the view's own.
+    let grouped = "opacity-100 group-data-range-middle:opacity-50";
+    let s = styled_data(grouped, &["range-middle"], &[], 0);
+    assert_eq!(s.view.opacity, 1.0);
+    let s = styled_data(grouped, &[], &["range-middle"], 0);
+    assert_eq!(s.view.opacity, 0.5);
+    // With a state of the same group.
+    let hovered = "opacity-100 group-hover:group-data-range-middle:opacity-50";
+    let s = styled_data(hovered, &[], &["range-middle"], 0);
+    assert_eq!(s.view.opacity, 1.0);
+    // After the `aria-*` variants: a selected day at the start of a range
+    // keeps the start's look.
+    let s = styled_data(
+        "data-range-start:bg-black aria-selected:bg-white selected:bg-white",
+        &["range-start"],
+        &[],
+        state::SELECTED,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    // Among themselves by their names, before `motion-safe:`.
+    let s = styled_data("data-b:bg-black data-a:bg-white", &["a", "b"], &[], 0);
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    let s = styled_data("motion-safe:bg-white data-a:bg-black", &["a"], &[], 0);
+    assert_eq!(s.view.background_color, Color(0xffff_ffff));
 }
 
 /// `aria-pressed:`, `aria-busy:`, `aria-checked:` and `aria-selected:`

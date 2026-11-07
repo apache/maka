@@ -20,7 +20,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
-import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
+import { historyFollowPosition } from '../app/history.ts';
+import { thinkingSummary } from '../app/thinkingSummary.ts';
+import { orderProcessRows, projectProcessGroups, sameProcessRows } from '../app/processGroups.ts';
 
 const event = (sequence, fact, invocationId = 'run') => ({
   sequence,
@@ -61,6 +63,7 @@ const row = (messageId, text, sequence, changes = {}) => ({
   role: 'assistant',
   turnId: 'run',
   position: { sourceSequence: sequence, itemIndex: 0 },
+  order: { sourceSequence: sequence, itemIndex: 0 },
   ...changes,
 });
 const index = (rows) => new Map(rows.map((row) => [`${row.messageId}/${row.field}`, row]));
@@ -255,26 +258,254 @@ test('text and pending tool input keep their step seat through canonical handoff
   ]);
 });
 
-test('executor text survives snapshot reseeding and ends with the same canonical handoff', () => {
+test('executor messages keep text/tool chronology through live, history handoff and cancellation', () => {
+  const overlay = new TranscriptOverlay();
+  let history = [];
+  const project = () =>
+    projectProcessGroups({
+      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
+      toolActivity: overlay.snapshot().tools,
+      activeTurnId: 'run',
+    }).entries.map((entry) => (entry.kind === 'process' ? entry.toolIds : entry.rowId));
+  const start = (sequence, messageId) =>
+    overlay.event(event(sequence, { kind: 'executor_message_started', messageId }));
+  const delta = (sequence, stepId, text) =>
+    overlay.event(event(sequence, { kind: 'delta', stepId, partId: 'text', text }));
+  const commit = (sequence, messageId) =>
+    overlay.event(
+      event(sequence, { kind: 'part_committed', stepId: messageId, messageId, ordinal: 0 }),
+    );
+  const tool = (sequence, toolUseId) =>
+    overlay.event(event(sequence, { kind: 'executor_tool_start', toolUseId, name: 'Shell' }));
+  const cover = (through, next, coveredFrom) => {
+    history = next;
+    overlay.history(index(history), through, coveredFrom);
+  };
+  const toolRow = (messageId, sequence) =>
+    row(messageId, 'result', sequence, { role: 'tool', tool: { toolUseId: messageId } });
+
+  overlay.event(event(1, { kind: 'opened' }));
+  overlay.event(event(2, { kind: 'executor_started' }));
+  tool(3, 'first-tool');
+  assert.deepEqual(project(), [['first-tool']]);
+  assert.deepEqual(overlay.snapshot().parts, []);
+  start(4, 'A');
+  delta(4, 'A', '');
+  assert.deepEqual(overlay.snapshot().rows, []);
+  delta(5, 'A', 'same');
+  delta(6, 'A', ' same');
+  tool(7, 'second-tool');
+  commit(8, 'A');
+  start(9, 'B');
+  delta(10, 'B', 'same');
+  tool(11, 'third-tool');
+  commit(12, 'B');
+  start(13, 'C');
+  delta(14, 'C', 'final');
+  assert.deepEqual(texts(overlay), ['same same', 'same', 'final']);
+  const expected = [['first-tool'], 'A/body', ['second-tool'], 'B/body', ['third-tool'], 'C/body'];
+  assert.deepEqual(project(), expected);
+  assert.deepEqual(
+    overlay.snapshot().parts.map((part) => [part.messageId, part.stepId, part.startSequence]),
+    [
+      ['C', 'C', 13],
+      ['C', 'C', 13],
+    ],
+  );
+
+  // A completed tool's canonical row replaces its live header at the original seat.
+  cover(8, [
+    toolRow('first-tool', 3),
+    row('A', 'same same', 8, { order: { sourceSequence: 4, itemIndex: 0 } }),
+    toolRow('second-tool', 7),
+  ]);
+  assert.deepEqual(project(), expected);
+  cover(12, [
+    ...history,
+    row('B', 'same', 12, { order: { sourceSequence: 9, itemIndex: 0 } }),
+    toolRow('third-tool', 11),
+  ]);
+  assert.deepEqual(project(), expected);
+  commit(15, 'C');
+  overlay.event(event(16, { kind: 'step_ended', stepId: 'run', completed: true }));
+  // Closed rows must not retain parts just because the final step is invocation-scoped.
+  assert.deepEqual(overlay.snapshot().parts, []);
+  assert.deepEqual(project(), expected);
+  cover(15, [...history, row('C', 'final', 15, { order: { sourceSequence: 13, itemIndex: 0 } })]);
+  overlay.event(event(17, { kind: 'ended', failed: false }));
+  overlay.page({ kind: 'empty', hostEpoch: 'epoch' });
+  assert.deepEqual(project(), expected);
+  assert.deepEqual(texts(overlay, history), [
+    'result',
+    'same same',
+    'result',
+    'same',
+    'result',
+    'final',
+  ]);
+});
+
+test('closed executor seats rewind missed deltas once and retire tool-only or paged-out seats', () => {
   const overlay = new TranscriptOverlay();
   overlay.event(event(1, { kind: 'opened' }));
-  overlay.event(event(2, { kind: 'executor_started', messageId: 'executor' }));
-  overlay.event(event(3, { kind: 'delta', stepId: 'run', partId: 'text', text: 'hello' }));
+  overlay.event(event(2, { kind: 'executor_message_started', messageId: 'paged-out' }));
+  overlay.event(event(3, { kind: 'delta', stepId: 'paged-out', partId: 'text', text: 'older' }));
+  overlay.event(event(4, { kind: 'executor_message_started', messageId: 'tool-only' }));
+  overlay.event(event(5, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
+  overlay.event(
+    event(6, { kind: 'part_committed', stepId: 'paged-out', messageId: 'paged-out', ordinal: 0 }),
+  );
+  overlay.event(
+    event(7, { kind: 'part_committed', stepId: 'tool-only', messageId: 'tool-only', ordinal: 0 }),
+  );
+  const history = [
+    row('tool', 'result', 5, {
+      role: 'tool',
+      tool: { toolUseId: 'tool' },
+      order: { sourceSequence: 4, itemIndex: 0 },
+    }),
+  ];
+  const snap = overlay.snapshot();
+  assert.deepEqual(snap.closedStarts, [2, 4]);
+  // With windowStart = 4 (a paged tail window starting at event 4), seat 2 is behind `before`
+  // while seat 4 rewinds once from event 4 and then retires even without a canonical body row.
+  assert.deepEqual(historyFollowPosition(history.at(-1), snap.rows, snap.closedStarts, 4), {
+    kind: 'event',
+    sequence: 4,
+  });
+  overlay.history(index(history), 7, 4, 4);
+  assert.deepEqual(overlay.snapshot().rows, []);
+  assert.deepEqual(overlay.snapshot().closedStarts, []);
+  assert.deepEqual(
+    historyFollowPosition(
+      history.at(-1),
+      overlay.snapshot().rows,
+      overlay.snapshot().closedStarts,
+      4,
+    ),
+    {
+      kind: 'after',
+      cursor: { position: { sourceSequence: 5, itemIndex: 0 }, field: 'body', offset: 0 },
+    },
+  );
+});
+
+test('native thinking-only and interrupted body rows keep their summary and seats after missed commits', () => {
+  const overlay = new TranscriptOverlay();
+  let history = [];
+  const project = () =>
+    projectProcessGroups({
+      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
+      toolActivity: overlay.snapshot().tools,
+      activeTurnId: 'run',
+    }).entries.map((entry) =>
+      entry.kind === 'process'
+        ? { thinking: entry.rowIds.filter((id) => id.endsWith('/thinking')), tools: entry.toolIds }
+        : entry.rowId,
+    );
+  overlay.event(event(1, { kind: 'opened' }));
+  overlay.event(event(2, { kind: 'executor_message_started', messageId: 'thought' }));
+  overlay.event(
+    event(3, { kind: 'delta', stepId: 'thought', partId: 'thinking', text: 'old\n\n**检查中**\n' }),
+  );
+  overlay.event(event(4, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
+  assert.equal(thinkingSummary(overlay.snapshot().rows[0].text), '检查中');
+  assert.deepEqual(project(), [{ thinking: ['thought/thinking'], tools: ['tool'] }]);
+  history = [row('tool', 'result', 4, { role: 'tool', tool: { toolUseId: 'tool' } })];
+  overlay.history(index(history), 4);
+  overlay.disconnect();
+  // MessageEnd was missed offline, while the invocation itself remains active.
   overlay.observe({
-    through: 3,
+    through: 5,
+    run: { invocationId: 'run', turnId: 'run', state: 'running' },
+    parts: [],
+  });
+  overlay.history(index(history), 5);
+  assert.deepEqual(texts(overlay, history), ['old\n\n**检查中**\n', 'result']);
+  assert.deepEqual(historyFollowPosition(history.at(-1), overlay.snapshot().rows), {
+    kind: 'event',
+    sequence: 2,
+  });
+  history.unshift(
+    row('thought', 'old\n\n**检查中**\n', 5, {
+      field: 'thinking',
+      role: 'thinking',
+      order: { sourceSequence: 2, itemIndex: 0 },
+    }),
+  );
+  overlay.history(index(history), 5);
+  assert.deepEqual(project(), [{ thinking: ['thought/thinking'], tools: ['tool'] }]);
+  assert.equal(thinkingSummary(history[0].text), '检查中');
+
+  overlay.event(event(6, { kind: 'executor_message_started', messageId: 'body' }));
+  overlay.event(event(7, { kind: 'delta', stepId: 'body', partId: 'text', text: 'before cancel' }));
+  overlay.event(event(8, { kind: 'executor_tool_start', toolUseId: 'pending', name: 'Shell' }));
+  const expected = [
+    { thinking: ['thought/thinking'], tools: ['tool'] },
+    'body/body',
+    { thinking: [], tools: ['pending'] },
+  ];
+  assert.deepEqual(project(), expected);
+  overlay.event(event(9, { kind: 'ended', failed: false }));
+  overlay.history(index(history), 9);
+  assert.deepEqual(texts(overlay, history), ['old\n\n**检查中**\n', 'result', 'before cancel']);
+  assert.deepEqual(historyFollowPosition(history.at(-1), overlay.snapshot().rows), {
+    kind: 'event',
+    sequence: 6,
+  });
+  const interrupted = row('body', 'before cancel', 9, {
+    position: { sourceSequence: 9, itemIndex: 1 },
+    order: { sourceSequence: 6, itemIndex: 0 },
+  });
+  history.push(
+    interrupted,
+    row('pending', 'cancelled', 8, { role: 'tool', tool: { toolUseId: 'pending' } }),
+  );
+  overlay.history(index(history), 9);
+  assert.deepEqual(project(), expected);
+  assert.deepEqual(texts(overlay, history), [
+    'old\n\n**检查中**\n',
+    'result',
+    'before cancel',
+    'cancelled',
+  ]);
+  assert.deepEqual(historyFollowPosition(interrupted, []), {
+    kind: 'after',
+    cursor: { position: { sourceSequence: 9, itemIndex: 1 }, field: 'body', offset: 0 },
+  });
+});
+
+test('refresh of an open executor message replays its own start without losing its seat or duplicating chunks', () => {
+  const overlay = new TranscriptOverlay();
+  overlay.observe({
+    through: 10,
     run: { invocationId: 'run', turnId: 'run', state: 'running' },
     parts: [
-      { stepId: 'run', partId: 'text', messageId: 'executor', textKind: 'text', startSequence: 2 },
+      { stepId: 'B', partId: 'text', messageId: 'B', textKind: 'text', startSequence: 9 },
+      { stepId: 'B', partId: 'thinking', messageId: 'B', textKind: 'thinking', startSequence: 9 },
     ],
   });
-  overlay.event(event(4, { kind: 'delta', stepId: 'run', partId: 'text', text: ' world' }));
-  overlay.event(event(5, { kind: 'step_ended', stepId: 'run', completed: true }));
-  overlay.event(event(6, { kind: 'ended', failed: false }));
-  overlay.page({ kind: 'empty', hostEpoch: 'epoch' });
-  assert.deepEqual(texts(overlay), ['hello world']);
-  const history = [row('executor', 'hello world', 2)];
-  overlay.history(index(history), 6);
-  assert.deepEqual(texts(overlay, history), ['hello world']);
+  const history = [row('A', 'before', 4)];
+  overlay.history(index(history), 10);
+  overlay.event(event(9, { kind: 'executor_message_started', messageId: 'B' }));
+  overlay.event(event(10, { kind: 'delta', stepId: 'B', partId: 'text', text: 'same' }));
+  overlay.event(event(10, { kind: 'delta', stepId: 'B', partId: 'text', text: 'same' }));
+  overlay.event(event(11, { kind: 'executor_tool_start', toolUseId: 'tool', name: 'Shell' }));
+  overlay.event(event(12, { kind: 'delta', stepId: 'B', partId: 'text', text: ' same' }));
+  assert.deepEqual(texts(overlay, history), ['before', 'same same']);
+  assert.deepEqual(
+    projectProcessGroups({
+      rows: orderProcessRows([...history, ...overlay.snapshot().rows]),
+      toolActivity: overlay.snapshot().tools,
+      activeTurnId: 'run',
+    }).entries.map((entry) => (entry.kind === 'process' ? entry.toolIds : entry.rowId)),
+    ['A/body', 'B/body', ['tool']],
+  );
+  const canonical = [...history, row('B', 'same same', 9)];
+  overlay.event(event(13, { kind: 'part_committed', stepId: 'B', messageId: 'B', ordinal: 0 }));
+  overlay.history(index(canonical), 13);
+  overlay.event(event(14, { kind: 'delta', stepId: 'B', partId: 'text', text: 'obsolete' }));
+  assert.deepEqual(texts(overlay, canonical), ['before', 'same same']);
 });
 
 test('tool input preview keeps a multi-page Unicode patch through admission', () => {
@@ -322,4 +553,66 @@ test('tool input preview keeps a multi-page Unicode patch through admission', ()
   overlay.event(event(4, { kind: 'tool_dispatched', toolUseId: 'patch', name: 'ApplyPatch' }));
   assert.equal(overlay.snapshot().tools[0].phase, 'running');
   assert.equal(overlay.snapshot().tools[0].detail, input);
+});
+
+test('agent inputs share tool activity while human messages and answers stay outside', () => {
+  const origins = [
+    { kind: 'session', invocation: { session_id: 'reviewer' } },
+    { kind: 'bot_worker', sessionId: 'worker' },
+  ];
+  const rows = [
+    row('request', 'Review the change', 1, { role: 'user' }),
+    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
+    ...origins.map((origin, i) =>
+      row(`agent-${i}`, 'Internal report', 3 + i, { role: 'user', origin }),
+    ),
+    row('tool', 'Result', 6, { role: 'tool_result', tool: { toolUseId: 'lookup' } }),
+    row('human', 'Focus on correctness', 7, { role: 'user' }),
+    row('answer', 'Reviewed', 8, { finalOutput: true }),
+  ];
+  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
+  assert.deepEqual(
+    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
+    [
+      'request/body',
+      ['thought/thinking', 'agent-0/body', 'agent-1/body', 'tool/body'],
+      'human/body',
+      'answer/body',
+    ],
+  );
+  assert.equal(projection.turns.get('run').interleavedInput, true, 'human steering stays visible');
+});
+
+test('an agent-started turn folds with its work without being treated as human steering', () => {
+  const origin = { kind: 'session', invocation: { session_id: 'parent' } };
+  const rows = [
+    row('delegation', 'Verify the patch', 1, { role: 'user', origin }),
+    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
+    row('report', 'Done', 3, { role: 'user', origin: { kind: 'bot_worker', sessionId: 'worker' } }),
+    row('answer', 'Verified', 4, { finalOutput: true }),
+  ];
+  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
+  assert.deepEqual(
+    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
+    [['delegation/body', 'thought/thinking', 'report/body'], 'answer/body'],
+  );
+  assert.equal(projection.turns.get('run').interleavedInput, false);
+  const previous = projection.entries[0];
+  const reloaded = projectProcessGroups({
+    rows: rows.map((row) => ({ ...row })),
+    toolActivity: [],
+    activeTurnId: null,
+    previous: projection.entries,
+  });
+  assert.equal(reloaded.entries[0].key, previous.key, 'history refresh retains disclosure state');
+});
+
+test('agent attribution arriving with canonical metadata invalidates the live grouping', () => {
+  const pending = row('input', 'Task', 1, { role: 'user' });
+  const canonical = {
+    ...pending,
+    origin: { kind: 'session', invocation: { session_id: 'parent' } },
+  };
+  assert.equal(sameProcessRows([pending], [canonical]), false);
+  assert.equal(sameProcessRows([canonical], [{ ...canonical, text: 'Task details' }]), true);
 });

@@ -23,31 +23,21 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelUsage;
 use maka_agent_facts::model::recorded::ModelObservation;
-use sqlx::SqliteConnection;
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// The first provider usage fact fixes a request's valuation, if it was quoted.
-pub(super) async fn witness(
-    db: &mut SqliteConnection,
-    request: &str,
-) -> Result<Option<u64>, StoreError> {
-    let row: Option<i64> = sqlx::query_scalar(
-        "SELECT MIN(e.sequence) FROM runtime_events r JOIN runtime_events e ON e.invocation_id=r.invocation_id
+pub(super) fn witness(db: &Connection, request: &str) -> Result<Option<u64>, StoreError> {
+    let row: Option<i64> = db.prepare_cached("SELECT MIN(e.sequence) FROM runtime_events r JOIN runtime_events e ON e.invocation_id=r.invocation_id
          AND json_extract(e.event_header,'$.fact.step_id')=json_extract(r.event_header,'$.fact.step_id')
          WHERE r.event_id=? AND (e.kind='model_completed' OR
-          (e.kind='model_observed' AND json_extract(e.event_header,'$.fact.event.kind')='finished'))"
-    ).bind(request).fetch_one(db).await?;
+          (e.kind='model_observed' AND json_extract(e.event_header,'$.fact.event.kind')='finished'))")?.query_row(params![request], |row| row.get(0))?;
     row.map(crate::sequence_number).transpose()
 }
 
-pub(super) async fn validate(
-    staged: &mut SqliteConnection,
-    original: &mut SqliteConnection,
-) -> Result<(), StoreError> {
+pub(super) fn validate(staged: &Connection, original: &Connection) -> Result<(), StoreError> {
     let mut after = 0i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT number,record_json FROM frames WHERE kind='accounting' AND number>? ORDER BY number LIMIT 1"
-        ).bind(after).fetch_optional(&mut *staged).await?;
+        let row: Option<(i64, String)> = staged.prepare_cached("SELECT number,record_json FROM frames WHERE kind='accounting' AND number>? ORDER BY number LIMIT 1")?.query_row(params![after], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
         let Some((number, json)) = row else { break };
         let Record::Accounting {
             event_id,
@@ -57,12 +47,7 @@ pub(super) async fn validate(
         else {
             unreachable!()
         };
-        let request: Option<String> = sqlx::query_scalar(
-            "SELECT event_header FROM runtime_events WHERE event_id=? AND kind='model_requested'",
-        )
-        .bind(&event_id)
-        .fetch_optional(&mut *original)
-        .await?;
+        let request: Option<String> = original.prepare_cached("SELECT event_header FROM runtime_events WHERE event_id=? AND kind='model_requested'")?.query_row(params![&event_id], |row| row.get(0)).optional()?;
         let event: RuntimeEvent =
             serde_json::from_str(&request.ok_or_else(|| invalid("unbound bundle model quote"))?)?;
         let Fact::ModelRequested {
@@ -72,16 +57,14 @@ pub(super) async fn validate(
             unreachable!()
         };
         quote.validate(model_id).map_err(invalid)?;
-        crate::usage::valuation::capture(original, &event_id, &quote).await?;
+        crate::usage::valuation::capture(original, &event_id, &quote)?;
         let mut observed: Option<ModelUsage> = None;
         let mut sequence = 0i64;
         loop {
-            let row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT sequence,event_header FROM runtime_events WHERE invocation_id=?1 AND sequence>?2
+            let row: Option<(i64, String)> = original.prepare_cached("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=?1 AND sequence>?2
                  AND json_extract(event_header,'$.fact.step_id')=?3 AND (kind='model_completed' OR
                   (kind='model_observed' AND json_extract(event_header,'$.fact.event.kind')='finished'))
-                 ORDER BY sequence LIMIT 1"
-            ).bind(&event.invocation.invocation_id).bind(sequence).bind(step_id).fetch_optional(&mut *original).await?;
+                 ORDER BY sequence LIMIT 1")?.query_row(params![&event.invocation.invocation_id, sequence, step_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
             let Some((next, json)) = row else { break };
             let usage_event: RuntimeEvent = serde_json::from_str(&json)?;
             let usage = match usage_event.fact {
@@ -104,7 +87,7 @@ pub(super) async fn validate(
                 if usage == valuation.usage
                     && quote.estimate(&usage).map_err(invalid)? == valuation.usd =>
             {
-                crate::usage::valuation::value(original, &event_id, &usage).await?;
+                crate::usage::valuation::value(original, &event_id, &usage)?;
             }
             _ => {
                 return Err(invalid(

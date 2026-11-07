@@ -1,5 +1,5 @@
-//! What the popups of `nsh/base` share (`Popover`, `Menu`, `ContextMenu`,
-//! `Tooltip`, `Sheet`): their open state, controlled or not, and why it
+//! What the popups of `nsh/base` share (`Popover`, `HoverCard`, `Menu`,
+//! `ContextMenu`, `Tooltip`, `Sheet`): their open state, controlled or not, and why it
 //! changed. They show their content in the core's overlays
 //! (`nsh_core::element::overlay`), which place it and report presses outside,
 //! Escape and the back button; deciding to close is theirs. A sheet comes
@@ -38,13 +38,18 @@ pub enum OpenChangeReason {
     /// An item was chosen (a menu's).
     Select,
     /// The pointer rested on its trigger, or left or pressed it (a
-    /// tooltip's).
+    /// tooltip's); left its trigger and itself (a hover card's).
     Hover,
+    /// The keyboard focus came to its trigger, or left it (a hover
+    /// card's).
+    Focus,
     /// A finger was held on its trigger (a context menu's on touch
     /// screens).
     LongPress,
     /// The secondary button was pressed on its trigger (a context menu's).
     ContextMenu,
+    /// The user typed in its input (a combobox's).
+    InputChange,
 }
 
 /// Whether a popup is open: the app's `open` when it sets one, else its own
@@ -180,8 +185,8 @@ impl StateLooks {
     }
 }
 
-/// A popup's presence (`Popover`'s, a desktop menu's and its submenus',
-/// `Tooltip`'s), as a toast's `transitionStatus` and Base UI's
+/// A popup's presence (`Popover`'s, `HoverCard`'s, a desktop menu's and
+/// its submenus', `Tooltip`'s), as a toast's `transitionStatus` and Base UI's
 /// `data-starting-style` / `data-ending-style`: opened, it is mounted with
 /// its starting look until its first display frame, so the app's
 /// `transition-*` classes run its entrance; closed, it stays mounted with
@@ -574,6 +579,25 @@ pub(crate) struct DropdownFrame {
     pub(crate) backdrop_style: Prop<Style>,
 }
 
+/// A view inside a dropdown laid over its trigger (`Select`'s selected
+/// item).
+#[derive(Clone, Copy)]
+pub(crate) struct Cover {
+    /// The view.
+    pub(crate) view: ElementRef,
+    /// It is rendered and laid out (refs are not tracked).
+    pub(crate) shown: Signal<bool>,
+}
+
+impl Cover {
+    pub(crate) fn new() -> Self {
+        Self {
+            view: element_ref(),
+            shown: signal(false),
+        }
+    }
+}
+
 /// What a dropdown asks of its component.
 #[derive(Clone)]
 pub(crate) struct Presence {
@@ -586,13 +610,17 @@ pub(crate) struct Presence {
 }
 
 /// A dropdown while it is open (`Select`'s list, `DatePicker`'s calendar):
-/// on the desktops a popup anchored to the trigger `anchor` names, at least
-/// `width` wide (its width, once it is laid out), never past the room on
-/// its side; on touch screens a sheet at the bottom over a backdrop. It
-/// holds what `content` makes (`true` in a sheet).
+/// on the desktops a popup anchored to the trigger `anchor` names, `width`
+/// wide (the trigger's, once it is laid out: a list, as shadcn/ui's and
+/// `gpui-component`'s, unless the app's popup style sets a width) or at
+/// least that wide (`fit`: a calendar, as wide as it needs), never past the
+/// room on its side; on touch screens a sheet at the bottom over a
+/// backdrop. It holds what `content` makes (`true` in a sheet).
 pub(crate) fn dropdown(
     anchor: ElementRef,
     width: Signal<Option<Points>>,
+    fit: bool,
+    cover: Option<Cover>,
     frame: DropdownFrame,
     presence: Presence,
     content: Rc<dyn Fn(bool) -> Vec<AnyElement>>,
@@ -631,6 +659,10 @@ pub(crate) fn dropdown(
     when(shown, move || {
         // The trigger may be a toolbar's item; the content is not.
         leave_bar();
+        // Each opening lays its own cover view out again.
+        if let Some(cover) = cover {
+            cover.shown.set(false);
+        }
         let content = content(sheet);
         let cancel = {
             let dismiss = presence.dismiss.clone();
@@ -670,7 +702,20 @@ pub(crate) fn dropdown(
             .align(frame.align)
             .offset(frame.offset)
             .margin(frame.margin)
-            .min_w(move || Length::from(width.get().unwrap_or_default()))
+            // A list as wide as the trigger, unless the app's popup style
+            // sets a width (`gpui-component`'s `menu_width`); a calendar
+            // at least that wide.
+            .when(fit, |p| {
+                p.min_w(move || Length::from(width.get().unwrap_or_default()))
+            })
+            .when(!fit, |p| {
+                p.w(move || Length::from(width.get().unwrap_or_default()))
+            })
+            // A view inside over the trigger (a select's selected item);
+            // on a side of it while there is none.
+            .when_some(cover, |p, cover| {
+                p.cover(&cover.view, move || cover.shown.get())
+            })
             // Never past the room on its side: its rows scroll. Until
             // the core says where it went, the window bounds it, so the
             // first layout already gives the rows a viewport to

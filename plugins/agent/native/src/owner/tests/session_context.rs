@@ -116,14 +116,14 @@ async fn no_agents_file_still_exposes_each_selected_workspace_and_current_sessio
         let child_path = fixture.workspace.join(child_name);
         std::fs::create_dir(&child_path).unwrap();
         let roots = fixture.query("directories", json!({"kind":"roots"})).await.unwrap();
-        let children = fixture.query("directories", json!({"kind":"children", "selection":roots["roots"][0]["selection"], "after":null})).await.unwrap();
+        let children = fixture.query("directories", json!({"kind":"children", "path":roots["roots"][0]["path"], "after":null})).await.unwrap();
         let child = children["children"].as_array().unwrap().iter().find(|entry| entry["path"] == child_path.to_str().unwrap()).unwrap();
         let mut captured = Vec::new();
         for (title, selection) in [
-            ("Quoted Unicode workspace", child["selection"].clone()),
-            ("Independent workspace", roots["roots"][1]["selection"].clone()),
+            ("Quoted Unicode workspace", child["path"].clone()),
+            ("Independent workspace", roots["roots"][1]["path"].clone()),
         ] {
-            let created = fixture.mutation(2, "create", json!({"title":title,"labels":[],"workspace":{"kind":"directory","selection":selection}}), Uuid::new_v4()).await.unwrap();
+            let created = fixture.mutation(2, "create", json!({"title":title,"labels":[],"workspace":{"kind":"directory","path":selection}}), Uuid::new_v4()).await.unwrap();
             let session = created["session"].clone();
             let id = session["id"].as_str().unwrap();
             fixture.send(id).await.unwrap();

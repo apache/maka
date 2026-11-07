@@ -53,7 +53,7 @@ impl maka_agent_engine::NativeApprovalExecutor for Owner {
     > {
         Box::pin(async move {
             let session = self
-                .session(&pending.invocation.session_id)
+                .mutable_session(&pending.invocation.session_id)
                 .await
                 .map_err(maka_agent_facts::tools::ToolError::Failed)?;
             workspace::validate(
@@ -150,12 +150,29 @@ impl Owner {
         self: &Arc<Self>,
         cutoff: u64,
     ) -> Result<(), RunError> {
+        // Keep recovery parked until the cleanup waiter injects shutdown.
+        #[cfg(test)]
+        if self
+            .mcp_shutdown_at_parked_wait
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
         let mut sessions = self.store.ready_native_approval_sessions().await?;
         sessions.extend(self.store.due_model_retry_sessions(cutoff).await?);
         let mut seen = std::collections::HashSet::new();
         sessions.retain(|session| seen.insert(session.clone()));
         for session in sessions {
             if !self.owns(&session) {
+                continue;
+            }
+            if self.runs.has_checkpoints()
+                && let Ok(current) = self.session(&session).await
+                && !self.runs.workspace_available(
+                    &session,
+                    std::path::Path::new(&current.configuration.workspace.path),
+                )
+            {
                 continue;
             }
             let mut runs = self.runs.state().await;
@@ -192,7 +209,7 @@ impl Owner {
     }
 
     // Recover the owner-scoped durable backlog without limiting active Sessions.
-    async fn schedule(self: &Arc<Self>) {
+    pub(super) async fn schedule(self: &Arc<Self>) {
         if let Err(error) = self.schedule_pending().await
             && !(self.stop.is_cancelled()
                 && matches!(
@@ -233,6 +250,15 @@ impl Owner {
                     .activation_checkpoint(session)
                     .await?
                     .is_some()
+                {
+                    continue;
+                }
+                if self.runs.has_checkpoints()
+                    && let Ok(current) = self.session(session).await
+                    && !self.runs.workspace_available(
+                        session,
+                        std::path::Path::new(&current.configuration.workspace.path),
+                    )
                 {
                     continue;
                 }
@@ -379,6 +405,9 @@ impl Owner {
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
+                settlement: basis
+                    .client_mcp
+                    .map(|_| tokio::sync::watch::channel(None).0),
                 #[cfg(test)]
                 handoff: running.handoff().cloned(),
                 preview: running.preview(),
@@ -394,9 +423,28 @@ impl Owner {
             let session = running.invocation().session_id.clone();
             loop {
                 let invocation = running.invocation().clone();
+                let settlement = self
+                    .runs
+                    .state()
+                    .await
+                    .controls
+                    .get(&session)
+                    .filter(|control| control.invocation == invocation)
+                    .and_then(|control| control.settlement.clone())
+                    .map(Settlement);
                 let completion = std::panic::AssertUnwindSafe(running.completion())
                     .catch_unwind()
                     .await;
+                if let Some(settlement) = &settlement {
+                    settlement.0.send_replace(Some(
+                        if matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
+                            Ok(())
+                        } else {
+                            Err("agent_execution_cleanup_unconfirmed".into())
+                        },
+                    ));
+                }
+                drop(settlement);
                 if !matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
                     let mut runs = self.runs.state().await;
                     let stage = if completion.is_err() {
@@ -459,6 +507,23 @@ impl Owner {
         loop {
             if cancellation.is_cancelled() {
                 return Ok(None);
+            }
+            if self.runs.has_checkpoints() {
+                if self.runs.checkpointed(session) {
+                    return Ok(None);
+                }
+                if let Some(record) = self
+                    .store
+                    .get_session::<StoredSessionConfiguration>(session)
+                    .await?
+                    && let Ok(resolved) = resolve_session(record)
+                    && !self.runs.workspace_available(
+                        session,
+                        std::path::Path::new(&resolved.configuration.workspace.path),
+                    )
+                {
+                    return Ok(None);
+                }
             }
             let store = self.store.session(session).await?;
             if let Some(checkpoint) = store.activation_checkpoint(session).await? {
@@ -607,11 +672,13 @@ impl Owner {
             serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
                 |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
             )?;
-        basis.mcp_catalog = Some(
-            self.mcp_projects
-                .catalog(basis.mcp_revision.as_deref())
-                .map_err(RunError::InvalidInput)?,
-        );
+        if !checkpoint.revoked && !checkpoint.stop_requested {
+            basis.mcp_catalog = Some(
+                self.mcp_projects
+                    .catalog(basis.mcp_revision.as_deref())
+                    .map_err(RunError::InvalidInput)?,
+            );
+        }
         let basis = Arc::new(basis);
         let store = self.store.session(&invocation.session_id).await?;
         let mut configuration = store
@@ -637,12 +704,15 @@ impl Owner {
         } else {
             ApprovalPolicy::Never
         };
-        let tool_names = self
-            .mcp_projects
-            .catalog(basis.mcp_revision.as_deref())
-            .map_err(RunError::InvalidInput)?
-            .tools
-            .names()
+        let names = match &basis.mcp_catalog {
+            Some(catalog) => catalog.tools.names(),
+            None => basis
+                .internal_tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
+        };
+        let tool_names = names
             .into_iter()
             .filter(|name| {
                 basis
@@ -833,9 +903,6 @@ impl Owner {
         self.validate_background(&basis)
             .await
             .map_err(RunError::InvalidInput)?;
-        self.validate_graph_basis(&invocation.session_id, &basis)
-            .await
-            .map_err(RunError::InvalidInput)?;
         let catalog = self
             .mcp_projects
             .catalog(basis.mcp_revision.as_deref())
@@ -942,8 +1009,6 @@ impl Owner {
             let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
                 .map_err(|_| "agent_message_basis_invalid")?;
             self.validate_background(&basis).await?;
-            self.validate_graph_basis(&invocation.session_id, &basis)
-                .await?;
             let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
             self.validate_accepted_tools(&basis, &selected_catalog)?;
             // Deserialization allocates independent descriptors. Only after the original
@@ -986,8 +1051,7 @@ impl Owner {
             | "agent_session_configuration_changed"
             | "agent_message_basis_invalid"
             | "scheduler_authorization_changed"
-            | "goal_continuation_stopped"
-            | "goal_incognito" => RunError::InvalidInput(message),
+            | "goal_continuation_stopped" => RunError::InvalidInput(message),
             _ => RunError::Internal(message),
         })?;
         let backend = match (&basis.model, &basis.executor) {
@@ -1068,11 +1132,6 @@ impl Owner {
             boundary_revision: session.configuration.boundary_revision,
             workspace_binding: Some(session.configuration.binding),
             collaboration_mode: basis.collaboration_mode,
-            orchestration_mode: if let Some(epoch) = &basis.graph {
-                graph::behavior(epoch)
-            } else {
-                BehaviorId::default()
-            },
             tool_mode: ToolMode::Direct,
             code_language: Default::default(),
             model: None,
@@ -1220,6 +1279,17 @@ impl Owner {
         invocation: &str,
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<bool, String> {
+        let goal = self.goals.gate.lock().await;
+        self.stop_run_id(session, invocation, self.operation_id(operation), &goal)
+            .await
+    }
+    pub(super) async fn stop_run_id(
+        &self,
+        session: &str,
+        invocation: &str,
+        interrupt_id: String,
+        _goal: &tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<bool, String> {
         self.session(session).await?;
         let physical = {
             let runs = self.runs.state().await;
@@ -1254,7 +1324,6 @@ impl Owner {
             }
         };
         {
-            let _gate = self.goals.gate.lock().await;
             if let Some(mut saved) = self
                 .goals
                 .repository
@@ -1278,7 +1347,7 @@ impl Owner {
         let command = InterruptCommand {
             host_epoch: self.revision.activation.clone(),
             session_id: session.into(),
-            interrupt_id: self.operation_id(operation),
+            interrupt_id,
             turn_id: original.turn_id.clone(),
             run_id: original.run_id.clone(),
         };
@@ -1319,6 +1388,17 @@ impl Owner {
                 Err(StoreError::RevisionConflict { .. }) => continue,
                 Err(_) => return Err("agent_queue_unavailable".into()),
             }
+        }
+    }
+}
+
+struct Settlement(tokio::sync::watch::Sender<Option<Result<(), String>>>);
+impl Drop for Settlement {
+    fn drop(&mut self) {
+        let pending = self.0.borrow().is_none();
+        if pending {
+            self.0
+                .send_replace(Some(Err("agent_execution_owner_disappeared".into())));
         }
     }
 }

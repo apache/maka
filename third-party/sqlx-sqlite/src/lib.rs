@@ -82,7 +82,7 @@ pub use connection::deserialize::SqliteOwnedBuf;
 #[cfg(feature = "preupdate-hook")]
 #[cfg_attr(docsrs, doc(cfg(feature = "preupdate-hook")))]
 pub use connection::PreupdateHookResult;
-pub use connection::{SqliteWorkerConnection, LockedSqliteHandle, SqliteConnection, SqliteOperation, UpdateHookResult};
+pub use connection::{LockedSqliteHandle, SqliteConnection, SqliteOperation, UpdateHookResult};
 pub use database::Sqlite;
 pub use error::SqliteError;
 pub use options::{

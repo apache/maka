@@ -164,7 +164,7 @@ view()
 
 ## 桌面文件拖放
 
-在 AppKit、GTK 和 Win32 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDragLeave` 跟踪当前拖放目标；`onFileDrop` 接收 `{ uris: string[] }`，顺序与原生文件列表一致。每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。
+在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDragLeave` 跟踪当前拖放目标；`onFileDrop` 接收 `{ uris: string[] }`，顺序与原生文件列表一致。每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。
 
 ```rust tabs
 let hovering = signal(false);

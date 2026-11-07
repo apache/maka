@@ -51,8 +51,7 @@ pub(super) fn calibration(
     let (Some(binding), LatestMainContext::Selected(latest)) = (binding, latest) else {
         return Ok(None);
     };
-    if !latest.projection_current
-        || latest.model_id != provider.model
+    if latest.model_id != provider.model
         || latest.route_identity != crate::runner::digest(provider)?
         || latest.connection_id.as_deref() != Some(binding.connection_id.as_str())
         || latest.checkpoint_event_id.as_deref() != checkpoint
@@ -66,7 +65,7 @@ pub(super) fn calibration(
         return Ok(None);
     };
     // The previous input is measured, including cache reads. Only the change in
-    // rendered input is estimated; prior output and newly settled tools occur once in that change.
+    // rendered input is estimated, including archived results removed since that request.
     Ok(Some(Calibration {
         input,
         estimated: breakdown.estimated_tokens(),
@@ -148,9 +147,7 @@ pub(super) async fn start(
     let cancellation = cancellation.child_token();
     let worker_cancel = cancellation.clone();
     let inner = inner.clone();
-    let cleanup = crate::cleanup::current();
-    let worker =
-        tokio::spawn(async move { cleanup.scope(job.execute(&inner, &worker_cancel)).await });
+    let worker = tokio::spawn(async move { job.execute(&inner, &worker_cancel).await });
     Ok(Some(Pending {
         cancellation: CancelGuard(cancellation),
         state: CandidateState::Running(worker),
@@ -176,9 +173,14 @@ pub(super) struct Pending {
 }
 
 async fn join_worker(
+    cleanup: &crate::cleanup::Evidence,
     worker: tokio::task::JoinHandle<Result<compact::Candidate, RunError>>,
 ) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
-    match worker.await.map_err(|_| crate::cleanup::unconfirmed())? {
+    let result = worker.await.map_err(|_| cleanup.unconfirmed())?;
+    if let Err(error) = &result {
+        cleanup.observe(error);
+    }
+    match result {
         Ok((_, checkpoint)) => Ok(checkpoint),
         Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
         Err(error) => Err(error),
@@ -217,7 +219,7 @@ impl Pending {
                 if waiting.is_err() {
                     guard.0.cancel();
                 }
-                let checkpoint = join_worker(worker).await?;
+                let checkpoint = join_worker(&inner.cleanup, worker).await?;
                 waiting?;
                 checkpoint
             }
@@ -228,14 +230,15 @@ impl Pending {
         let Some(checkpoint) = checkpoint else {
             return Ok(false);
         };
-        let session = checkpoint.invocation.session_id.clone();
-        inner.log.append(&EventWrite::plain(checkpoint)?).await?;
-        inner.shared.clear_loaded(&session)?;
+        record(inner, checkpoint).await?;
         Ok(true)
     }
 }
 
-pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError> {
+pub(super) async fn settle(
+    inner: &RunContext,
+    pending: &mut Option<Pending>,
+) -> Result<(), RunError> {
     if !matches!(
         pending,
         Some(Pending {
@@ -252,7 +255,7 @@ pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError
     else {
         unreachable!();
     };
-    if let Some(checkpoint) = join_worker(worker).await? {
+    if let Some(checkpoint) = join_worker(&inner.cleanup, worker).await? {
         *pending = Some(Pending {
             cancellation,
             state: CandidateState::Ready(Box::new(checkpoint)),
@@ -300,16 +303,33 @@ pub(super) async fn compact_now(
         .await
 }
 
-pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
+pub(super) async fn record(
+    inner: &RunContext,
+    checkpoint: maka_agent_facts::event::RuntimeEvent,
+) -> Result<(), RunError> {
+    let session = checkpoint.invocation.session_id.clone();
+    inner.log.append(&EventWrite::plain(checkpoint)?).await?;
+    inner.shared.clear_loaded(&session)?;
+    Ok(())
+}
+
+pub(super) async fn drain(
+    inner: &RunContext,
+    pending: &mut Option<Pending>,
+) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
     if let Some(Pending {
         cancellation,
         state,
     }) = pending.take()
     {
         cancellation.0.cancel();
-        if let CandidateState::Running(worker) = state {
-            join_worker(worker).await?;
+        match state {
+            CandidateState::Running(worker) => return join_worker(&inner.cleanup, worker).await,
+            CandidateState::Ready(checkpoint) => return Ok(Some(*checkpoint)),
         }
     }
-    Ok(())
+    Ok(None)
 }
+
+#[cfg(test)]
+mod tests;

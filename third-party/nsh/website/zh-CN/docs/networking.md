@@ -382,6 +382,7 @@ TSX 的 `fetch` 遵循 Fetch 标准，但在对应用（而不是网页）有意
 - **没有禁止的请求头。** 应用可以设置 `Cookie`、`User-Agent`、`Origin` 等。
 - **`redirect: "manual"`** 返回 3xx 响应本身（带有 `Location` 头），而不是不透明重定向。`redirect: "error"` 遇到重定向时拒绝。
 - **`data:` 和 `blob:` URL** 在本地应答。`URL.createObjectURL(blob)` 生成一个 `blob:` URL，在撤销之前 `fetch` 都可以读取它。
+- **`asset:/` URL** 指应用随附的文件，从应用自身的文件中读取，无需任何能力授权（[运行时读取文件](./images-and-assets.md#运行时读取文件)）。
 - 浏览器专用的选项（`mode`、`credentials`、`cache`、`referrer`、`integrity`、`keepalive`、`priority`）为兼容各种库而被接受。
 
 基于 `fetch`（以及 `AbortController`、`FormData` 和流）构建的库通常无需修改即可使用。没有 `XMLHttpRequest`；原生宿主提供全局 `WebSocket` 和 [`websocket` 模块](../modules/standard-modules.md)，按与 `fetch` 相同的授权检查。

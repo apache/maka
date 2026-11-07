@@ -118,9 +118,10 @@ pub(crate) trait Hosted {
         false
     }
 
-    /// A wheel or touchpad scroll at `(x, y)` (item coordinates) for a
-    /// [`Hosted::raw`] item; true when it took it (else the scroll views
-    /// around it get it).
+    /// A wheel or touchpad scroll at `(x, y)` (item coordinates): for a
+    /// [`Hosted::raw`] item under the pointer, or any other item of the
+    /// view under it (a native component); true when it took it (else the
+    /// scroll views around it get it).
     fn wheel(&self, x: f32, y: f32, event: &crate::input::WheelEvent) -> bool {
         let _ = (x, y, event);
         false
@@ -341,6 +342,28 @@ struct Node {
     /// Where the window's last frame painted it (not its children), clipped
     /// to what was visible: the area to draw again when it changes.
     painted: Cell<Option<WindowRect>>,
+    /// The newest change in it or what it holds ([`NshView::changes`]).
+    changes: Cell<u64>,
+}
+
+thread_local! {
+    /// The last change stamped on the views ([`NshView::changed`]).
+    static CHANGES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The newest change stamp: a picture taken now holds every change up to
+/// it ([`NshView::changes`]).
+pub(crate) fn change_stamp() -> u64 {
+    CHANGES.with(Cell::get)
+}
+
+/// A change stamp newer than every one before ([`NshView::changed`],
+/// [`crate::surface::Surface::invalidate`]).
+pub(crate) fn next_change_stamp() -> u64 {
+    CHANGES.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    })
 }
 
 /// The smallest rectangle holding `a` and `b`.
@@ -384,6 +407,7 @@ impl NshView {
             invalidate: RefCell::new(None),
             queued: Cell::new(false),
             painted: Cell::new(None),
+            changes: Cell::new(0),
         }))
     }
 
@@ -420,23 +444,57 @@ impl NshView {
     }
 
     /// Something it or its subtree draws changed: its surface draws that
-    /// again (if it is in one).
+    /// again (if it is in one), and it and the views it is in hold a newer
+    /// change ([`Self::changes`]: a shader picturing them takes them again).
     pub(crate) fn changed(&self) {
-        if self.0.queued.get() {
-            return;
-        }
+        let stamp = next_change_stamp();
         let mut node = self.0.clone();
         loop {
+            node.changes.set(stamp);
             let parent = node.parent.borrow().upgrade();
             match parent {
                 Some(p) => node = p,
                 None => break,
             }
         }
+        if self.0.queued.get() {
+            return;
+        }
         let invalidate = node.invalidate.borrow().clone();
         if let Some(f) = invalidate {
             f(self);
         }
+    }
+
+    /// Draws again what it draws itself (a shader's own frame): a change
+    /// of what the views it is in hold, not of what it holds (a shader
+    /// picturing its children does not take them again for its own frame).
+    pub(crate) fn redraw(&self) {
+        let stamp = next_change_stamp();
+        let mut node = self.0.clone();
+        loop {
+            let parent = node.parent.borrow().upgrade();
+            match parent {
+                Some(p) => {
+                    p.changes.set(stamp);
+                    node = p;
+                }
+                None => break,
+            }
+        }
+        if self.0.queued.get() {
+            return;
+        }
+        let invalidate = node.invalidate.borrow().clone();
+        if let Some(f) = invalidate {
+            f(self);
+        }
+    }
+
+    /// The stamp of the newest change in it or what it holds
+    /// ([`change_stamp`] when it was made).
+    pub(crate) fn changes(&self) -> u64 {
+        self.0.changes.get()
     }
 
     /// Whether it is on its surface's list of changed views; set by the
@@ -572,6 +630,60 @@ impl NshView {
             m = Mat4::mul(&m, &local);
             view = parent;
         }
+    }
+
+    /// The part of this view (its coordinates, an axis-aligned box) that
+    /// the views clipping around it leave in sight: where a scroll view
+    /// taller or wider than the scroll view it is in draws its indicator
+    /// ([`ScrollState::thumb_within`]), so its bar stays in view. Its own
+    /// bounds when nothing clips it.
+    pub(crate) fn visible_bounds(&self) -> Bounds<Points> {
+        let size = self.state().frame.size;
+        let full = Bounds::new(Default::default(), size);
+        let (mut left, mut top) = (0.0f32, 0.0f32);
+        let (mut right, mut bottom) = (size.width.0, size.height.0);
+        // This view's coordinates to `view`'s.
+        let mut m = Mat4::new();
+        let mut view = self.clone();
+        while let Some(parent) = view.parent_view() {
+            {
+                let s = view.state();
+                let (x, y) = parent.state().child_origin(s.frame, s.shift);
+                let mut local = Mat4::new().translate(x, y);
+                if let Some(t) = s.transform() {
+                    local = Mat4::mul(&t, &local);
+                }
+                m = Mat4::mul(&m, &local);
+            }
+            let clip = {
+                let p = parent.state();
+                p.clips()
+                    .then_some((p.frame.size.width.0, p.frame.size.height.0))
+            };
+            if let Some((w, h)) = clip {
+                let mut min = (f32::MAX, f32::MAX);
+                let mut max = (f32::MIN, f32::MIN);
+                for (cx, cy) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+                    let Some((x, y)) = m.unproject(cx, cy) else {
+                        return full;
+                    };
+                    min = (min.0.min(x), min.1.min(y));
+                    max = (max.0.max(x), max.1.max(y));
+                }
+                left = left.max(min.0);
+                top = top.max(min.1);
+                right = right.min(max.0);
+                bottom = bottom.min(max.1);
+            }
+            view = parent;
+        }
+        Bounds::new(
+            nsh_core::geometry::point(Points(left), Points(top)),
+            nsh_core::geometry::size(
+                Points((right - left).max(0.0)),
+                Points((bottom - top).max(0.0)),
+            ),
+        )
     }
 
     fn attached_root(&self, root: &NshView) -> bool {

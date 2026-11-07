@@ -66,6 +66,10 @@ parts! {
     /// The marker of a line where a fold starts (`⌄`, `›` folded), shown
     /// in the gutter.
     fold_marker => FoldMarker,
+    /// The overview ruler: the strip along the editor's right edge where
+    /// decorations' marks map the whole text (shown while one has a mark
+    /// there; no look of its own).
+    overview_ruler => OverviewRuler,
     /// The text area: the rows, beside the gutter (its padding is the room
     /// around the text).
     content => Content,
