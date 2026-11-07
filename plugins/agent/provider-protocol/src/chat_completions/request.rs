@@ -223,6 +223,7 @@ pub fn prompt_options(
         provider_namespace: namespace.to_owned(),
         metadata_namespace,
         multipart_tool_content,
+        reasoning_field: Default::default(),
     }
 }
 
@@ -388,6 +389,7 @@ fn prepare_inner(
             &PromptOptions {
                 provider_namespace: namespace.clone(),
                 metadata_namespace: metadata_namespace.clone(),
+                reasoning_field: Default::default(),
                 multipart_tool_content: config.multipart_tool_content
             }
         )?);
