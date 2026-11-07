@@ -341,6 +341,37 @@ impl CapturedSource {
             domain: Arc::new(maka_agent_facts::model::prompt_source::source::SourceIdentity),
         })))
     }
+    /// Resolve producing-request facts from a checked semantic row, without
+    /// loading response bodies or duplicating request provenance on each part.
+    pub async fn request_context(
+        &self,
+        row: &CapturedRow,
+    ) -> Result<Option<maka_agent_facts::context::ModelRequestContext>, StoreError> {
+        self.check(&row.domain)?;
+        let rowid = row.rowid;
+        let json: Option<String> = self
+            .0
+            .log
+            .connection
+            .read(move |db| {
+                Box::pin(async move {
+                    Ok(sqlx::query_scalar(
+                        "SELECT json_extract(e.event_header,'$.fact.context')
+                     FROM context_semantic_rows r JOIN runtime_events e
+                       ON e.invocation_id=r.invocation_id
+                      AND e.operation_id=json_extract(r.row_json,'$.kind.AssistantPart.step_id')
+                      AND e.kind='model_requested'
+                     WHERE r.rowid=?",
+                    )
+                    .bind(rowid)
+                    .fetch_one(db)
+                    .await?)
+                })
+            })
+            .await?;
+        json.map(|value| serde_json::from_str(&value).map_err(StoreError::from))
+            .transpose()
+    }
     pub fn selection(&self) -> &SemanticSelection {
         &self.0.selection
     }

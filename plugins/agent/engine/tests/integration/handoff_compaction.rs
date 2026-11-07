@@ -41,6 +41,40 @@ use std::{
 use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 
+struct RefreshedModel {
+    provider: maka_model::ProviderConfig,
+    context: ModelRequestContext,
+    options: serde_json::Value,
+}
+
+impl maka_agent_engine::ModelSource for RefreshedModel {
+    fn capture(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<maka_agent_engine::PreparedModel, maka_agent_engine::RunError>,
+    > {
+        Box::pin(async move {
+            Ok(maka_agent_engine::PreparedModel {
+                provider_id: "openai".into(),
+                provider: self.provider.clone(),
+                options: self.options.clone(),
+                context: Some(self.context.clone()),
+                main_output_limit: None,
+                supports_vision: false,
+                revision: maka_agent_facts::composition::SourceRevision {
+                    kind: maka_agent_facts::composition::SourceKind::ModelProvider,
+                    name: "openai".into(),
+                    package_id: "fixture".into(),
+                    entry_id: "fixture".into(),
+                    activation: "fixture".into(),
+                    revision: "1".into(),
+                },
+            })
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_anchor() {
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -108,7 +142,10 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         });
         first.context = Some(ModelRequestContext {
             operation: maka_agent_facts::context::ModelOperation::Inference,
-            codex: None, provider_id: "openai".into(), context_window: Some(170_000), declared_window: Some(110_000),
+            codex: Some(maka_agent_facts::context::CodexRequestProvenance {
+                connection_id: "connection".into(), account_id: Some("account".into()),
+                compatibility: Some(maka_agent_facts::context::CodexCompatibility { comp_hash: "old".into(), fetched_at: 1 }),
+            }), provider_id: "openai".into(), context_window: Some(170_000), declared_window: Some(110_000),
             model_context_window: Some(200_000),
         });
         let configuration = first.configuration.clone();
@@ -133,6 +170,13 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         successor.invocation = pause.intent.successor(&source_invocation);
         successor.configuration = configuration;
         successor.context = context;
+        let mut refreshed = successor.context.clone().unwrap();
+        let proof = refreshed.codex.as_mut().unwrap().compatibility.as_mut().unwrap();
+        proof.comp_hash = "new".into();
+        proof.fetched_at = 2;
+        successor.model_source = Some(Arc::new(RefreshedModel {
+            provider: successor.provider.clone(), context: refreshed.clone(), options: successor.provider_options.clone(),
+        }));
         successor.work = RunWork::Handoff {
             source: prefix.boundary,
             pause: Box::new(pause), tools,
@@ -146,6 +190,8 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         assert!(!main["messages"].to_string().contains("old-answer"));
         assert_eq!(count.load(Ordering::SeqCst), 1);
         let prefix = log.prefix(100, 256 * 1024).await.unwrap();
+        assert!(prefix.events.iter().any(|event| event.event.invocation.invocation_id == "successor-invocation"
+            && matches!(&event.event.fact, Fact::ModelRequested { context: Some(context), .. } if context == &refreshed)));
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
             Fact::ModelCompleted { output, .. } if crate::support::model_records::parts(output, &prefix.events).any(|part| matches!(part,
                 maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Thinking, .. })))));

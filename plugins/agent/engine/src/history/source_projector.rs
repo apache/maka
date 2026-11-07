@@ -48,7 +48,9 @@ pub(super) struct ProjectContext<'a> {
     pub vision: bool,
     pub provider: &'a ProviderKind,
     pub replay: Option<&'a maka_event_log::context::semantic::SemanticReplay>,
+    pub model: Option<&'a crate::history::ReplayTarget>,
     pub captured: Option<&'a maka_event_log::context::semantic::CapturedSource>,
+    pub row: Option<&'a maka_event_log::context::semantic::CapturedRow>,
     pub row_root: Option<&'a PayloadSource>,
     pub payload_root: Option<&'a maka_event_log::context::semantic::PayloadSource>,
     pub arena: Option<&'a super::capture_arena::CaptureArena>,
@@ -68,7 +70,9 @@ impl ProjectContext<'_> {
             vision: self.vision,
             provider: self.provider,
             replay: self.replay,
+            model: self.model,
             captured: self.captured,
+            row: self.row,
             row_root: self.row_root,
             payload_root,
             arena: self.arena,
@@ -80,10 +84,12 @@ impl ProjectContext<'_> {
     }
     pub fn for_row<'row>(
         &'row self,
+        row: &'row maka_event_log::context::semantic::CapturedRow,
         row_root: &'row PayloadSource,
         payload_root: Option<&'row PayloadSource>,
     ) -> ProjectContext<'row> {
         let mut context = self.for_payload(payload_root);
+        context.row = Some(row);
         context.row_root = Some(row_root);
         context
     }
@@ -187,15 +193,20 @@ pub(super) async fn project_row(
             ))
         }
         (RowDirectory::AssistantPart { .. }, PayloadDirectory::Part(part)) => {
-            if matches!(
-                part,
-                PartDirectory::Text {
-                    text_kind: TextKind::Thinking,
-                    ..
-                }
-            ) && !reasoning_matches_route(row, context).await?
+            if let PartDirectory::Text {
+                text_kind: TextKind::Thinking,
+                text,
+                ..
+            } = part
             {
-                return Ok(ProjectedRow::Skip);
+                match reasoning_replay(row, context).await? {
+                    ReasoningReplay::Original => {}
+                    ReasoningReplay::Omit => return Ok(ProjectedRow::Skip),
+                    ReasoningReplay::Plaintext => {
+                        return project_text(located::text(*text, context)?, None, true, context)
+                            .await;
+                    }
+                }
             }
             assistant(part, context).await
         }
@@ -369,10 +380,70 @@ async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Re
         }
     }
 }
-async fn reasoning_matches_route(
+enum ReasoningReplay {
+    Original,
+    Plaintext,
+    Omit,
+}
+
+fn incompatible_reasoning(provider: &ProviderKind) -> ReasoningReplay {
+    match provider {
+        ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. } => {
+            ReasoningReplay::Plaintext
+        }
+        ProviderKind::OpenResponses(contract)
+            if contract.reasoning_replay
+                == maka_agent_facts::model::PlaintextReasoningReplay::PlaintextContent =>
+        {
+            ReasoningReplay::Plaintext
+        }
+        _ => ReasoningReplay::Omit,
+    }
+}
+
+async fn reasoning_replay(
     row: &RowDirectory,
     context: &ProjectContext<'_>,
-) -> io::Result<bool> {
+) -> io::Result<ReasoningReplay> {
+    if let Some(target) = context.model {
+        let source = context
+            .captured
+            .ok_or_else(invalid)?
+            .request_context(context.row.ok_or_else(invalid)?)
+            .await
+            .map_err(io::Error::other)?;
+        let source_codex = source.as_ref().and_then(|request| request.codex.as_ref());
+        if target.codex.is_some() || source_codex.is_some() {
+            let (Some(target_codex), Some(source_codex)) = (&target.codex, source_codex) else {
+                return Ok(incompatible_reasoning(context.provider));
+            };
+            let RowDirectory::AssistantPart { model_id, .. } = row else {
+                return Err(invalid());
+            };
+            let same_model = json::text_eq(
+                &row_text(*model_id, context)?,
+                &target.model,
+                context.budget.clone(),
+            )
+            .await?;
+            let hashes_match = source_codex
+                .compatibility
+                .as_ref()
+                .zip(target_codex.compatibility.as_ref())
+                .map(|(old, new)| old.comp_hash == new.comp_hash);
+            return Ok(
+                if maka_agent_facts::context::codex_replay_allowed(
+                    same_model,
+                    hashes_match,
+                    target.operation,
+                ) {
+                    ReasoningReplay::Original
+                } else {
+                    incompatible_reasoning(context.provider)
+                },
+            );
+        }
+    }
     if let Some(replay) = context.replay {
         let RowDirectory::AssistantPart {
             model_id,
@@ -395,10 +466,10 @@ async fn reasoning_matches_route(
             )
             .await?
         {
-            return Ok(false);
+            return Ok(ReasoningReplay::Omit);
         }
     }
-    Ok(true)
+    Ok(ReasoningReplay::Original)
 }
 
 async fn call_kind(

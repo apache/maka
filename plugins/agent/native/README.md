@@ -173,8 +173,10 @@ The engine installs its opaque checkpoint only after the producing stream comple
 validates the same source fence and producer request. Subsequent requests replay the checkpoint
 with the preserved suffix; another compact replaces that baseline. Session/global/custom text
 compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
-With the setting off, text compaction prompts apply as usual. Native replay currently requires
-the producing model; cross-model admission and switch preflight are separate stack layers.
+With the setting off, text compaction prompts apply as usual. Native checkpoints and ordinary
+encrypted reasoning share hash-based replay admission, including across subscription accounts.
+Incompatible native state is refused before inference; automatic conversion and smaller-window
+switch preflight remain separate work.
 
 The subscription provider selects native compaction in its resolved capabilities only when the
 connection opts in. Disabling it preserves replay of existing native checkpoints; the next
