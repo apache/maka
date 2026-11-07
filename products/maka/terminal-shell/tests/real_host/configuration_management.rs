@@ -59,6 +59,54 @@ async fn choose(view: &mut AppView, select: &str, option: &str) {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn general_settings_save_and_read_back_the_default_sandbox() {
+    let fixture = Fixture::configured(Default::default()).await;
+    let client = fixture.client().await;
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    view.resize(160, 80);
+    wait_editable_composer(&mut view).await;
+    click(&mut view, "Connections & models").await;
+    click(&mut view, "Settings section General").await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    choose(
+        &mut view,
+        "Default sandbox policy",
+        "Full access · Sandbox off",
+    )
+    .await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    assert_eq!(
+        client
+            .query("settings", "assistantPreferences", json!({}))
+            .await
+            .unwrap()["defaultSandboxMode"],
+        "danger-full-access"
+    );
+    click(&mut view, "Close settings").await;
+    click(&mut view, "Connections & models").await;
+    click(&mut view, "Settings section General").await;
+    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    let selected = view
+        .accessibility_snapshot()
+        .into_iter()
+        .find(|node| {
+            node.role == nsh_core::AccessibilityRole::Combobox
+                && node.label == "Default sandbox policy"
+        })
+        .unwrap();
+    assert_eq!(
+        selected.value.and_then(|value| value.text).as_deref(),
+        Some("Full access · Sandbox off")
+    );
+    support::evidence("general-default-sandbox", &view.snapshot());
+    support::evidence_cells("general-default-sandbox", &view);
+    drop(view);
+    drop(bindings);
+    client.close().await.unwrap();
+    fixture.finish().await;
+}
+
 fn skill(source: &std::path::Path, name: &str, body: &str) {
     let directory = source.join(name);
     std::fs::create_dir_all(&directory).unwrap();

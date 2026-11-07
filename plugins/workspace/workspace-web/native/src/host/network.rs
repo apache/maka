@@ -76,13 +76,7 @@ impl Access {
         let _lease = self.admit(call)?;
         let available = match &self.purpose {
             Purpose::Retrieval { basis, search } => self.owner.current(basis, *search).await,
-            Purpose::Health => self
-                .owner
-                .configuration
-                .runtime_policy()
-                .await
-                .map(|policy| !policy.policy.privacy.incognito_active)
-                .map_err(message),
+            Purpose::Health => Ok(true),
         }
         .map_err(Error::Failed)?;
         if !available {
@@ -394,15 +388,8 @@ impl Authority for CredentialCheck {
                 .snapshot()
                 .await
                 .map_err(|e| Error::Failed(e.to_string()))?;
-            let policy = self
-                .owner
-                .configuration
-                .runtime_policy()
-                .await
-                .map_err(|e| Error::Failed(e.to_string()))?;
             if snapshot.credential.revision != Some(self.revision)
                 || !snapshot.credential.configured
-                || policy.policy.privacy.incognito_active
             {
                 return Err(Error::Denied);
             }

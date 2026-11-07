@@ -29,6 +29,7 @@ import type {
   ComposerSession,
   ComposerSendAction as SendAction,
   ComposerCommand,
+  ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
@@ -49,10 +50,15 @@ import {
 } from '../../../../products/maka/workbench/app/ComposerEditor';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
+type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput['pending']>>>;
+type Owner = ComposerSession | Pending;
+const isSession = (owner: Owner): owner is ComposerSession => 'sessionId' in owner;
+const editable = (owner: Owner) => (isSession(owner) ? owner.editable() : !owner.sending());
+const sessionId = (owner: Owner) => (isSession(owner) ? owner.sessionId : null);
 type Editor = { sessionId: string | null; node: ComposerEditor };
 type Read = {
   serial: number;
-  owner: ComposerSession;
+  owner: Owner;
   editor: ComposerEditor;
   text: string;
   selection: Selection;
@@ -62,7 +68,7 @@ type Read = {
   query: string;
   inputQuery: string;
   directory: WorkspacePath | null;
-  backend: string;
+  context: string;
   commands: ComposerCommand[];
 };
 type Row = {
@@ -81,13 +87,15 @@ type Row = {
 );
 type Options = {
   session(): ComposerSession | null;
+  pending(): Pending | null;
   commands(): ComposerCommand[];
   active(): boolean;
 };
 type FileRead = { close(): Promise<void>; closing: Promise<void> | null };
 
 const sameSelection = (a: Selection, b: Selection) => a.start === b.start && a.end === b.end;
-const backendKey = (owner: ComposerSession) => {
+const contextKey = (owner: Owner) => {
+  if (!isSession(owner)) return owner.confirmation();
   const backend = owner.backend();
   const details = owner.modelDetails();
   return JSON.stringify([
@@ -98,6 +106,7 @@ const backendKey = (owner: ComposerSession) => {
 
 /** One resident editor owns its menu, selection and latest outstanding lookup. */
 export function createComposerCompletion(options: Options) {
+  const owner = () => options.session() ?? options.pending();
   const editor = signal<Editor | null>(null);
   const caret = signal<Bounds | null>(null);
   const selection = signal<Selection>({ start: 0, end: 0 });
@@ -124,9 +133,10 @@ export function createComposerCompletion(options: Options) {
   let directoryHint: { prefix: string; path: WorkspacePath } | null = null;
   let textVersion = 0;
   let pendingCommand: {
-    owner: ComposerSession;
+    owner: Owner;
     text: string;
     version: number;
+    confirmation: string | null;
     id: string;
   } | null = null;
 
@@ -151,13 +161,13 @@ export function createComposerCompletion(options: Options) {
   const owns = (read: Read) =>
     alive &&
     options.active() &&
-    options.session() === read.owner &&
-    read.owner.editable() &&
-    editor()?.sessionId === read.owner.sessionId &&
+    owner() === read.owner &&
+    editable(read.owner) &&
+    editor()?.sessionId === sessionId(read.owner) &&
     editor()?.node === read.editor &&
     read.owner.draft() === read.text &&
     sameSelection(selection(), read.selection) &&
-    backendKey(read.owner) === read.backend &&
+    contextKey(read.owner) === read.context &&
     !composing();
   const sameDismissed = (context: Pick<Read, 'owner' | 'editor' | 'text' | 'selection'>) =>
     dismissed !== null &&
@@ -222,7 +232,7 @@ export function createComposerCompletion(options: Options) {
         }),
       );
   const localRows = (read: Read): Row[] => {
-    if (read.source === 'add')
+    if (read.source === 'add' && isSession(read.owner))
       return [
         row(read, {
           id: 'add:attachment',
@@ -289,8 +299,10 @@ export function createComposerCompletion(options: Options) {
     if (first) list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
   };
   const lookup = async (read: Read): Promise<void> => {
+    const owner = read.owner;
+    if (!isSession(owner)) return;
     if (read.source === 'files') {
-      const stream = await read.owner.completion.files(read.query, read.directory);
+      const stream = await owner.completion.files(read.query, read.directory);
       const active: FileRead = { close: () => stream.close(), closing: null };
       fileRead = active;
       const decoder = new TextDecoder('utf-8', {
@@ -322,7 +334,7 @@ export function createComposerCompletion(options: Options) {
                 title = path.replace(/\p{Cc}/gu, '�');
               } catch {
                 // Opaque bytes stay authoritative; display labels are never decoded back into paths.
-                title = read.owner.completion.pathLabel(entry.path);
+                title = owner.completion.pathLabel(entry.path);
               }
               const common = {
                 id: `file:${entry.path.bytesBase64}`,
@@ -357,11 +369,11 @@ export function createComposerCompletion(options: Options) {
       }
       return;
     }
-    const backend = read.owner.backend();
-    const details = read.owner.modelDetails();
+    const backend = owner.backend();
+    const details = owner.modelDetails();
     if (!backend || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection))
       return;
-    const result = await read.owner.completion.skills({
+    const result = await owner.completion.skills({
       backend,
       query: read.query,
     });
@@ -401,7 +413,7 @@ export function createComposerCompletion(options: Options) {
     }
   };
   effect(() => {
-    const owner = options.session();
+    const currentOwner = owner();
     const binding = editor();
     if (!options.active()) {
       if (current) dismissed = current;
@@ -410,22 +422,22 @@ export function createComposerCompletion(options: Options) {
       return;
     }
     if (
-      !owner ||
-      !owner.editable() ||
+      !currentOwner ||
+      !editable(currentOwner) ||
       !binding ||
-      binding.sessionId !== owner.sessionId ||
+      binding.sessionId !== sessionId(currentOwner) ||
       composing()
     ) {
       hide();
       return;
     }
-    const text = owner.draft();
+    const text = currentOwner.draft();
     const range = selection();
     if (!validSelection(text, range)) {
       hide();
       return;
     }
-    const context = { owner, editor: binding.node, text, selection: range };
+    const context = { owner: currentOwner, editor: binding.node, text, selection: range };
     const requested = explicit();
     if (dismissed && !sameDismissed(context)) dismissed = null;
     if (sameDismissed(context)) {
@@ -433,15 +445,18 @@ export function createComposerCompletion(options: Options) {
       return;
     }
     const token = completionToken(text, range);
-    const source =
-      requested ??
-      (token?.kind === 'file'
-        ? 'files'
-        : token?.kind === 'skill'
-          ? 'skills'
-          : token
-            ? 'slash'
-            : null);
+    const source = !isSession(currentOwner)
+      ? token?.kind === 'slash' && token.leading
+        ? 'commands'
+        : null
+      : (requested ??
+        (token?.kind === 'file'
+          ? 'files'
+          : token?.kind === 'skill'
+            ? 'skills'
+            : token
+              ? 'slash'
+              : null));
     if (source === null) {
       hide();
       return;
@@ -453,7 +468,7 @@ export function createComposerCompletion(options: Options) {
       source === 'files' ? fileQuery(inputQuery) : { query: inputQuery, directory: null };
     const read: Read = {
       serial: serial + 1,
-      owner,
+      owner: currentOwner,
       editor: binding.node,
       text,
       selection: { ...range },
@@ -462,7 +477,7 @@ export function createComposerCompletion(options: Options) {
       explicit: requested !== null,
       ...location,
       inputQuery,
-      backend: backendKey(owner),
+      context: contextKey(currentOwner),
       commands,
     };
     stopFile();
@@ -474,28 +489,36 @@ export function createComposerCompletion(options: Options) {
     rows.set(localRows(read));
     list?.scrollToIndex({ index: 0, animated: false, viewPosition: 0 });
     const remote = source === 'files' || source === 'skills' || source === 'slash';
-    const model = owner.modelDetails();
+    const model = isSession(currentOwner) ? currentOwner.modelDetails() : null;
     const available =
-      source === 'files' ||
-      (model.kind === 'ready' && sameRoute(owner.backend(), model.choice.selection));
+      isSession(currentOwner) &&
+      (source === 'files' ||
+        (model?.kind === 'ready' && sameRoute(currentOwner.backend(), model.choice.selection)));
     loading.set(remote && available);
     wanted = remote && available ? read : null;
     if (wanted) void pump();
   });
   const command = (text: string) => matchComposerCommand(options.commands(), text);
   const runCommand = (
-    owner: ComposerSession,
+    target: Owner,
     text: string,
     command: ComposerCommand,
     argument: string | undefined,
     consume: boolean,
   ) => {
-    const ticket = { owner, text, version: textVersion, id: command.id };
+    const ticket = {
+      owner: target,
+      text,
+      version: textVersion,
+      confirmation: isSession(target) ? null : target.confirmation(),
+      id: command.id,
+    };
     if (
       pendingCommand &&
-      pendingCommand.owner === owner &&
+      pendingCommand.owner === target &&
       pendingCommand.text === text &&
       pendingCommand.version === textVersion &&
+      pendingCommand.confirmation === ticket.confirmation &&
       pendingCommand.id === command.id
     )
       return;
@@ -506,12 +529,13 @@ export function createComposerCompletion(options: Options) {
         consume &&
         accepted !== false &&
         alive &&
-        options.session() === owner &&
+        owner() === target &&
         textVersion === ticket.version &&
-        owner.draft() === text
+        (isSession(target) || target.confirmation() === ticket.confirmation) &&
+        target.draft() === text
       ) {
         textVersion += 1;
-        owner.changeDraft('');
+        target.changeDraft('');
       }
     };
     try {
@@ -527,19 +551,19 @@ export function createComposerCompletion(options: Options) {
       throw reason;
     }
   };
-  const submitCommand = (owner: ComposerSession, text: string) => {
+  const submitCommand = (target: Owner, text: string) => {
     const action = command(text);
     if (
       !action ||
       !options.active() ||
-      options.session() !== owner ||
-      owner.draft() !== text ||
-      !owner.editable() ||
+      owner() !== target ||
+      target.draft() !== text ||
+      !editable(target) ||
       composing()
     )
       return false;
     close();
-    runCommand(owner, text, action.found, action.argument || undefined, true);
+    runCommand(target, text, action.found, action.argument || undefined, true);
     return true;
   };
   const accept = (action: { read: number; id: string }) => {
@@ -576,6 +600,7 @@ export function createComposerCompletion(options: Options) {
     }
     read.editor.focus();
     if (item.kind === 'attachment') {
+      if (!isSession(read.owner)) return;
       close();
       read.owner.attachments.open({ owner: read.owner.sessionId, value: true });
       return;
@@ -728,16 +753,16 @@ export function createComposerCompletion(options: Options) {
       queryComposing.set(false);
       explicit.set(null);
     },
-    change(owner: ComposerSession, text: string) {
-      if (options.session() !== owner) return;
+    change(target: Owner, text: string) {
+      if (owner() !== target) return;
       textVersion += 1;
-      owner.changeDraft(text);
+      target.changeDraft(text);
     },
-    caret(owner: ComposerSession, event: CaretEvent) {
-      if (options.session() === owner) caret.set(event.pageBounds);
+    caret(target: Owner, event: CaretEvent) {
+      if (owner() === target) caret.set(event.pageBounds);
     },
-    selection(owner: ComposerSession, event: Selection) {
-      if (options.session() === owner) selection.set({ ...event });
+    selection(target: Owner, event: Selection) {
+      if (owner() === target) selection.set({ ...event });
     },
     toggleAdd(target: { sessionId: string | null }) {
       const owner = options.session();
@@ -758,7 +783,22 @@ export function createComposerCompletion(options: Options) {
       query.set('');
       explicit.set('add');
     },
-    isCommand: () => !!options.session()?.editable() && !!command(options.session()!.draft()),
+    isCommand: () => {
+      const target = owner();
+      return !!target && editable(target) && !!command(target.draft());
+    },
+    submitPending(target: Pending, text: string, expected?: string) {
+      if (
+        owner() !== target ||
+        !options.active() ||
+        target.sending() ||
+        composing() ||
+        target.draft() !== text ||
+        (expected !== undefined && target.confirmation() !== expected)
+      )
+        return;
+      if (!submitCommand(target, text)) target.submit(text, expected);
+    },
     submit(owner: ComposerSession, event: { text: string }) {
       if (options.session() !== owner || !options.active() || composing()) return;
       if (submitCommand(owner, event.text)) return;

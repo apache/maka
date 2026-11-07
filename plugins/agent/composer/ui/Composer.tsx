@@ -52,7 +52,6 @@ import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loadin
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
 import { FileDropHint } from '../../../../products/maka/workbench/app/FileDropHint';
-import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
 import { createComposerPaste } from './composerPaste';
 import { SkillInput } from '../../../../products/maka/workbench/app/SkillInput';
@@ -63,6 +62,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const pendingAdd = signal(false);
   const completion = createComposerCompletion({
     session: props.session,
+    pending: () => props.pending?.() ?? null,
     commands: props.commands,
     active: props.active,
   });
@@ -141,56 +141,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (owner) completion.drop(owner, event);
     else pendingDrop?.(event);
   });
-  type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
-  let pendingCommand: {
-    owner: Pending;
-    text: string;
-    confirmation: string;
-    id: string;
-  } | null = null;
-  const submitPending = (owner: Pending, text: string, expected?: string) => {
-    if (
-      pending() !== owner ||
-      !props.active() ||
-      owner.sending() ||
-      completion.composing() ||
-      owner.draft() !== text ||
-      (expected !== undefined && owner.confirmation() !== expected)
-    )
-      return;
-    const command = matchComposerCommand(props.commands(), text);
-    if (!command) {
-      owner.submit(text, expected);
-      return;
-    }
-    const confirmation = owner.confirmation();
-    if (
-      pendingCommand?.owner === owner &&
-      pendingCommand.text === text &&
-      pendingCommand.confirmation === confirmation &&
-      pendingCommand.id === command.found.id
-    )
-      return;
-    const ticket = { owner, text, confirmation, id: command.found.id };
-    pendingCommand = ticket;
-    const finish = (accepted: void | boolean) => {
-      if (pendingCommand === ticket) pendingCommand = null;
-      if (accepted !== false && pending() === owner && owner.confirmation() === confirmation)
-        owner.changeDraft('');
-    };
-    try {
-      const result = command.found.run(command.argument || undefined);
-      if (result instanceof Promise)
-        void result.then(finish, (reason) => {
-          if (pendingCommand === ticket) pendingCommand = null;
-          throw reason;
-        });
-      else finish(result);
-    } catch (reason) {
-      if (pendingCommand === ticket) pendingCommand = null;
-      throw reason;
-    }
-  };
   const sendPending = ({
     owner,
     text,
@@ -201,7 +151,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     expected: string;
   }) => {
     const current = pending();
-    if (current?.id === owner) submitPending(current, text, expected);
+    if (current?.id === owner) completion.submitPending(current, text, expected);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -215,7 +165,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     (props.session() === null &&
       (pending() === null ||
         pending()!.sending() ||
-        !pending()!.ready() ||
+        (!completion.isCommand() && !pending()!.ready()) ||
         (!pending()!.draft().trim() && !pending()!.files().length))) ||
     (props.session() !== null && !props.session()!.editable()) ||
     (!completion.isCommand() &&
@@ -731,7 +681,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           owner
                             ? ({ value }) => completion.change(owner, value)
                             : local
-                              ? ({ value }) => local.changeDraft(value)
+                              ? ({ value }) => completion.change(local, value)
                               : undefined
                         }
                         onPaste={
@@ -780,10 +730,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             : local
                               ? (event) => {
                                   selection.set({ ...event });
+                                  completion.selection(local, event);
                                 }
                               : undefined
                         }
-                        onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
+                        onCaretMove={
+                          owner
+                            ? (event) => completion.caret(owner, event)
+                            : local
+                              ? (event) => completion.caret(local, event)
+                              : undefined
+                        }
                         onSubmit={
                           owner
                             ? (event) => {
@@ -797,7 +754,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                                 else completion.submit(owner, event);
                               }
                             : local
-                              ? (event) => submitPending(local, event.text)
+                              ? (event) => completion.submitPending(local, event.text)
                               : undefined
                         }
                         placeholder={

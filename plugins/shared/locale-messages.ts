@@ -164,11 +164,6 @@ export const msg_graphConflict: Message = [
   '请使用未归档、没有活动 Goal 的 Agent 对话。',
   '請使用未封存、沒有活動 Goal 的 Agent 對話。',
 ];
-export const msg_graphIncognito: Message = [
-  'Graph and Swarm require persistent conversation history.',
-  'Graph 和 Swarm 需要持久保存对话历史。',
-  'Graph 和 Swarm 需要持久保存對話歷史。',
-];
 export const msg_graphStatus_closing: Message = ['Stopping', '停止中', '停止中'];
 export const msg_graphTitle: Message = ['Graph / Swarm', 'Graph / Swarm', 'Graph / Swarm'];
 export const msg_graphMode: Message = ['Mode', '模式', '模式'];

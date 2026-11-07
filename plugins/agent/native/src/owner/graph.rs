@@ -38,20 +38,6 @@ pub(super) fn behavior(epoch: &Epoch) -> BehaviorId {
     .expect("native graph behavior")
 }
 impl Owner {
-    pub(crate) async fn graph_privacy(&self) -> Result<(), String> {
-        if self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(|_| "graph_policy_unavailable")?
-            .policy
-            .privacy
-            .incognito_active
-        {
-            return Err("graph_incognito".into());
-        }
-        Ok(())
-    }
     pub(super) async fn graph_selected(&self, session: &str) -> Result<bool, String> {
         match &self.graphs {
             Some(graphs) => Ok(graphs
@@ -62,7 +48,6 @@ impl Owner {
         }
     }
     pub(crate) async fn graph_invocation(&self, invocation: &Invocation) -> Result<Epoch, String> {
-        self.graph_privacy().await?;
         let runs = self.runs.lock().await;
         let control = runs
             .controls
@@ -157,9 +142,6 @@ impl Owner {
         &self,
         target: &ScheduledTarget,
     ) -> Result<bool, String> {
-        if self.graph_privacy().await.is_err() {
-            return Ok(false);
-        }
         let session = self.session(&target.session_id).await?;
         Ok(!session.archived
             && session.configuration.workspace == target.workspace
@@ -183,7 +165,6 @@ impl Owner {
         else {
             return Ok(());
         };
-        self.graph_privacy().await?;
         if basis.executor.is_some() || basis.background.is_some() {
             return Err("graph_execution_conflict".into());
         }
@@ -274,7 +255,6 @@ impl Owner {
     ) -> Result<(), String> {
         match (&self.graphs, &basis.graph) {
             (Some(graphs), Some(epoch)) => {
-                self.graph_privacy().await?;
                 if graphs.active(session).await?.as_ref() != Some(epoch) {
                     return Err("graph_epoch_changed".into());
                 }
@@ -299,10 +279,7 @@ impl Owner {
             None => None,
         };
         match current {
-            Some(epoch) if graph_behavior && behavior(&epoch) == *source => {
-                self.graph_privacy().await?;
-                Ok(Some(epoch))
-            }
+            Some(epoch) if graph_behavior && behavior(&epoch) == *source => Ok(Some(epoch)),
             None if !graph_behavior && !self.graph_selected(session).await? => Ok(None),
             _ => Err("graph_resume_epoch_changed".into()),
         }
@@ -425,7 +402,6 @@ impl Owner {
         runs: &Runs,
         current: Option<&maka_graph::control::Control>,
     ) -> Result<(), String> {
-        self.graph_privacy().await?;
         if !graphs.enabled() {
             return Err("graph_workers_unavailable".into());
         }

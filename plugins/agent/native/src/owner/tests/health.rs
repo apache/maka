@@ -240,13 +240,6 @@ mod acceptance {
             }).collect();
             assert_eq!(operations.len(),1);
             assert_eq!(facts.iter().filter(|fact|matches!(fact,maka_agent_facts::event::Fact::ToolSettled { operation_id,.. } if operations.contains(operation_id))).count(),1);
-            let policy=f.config.runtime_policy().await.unwrap();
-            f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active:true }).await.unwrap();
-            let private=roundtrip(&model,&f,&session,"BackgroundTaskHealth",json!({"ref":reference,"url":url})).await;
-            assert_eq!(private["value"]["endpoint"]["state"],"unknown","{private}");
-            assert_eq!(private["value"]["process"]["status"],"completed");
-            assert!(f.session(&session).await.pending_interactions(&session).await.unwrap().is_empty());
-            assert!(tokio::time::timeout(Duration::from_millis(50),endpoint.accept()).await.is_err());
             f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();
         }).await.unwrap();
     }

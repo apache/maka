@@ -1625,6 +1625,10 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * User-facing isolation preset, independent of whether approval may be requested.
+ */
+export type Mode = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type ShellPreference = 'auto' | 'git_bash';
 export type ProxyProtocol = 'http' | 'https' | 'socks5';
 export type CredentialLocator =
@@ -1691,8 +1695,8 @@ export type SettingsPreferencesMutation =
       enabled: boolean;
     }
   | {
-      kind: 'privacy';
-      incognitoActive: boolean;
+      kind: 'default_sandbox';
+      mode: Mode;
     }
   | {
       kind: 'shell';
@@ -6887,7 +6891,7 @@ export interface SettingsAssistantPreferences {
   revision: number;
   displayName: string;
   workspaceInstructions: boolean;
-  incognitoActive: boolean;
+  defaultSandboxMode: Mode;
   shell: ShellPolicy;
 }
 export interface MessagePredictionSettings {

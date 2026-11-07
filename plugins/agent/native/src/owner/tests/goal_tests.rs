@@ -341,7 +341,7 @@ async fn goal_original_business_receipt_and_reserved_iteration_survive_restart_w
 }
 
 #[tokio::test]
-async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admission() {
+async fn goal_rechecks_revoked_session_before_original_outbox_admission() {
     use maka_capabilities::storage::Namespace;
     use maka_goal::goal::{Control, Repository};
     tokio::time::timeout(Duration::from_secs(45), async {
@@ -361,12 +361,6 @@ async fn goal_rechecks_privacy_and_revoked_session_before_original_outbox_admiss
         }), Uuid::new_v4()).await.unwrap();
         assert_eq!(rejected["kind"], "rejected");
         assert!(current(&f, &session).await.is_null());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:true}).await.unwrap();
-        assert_eq!(create(&f,&session,true,None).await["reason"],"goal_incognito");
-        assert!(current(&f,&session).await.is_null());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision,maka_agent_facts::configuration::policy::PrivacyPolicy{incognito_active:false}).await.unwrap();
         assert_eq!(create(&f,&session,false,None).await["kind"],"committed");
         f.app.shutdown().await.unwrap();
         let storage = Arc::new(maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.goal",maka_plugin_core::scope::Scope::Profile).unwrap()));

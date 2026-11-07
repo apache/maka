@@ -56,11 +56,6 @@ pub struct MemoryPolicy {
 pub struct EnabledPolicy {
     pub enabled: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PrivacyPolicy {
-    pub incognito_active: bool,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ShellPreference {
@@ -96,12 +91,6 @@ pub struct AgentSettingsPatch {
         deserialize_with = "present"
     )]
     pub workspace_instructions: Option<EnabledPatch>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub privacy: Option<PrivacyPatch>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -138,14 +127,4 @@ pub struct EnabledPatch {
         deserialize_with = "present"
     )]
     pub enabled: Option<bool>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PrivacyPatch {
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present"
-    )]
-    pub incognito_active: Option<bool>,
 }

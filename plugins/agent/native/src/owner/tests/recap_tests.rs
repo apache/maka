@@ -105,12 +105,6 @@ async fn recap_native_original_receipt_cached_access_accounting_and_restart() {
         assert_eq!(auxiliary.usage.input_tokens, Some(1));
         assert_eq!(auxiliary.usage.output_tokens, Some(2));
         assert!(auxiliary.quote.is_some());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision, maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active: true }).await.unwrap();
-        assert!(f.query("recap", json!({"sessionId":session})).await.is_err());
-        assert!(f.mutation(2, "generateRecap", input.clone(), Uuid::new_v4()).await.is_err());
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision, maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active: false }).await.unwrap();
         todo_tests::reopen(&mut f).await;
         assert_eq!(read(&f, &session).await, result);
         assert_eq!(f.mutation(2, "generateRecap", input, operation).await.unwrap(), result);

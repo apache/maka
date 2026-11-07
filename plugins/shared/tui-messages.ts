@@ -251,9 +251,9 @@ export const tui_decisions_api_test_help: Message = [
 ];
 export const tui_decisions_api_tested: Message = ['Test completed', '测试完成', '測試完成'];
 export const tui_decisions_api_test_failed: Message = [
-  'Test failed. Check the endpoint, credentials, network permissions and privacy mode.',
-  '测试失败，请检查端点、凭据、网络权限及隐私模式。',
-  '測試失敗，請檢查端點、憑證、網路權限及隱私模式。',
+  'Test failed. Check the endpoint, credentials and network permissions.',
+  '测试失败，请检查端点、凭据和网络权限。',
+  '測試失敗，請檢查端點、憑證和網路權限。',
 ];
 export const tui_decisions_api_reload: Message = [
   'Reload saved settings',
@@ -293,9 +293,9 @@ export const tui_web_check_key: Message = [
 ];
 export const tui_web_checked: Message = ['Key check complete', '密钥验证完成', '金鑰驗證完成'];
 export const tui_web_check_unavailable: Message = [
-  'Key check is unavailable: check the key, network access and privacy mode.',
-  '无法验证，请检查密钥、网络权限和隐私模式。',
-  '無法驗證，請檢查金鑰、網路權限和隱私模式。',
+  'Key check is unavailable: check the key and network access.',
+  '无法验证，请检查密钥和网络权限。',
+  '無法驗證，請檢查金鑰和網路權限。',
 ];
 export const tui_web_check_valid: Message = [
   'Key accepted by Tavily',
@@ -1516,7 +1516,6 @@ export const tui_assistant_shell_titles: Message = [
   'Shell 命令標題',
 ];
 
-export const tui_assistant_privacy: Message = ['Privacy mode', '隐私模式', '隱私模式'];
 export const tui_assistant_instructions: Message = [
   'Read workspace instructions',
   '读取工作区指令',

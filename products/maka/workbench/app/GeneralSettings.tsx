@@ -19,7 +19,10 @@
 
 import { inputAction, platform, signal, View } from 'nsh';
 import { Button, Slider } from 'nsh/base';
-import type { LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  LanguagePreference,
+  SettingsAssistantPreferences,
+} from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from './locale';
 import {
   assistantLanguages,
@@ -67,7 +70,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
   const owner = props.owner;
   const request = props.request;
   const facts = owner.facts;
-  const toggle = (kind: 'instructions' | 'privacy' | 'titles' | 'predictions') =>
+  const toggle = (kind: 'instructions' | 'titles' | 'predictions') =>
     inputAction(owner.toggle, { request, kind });
   const open = (kind: 'personalization' | 'compaction' | 'shell' | 'predictions') =>
     inputAction(owner.open, { request, kind });
@@ -121,11 +124,22 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             disabled={owner.disabled()}
             onPress={toggle('instructions')}
           />
-          <SettingsSwitch
-            label={tr('Incognito mode')}
-            checked={facts()?.incognitoActive ?? false}
+          <SettingsSelect
+            label={tr('Default sandbox policy')}
+            description={tr('Applied to new conversations.')}
+            value={facts()?.defaultSandboxMode ?? 'workspace-write'}
             disabled={owner.disabled()}
-            onPress={toggle('privacy')}
+            choices={[
+              { value: 'read-only', title: tr('Read only') },
+              { value: 'workspace-write', title: tr('Workspace write') },
+              { value: 'danger-full-access', title: tr('Full access · Sandbox off') },
+            ]}
+            change={(mode) =>
+              owner.sandboxMode({
+                request,
+                mode: mode as SettingsAssistantPreferences['defaultSandboxMode'],
+              })
+            }
           />
           <SettingsSwitch
             label={tr('Automatic shell titles')}

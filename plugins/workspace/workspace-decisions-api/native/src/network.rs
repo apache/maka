@@ -103,17 +103,10 @@ impl Authority for Access {
                 .snapshot()
                 .await
                 .map_err(|e| Error::Failed(message(e)))?;
-            let policy = self
-                .owner
-                .configuration
-                .runtime_policy()
-                .await
-                .map_err(|e| Error::Failed(message(e)))?;
             if snapshot.revision != self.revision
                 || snapshot.credential_revision != self.credential_revision
                 || !snapshot.settings.enabled
                 || !snapshot.configured
-                || policy.policy.privacy.incognito_active
             {
                 return Err(Error::Denied);
             }
@@ -155,26 +148,5 @@ impl Authority for Access {
             ticket.complete(result);
         });
         Ok(())
-    }
-}
-pub(super) struct Preferences(pub Arc<ConfigurationStore>);
-impl maka_agent_ports::preferences::Preferences for Preferences {
-    fn read(
-        &self,
-    ) -> BoxFuture<'_, Result<maka_agent_ports::preferences::Snapshot, maka_capabilities::Error>>
-    {
-        Box::pin(async {
-            let snapshot = self
-                .0
-                .runtime_policy()
-                .await
-                .map_err(|e| maka_capabilities::Error::Invalid(message(e)))?;
-            Ok(maka_agent_ports::preferences::Snapshot {
-                revision: snapshot.revision,
-                privacy: snapshot.policy.privacy,
-                personalization: snapshot.policy.personalization,
-                workspace_instructions: snapshot.policy.workspace_instructions.enabled,
-            })
-        })
     }
 }

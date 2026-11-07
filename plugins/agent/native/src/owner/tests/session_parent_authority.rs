@@ -274,6 +274,16 @@ async fn model_child_inherits_caller_policy_not_workspace_session_or_installatio
         let other = f.create("Workspace reference, not parent").await;
         set_policy(&f, &caller, "danger_full_access", false).await;
         set_policy(&f, &other, "read_only", true).await;
+        let policy = f.config.runtime_policy().await.unwrap();
+        f.config
+            .set_chat_defaults(
+                policy.revision,
+                maka_agent_facts::configuration::policy::ChatDefaults {
+                    sandbox_mode: SandboxMode::ReadOnly,
+                },
+            )
+            .await
+            .unwrap();
         let mut socket = start(&f, &listener, &caller).await;
         let child = create_child(&listener, &mut socket, &other, "Inherited child").await;
         let child = observe(&f, child["id"].as_str().unwrap()).await;
@@ -335,7 +345,7 @@ async fn model_child_inherits_caller_policy_not_workspace_session_or_installatio
         assert_eq!(
             root["permissions"],
             json!({
-                "access":"workspace_write","requestPermissions":true,
+                "access":"read_only","requestPermissions":true,
             })
         );
         response(&mut socket).await;

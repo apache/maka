@@ -65,7 +65,6 @@ mod tests {
     #[test]
     fn preferences_are_bounded_json_data_without_changing_the_static_prefix_or_policy() {
         let mut snapshot = Snapshot {
-            privacy: RuntimePolicy::default().privacy,
             revision: 7,
             personalization: RuntimePolicy::default().personalization,
             workspace_instructions: true,

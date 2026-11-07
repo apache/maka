@@ -270,14 +270,6 @@ async fn native_web_request_binding_tracks_settings_provider_capabilities_and_pr
         assert_eq!(mutation(&f, "saveKey", json!({"revision":null}), Some("   ")).await["kind"], "invalid_key");
         let saved = mutation(&f, "saveKey", json!({"revision":null}), Some("private-web-first-key")).await;
         assert_eq!(saved["snapshot"]["credential"]["configured"], true);
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision, maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active: true }).await.unwrap();
-        assert_eq!(mutation(&f, "checkKey", json!({"revision":saved["snapshot"]["credential"]["revision"]}), None).await["kind"], "check_unavailable");
-        assert!(!capture(None, false).await.contains("WebFetch"));
-        assert!(!capture(None, false).await.contains("WebSearch"));
-        let policy = f.config.runtime_policy().await.unwrap();
-        f.config.set_privacy(policy.revision, maka_agent_facts::configuration::policy::PrivacyPolicy { incognito_active: false }).await.unwrap();
-
         assert_eq!(mutation(&f, "saveKey", json!({"revision":null}), Some("private-web-stale-key")).await["kind"], "changed");
         let bound = capture(None, false).await;
         assert!(bound.contains("WebSearch"));

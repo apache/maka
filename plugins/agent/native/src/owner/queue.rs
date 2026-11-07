@@ -1056,8 +1056,7 @@ impl Owner {
             | "agent_session_configuration_changed"
             | "agent_message_basis_invalid"
             | "scheduler_authorization_changed"
-            | "goal_continuation_stopped"
-            | "goal_incognito" => RunError::InvalidInput(message),
+            | "goal_continuation_stopped" => RunError::InvalidInput(message),
             _ => RunError::Internal(message),
         })?;
         let backend = match (&basis.model, &basis.executor) {
