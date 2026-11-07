@@ -50,7 +50,6 @@ fn origin(id: &str, authority: Option<&str>) -> PluginSession {
         )
         .unwrap(),
         fingerprint: format!("create-{id}"),
-        managed: false,
         authority_session_id: authority.map(Into::into),
     }
 }

@@ -62,18 +62,6 @@ export default {
           contract: contracts.terminal,
           cardinality: { kind: 'optional' },
         },
-        coordinator: {
-          contract: contracts.agent,
-          cardinality: { kind: 'optional' },
-        },
-        workhub: {
-          contract: contracts.workhubCoordinator,
-          cardinality: { kind: 'optional' },
-        },
-        coordinatorTerminal: {
-          contract: contracts.terminal,
-          cardinality: { kind: 'optional' },
-        },
         decisions_api: {
           contract: contracts.workspaceDecisionsApi,
           cardinality: { kind: 'optional' },

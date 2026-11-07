@@ -27,18 +27,3 @@ pub fn now() -> u64 {
         .expect("clock after epoch")
         .as_millis() as u64
 }
-
-/// Data selection only; service grants remain independent of this prefix.
-pub fn session_namespace(
-    domain: &str,
-    deployment: uuid::Uuid,
-    instance: &maka_plugin_core::composition::InstanceId,
-    coordinator: bool,
-) -> String {
-    let prefix = maka_host_runtime::storage::instance_prefix(domain, deployment, instance);
-    if coordinator {
-        format!("wh_{}", &prefix[3..])
-    } else {
-        prefix
-    }
-}

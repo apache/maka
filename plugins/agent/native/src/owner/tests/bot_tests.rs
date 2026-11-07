@@ -347,9 +347,41 @@ async fn bot_tools_follow_the_current_composition_not_the_list_stored_at_creatio
         assert_eq!(resumed["kind"], "started", "{resumed}");
         let (mut socket, _) = listener.accept().await.unwrap();
         let replay = request(&mut socket).await;
+        let queued = f
+            .mutation(
+                2,
+                "send",
+                json!({
+                    "sessionId": bot,
+                    "message": "queued then promoted on resumed bot",
+                    "delivery": "queue",
+                    "backend": model_backend(&f.selection().await),
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(queued["kind"], "queued", "{queued}");
+        let promoted = f
+            .mutation(
+                2,
+                "editQueue",
+                json!({
+                    "sessionId": bot,
+                    "expectedRevision": queued["revision"],
+                    "edit": { "kind": "promote", "messageId": queued["messageId"] },
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(promoted["kind"], "committed", "{promoted}");
         response(&mut socket).await;
+        let (mut steered_socket, _) = listener.accept().await.unwrap();
+        let steered = request(&mut steered_socket).await;
+        response(&mut steered_socket).await;
         idle(&f, &bot).await;
-        for sent in [&sent, &replay] {
+        for sent in [&sent, &replay, &steered] {
             let names = tool_names(sent);
             for name in ["SessionCreate", "SessionSend", "SendUser", "sleep"] {
                 assert!(
@@ -513,7 +545,7 @@ async fn send_user_is_the_only_voice_idempotent_and_durable() {
 }
 
 /// A tool dispatched but never settled leaves an unknown outcome. A delegated
-/// (WorkHub-origin) result must still wake the Bot; an ordinary Session keeps the
+/// worker result must still wake the Bot; an ordinary Session keeps the
 /// stricter protection.
 async fn origin_wake_after_unknown_outcome(bot_mode: bool) -> bool {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -579,8 +611,8 @@ async fn origin_wake_after_unknown_outcome(bot_mode: bool) -> bool {
             &route,
             "unknown-outcome-wake",
             |_| "Delegated task finished".into(),
-            MessageOrigin::WorkhubTask {
-                task_id: "task-1".into(),
+            MessageOrigin::BotWorker {
+                session_id: "worker-1".into(),
             },
         )
         .await
@@ -733,9 +765,9 @@ async fn only_the_bot_session_carries_bot_instructions() {
             prompts[0].contains("cannot read or edit files"),
             "the Bot is told what it cannot do"
         );
-        // This fixture has no WorkHub, so the Bot must not be told to delegate.
+        // This fixture has no delegation tools, so the Bot must not be told to delegate.
         assert!(
-            !prompts[0].contains("workhub_tasks") && prompts[0].contains("ScheduledTask"),
+            !prompts[0].contains("SessionCreate") && prompts[0].contains("ScheduledTask"),
             "the Bot is told only about tools it holds"
         );
         assert!(!instructed(&prompts[1]), "{}", prompts[1]);
@@ -1002,7 +1034,7 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
         // Identity grants SendUser and sleep; nothing else is promised.
         let bare = bot_prompt(language, &[]);
         for absent in [
-            "workhub_tasks",
+            "SessionCreate",
             "ScheduledTask",
             "GoalStatus",
             "Recall",
@@ -1015,12 +1047,12 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             );
         }
         assert!(bare.contains("SendUser") && bare.contains("sleep"));
-        // A held tool is named, and delegation is offered only with WorkHub.
+        // A held tool is named, and delegation is offered only with SessionCreate + SessionSend.
         let some = bot_prompt(language, &held(&["ScheduledTask", "todo_read", "Skill"]));
         assert!(
             some.contains("ScheduledTask") && some.contains("todo_read") && some.contains("Skill")
         );
-        assert!(!some.contains("workhub_tasks"), "{language:?}: {some}");
+        assert!(!some.contains("SessionCreate"), "{language:?}: {some}");
         // A partial family is credited only with the members it holds.
         let skill_only = bot_prompt(language, &held(&["Skill"]));
         assert!(
@@ -1046,9 +1078,7 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             &held(&["SessionCreate", "SessionSend", "SessionRead"]),
         );
         assert!(
-            sessions.contains("SessionCreate / SessionSend")
-                && !sessions.contains("SessionStop")
-                && !sessions.contains("workhub_tasks"),
+            sessions.contains("SessionCreate / SessionSend") && !sessions.contains("SessionStop"),
             "{language:?}: {sessions}"
         );
         // With delegation held, the Bot is not told it cannot delegate.
@@ -1058,8 +1088,6 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
                 && !sessions.contains("既做不到也无法委派"),
             "{language:?}: {sessions}"
         );
-        let hub = bot_prompt(language, &held(&["workhub_tasks"]));
-        assert!(hub.contains("workhub_tasks"), "{language:?}: {hub}");
     }
 }
 
@@ -1105,7 +1133,7 @@ async fn the_bot_opens_without_naming_a_workspace() {
 
 fn session_tool(method: &str, name: &str) -> contract::ServiceTool {
     contract::ServiceTool {
-        nestable: false,
+        nestable: true,
         input: contract::ToolInput::Json,
         presentation: None,
         title: None,
@@ -1455,4 +1483,152 @@ async fn the_next_send_to_a_worker_replaces_its_unreadable_watch_so_it_wakes_the
 #[tokio::test]
 async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
     worker_wake(true, Damage::None).await;
+}
+
+#[tokio::test]
+async fn bot_code_mode_nests_delegation_schedules_and_send_user_while_finishing_with_direct_sleep()
+{
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.scheduled_tasks = true;
+                settings.todo = true;
+                settings.tool_discovery = true;
+                settings.tools = vec![
+                    session_tool("models", "ModelList"),
+                    session_tool("create", "SessionCreate"),
+                    session_tool("send", "SessionSend"),
+                    session_tool("observe", "SessionRead"),
+                ];
+            },
+        )
+        .await;
+        selection::edit(&f, |changes| {
+            changes.model_overrides = Patch::Set(BTreeMap::from([(
+                "fixture-model".into(),
+                ModelOverride {
+                    code_mode: Some(true),
+                    ..Default::default()
+                },
+            )]));
+        })
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&bot).await.unwrap();
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert_eq!(tool_names(&sent), vec!["exec", "wait", "sleep"]);
+        let exec_description = sent["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            exec_description.contains("SendUser("),
+            "Bot's voice must stay visible in Code Mode even with toolDiscovery enabled: {exec_description}"
+        );
+        let fire_at = now() + 3_600_000;
+        let script = format!(
+            r#"
+            const discovered = ALL_TOOLS.map(tool => tool.name);
+            for (const expected of ['ModelList', 'SessionCreate', 'SessionSend', 'ScheduledTask', 'SendUser']) {{
+                if (!discovered.includes(expected)) throw Error('missing ALL_TOOLS entry: ' + expected);
+            }}
+            const catalog = await tools.ModelList({{ request: {{ kind: 'start' }} }});
+            const backend = catalog.choices[0].selection;
+            const created = await tools.SessionCreate({{
+                title: 'Code Mode worker',
+                labels: [],
+                workspace: {{ kind: 'session', sessionId: {bot:?} }},
+            }});
+            const workerId = created.session.id;
+            const sent = await tools.SessionSend({{
+                sessionId: workerId,
+                message: 'Inspect from Code Mode',
+                backend,
+            }});
+            const scheduled = await tools.ScheduledTask({{
+                request: {{
+                    mode: 'create',
+                    title: 'Code Mode reminder',
+                    intentBody: 'Check delegated output',
+                    schedule: {{ kind: 'interval', everySeconds: 3600, startAt: {fire_at} }},
+                    timezone: 'UTC',
+                    effect: 'reminder',
+                    maxFires: null,
+                    expiresAt: null,
+                }},
+            }});
+            await tools.SendUser({{
+                messageId: 'code-bot-1',
+                messages: [{{ text: 'Delegated and scheduled.' }}],
+            }});
+            text({{ workerId, sendKind: sent.kind, taskId: scheduled.taskId }});
+            "#
+        );
+        service_tools::named_tool_response(&mut socket, "exec", json!({ "code": script })).await;
+
+        let mut worker_socket = None;
+        let mut bot_socket = None;
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let req = request(&mut socket).await;
+            if req["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "tool")
+            {
+                assert!(
+                    last_tool_result(&req).contains("started"),
+                    "{}",
+                    last_tool_result(&req)
+                );
+                bot_socket = Some(socket);
+            } else {
+                assert!(req["messages"].to_string().contains("Inspect from Code Mode"));
+                worker_socket = Some(socket);
+            }
+        }
+        let mut bot_socket = bot_socket.expect("Bot receives exec result");
+        let mut worker_socket = worker_socket.expect("worker starts in Code Mode");
+        service_tools::named_tool_response(&mut bot_socket, "sleep", json!({})).await;
+        idle(&f, &bot).await;
+
+        let out = outbox(&f).await;
+        assert_eq!(out["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(out["messages"][0]["text"], "Delegated and scheduled.");
+        let schedules = f.query("schedules", json!({ "kind": "list" })).await.unwrap();
+        assert_eq!(schedules["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(schedules["tasks"][0]["title"], "Code Mode reminder");
+        assert_eq!(schedules["tasks"][0]["nextFireAt"], json!(fire_at));
+        let detail = f
+            .query(
+                "schedules",
+                json!({ "kind": "get", "taskId": schedules["tasks"][0]["id"] }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail["detail"]["task"]["schedule"]["startAt"], json!(fire_at));
+
+        response(&mut worker_socket).await;
+        let (mut wake_socket, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
+            .await
+            .expect("finished worker wakes Bot")
+            .unwrap();
+        let wake = request(&mut wake_socket).await;
+        assert!(wake["messages"].to_string().contains("Code Mode worker"));
+        service_tools::named_tool_response(&mut wake_socket, "sleep", json!({})).await;
+        idle(&f, &bot).await;
+
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

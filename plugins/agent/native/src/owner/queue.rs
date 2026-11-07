@@ -903,9 +903,6 @@ impl Owner {
         self.validate_background(&basis)
             .await
             .map_err(RunError::InvalidInput)?;
-        self.validate_graph_basis(&invocation.session_id, &basis)
-            .await
-            .map_err(RunError::InvalidInput)?;
         let catalog = self
             .mcp_projects
             .catalog(basis.mcp_revision.as_deref())
@@ -1012,8 +1009,6 @@ impl Owner {
             let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
                 .map_err(|_| "agent_message_basis_invalid")?;
             self.validate_background(&basis).await?;
-            self.validate_graph_basis(&invocation.session_id, &basis)
-                .await?;
             let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
             self.validate_accepted_tools(&basis, &selected_catalog)?;
             // Deserialization allocates independent descriptors. Only after the original
@@ -1137,11 +1132,6 @@ impl Owner {
             boundary_revision: session.configuration.boundary_revision,
             workspace_binding: Some(session.configuration.binding),
             collaboration_mode: basis.collaboration_mode,
-            orchestration_mode: if let Some(epoch) = &basis.graph {
-                graph::behavior(epoch)
-            } else {
-                BehaviorId::default()
-            },
             tool_mode: ToolMode::Direct,
             code_language: Default::default(),
             model: None,

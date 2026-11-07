@@ -25,7 +25,6 @@ import type {
   SettingChange,
   ManagementResultForDeploymentRef,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
-import type { UiService } from '../../../../packages/plugin-sdk/src/workbench';
 import type { Host } from './host';
 import type { SettingsOperations } from './settingsOperations';
 import { errorMessage, UiError } from './text';
@@ -33,15 +32,14 @@ import { tr } from './locale';
 import { sameValue } from '../../../../plugins/shared/value';
 
 type Target = {
-  target: AgentExternalAgents['target'];
+  instance: AgentExternalAgents['target'];
   configured: boolean;
   runtimes: AgentExternalAgents['runtimes'];
 };
-type Basis = { source: DeploymentRef; targets: Target[] };
+type Basis = { source: DeploymentRef; target: Target };
 export type ExternalAgentAction = { view: number };
 export function createExternalAgentSettings(
   host: Host,
-  agents: readonly UiService[],
   operations: SettingsOperations,
   active: () => boolean,
   changed: () => void,
@@ -70,33 +68,26 @@ export function createExternalAgentSettings(
     loading() || operations.busy() || !operations.pendingKnown() || operations.pending().length > 0;
   const source = async () => (await host.query('management', 'read', {})).source.reference;
   const observeBasis = async (): Promise<Basis> => {
-    if (!agents.length) throw new UiError('No external agent configuration targets are bound.');
     const before = await source();
-    const statuses = await Promise.all(
-      agents.map(
-        async (agent) =>
-          (await agent.query('externalAgents', {
-            inspect: true,
-          })) as AgentExternalAgents,
-      ),
-    );
+    const status = (await host.query('agent', 'externalAgents', {
+      inspect: true,
+    })) as AgentExternalAgents;
     const after = await source();
     if (!sameValue(before, after))
       throw new UiError('These settings changed elsewhere. Reload before saving again.');
     if (
-      statuses.some(
-        ({ target }) =>
-          target.source.stateDomain !== after.stateDomain ||
-          target.source.deployment !== after.deployment,
-      )
+      status.target.source.stateDomain !== after.stateDomain ||
+      status.target.source.deployment !== after.deployment
     )
       throw new UiError('This agent belongs to another deployment and cannot be configured here.');
-    const targets = statuses.map(({ target, configured, runtimes }) => ({
-      target,
-      configured,
-      runtimes,
-    }));
-    return { source: after, targets };
+    return {
+      source: after,
+      target: {
+        instance: status.target,
+        configured: status.configured,
+        runtimes: status.runtimes,
+      },
+    };
   };
   const invalidate = () => {
     view.set(view() + 1);
@@ -115,9 +106,7 @@ export function createExternalAgentSettings(
       const next = await observeBasis();
       if (!alive || !active() || generation !== read) return;
       basis.set(next);
-      const status = next.targets.some((target) =>
-        target.runtimes.some((runtime) => runtime.enabled),
-      )
+      const status = next.target.runtimes.some((runtime) => runtime.enabled)
         ? await host.query('agent', 'externalAgents', {})
         : null;
       if (!alive || !active() || generation !== read) return;
@@ -166,18 +155,15 @@ export function createExternalAgentSettings(
       (enabled && (!confirmation()?.acknowledged || confirmation()?.runtime !== runtime))
     )
       return;
-    if (!original.targets.some((target) => target.runtimes.some((item) => item.id === runtime)))
-      return;
+    if (!original.target.runtimes.some((item) => item.id === runtime)) return;
     return run(async () => {
       if (!(await verify(original, request))) return;
-      const edits = original.targets.map(({ target, configured }) => {
-        const changes: SettingChange[] = [];
-        if (!configured) changes.push({ path: target.path as [string, ...string[]] });
-        changes.push({
-          path: target.path.concat('runtimes', runtime) as [string, ...string[]],
-          value: { kind: 'boolean', value: enabled },
-        });
-        return { instance: target.source.namespace, changes };
+      const { instance, configured } = original.target;
+      const changes: SettingChange[] = [];
+      if (!configured) changes.push({ path: instance.path as [string, ...string[]] });
+      changes.push({
+        path: instance.path.concat('runtimes', runtime) as [string, ...string[]],
+        value: { kind: 'boolean', value: enabled },
       });
       // Remove consent before dispatch. Unknown receipts remain in the existing journal,
       // never in a second retryable enable request.
@@ -188,7 +174,7 @@ export function createExternalAgentSettings(
         'configureBatch',
         {
           expectedRevision: original.source.revision,
-          edits,
+          edits: [{ instance: instance.source.namespace, changes }],
         },
       );
       if (result.status !== 'committed') {
@@ -224,19 +210,7 @@ export function createExternalAgentSettings(
     view.set(view() + 1);
     confirmation.set(null);
   };
-  const runtimes = (): AgentExternalAgents['runtimes'] => {
-    const rows = new Map<string, AgentExternalAgents['runtimes'][number]>();
-    for (const target of basis()?.targets ?? []) {
-      for (const runtime of target.runtimes) {
-        const previous = rows.get(runtime.id);
-        rows.set(runtime.id, {
-          ...runtime,
-          enabled: !!previous?.enabled || runtime.enabled,
-        });
-      }
-    }
-    return [...rows.values()];
-  };
+  const runtimes = (): AgentExternalAgents['runtimes'] => basis()?.target.runtimes ?? [];
   const statuses = (): AgentExternalRuntime[] => {
     const state = catalog()?.state;
     return state?.kind === 'ready' ? state.runtimes : [];

@@ -8,7 +8,6 @@
   "settings-authentication": "plugins/settings/authentication",
   "settings-setup": "plugins/settings/setup",
   "agent": "plugins/agent/agent",
-  "workhub": "plugins/workhub/workhub",
   "workspace-computer": "plugins/workspace/workspace-computer",
   "workspace-web": "plugins/workspace/workspace-web",
   "workspace-decisions-api": "plugins/workspace/workspace-decisions-api",

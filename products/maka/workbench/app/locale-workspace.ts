@@ -534,11 +534,6 @@ export const workspaceMessages = {
     '已複製可見終端內容。',
   ],
   'Waiting for you': msg_goalStatus_waiting,
-  'WorkHub manages this conversation. Its history cannot be forked here.': [
-    'WorkHub manages this conversation. Its history cannot be forked here.',
-    '此对话由 WorkHub 管理，无法在此处分叉其历史。',
-    '此對話由 WorkHub 管理，無法在此處分支其歷史。',
-  ],
   Working: msg_goalStatus_active,
   Workspace: ['Workspace', '工作区', '工作區'],
   'Workspace folders': ['Workspace folders', '工作区文件夹', '工作區資料夾'],

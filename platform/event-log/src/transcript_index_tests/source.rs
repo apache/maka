@@ -216,7 +216,6 @@ async fn structured_sources_select_original_values_without_aliasing_keys_or_auth
         session_id: "structured".into(),
         creator: Namespace::new("source.fixture", Scope::Profile).unwrap(),
         fingerprint: "structured-import".into(),
-        managed: false,
         authority_session_id: None,
     };
 

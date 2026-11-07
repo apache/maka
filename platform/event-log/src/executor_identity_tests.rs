@@ -23,7 +23,7 @@ use maka_agent_facts::{
     event::{
         CommitError, EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
     },
-    execution::{BehaviorId, CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode},
+    execution::{CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode},
     executor::{Binding, Output},
     input::DeliveredMessage,
     message::{MessageDisposition, Placement, RootSourceMessage},
@@ -73,7 +73,6 @@ fn opening(cwd: &std::path::Path, external: bool) -> Fact {
                 thinking_level: None,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
             })

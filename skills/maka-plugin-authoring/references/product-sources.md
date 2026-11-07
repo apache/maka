@@ -25,7 +25,7 @@ The bundled skill includes selected TypeScript source from the same build as its
 | --- | --- |
 | Declare a Host service and explicit imports | `plugins/application/gateway/package.ts`, `plugins/shared/package.ts` |
 | Inspect package and management contracts | `references/sdk/contracts/`, `references/sdk/generated/runtime.ts` |
-| Wire Agent/WorkHub instances and grants | `products/maka/bundle/src/composition.ts` |
+| Wire Agent instances and grants | `products/maka/bundle/src/composition.ts` |
 | Build a root application or UI contribution | `assets/starter/ui.tsx`, `references/sdk/workbench.ts` |
 | Replace the composer using the resident session controller | `assets/composer-ui/README.md`, `assets/composer-ui/index.tsx`, `references/sdk/composer-view.ts` |
 | Inspect the shared business UI input contracts | `references/sdk/workbench-views.ts`, `references/sdk/workspace-view.ts` |

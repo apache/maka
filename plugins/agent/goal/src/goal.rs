@@ -295,7 +295,6 @@ impl<A> Goal<A> {
             request: Submit {
                 operation_id: format!("goal-{}-{}", self.id, self.iterations),
                 session_id: self.session_id.clone(),
-                orchestration_mode: None,
                 content: content.into(),
             },
         });

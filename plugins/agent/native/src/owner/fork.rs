@@ -198,14 +198,6 @@ impl Owner {
                 });
             }
             Err(
-                StoreError::ManagedSession
-                | StoreError::SessionCreationRejected(CreationRejection::ManagedSource),
-            ) => {
-                return Ok(ForkResult::Rejected {
-                    reason: Rejection::ManagedSession,
-                });
-            }
-            Err(
                 StoreError::SessionNotFound
                 | StoreError::SessionRetired
                 | StoreError::SessionCreationRejected(

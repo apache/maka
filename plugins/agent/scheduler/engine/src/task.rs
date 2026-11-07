@@ -18,7 +18,6 @@
  */
 
 use crate::{Error, invalid, schedule::Schedule};
-use maka_agent_facts::execution::BehaviorId;
 use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::SandboxMode;
 use maka_agent_facts::execution::ThinkingLevel;
@@ -108,7 +107,6 @@ pub struct ExecutionTemplate {
     pub sandbox_mode: SandboxMode,
     pub approval_policy: maka_agent_facts::execution::ApprovalPolicy,
     pub collaboration_mode: CollaborationMode,
-    pub orchestration_mode: BehaviorId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_tools: Option<std::collections::BTreeSet<String>>,
 }

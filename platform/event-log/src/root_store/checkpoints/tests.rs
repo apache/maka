@@ -434,16 +434,13 @@ async fn real_history_and_artifact_are_verified_but_busy_source_is_not_published
 
 #[tokio::test]
 async fn source_retirement_does_not_erase_checkpoint_or_original_receipt() {
-    use crate::sessions::{RemovalAuthority, RemoveFamilyResult};
+    use crate::sessions::RemoveFamilyResult;
     let directory = tempfile::tempdir().unwrap();
     let (store, handle, input) = fixture(directory.path()).await;
     let value = handle.publish(input.clone()).await.unwrap();
     let head = published(&value);
     assert!(matches!(
-        store
-            .remove_session_family("source", 1, RemovalAuthority::Unmanaged)
-            .await
-            .unwrap(),
+        store.remove_session_family("source", 1).await.unwrap(),
         RemoveFamilyResult::Accepted(_)
     ));
     store.finish_session_retirement("source").await.unwrap();

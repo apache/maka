@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-本目录选择 Maka 分发的 Host 与 UI 插件包，并将其绑定成一个 Agent/WorkHub 来源。插件声明与实现位于 [plugins](../../../plugins/README.zh-CN.md) 和[默认工作台包](../workbench/package.ts)。
+本目录选择 Maka 分发的 Host 与 UI 插件包，并将其绑定成一个 Agent 来源。插件声明与实现位于 [plugins](../../../plugins/README.zh-CN.md) 和[默认工作台包](../workbench/package.ts)。
 
 - [package-inputs.json](package-inputs.json)选择参与构建的包。
 - [src/composition.ts](src/composition.ts)构造实例、绑定和安装身份。
@@ -118,7 +118,7 @@ maka application compose --configuration installation.json --output product-sour
 
 输出目录必须不存在。命令生成 `host.json`、`endpoints.json`、`native-grants.json`、记录完整身份的 `installation.json` 及 `.maka-plugin` 包，不安装或启动它们。
 
-`installation.json` 选择 `locale` 和服务配置。它使用生成的 `AgentConfiguration`；可选 `coordinator` 会在同一 Host 中加入 WorkHub 服务。可选服务和 ACP 执行器需要显式选择。支持字段见[配置](src/composition.ts)和 [SDK 类型](../../../packages/plugin-sdk/src/generated/runtime.ts)。
+`installation.json` 选择 `locale` 和服务配置。它使用生成的 `AgentConfiguration`。可选服务和 ACP 执行器需要显式选择。支持字段见[配置](src/composition.ts)和 [SDK 类型](../../../packages/plugin-sdk/src/generated/runtime.ts)。
 
 重新生成已有安装时，保留输出的 `keys` 和 `hostDeployment`，它们标识已有所有者及数据。包修订标识内容，可以独立变化。
 

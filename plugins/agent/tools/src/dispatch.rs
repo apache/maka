@@ -125,11 +125,6 @@ impl RunTools {
         self
     }
 
-    pub fn with_behavior(mut self, behavior: maka_agent_facts::execution::BehaviorId) -> Self {
-        self.availability.set_behavior(behavior);
-        self
-    }
-
     pub fn set_model(&mut self, model: maka_agent_facts::tools::ModelToolContext) {
         self.model = Some(model);
     }

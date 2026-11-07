@@ -668,8 +668,7 @@ async fn exclusive_session_retirement_settles_parked_work_without_a_new_activati
         parked(&fixture, &session).await;
         eprintln!("approval fixture: physical park confirmed session={session}");
         let revision = fixture.owner.session(&session).await.unwrap().revision;
-        assert!(matches!(fixture.store.remove_session_family(&session, revision,
-            maka_event_log::sessions::RemovalAuthority::Unmanaged).await.unwrap(),
+        assert!(matches!(fixture.store.remove_session_family(&session, revision).await.unwrap(),
             maka_event_log::sessions::RemoveFamilyResult::Accepted(_)));
         assert_eq!(fixture.store.finish_session_retirement(&session).await.unwrap(),
             maka_event_log::sessions::SessionRetirement::Removed);
@@ -1637,22 +1636,6 @@ async fn frozen_retry_preparation_reacquires_current_ceiling_and_rejects_changed
         assert!(
             matches!(fixture.owner.prepare_frozen_retry(invocation, replaced, &cancellation).await,
             Err(RunError::InvalidInput(reason)) if reason == "agent_session_configuration_changed")
-        );
-
-        let mut retired = accepted.clone();
-        retired["background_kind"] = json!({"plan": "approved proposal"});
-        let mut retired: MessageBasis = serde_json::from_value(retired).unwrap();
-        let current = fixture.owner.session(&session).await.unwrap();
-        retired.background = Some(contract::ScheduledTarget {
-            session_id: session.clone(),
-            workspace: current.configuration.workspace,
-            permissions: current.configuration.permissions,
-            boundary_revision: current.configuration.boundary_revision,
-            binding: current.configuration.binding,
-        });
-        assert!(
-            matches!(fixture.owner.prepare_frozen_retry(invocation, Arc::new(retired), &cancellation).await,
-            Err(RunError::InvalidInput(reason)) if reason == "plan_disabled")
         );
 
         super::super::selection::edit(&fixture, |changes| changes.enabled = Some(false)).await;

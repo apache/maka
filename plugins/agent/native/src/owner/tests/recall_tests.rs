@@ -42,7 +42,6 @@ async fn imported(f: &Fixture, title: &str, prefix: &str, answer: &str) -> Strin
         session_id: session.clone(),
         creator: Namespace::new("recall.fixture", StorageScope::Profile).unwrap(),
         fingerprint: session.clone(),
-        managed: false,
         authority_session_id: None,
     };
 
@@ -263,7 +262,6 @@ async fn recall_model_tool_ranks_multi_term_tool_calls_and_unlocks_mid_turn_comp
                     session_id: source.clone(),
                     creator: Namespace::new("recall.fixture", StorageScope::Profile).unwrap(),
                     fingerprint: source.clone(),
-                    managed: false,
                     authority_session_id: None,
                 },
                 &Source {

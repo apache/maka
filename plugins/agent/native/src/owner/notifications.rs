@@ -17,13 +17,11 @@
  * under the License.
  */
 
-//! WorkHub follow-ups use the original Agent admission gate and durable queue.
+//! Background worker follow-ups use the original Agent admission gate and durable queue.
 use super::*;
 use maka_agent_facts::message::MessageOrigin;
 use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ReturnRoute {
     model: crate::model::AcceptedModel,
     pub(crate) workspace: Workspace,
@@ -67,16 +65,16 @@ impl Owner {
         let control = runs
             .controls
             .get(&source.session_id)
-            .ok_or("workhub_source_inactive")?;
+            .ok_or("agent_source_inactive")?;
         if control.invocation != *source {
-            return Err("workhub_source_changed".into());
+            return Err("agent_source_changed".into());
         }
         Ok(ReturnRoute {
             model: control
                 .basis
                 .model
                 .clone()
-                .ok_or("workhub_model_unavailable")?,
+                .ok_or("agent_model_unavailable")?,
             workspace: control.basis.workspace.clone(),
             binding: control.basis.binding,
         })
@@ -148,7 +146,7 @@ impl Owner {
             return Ok(None);
         }
 
-        let mut basis = MessageBasis {
+        let basis = MessageBasis {
             mcp_revision: None,
             client_mcp: None,
             mcp_catalog: None,
@@ -158,7 +156,6 @@ impl Owner {
                 &snapshot,
                 language,
             )),
-            graph: None,
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: self.settings.tool_discovery,
@@ -182,8 +179,6 @@ impl Owner {
                     .as_deref(),
             ),
         };
-        self.prepare_graph_behavior(&source.session_id, &mut basis, false)
-            .await?;
         let message: MessageInput = text.into();
         let delivered = RootSourceMessage {
             message: DeliveredMessage {

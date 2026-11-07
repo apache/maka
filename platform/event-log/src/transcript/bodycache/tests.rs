@@ -218,8 +218,8 @@ async fn oversized_source_reuses_fragments_then_reclaims_backing_file_on_replace
     let sources: Vec<_> = (0..SIBLINGS)
         .map(|index| RootSourceMessage {
             message: DeliveredMessage {
-                origin: Some(MessageOrigin::WorkhubTask {
-                    task_id: format!("task-{index}"),
+                origin: Some(MessageOrigin::BotWorker {
+                    session_id: format!("worker-{index}"),
                 }),
                 message_id: format!("large-{index}"),
                 content: text.clone(),

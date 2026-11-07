@@ -223,18 +223,7 @@ impl Owner {
         else {
             return Ok(());
         };
-        if session.configuration.title_is_manual
-            || session.archived
-            || self
-                .store
-                .session(&invocation.session_id)
-                .await
-                .map_err(persistence)?
-                .session_manager(&invocation.session_id)
-                .await
-                .map_err(persistence)?
-                .is_some()
-        {
+        if session.configuration.title_is_manual || session.archived {
             return Ok(());
         }
         let Some(opening) = self
@@ -408,15 +397,6 @@ impl Owner {
             if current.archived
                 || current.configuration.title_is_manual
                 || current.configuration.title != session.configuration.title
-                || self
-                    .store
-                    .session(&invocation.session_id)
-                    .await
-                    .map_err(persistence)?
-                    .session_manager(&invocation.session_id)
-                    .await
-                    .map_err(persistence)?
-                    .is_some()
             {
                 return Ok(());
             }

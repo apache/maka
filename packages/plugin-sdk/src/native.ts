@@ -139,11 +139,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     };
     exports: { executor: typeof contracts.executor; setup: typeof contracts.executorSetup };
   };
-  workhub: {
-    implementation: string;
-    configuration: typeof configurations.workhub;
-    exports: { agent: typeof contracts.agent; workhub: typeof contracts.workhubCoordinator };
-  };
   workspaceComputer: {
     implementation: string;
     configuration: typeof configurations.workspaceComputer;
@@ -405,11 +400,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
       },
     },
     exports: { executor: contracts.executor, setup: contracts.executorSetup },
-  },
-  workhub: {
-    implementation: 'maka.workhub.api',
-    configuration: configurations.workhub,
-    exports: { agent: contracts.agent, workhub: contracts.workhubCoordinator },
   },
   workspaceComputer: {
     implementation: 'maka.workspace.computer',

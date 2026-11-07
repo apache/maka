@@ -336,7 +336,6 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
         thinking_level: None,
         sandbox_mode: SandboxMode::ReadOnly,
         collaboration_mode: CollaborationMode::Agent,
-        orchestration_mode: BehaviorId::default(),
         tool_mode: ToolMode::Direct,
         code_language: Default::default(),
     };

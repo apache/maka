@@ -19,9 +19,9 @@
 //! Native request capabilities have no addressable ambient router.
 use super::{
     Result, failed,
-    json::{Json, decode},
+    json::{Json, JsonInput},
 };
-use deno_core::{FromV8, JsRuntime, OpState, op2, v8};
+use deno_core::{JsRuntime, OpState, op2, v8};
 use deno_error::JsErrorBox;
 use futures_util::{FutureExt, future::BoxFuture};
 use serde_json::Value;
@@ -71,22 +71,12 @@ pub(super) struct Factory(pub v8::Global<v8::Function>);
 struct Budget {
     bytes: Arc<Semaphore>,
 }
-struct Input(Value);
-impl<'a> FromV8<'a> for Input {
-    type Error = JsErrorBox;
-    fn from_v8<'i>(
-        scope: &mut v8::PinScope<'a, 'i>,
-        value: v8::Local<'a, v8::Value>,
-    ) -> std::result::Result<Self, Self::Error> {
-        decode(scope, value).map(Self)
-    }
-}
 
 #[op2]
 async fn op_maka_request(
     state: Rc<RefCell<OpState>>,
     #[cppgc] handle: &Handle,
-    #[scoped] input: Input,
+    #[scoped] input: JsonInput,
 ) -> std::result::Result<Json, JsErrorBox> {
     let owner = handle
         .0

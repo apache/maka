@@ -41,8 +41,8 @@ async fn submit_receipt_is_atomic_and_survives_edit_delivery_cancellation_and_ep
     let owner = invocation("original");
     append(&log, &owner, opening()).await;
     let mut pending = admission(&owner, "queued", Disposition::Followup);
-    pending.source.message.origin = Some(MessageOrigin::WorkhubTask {
-        task_id: "task-original".into(),
+    pending.source.message.origin = Some(MessageOrigin::BotWorker {
+        session_id: "worker-original".into(),
     });
     pending.required_tools.insert("Shell".into());
     pending.source.message.content.preparation.push(serde_json::from_value(json!({
@@ -188,8 +188,8 @@ async fn submit_receipt_is_atomic_and_survives_edit_delivery_cancellation_and_ep
     );
     // The compact receipt remains authoritative after delivery removes the pending row.
     let mut changed_origin = pending.clone();
-    changed_origin.source.message.origin = Some(MessageOrigin::WorkhubTask {
-        task_id: "task-other".into(),
+    changed_origin.source.message.origin = Some(MessageOrigin::BotWorker {
+        session_id: "worker-other".into(),
     });
     assert!(matches!(
         log.admit_queued_message("epoch", 0, changed_origin).await,

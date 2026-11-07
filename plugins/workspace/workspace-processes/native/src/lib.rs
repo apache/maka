@@ -181,11 +181,10 @@ impl Processes {
             context.activation().instance(),
         );
         let session_prefix = settings.session_owner.as_ref().map(|instance| {
-            maka_agent_authority::session_namespace(
+            maka_host_runtime::storage::instance_prefix(
                 &persistence.source().state_domain,
                 persistence.source().deployment,
                 instance,
-                matches!(settings.session_kind, SessionKind::Workhub),
             )
         });
         let drain = CancellationToken::new();

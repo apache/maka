@@ -66,21 +66,6 @@ impl Owner {
                 actual: session.revision,
             });
         }
-        // Managed tasks retain their owner's lifecycle authority.
-        if self
-            .store
-            .session(&input.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .session_manager(&input.session_id)
-            .await
-            .map_err(|_| "agent_session_unavailable")?
-            .is_some()
-        {
-            return Ok(SessionChanged::Rejected {
-                reason: Rejection::SessionUnavailable,
-            });
-        }
         if runs.busy(&input.session_id)
             || !self
                 .store
@@ -92,7 +77,6 @@ impl Owner {
                 .map_err(|_| "agent_queue_unavailable")?
                 .entries
                 .is_empty()
-            || self.graph_selected(&input.session_id).await?
             || !matches!(
                 crate::service::summary(self, resolve_session(session)?).activity,
                 SessionActivity::Idle

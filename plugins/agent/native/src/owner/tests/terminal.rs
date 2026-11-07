@@ -236,26 +236,6 @@ async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
     }).await.unwrap();
 }
 
-#[tokio::test]
-async fn workhub_terminal_selects_coordinator_namespace_and_rejects_original_agent_session() {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        let (_, mut f, ordinary_session) = processes::fixture().await;
-        workhub::activate(&mut f, true).await;
-        let resolved = workhub::resolve(&f, workhub::selection(&f).await, Uuid::new_v4()).await;
-        let coordinator = resolved["session"]["id"].as_str().unwrap();
-        assert!(coordinator.starts_with("wh_"));
-        let denied = query(&f, "list", json!({"sessionId": ordinary_session})).await;
-        assert_eq!(denied["kind"], "failed", "{denied}");
-        let listed = query(&f, "list", json!({"sessionId": coordinator})).await;
-        assert_eq!(listed["kind"], "completed", "{listed}");
-        let owner = caller();
-        let started = mutation(&f, &owner, "start", json!({"sessionId": coordinator, "command": "printf coordinator > coordinator-terminal.txt"}), Uuid::new_v4()).await;
-        assert_eq!(started["kind"], "completed", "{started}");
-        wait_file(&f, "coordinator-terminal.txt", "coordinator").await;
-        processes::close(&f).await;
-    }).await.unwrap();
-}
-
 fn output_request(target: &Value, after: u64) -> Value {
     json!({"target":target,"after":after})
 }

@@ -111,7 +111,7 @@ equivalent.
 
 ## External agents
 
-Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and atomically updates the conversation Agent and WorkHub coordinator. Cancellation changes nothing; disabling preserves native launch settings and does not uninstall or sign out.
+Open **Settings → External agents**, or use **External agents** in the model picker. Only Antigravity, Codex and Claude Code are offered; all are off by default. Listing disabled runtimes does not probe them. Each enable requires fresh acknowledgement of native full-access permissions and updates the conversation Agent. Cancellation changes nothing; disabling preserves native launch settings and does not uninstall or sign out.
 
 These CLIs retain native tools, accounts and full-access permissions outside Maka’s sandbox. Maka Host tools still use their existing authorization and receipts. Install, initialize and sign in using each native CLI, then **Refresh**. There is no SDK installer or automatic update. Claude runs in an interactive PTY, never print mode.
 

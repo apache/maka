@@ -30,7 +30,7 @@ fn opening(id: &str) -> EventWrite {
         "workspace_origin":"selected",
         "approval_policy":{"kind":"on-request"},
         "boundary_revision":0,
-        "orchestration_mode":"default", "tool_mode":"direct",
+        "tool_mode":"direct",
         "model":{"connection_id":"connection", "connection_slug":"test", "model":"test"}, "thinking_level":null
     })).unwrap()), input: InvocationInput::Message { source_messages: Vec::new(), content: serde_json::from_value(json!({
         "text":"Original anchor", "display_text":"Display anchor",

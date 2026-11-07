@@ -170,8 +170,6 @@ impl ToolCatalog {
 
 #[derive(Clone)]
 pub struct BindingRequest {
-    /// Frozen behavior identity for visibility decisions, never authority.
-    pub behavior: Option<maka_agent_facts::execution::BehaviorId>,
     pub model: Option<maka_agent_facts::tools::ModelToolContext>,
     pub invocation: maka_agent_facts::event::Invocation,
     pub execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
@@ -248,7 +246,6 @@ mod tests {
     fn capture(catalog: &mut ToolCatalog, cwd: &str) {
         let request = BindingRequest {
             execution: None,
-            behavior: None,
             model: None,
             invocation: Invocation {
                 session_id: "session".into(),

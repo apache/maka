@@ -111,9 +111,9 @@ async fn copy(
 }
 
 #[tokio::test]
-async fn removal_does_not_treat_revision_history_as_management_authority() {
+async fn removal_of_authority_parent_archives_revision_child_without_archiving_history_source() {
     use maka_capabilities::storage::Namespace;
-    use maka_event_log::sessions::{PluginSession, RemovalAuthority, RemoveFamilyResult};
+    use maka_event_log::sessions::{PluginSession, RemoveFamilyResult};
     use maka_plugin_core::scope::Scope;
     let temp = tempfile::tempdir().unwrap();
     let log = EventLog::open(&temp.path().join("authority.sqlite"))
@@ -125,10 +125,9 @@ async fn removal_does_not_treat_revision_history_as_management_authority() {
         .unwrap();
     log.create_plugin_session(
         &PluginSession {
-            session_id: "managed".into(),
+            session_id: "source-root".into(),
             creator: namespace.clone(),
-            fingerprint: "managed".into(),
-            managed: true,
+            fingerprint: "source-root".into(),
             authority_session_id: None,
         },
         &json!({}),
@@ -136,12 +135,16 @@ async fn removal_does_not_treat_revision_history_as_management_authority() {
     )
     .await
     .unwrap();
-    turn(&log, "managed", "source-turn", false).await;
-    let source = log.get_session::<Value>("managed").await.unwrap().unwrap();
+    turn(&log, "source-root", "source-turn", false).await;
+    let source = log
+        .get_session::<Value>("source-root")
+        .await
+        .unwrap()
+        .unwrap();
     log.copy_plugin_session(
         SessionCopy {
             source_session_id: source.id,
-            target_session_id: "unmanaged-revision".into(),
+            target_session_id: "revision-child".into(),
             expected_source_revision: source.revision,
             purpose: maka_agent_facts::session::CopyPurpose::Revision {
                 turn_id: "source-turn".into(),
@@ -150,58 +153,29 @@ async fn removal_does_not_treat_revision_history_as_management_authority() {
         &json!({}),
         2,
         PluginSession {
-            session_id: "unmanaged-revision".into(),
-            creator: namespace.clone(),
+            session_id: "revision-child".into(),
+            creator: namespace,
             fingerprint: "revision".into(),
-            managed: false,
             authority_session_id: Some("parent".into()),
         },
     )
     .await
     .unwrap();
-    log.retain_session("unmanaged-revision").await.unwrap();
-    let revision = log
-        .get_session::<Value>("unmanaged-revision")
-        .await
-        .unwrap()
-        .unwrap()
-        .revision;
-    for authority in [
-        RemovalAuthority::Unmanaged,
-        RemovalAuthority::Granted {
-            namespace,
-            sessions: ["unmanaged-revision".into()].into_iter().collect(),
-        },
-    ] {
-        assert!(matches!(
-            log.remove_session_family("unmanaged-revision", revision, authority)
-                .await,
-            Err(StoreError::SessionConflict)
-        ));
-        assert!(log.session_retirement("managed").await.unwrap().is_none());
-        assert!(
-            log.session_removal_receipt("unmanaged-revision")
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
+    log.retain_session("revision-child").await.unwrap();
     let revision = log
         .get_session::<Value>("parent")
         .await
         .unwrap()
         .unwrap()
         .revision;
-    let RemoveFamilyResult::Accepted(plan) = log
-        .remove_session_family("parent", revision, RemovalAuthority::Unmanaged)
-        .await
-        .unwrap()
+    let RemoveFamilyResult::Accepted(plan) =
+        log.remove_session_family("parent", revision).await.unwrap()
     else {
         panic!("unchanged revision");
     };
-    assert_eq!(plan.archive, ["unmanaged-revision"]);
+    assert_eq!(plan.archive, ["revision-child"]);
     assert!(
-        !log.get_session::<Value>("managed")
+        !log.get_session::<Value>("source-root")
             .await
             .unwrap()
             .unwrap()
@@ -861,7 +835,6 @@ async fn draft_abandonment_serializes_with_acceptance_and_preserves_identity_aft
         )
         .unwrap(),
         fingerprint: "new-root".into(),
-        managed: false,
         authority_session_id: Some("failed-child".into()),
     };
     assert!(matches!(

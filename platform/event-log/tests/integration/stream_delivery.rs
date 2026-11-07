@@ -254,7 +254,6 @@ async fn pages_obey_global_fences_and_never_skip_oversized_executor_deltas() {
                                     maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
                                 collaboration_mode:
                                     maka_agent_facts::execution::CollaborationMode::Agent,
-                                orchestration_mode: Default::default(),
                                 tool_mode: maka_agent_facts::execution::ToolMode::Direct,
                                 code_language: Default::default(),
                             },

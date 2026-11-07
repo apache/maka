@@ -111,30 +111,6 @@ export type RuntimeProtocol =
   | ProtocolProcessCompletion
   | ProtocolProcessWritten
   | AgentToolNames
-  | WorkHubPresets
-  | WorkHubPresetsResult
-  | WorkHubGraphRead
-  | WorkHubGraphView
-  | WorkHubGraphWorkRead
-  | GraphWorkDefinition
-  | WorkHubGraphResultRead
-  | WorkHubGraphResult
-  | WorkHubGraphHistoryRead
-  | WorkHubGraphHistory
-  | WorkHubGraphChange
-  | WorkHubGraphChanged
-  | WorkHubGraphReceiptRead
-  | WorkHubResolve
-  | WorkHubCoordinator
-  | WorkHubConfiguration
-  | WorkHubTaskRead
-  | WorkHubTask
-  | WorkHubControlRead
-  | WorkHubControl
-  | WorkHubControlsRead
-  | WorkHubControls
-  | WorkHubTasksRead
-  | WorkHubTasks
   | AgentWorkRead
   | AgentWork
   | ModelSelection
@@ -1120,203 +1096,14 @@ export type ProtocolProcessCompletion =
       kind: 'failed';
       message: string;
     };
-export type WorkHubPresetsResult =
+export type AgentWorkTarget =
   | {
-      kind: 'saved';
-      snapshot: WorkHubPresets;
-    }
-  | {
-      kind: 'conflict';
-      snapshot: WorkHubPresets;
-    }
-  | {
-      kind: 'invalid';
-    };
-export type GraphId = string;
-export type WorkId = string;
-export type GraphMode = 'graph' | 'swarm';
-export type GraphStatus =
-  | 'empty'
-  | 'active'
-  | 'waiting'
-  | 'closing'
-  | 'stopped'
-  | 'completed'
-  | 'failed';
-export type GraphTarget =
-  | {
-      kind: 'agent';
-      agentId: string;
-    }
-  | {
-      kind: 'preset';
-      presetId: string;
-    }
-  | {
-      kind: 'executor';
-      executorId: string;
-    }
-  | {
-      kind: 'operator';
-      operatorId: OperatorId;
-    };
-export type OperatorId = string;
-export type GraphWorkState =
-  | 'requested'
-  | 'waiting'
-  | 'running'
-  | 'blocked'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'stopped'
-  | 'superseded';
-export type AgentExecutionState =
-  | 'admitted'
-  | 'running'
-  | 'waiting'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
-export type WorkHubGraphAction =
-  | {
-      kind: 'start';
-      mode: GraphMode;
-    }
-  | {
-      kind: 'stop';
-    }
-  | {
-      kind: 'leave';
-    };
-export type WorkHubGraphChanged =
-  | {
-      kind: 'committed';
-      epoch: GraphEpoch;
-    }
-  | {
-      kind: 'conflict';
-      current?: GraphEpoch | null;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
-    };
-export type WorkHubCoordinator =
-  | {
-      kind: 'missing';
-    }
-  | {
-      kind: 'pending';
-      workspace: string;
-    }
-  | {
-      kind: 'ready';
-      session: AgentSession;
-    }
-  | {
-      kind: 'rejected';
-      reason: AgentRejection;
-    };
-/**
- * A complete logical Turn boundary within the source session.
- */
-export type AgentForkPosition =
-  | {
-      kind: 'start';
-    }
-  | {
-      kind: 'end';
-    }
-  | {
-      kind: 'through_turn';
-      turnId: string;
-    }
-  | {
-      kind: 'before_turn';
-      turnId: string;
-    };
-export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
-export type AgentRejection =
-  | 'permission_change_requires_user'
-  | 'title_invalid'
-  | 'labels_invalid'
-  | 'tools_unavailable'
-  | 'busy'
-  | 'workspace_unavailable'
-  | 'session_unavailable'
-  | 'history_unavailable'
-  | 'managed_session'
-  | 'closed';
-export type WorkHubTaskStatus =
-  | {
-      kind: 'blocked';
-      dependencies: string[];
-    }
-  | {
-      kind: 'cancelled';
-    }
-  | {
-      kind: 'preparing';
-      stage: WorkHubPreparationStage;
-      operation: string;
-      sessionId?: string | null;
-      state: WorkHubPreparationState;
-    }
-  | {
-      kind: 'pending';
-    }
-  | {
-      kind: 'uncertain';
-    }
-  | {
-      kind: 'unavailable';
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
-    }
-  | {
-      kind: 'started';
-      sessionId: string;
+      kind: 'invocation';
       invocationId: string;
-      progress?: AgentWork | null;
     }
   | {
-      kind: 'queued';
-      sessionId: string;
+      kind: 'message';
       messageId: string;
-      progress?: AgentWork | null;
-    };
-export type WorkHubPreparationStage =
-  | {
-      kind: 'create';
-    }
-  | {
-      kind: 'attachment';
-      index: number;
-      total: number;
-    }
-  | {
-      kind: 'delivery';
-    };
-export type WorkHubPreparationState =
-  | {
-      kind: 'pending';
-    }
-  | {
-      kind: 'unavailable';
-    }
-  | {
-      kind: 'uncertain';
-    }
-  | {
-      kind: 'original_capture_required';
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
     };
 export type AgentWork =
   | {
@@ -1341,101 +1128,14 @@ export type AgentWork =
        */
       pendingInteractions: number;
     };
-export type WorkHubControlStatus =
-  | {
-      kind: 'pending';
-    }
-  | {
-      kind: 'unavailable';
-    }
-  | {
-      kind: 'uncertain';
-    }
-  | {
-      kind: 'returned';
-      outcome: WorkHubControlOutcome;
-    };
-export type WorkHubControlOutcome =
-  | {
-      kind: 'patch';
-      result: AgentPatchResult;
-    }
-  | {
-      kind: 'stop';
-      result: AgentStopped;
-    }
-  | {
-      kind: 'resume';
-      result: AgentResumeResult;
-    }
-  | {
-      kind: 'retract';
-      result: AgentQueueMutationResult;
-    };
-export type AgentPatchResult =
-  | {
-      kind: 'unavailable';
-    }
-  | {
-      kind: 'busy';
-    }
-  | {
-      kind: 'changed';
-    }
-  | {
-      kind: 'ready';
-      patch: AgentWorkspacePatch;
-    };
-export type AgentResumeResult =
-  | {
-      kind: 'started';
-      execution: AgentExecution;
-    }
-  | {
-      kind: 'parked';
-      reason: AgentResumeParkReason;
-    };
-export type AgentResumeParkReason =
-  | 'closed'
-  | 'archived'
-  | 'busy'
-  | 'source_missing'
-  | 'source_changed'
-  | 'source_not_resumable'
-  | 'already_continued'
-  | 'workspace_changed'
-  | 'safety_check_failed';
-export type AgentQueueMutationResult =
-  | {
-      kind: 'committed';
-      revision: number;
-    }
-  | {
-      kind: 'revision_conflict';
-      expected: number;
-      actual: number;
-    }
-  | {
-      kind: 'rejected';
-      reason: AgentQueueRejection;
-    };
-export type AgentQueueRejection =
-  | 'not_your_message'
-  | 'closed'
-  | 'missing'
-  | 'in_flight'
-  | 'invalid_edit'
-  | 'execution_changed'
-  | 'not_running';
-export type AgentWorkTarget =
-  | {
-      kind: 'invocation';
-      invocationId: string;
-    }
-  | {
-      kind: 'message';
-      messageId: string;
-    };
+export type AgentExecutionState =
+  | 'admitted'
+  | 'running'
+  | 'waiting'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 export type SettingsModelsRead =
   | {
       kind: 'start';
@@ -2674,6 +2374,25 @@ export type AgentScheduleChange =
       taskId: string;
       revision: number;
     };
+/**
+ * A complete logical Turn boundary within the source session.
+ */
+export type AgentForkPosition =
+  | {
+      kind: 'start';
+    }
+  | {
+      kind: 'end';
+    }
+  | {
+      kind: 'through_turn';
+      turnId: string;
+    }
+  | {
+      kind: 'before_turn';
+      turnId: string;
+    };
+export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentImportsRead =
   | {
       kind: 'sources';
@@ -3296,6 +3015,16 @@ export type AgentCreated =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentRejection =
+  | 'permission_change_requires_user'
+  | 'title_invalid'
+  | 'labels_invalid'
+  | 'tools_unavailable'
+  | 'busy'
+  | 'workspace_unavailable'
+  | 'session_unavailable'
+  | 'history_unavailable'
+  | 'closed';
 export type AgentForkResult =
   | {
       kind: 'forked';
@@ -3382,6 +3111,25 @@ export type AgentResumable =
     }
   | {
       kind: 'unavailable';
+      reason: AgentResumeParkReason;
+    };
+export type AgentResumeParkReason =
+  | 'closed'
+  | 'archived'
+  | 'busy'
+  | 'source_missing'
+  | 'source_changed'
+  | 'source_not_resumable'
+  | 'already_continued'
+  | 'workspace_changed'
+  | 'safety_check_failed';
+export type AgentResumeResult =
+  | {
+      kind: 'started';
+      execution: AgentExecution;
+    }
+  | {
+      kind: 'parked';
       reason: AgentResumeParkReason;
     };
 export type AgentAttachmentUploadResult =
@@ -3777,7 +3525,6 @@ export type FormResult =
       [k: string]: unknown | undefined;
     };
 export type QuestionRejection = 'invalid_input' | 'unavailable';
-export type WorkspaceProcessSessionKind = 'agent' | 'workhub';
 export type AgentContextRequestState = 'requested' | 'completed' | 'interrupted';
 /**
  * Read-only completion context before or after a conversation is created.
@@ -4281,21 +4028,8 @@ export type MessageOrigin =
       objective: string;
     }
   | {
-      kind: 'workhub_task';
-      taskId: string;
-    }
-  | {
-      kind: 'workhub_graph';
-      graphId: string;
-    }
-  | {
       kind: 'bot_worker';
       sessionId: string;
-    }
-  | {
-      kind: 'plan';
-      executionId: string;
-      title: string;
     };
 export type AgentDeliveryPage =
   | {
@@ -4390,6 +4124,28 @@ export type AgentQueueAction =
        */
       messageIds: [string, ...string[]];
     };
+export type AgentQueueMutationResult =
+  | {
+      kind: 'committed';
+      revision: number;
+    }
+  | {
+      kind: 'revision_conflict';
+      expected: number;
+      actual: number;
+    }
+  | {
+      kind: 'rejected';
+      reason: AgentQueueRejection;
+    };
+export type AgentQueueRejection =
+  | 'not_your_message'
+  | 'closed'
+  | 'missing'
+  | 'in_flight'
+  | 'invalid_edit'
+  | 'execution_changed'
+  | 'not_running';
 /**
  * Model identity recorded for the exact historical assistant step.
  */
@@ -5369,11 +5125,6 @@ export interface AgentConfiguration {
    */
   goals?: boolean;
   /**
-   * Retired with planning mode and ignored. Package updates keep a saved
-   * installation's parameters, so this key must keep validating.
-   */
-  plans?: boolean;
-  /**
    * Enable the session-scoped, model-maintained checklist.
    */
   todo?: boolean;
@@ -5931,248 +5682,14 @@ export interface ProtocolProcessWritten {
 export interface AgentToolNames {
   names: string[];
 }
-export interface WorkHubPresets {
-  revision: number | null;
-  entries: WorkHubPreset[];
-}
-export interface WorkHubPreset {
-  isolatedWorkspace?: boolean;
-  id: string;
-  name: string;
-  description: string;
-  worker: string;
-  /**
-   * Exact installed names; an empty list permits reasoning without tools.
-   */
-  tools: string[];
-  model: ConnectionTarget;
-  thinkingLevel?: ThinkingLevel | null;
-  enabled: boolean;
-}
-export interface ConnectionTarget {
-  connectionId: string;
-  modelId: string;
-}
-export interface WorkHubGraphRead {
+export interface AgentWorkRead {
   sessionId: string;
-  graphId?: GraphId | null;
-  after?: WorkId | null;
+  target: AgentWorkTarget;
+  cursor?: AgentAnswerCursor | null;
 }
-export interface WorkHubGraphView {
-  enabled: boolean;
-  currentEpoch?: GraphEpoch | null;
-  selectedMode?: GraphMode | null;
-  epoch?: GraphEpoch | null;
-  revision: number;
-  status: GraphStatus;
-  quiescent: boolean;
-  /**
-   * @maxItems 16
-   */
-  work:
-    | []
-    | [WorkHubGraphWork]
-    | [WorkHubGraphWork, WorkHubGraphWork]
-    | [WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork]
-    | [WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork]
-    | [WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork, WorkHubGraphWork]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ]
-    | [
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-        WorkHubGraphWork,
-      ];
-  after?: WorkId | null;
-  finish?: GraphFinish | null;
-}
-export interface GraphEpoch {
-  rootSessionId: string;
-  epoch: number;
-  graphId: GraphId;
-  createdAt: number;
-  mode: GraphMode;
-}
-export interface WorkHubGraphWork {
-  workId: WorkId;
-  taskId: string;
-  target: GraphTarget;
-  status: GraphWorkState;
-  instructionExcerpt: string;
-  instructionTruncated: boolean;
-  resultId?: string | null;
-  failure?: string | null;
-}
-export interface GraphFinish {
-  resultIds: string[];
-  reason: string;
-}
-export interface WorkHubGraphWorkRead {
-  sessionId: string;
-  graphId: GraphId;
-  workId: WorkId;
-}
-export interface GraphWorkDefinition {
-  workId: WorkId;
-  target: GraphTarget;
-  instruction: string;
-  inputIds: string[];
-  selectedResultInputs?: HistoricalInput[];
-  replaces?: string | null;
-}
-export interface HistoricalInput {
-  sourceGraphId: GraphId;
-  resultId: string;
-}
-export interface WorkHubGraphResultRead {
-  sessionId: string;
-  graphId: GraphId;
-  workId: WorkId;
-  resultId: string;
+export interface AgentAnswerCursor {
+  invocationId: string;
   offset: number;
-}
-export interface WorkHubGraphResult {
-  workId: WorkId;
-  resultId: string;
-  execution: AgentExecution;
-  text: string;
-  nextOffset?: number | null;
 }
 /**
  * Canonical physical execution receipt, independent of the current Session tip.
@@ -6188,493 +5705,9 @@ export interface AgentExecution {
   highWater: number;
   state: AgentExecutionState;
 }
-export interface WorkHubGraphHistoryRead {
-  sessionId: string;
-  before?: number | null;
-}
-export interface WorkHubGraphHistory {
-  /**
-   * @maxItems 32
-   */
-  epochs: GraphEpoch[];
-  currentEpoch?: number | null;
-  nextBefore?: number | null;
-}
-export interface WorkHubGraphChange {
-  sessionId: string;
-  expectedGraphId?: GraphId | null;
-  action: WorkHubGraphAction;
-}
-export interface WorkHubGraphReceiptRead {
-  reference: RecoveryRef;
-}
-export interface WorkHubResolve {
-  /**
-   * The coordinator's directory, used only when freezing the first
-   * creation intent.
-   */
-  workspace: string;
-}
-export interface AgentSession {
-  /**
-   * Session that initiated creation, independent of fork ancestry and task ownership.
-   */
-  parentSessionId: string | null;
-  branch: AgentSessionBranch | null;
-  backend?: AgentBackendPreference | null;
-  tools?: string[] | null;
-  dataSource: AgentDataSource;
-  permissions: AgentWorkspacePermissions;
-  boundaryRevision: number;
-  binding: BindingStamp;
-  id: string;
-  title: string;
-  labels: string[];
-  workspace: AgentWorkspace;
-  revision: number;
-  updatedAt: number;
-  archived: boolean;
-  pinned: boolean;
-  hasUnread: boolean;
-  /**
-   * Exact durable visible tail accepted by markRead; independent of preview clocks.
-   */
-  tailMessageId: string | null;
-  activity: AgentSessionActivity;
-}
-/**
- * Frozen conversation ancestry for presentation, not authority over the source.
- */
-export interface AgentSessionBranch {
-  sessionId: string;
-  position: AgentForkPosition;
-}
-export interface BindingStamp {
-  id: string;
-  permissionEpoch: number;
-}
-export interface AgentWorkspace {
-  /**
-   * Native owner allocation; never accepted from a caller as workspace authority.
-   */
-  worktree?: Binding | null;
-  /**
-   * Optional membership in this Agent's canonical Project catalog.
-   */
-  projectId?: string | null;
-  path: string;
-  directoryIdentity: string;
-  identity: string;
-}
-/**
- * Immutable allocation intent, not the current child branch or HEAD.
- */
-export interface Binding {
-  id: string;
-  common_dir: string;
-  source: string;
-  source_identity: string;
-  base_commit: string;
-  directory: string;
-}
-export interface WorkHubConfiguration {
-  agent: AgentConfiguration;
-  /**
-   * Exactly selected imports of Agent services. Native grants are independent.
-   */
-  workers: string[];
-}
-export interface WorkHubTaskRead {
-  taskId: string;
-  cursor?: AgentAnswerCursor | null;
-}
-export interface AgentAnswerCursor {
-  invocationId: string;
-  offset: number;
-}
-export interface WorkHubTask {
-  dependencies?: string[];
-  taskId: string;
-  worker: string;
-  title: string;
-  /**
-   * Frozen task acceptance time in Unix milliseconds.
-   */
-  acceptedAt: number;
-  operation: string;
-  status: WorkHubTaskStatus;
-}
 export interface AgentAnswerPage {
   text: string;
   next?: AgentAnswerCursor | null;
-}
-export interface WorkHubControlRead {
-  controlId: string;
-}
-export interface WorkHubControl {
-  taskId: string;
-  controlId: string;
-  operation: string;
-  status: WorkHubControlStatus;
-}
-export interface AgentWorkspacePatch {
-  artifactId: string;
-  sessionId: string;
-  turnId: string;
-  baseCommit: string;
-  bytes: number;
-}
-export interface AgentStopped {
-  requested: boolean;
-}
-export interface WorkHubControlsRead {
-  after?: string | null;
-}
-export interface WorkHubControls {
-  /**
-   * @maxItems 16
-   */
-  entries:
-    | []
-    | [WorkHubControlEntry]
-    | [WorkHubControlEntry, WorkHubControlEntry]
-    | [WorkHubControlEntry, WorkHubControlEntry, WorkHubControlEntry]
-    | [WorkHubControlEntry, WorkHubControlEntry, WorkHubControlEntry, WorkHubControlEntry]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ]
-    | [
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-        WorkHubControlEntry,
-      ];
-  after?: string | null;
-}
-export interface WorkHubControlEntry {
-  taskId: string;
-  controlId: string;
-}
-export interface WorkHubTasksRead {
-  /**
-   * Opaque continuation for newest accepted tasks first, with stable identity ties.
-   * This is live keyset pagination, not a frozen snapshot; pass it unchanged.
-   */
-  after?: string | null;
-}
-export interface WorkHubTasks {
-  /**
-   * @maxItems 16
-   */
-  entries:
-    | []
-    | [WorkHubTaskEntry]
-    | [WorkHubTaskEntry, WorkHubTaskEntry]
-    | [WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry]
-    | [WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry]
-    | [WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry, WorkHubTaskEntry]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ]
-    | [
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-        WorkHubTaskEntry,
-      ];
-  /**
-   * Opaque live continuation in accepted-time descending order. Null ends the page sequence.
-   */
-  after?: string | null;
-}
-export interface WorkHubTaskEntry {
-  taskId: string;
-  worker: string;
-  title: string;
-  /**
-   * Frozen task acceptance time in Unix milliseconds.
-   */
-  acceptedAt: number;
-}
-export interface AgentWorkRead {
-  sessionId: string;
-  target: AgentWorkTarget;
-  cursor?: AgentAnswerCursor | null;
 }
 /**
  * Stable model identity, resolved from current connection settings at admission.
@@ -7021,6 +6054,10 @@ export interface SettingsModelLimits {
   maxOutputTokens: number | null;
   compactionThreshold: number | null;
 }
+export interface ConnectionTarget {
+  connectionId: string;
+  modelId: string;
+}
 export interface SettingsModelDefaults {
   catalogMatched: boolean;
   label: string;
@@ -7323,6 +6360,30 @@ export interface SetDefaultConnectionTargetInput {
 }
 export interface AgentMcpConfigurations {
   workspace?: AgentWorkspace | null;
+}
+export interface AgentWorkspace {
+  /**
+   * Native owner allocation; never accepted from a caller as workspace authority.
+   */
+  worktree?: Binding | null;
+  /**
+   * Optional membership in this Agent's canonical Project catalog.
+   */
+  projectId?: string | null;
+  path: string;
+  directoryIdentity: string;
+  identity: string;
+}
+/**
+ * Immutable allocation intent, not the current child branch or HEAD.
+ */
+export interface Binding {
+  id: string;
+  common_dir: string;
+  source: string;
+  source_identity: string;
+  base_commit: string;
+  directory: string;
 }
 export interface AgentMcpConfigurationList {
   locations: AgentMcpConfigurationLocation[];
@@ -7631,6 +6692,10 @@ export interface AgentScheduledTarget {
   permissions: AgentWorkspacePermissions;
   boundaryRevision: number;
   binding: BindingStamp;
+}
+export interface BindingStamp {
+  id: string;
+  permissionEpoch: number;
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
@@ -7977,6 +7042,40 @@ export interface AgentRecallPage {
   passages: AgentRecallPassage[];
   complete: boolean;
   gaps: string[];
+}
+export interface AgentSession {
+  /**
+   * Session that initiated creation, independent of fork ancestry and task ownership.
+   */
+  parentSessionId: string | null;
+  branch: AgentSessionBranch | null;
+  backend?: AgentBackendPreference | null;
+  tools?: string[] | null;
+  dataSource: AgentDataSource;
+  permissions: AgentWorkspacePermissions;
+  boundaryRevision: number;
+  binding: BindingStamp;
+  id: string;
+  title: string;
+  labels: string[];
+  workspace: AgentWorkspace;
+  revision: number;
+  updatedAt: number;
+  archived: boolean;
+  pinned: boolean;
+  hasUnread: boolean;
+  /**
+   * Exact durable visible tail accepted by markRead; independent of preview clocks.
+   */
+  tailMessageId: string | null;
+  activity: AgentSessionActivity;
+}
+/**
+ * Frozen conversation ancestry for presentation, not authority over the source.
+ */
+export interface AgentSessionBranch {
+  sessionId: string;
+  position: AgentForkPosition;
 }
 export interface AgentRecallPassage {
   session: AgentSession;
@@ -8368,10 +7467,6 @@ export interface WorkspaceProcessConfiguration {
    * namespace only; Terminal endpoints still require their own explicit grants.
    */
   sessionOwner?: InstanceId | null;
-  /**
-   * Explicit data namespace of the selected Session owner.
-   */
-  sessionKind?: WorkspaceProcessSessionKind & string;
 }
 /**
  * Longest path wins; at the same path exact wins over subtree, then deny wins
@@ -8632,6 +7727,9 @@ export interface AgentSessionPage {
   sessions: AgentSession[];
   before: string | null;
   after: string | null;
+}
+export interface AgentStopped {
+  requested: boolean;
 }
 export interface AgentDelivery {
   sequence: number;

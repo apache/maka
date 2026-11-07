@@ -1197,7 +1197,7 @@ export interface ServiceMethods {
           }
         | {
             kind: 'ready';
-            patch: Runtime.AgentWorkspacePatch;
+            patch: AgentReadPatchOutput_AgentWorkspacePatch;
             offset: number;
             next: number | null;
             text: string;
@@ -1360,7 +1360,20 @@ export interface ServiceMethods {
     snapshotPatch: {
       mode: 'mutation';
       input: Runtime.AgentExecutionRead;
-      output: Runtime.AgentPatchResult;
+      output:
+        | {
+            kind: 'unavailable';
+          }
+        | {
+            kind: 'busy';
+          }
+        | {
+            kind: 'changed';
+          }
+        | {
+            kind: 'ready';
+            patch: AgentSnapshotPatchOutput_AgentWorkspacePatch;
+          };
     };
     source: {
       mode: 'query';
@@ -2539,6 +2552,13 @@ export interface AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceSnapsh
   warning: AgentReadHistoryCheckpointOutput_AgentCheckpointWorkspaceWarning;
   inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
 }
+export interface AgentReadPatchOutput_AgentWorkspacePatch {
+  artifactId: string;
+  sessionId: string;
+  turnId: string;
+  baseCommit: string;
+  bytes: number;
+}
 export interface AgentRequestSystemPermissionOutput_AgentSystemPermissionState {
   grant: AgentRequestSystemPermissionOutput_SystemPermissionGrant;
   effective: boolean;
@@ -2700,6 +2720,13 @@ export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   description: string;
   invocation: string;
   [k: string]: unknown | undefined;
+}
+export interface AgentSnapshotPatchOutput_AgentWorkspacePatch {
+  artifactId: string;
+  sessionId: string;
+  turnId: string;
+  baseCommit: string;
+  bytes: number;
 }
 export interface AgentSystemPermissionStatusOutput_AgentSystemPermissionState {
   grant: AgentSystemPermissionStatusOutput_SystemPermissionGrant;

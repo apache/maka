@@ -27,7 +27,6 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::execution::ApprovalPolicy;
-use maka_agent_facts::execution::BehaviorId;
 use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::InvocationConfiguration;
 use maka_agent_facts::execution::SandboxMode;
@@ -213,7 +212,6 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
                 approval_policy,
                 boundary_revision: 0,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::CodeMode,
                 code_language: Default::default(),
                 model: None,

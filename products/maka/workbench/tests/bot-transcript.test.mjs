@@ -415,7 +415,7 @@ test('a Bot Turn started by a worker finishing reports that worker; other Turns 
   const rows = [
     { turnId: 't1', origin: { kind: 'bot_worker', sessionId: 'worker-a' } },
     { turnId: 't2' },
-    { turnId: 't3', origin: { kind: 'plan', executionId: 'x' } },
+    { turnId: 't3', origin: { kind: 'goal', goalId: 'g1', objective: 'x' } },
     { turnId: 't4', origin: { kind: 'bot_worker', sessionId: 'worker-b' } },
   ];
   assert.equal(reportedWorker(rows, 't1'), 'worker-a');
