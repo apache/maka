@@ -1170,7 +1170,7 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
                 (copies.len() == 2
                     && desktop.controls("Fork from this turn").len() == 2
                     && desktop.controls("Regenerate in a fork").len() == 2
-                    && desktop.controls("Show message source").len() == 1)
+                    && desktop.controls("Show message source").len() == 2)
                     .then(|| copies.into_iter().find(|item| *item != copy).unwrap())
             },
         )
@@ -1195,8 +1195,8 @@ async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() 
             || {
                 (desktop.controls("Copy user message").len() == 2
                     && desktop.controls("Edit and resend in a fork").len() == 2
-                    && desktop.controls("Show message source").is_empty())
-                .then_some(())
+                    && desktop.controls("Show message source").len() == 1)
+                    .then_some(())
             },
         )
         .await;

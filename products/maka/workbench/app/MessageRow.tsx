@@ -170,8 +170,8 @@ export function MessageRow({
           if (action.value) onExpand?.(action.key);
         };
         // On the desktop the replies between tool calls carry no actions, so
-        // only the final reply has a row; the source view is in the context menu.
-        const actionRow = () => platform.isTerminal || row().finalOutput;
+        // only the final reply (or one already showing its source) has a row.
+        const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
         if (sender())
@@ -352,18 +352,16 @@ export function MessageRow({
                               {finalActions?.(row, () => rowKey(row()), menu)}
                             </If>
                           </If>
-                          <If when={platform.isTerminal}>
-                            <IconButton
-                              label={
-                                sourceMode()
-                                  ? tr('Show formatted message')
-                                  : tr('Show message source')
-                              }
-                              icon={sourceMode() ? 'file' : 'markdown'}
-                              selected={sourceMode()}
-                              onPress={toggleSource()}
-                            />
-                          </If>
+                          <IconButton
+                            label={
+                              sourceMode()
+                                ? tr('Show formatted message')
+                                : tr('Show message source')
+                            }
+                            icon={sourceMode() ? 'file' : 'markdown'}
+                            selected={sourceMode()}
+                            onPress={toggleSource()}
+                          />
                         </View>
                       </If>
                     </View>
@@ -527,7 +525,7 @@ export function MessageRow({
           </View>
         );
         if (!menu) return message;
-        const item = (props: { label: string; disabled?: boolean; select(): void }) => (
+        const Item = (props: { label: string; disabled?: boolean; select(): void }) => (
           <MenuItem
             accessibilityLabel={props.label}
             disabled={props.disabled}
@@ -557,19 +555,19 @@ export function MessageRow({
               of={menu.commands().filter((command) => command.action() !== null)}
               key={(command) => command.kind}
             >
-              {(command) =>
-                item({
-                  label: command().label(),
-                  disabled: command().busy(),
-                  select: command().action()!,
-                })
-              }
+              {(command) => (
+                <Item
+                  label={command().label()}
+                  disabled={command().busy()}
+                  select={command().action()!}
+                />
+              )}
             </Each>
             <If when={!user()}>
-              {item({
-                label: sourceMode() ? tr('Show formatted message') : tr('Show message source'),
-                select: toggleSource(),
-              })}
+              <Item
+                label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}
+                select={toggleSource()}
+              />
             </If>
           </ContextMenu>
         );
