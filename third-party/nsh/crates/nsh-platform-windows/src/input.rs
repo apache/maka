@@ -2645,13 +2645,14 @@ mod tests {
             );
             crate::text_input::create(&surface, &field);
             crate::text_input::config(&surface, &field, &InputConfig::default());
-            let output = view(
+            let container = view(
                 &surface.root,
                 3,
-                ViewKind::Text,
+                ViewKind::View,
                 rect(0.0, 80.0, 200.0, 40.0),
             );
-            output.state_mut().props.selectable_view = area;
+            container.state_mut().props.selectable_view = area;
+            let output = view(&container, 4, ViewKind::Text, rect(0.0, 0.0, 200.0, 40.0));
             let mut text = AttributedText::default();
             text.push("Model output", Default::default());
             text.selectable = Some(true);

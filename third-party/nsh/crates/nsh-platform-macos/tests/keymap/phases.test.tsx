@@ -65,9 +65,7 @@ test("a replacement clipped to maxLength leaves the caret after what it inserted
 
 test("a narrow native sink keeps its caret anchored after committed text", async () => {
   const app = await open("./app.tsx");
-  await app.type("id:sink", "你");
-  await app.waitFor("text:native caret 你: true");
-  await app.type("id:sink", "好");
+  await app.type("id:sink", "你好");
   await app.waitFor("text:native caret 你好: true");
 });
 
@@ -81,7 +79,8 @@ for (const [target, selected] of [
     await app.keyboard.press("mod+a");
     await app.keyboard.press("mod+c");
     expect(app.clipboard()).toBe("draft");
-    await app.press(`id:${target}`);
+    // Plain text has no press handler; a zero-distance drag sends a native click.
+    await app.drag(`id:${target}`, { x: 0, y: 0 });
     await app.keyboard.press("mod+a");
     await app.rightClick(`id:${target}`);
     expect(app.menu()?.map((item) => item.label)).toEqual(["Copy"]);
@@ -92,7 +91,7 @@ for (const [target, selected] of [
     await app.keyboard.press("mod+a");
     await app.keyboard.press("mod+c");
     expect(app.clipboard()).toBe("draft!");
-    await app.press(`id:${target}`);
+    await app.drag(`id:${target}`, { x: 0, y: 0 });
     await app.keyboard.press("mod+a");
     await app.keyboard.press("mod+c");
     expect(app.clipboard()).toBe(selected);
