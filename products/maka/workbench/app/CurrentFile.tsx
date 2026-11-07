@@ -39,6 +39,7 @@ import {
   C,
   bodyTextStyle,
   captionTextStyle,
+  cardFocusStyle,
   codeTextStyle,
   controlStyle,
   controlHoverStyle,
@@ -540,7 +541,7 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
         backgroundColor: C.card,
       }}
       hoverStyle={{ backgroundColor: C.cardRaised }}
-      focusStyle={controlFocusStyle()}
+      focusStyle={cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <Icon name="refresh" color={C.secondary} />

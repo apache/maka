@@ -63,6 +63,34 @@ export function Workbench(props: {
   const preview = () => props.previewShown() && canDockPreview();
   const browser = () => props.expanded() && canDockBrowser(props.previewShown());
   const room = () => sidePaneRoom(browser(), preview());
+  const panes = () => (
+    <>
+      <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+        {props.children}
+      </ResizablePanel>
+      <Each of={props.sides?.() ?? []} key={(pane) => pane}>
+        {(pane, index) => (
+          <ResizablePanel visible={index() < room()} minSize={CENTER_MIN} style={{ minHeight: 0 }}>
+            {pane().render()}
+          </ResizablePanel>
+        )}
+      </Each>
+      <ResizablePanel
+        visible={preview()}
+        size={preferredPreviewWidth()}
+        minSize={PREVIEW_MIN}
+        onResize={({ size }) => preferredPreviewWidth.set(size)}
+        style={{ minHeight: 0 }}
+      >
+        <If when={preview()}>{props.preview(true)}</If>
+      </ResizablePanel>
+    </>
+  );
+  // The desktop's panel holds the panes, so it needs their minimums and its own insets.
+  const panesMin = () =>
+    CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
+    (preview() ? PREVIEW_MIN : 0) +
+    INSET * (browser() ? 1 : 2);
   const previewDialog = signal(false);
   let wasDocked = canDockPreview();
   effect(() => {
@@ -90,58 +118,36 @@ export function Workbench(props: {
           minSize={BROWSER_MIN}
           maxSize={BROWSER_MAX}
           onResize={({ size }) => preferredWidth.set(size)}
-          style={{ minHeight: 0 }}
+          style={{ minHeight: 0, backgroundColor: C.chrome }}
         >
           <If when={browser()}>{props.navigation()}</If>
         </ResizablePanel>
-        <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          <View
-            style={{
-              flex: 1,
-              minHeight: 0,
-              ...(platform.isTerminal
-                ? {}
-                : {
-                    margin: INSET,
-                    marginLeft: browser() ? 0 : INSET,
-                    borderRadius: 12,
-                    overflow: 'hidden',
-                    backgroundColor: C.panel,
-                  }),
-            }}
-          >
-            <ResizablePanelGroup
-              axis="horizontal"
-              handleAccessibilityLabel={tr('Resize workspace panels')}
-              handleStyle={{ backgroundColor: C.line }}
-              style={{ flex: 1, minWidth: 0, minHeight: 0, gap: GAP }}
+        {platform.isTerminal ? (
+          panes()
+        ) : (
+          <ResizablePanel minSize={panesMin()} style={{ minHeight: 0 }}>
+            <View
+              style={{
+                flex: 1,
+                minHeight: 0,
+                margin: INSET,
+                marginLeft: browser() ? 0 : INSET,
+                borderRadius: 12,
+                overflow: 'hidden',
+                backgroundColor: C.panel,
+              }}
             >
-              <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-                {props.children}
-              </ResizablePanel>
-              <Each of={props.sides?.() ?? []} key={(pane) => pane}>
-                {(pane, index) => (
-                  <ResizablePanel
-                    visible={index() < room()}
-                    minSize={CENTER_MIN}
-                    style={{ minHeight: 0 }}
-                  >
-                    {pane().render()}
-                  </ResizablePanel>
-                )}
-              </Each>
-              <ResizablePanel
-                visible={preview()}
-                size={preferredPreviewWidth()}
-                minSize={PREVIEW_MIN}
-                onResize={({ size }) => preferredPreviewWidth.set(size)}
-                style={{ minHeight: 0 }}
+              <ResizablePanelGroup
+                axis="horizontal"
+                handleAccessibilityLabel={tr('Resize workspace panels')}
+                handleStyle={{ backgroundColor: C.line }}
+                style={{ flex: 1, minWidth: 0, minHeight: 0 }}
               >
-                <If when={preview()}>{props.preview(true)}</If>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </View>
-        </ResizablePanel>
+                {panes()}
+              </ResizablePanelGroup>
+            </View>
+          </ResizablePanel>
+        )}
       </ResizablePanelGroup>
       <If when={previewDialog()}>
         <Dialog

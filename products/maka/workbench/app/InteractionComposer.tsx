@@ -53,7 +53,7 @@ import {
   codeTextStyle,
   compact,
   controlDisabledStyle,
-  controlFocusStyle,
+  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
@@ -112,7 +112,7 @@ export function InteractionAction(props: {
         backgroundColor: props.primary ? C.accent : props.selected ? C.cardRaised : C.card,
       }}
       hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.cardRaised }}
-      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle()}
+      focusStyle={props.primary ? { backgroundColor: C.accentHover } : cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -958,7 +958,7 @@ export function InteractionComposer({
                                     : C.card,
                               }}
                               hoverStyle={{ backgroundColor: C.cardRaised }}
-                              focusStyle={controlFocusStyle()}
+                              focusStyle={cardFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
                               {/* As tall as the label's line, so the mark centres on it. */}

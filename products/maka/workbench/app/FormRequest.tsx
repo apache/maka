@@ -31,7 +31,7 @@ import {
   captionTextStyle,
   compact,
   controlDisabledStyle,
-  controlFocusStyle,
+  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
@@ -62,7 +62,7 @@ function Choice(props: {
         backgroundColor: props.selected ? C.cardRaised : C.card,
       }}
       hoverStyle={{ backgroundColor: C.cardRaised }}
-      focusStyle={controlFocusStyle()}
+      focusStyle={cardFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>

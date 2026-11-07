@@ -173,6 +173,8 @@ export const fieldBoxStyle = () =>
   platform.isTerminal ? {} : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
 export const controlHoverStyle = () => ({ backgroundColor: C.raised });
 export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor: C.accent });
+/** Focus for a control that rests on a card: one step above the card. */
+export const cardFocusStyle = () => ({ ...controlFocusStyle(), backgroundColor: C.cardRaised });
 export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };
