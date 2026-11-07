@@ -51,6 +51,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
+import { getSettingsNavigationCopy } from './locales/settings-navigation-copy.js';
 import { SETTINGS_NAV } from './settings/settings-nav.js';
 import type { Command } from './features/overlays/index.js';
 
@@ -271,14 +272,16 @@ export function buildCommandList(args: {
 
   // One palette command per Settings section so ⌘K → label lands the user
   // directly on that page.
+  const settingsSections = getSettingsNavigationCopy(args.locale).sections;
   for (const navItem of SETTINGS_NAV) {
+    const sectionLabel = settingsSections[navItem.id].label;
     cmds.push({
       id: `settings:${navItem.id}`,
       kind: 'action',
-      label: copy.settingsCommand(copy.settingsSections[navItem.id]),
+      label: copy.settingsCommand(sectionLabel),
       group: copy.groups.settings,
       Icon: navItem.Icon as LucideIcon,
-      keywords: copy.settingsKeywords(navItem.id, copy.settingsSections[navItem.id]),
+      keywords: copy.settingsKeywords(navItem.id, sectionLabel),
       run: () => args.onOpenSettingsSection(navItem.id),
     });
   }
