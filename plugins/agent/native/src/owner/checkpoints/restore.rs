@@ -109,24 +109,13 @@ impl Owner {
                 let (admission, session) = owner
                     .checkpoint_admission(&input.checkpoint.session_id, Some(&path))
                     .await?;
-                if owner.behavior.is_some()
-                    || session.archived
+                if session.archived
                     || session.configuration.parent_session_id.is_some()
                     || session
                         .configuration
                         .backend
                         .as_ref()
                         .is_some_and(|v| !matches!(v, BackendPreference::Model { .. }))
-                    || owner.graph_selected(&session.id).await?
-                    || owner
-                        .store
-                        .session(&session.id)
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .session_manager(&session.id)
-                        .await
-                        .map_err(|_| "agent_session_unavailable")?
-                        .is_some()
                     || owner
                         .goals
                         .repository

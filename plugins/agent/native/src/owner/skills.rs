@@ -180,14 +180,6 @@ impl Owner {
                     &self.managed_worktrees,
                 )
                 .await?;
-                // Selection observes the current epoch without admitting graph work.
-                let graph = match &self.graphs {
-                    Some(graphs) => graphs
-                        .current(session_id)
-                        .await?
-                        .is_some_and(|control| control.selected),
-                    None => false,
-                };
                 let catalog = if external {
                     self.mcp_projects.base.clone()
                 } else {
@@ -200,7 +192,6 @@ impl Owner {
                 let tools = tool_names(self.select_catalog_tools(
                     &catalog.tools,
                     Some(session_id),
-                    graph,
                     allowed_tools.as_deref(),
                     editing,
                 ));
@@ -228,13 +219,8 @@ impl Owner {
                         )
                         .await?
                 };
-                let tools = tool_names(self.select_catalog_tools(
-                    &catalog.tools,
-                    None,
-                    false,
-                    None,
-                    editing,
-                ));
+                let tools =
+                    tool_names(self.select_catalog_tools(&catalog.tools, None, None, editing));
                 (
                     "candidates",
                     serde_json::to_value(maka_skills_api::contract::CandidatesRead {

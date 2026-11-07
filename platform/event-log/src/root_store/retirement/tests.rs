@@ -175,12 +175,7 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
         .await
         .unwrap();
     let outcome = stale
-        .remove_session_family_guarded(
-            "parent",
-            expected,
-            Arc::new(RemovalAuthority::Unmanaged),
-            Some(plan),
-        )
+        .remove_session_family_guarded("parent", expected, Some(plan))
         .await
         .unwrap();
     assert!(
@@ -192,11 +187,8 @@ async fn promoted_draft_rejects_stale_plan_and_retries_with_its_binding_pin() {
     owner.connection.run(|_| Ok(())).await.unwrap();
 
     let removing = root.clone();
-    let removal = tokio::spawn(async move {
-        removing
-            .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
-            .await
-    });
+    let removal =
+        tokio::spawn(async move { removing.remove_session_family("parent", expected).await });
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if root
@@ -250,7 +242,6 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
             session_id: "child".into(),
             creator: Namespace::new("example", Scope::Profile).unwrap(),
             fingerprint: "child".into(),
-            managed: false,
             authority_session_id: Some("parent".into()),
         },
         &json!({}),
@@ -260,7 +251,7 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
     .unwrap();
     let expected = parent.get::<Value>().await.unwrap().unwrap().revision;
     let RemoveFamilyResult::Accepted(plan) = root
-        .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
+        .remove_session_family("parent", expected)
         .await
         .unwrap()
     else {
@@ -302,7 +293,7 @@ async fn removal_retry_keeps_a_restored_child_and_its_new_work_unchanged() {
         .unwrap();
     assert_eq!(
         owner
-            .remove_session_family("parent", expected, RemovalAuthority::Unmanaged)
+            .remove_session_family("parent", expected)
             .await
             .unwrap(),
         RemoveFamilyResult::Accepted(plan)

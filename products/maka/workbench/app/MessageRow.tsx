@@ -47,9 +47,9 @@ import type { ImagePreview } from './ImageThumbnail';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
-  if (origin?.kind === 'goal')
-    return tr('Pursuing Goal: {objective}', { objective: origin.objective });
-  return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
+  return origin?.kind === 'goal'
+    ? tr('Pursuing Goal: {objective}', { objective: origin.objective })
+    : null;
 }
 
 function senderLabel(sessionId: string, senders?: MessageSenders): string {

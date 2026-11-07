@@ -179,8 +179,7 @@ async fn run_from(
             .with_language(input.configuration.code_language),
         inner.shared.loaded(&input.invocation.session_id),
     )
-    .with_model(input.provider.tool_context())
-    .with_behavior(input.configuration.orchestration_mode.clone());
+    .with_model(input.provider.tool_context());
     let mut pending: Option<auto_context::Pending> = None;
     let mut handoff_cleanup = None;
     let result = std::panic::AssertUnwindSafe(async {

@@ -26,8 +26,6 @@ publish.workspace = true
 [dependencies]
 maka-code-runtime.workspace = true
 maka-agent-facts.workspace = true
-maka-agent-ports.workspace = true
-maka-capabilities.workspace = true
 maka-plugin-core.workspace = true
 deno_core.workspace = true
 deno_error.workspace = true

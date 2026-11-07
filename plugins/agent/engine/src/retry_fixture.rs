@@ -119,8 +119,7 @@ pub async fn seed_due_model_retry(
             .with_language(input.configuration.code_language),
         engine.0.loaded(&input.invocation.session_id),
     )
-    .with_model(input.provider.tool_context())
-    .with_behavior(input.configuration.orchestration_mode.clone());
+    .with_model(input.provider.tool_context());
     let mut retained_prompt = None;
     let result = async {
         let mut opening = RuntimeEvent::new(

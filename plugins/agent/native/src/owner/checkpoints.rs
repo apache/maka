@@ -192,7 +192,6 @@ impl Owner {
                 deployment: self.data_source.deployment,
                 namespace: self.data_source.namespace.clone(),
             },
-            self.behavior.is_some(),
         )
     }
 

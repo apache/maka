@@ -26,6 +26,7 @@ use maka_agent_engine::{Engine, RunError, RunInput, RunWork};
 mod assistant;
 mod attachments;
 mod auxiliary;
+mod bot;
 mod checkpoints;
 mod compaction;
 mod computer_apps;
@@ -34,23 +35,19 @@ mod execution;
 mod external_setup;
 mod files;
 mod fork;
+mod git;
+mod global_instructions;
 mod goal;
-mod graph;
 mod imports;
 mod interactions;
 mod lifecycle;
+mod mcp;
 mod models;
 mod notifications;
-mod preferences;
-mod projects;
-mod system_permission;
-pub(crate) use notifications::ReturnRoute;
-mod bot;
-mod git;
-mod global_instructions;
-mod mcp;
 mod patches;
 mod predictions;
+mod preferences;
+mod projects;
 mod queue;
 mod recall;
 mod recap;
@@ -58,6 +55,7 @@ mod runs;
 mod scheduler;
 mod skills;
 mod steering;
+mod system_permission;
 mod title;
 mod todo;
 mod work;
@@ -107,8 +105,6 @@ struct MessageBasis {
     client_mcp: Option<crate::mcp::ClientGeneration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compaction_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    graph: Option<maka_graph::Epoch>,
     #[serde(default, skip_serializing_if = "is_agent_collaboration")]
     collaboration_mode: CollaborationMode,
     #[serde(default, skip_serializing_if = "BackgroundKind::is_schedule")]
@@ -150,9 +146,6 @@ enum BackgroundKind {
     #[default]
     Schedule,
     Goal(Uuid),
-    /// Planning mode is gone, but a checkpoint parked while executing an approved
-    /// plan still carries this. It must read back so that its recovery can end it.
-    Plan(String),
 }
 impl BackgroundKind {
     fn is_schedule(&self) -> bool {
@@ -212,7 +205,6 @@ fn intersect_tools(
 }
 
 pub(crate) struct Owner {
-    graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
     pub store: Arc<RootStore>,
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
@@ -229,7 +221,6 @@ pub(crate) struct Owner {
     pub(crate) catalog: Arc<maka_providers::catalog::Catalog>,
     credentials: crate::model::Credentials,
     revision: SourceRevision,
-    behavior: Option<BuiltinBehavior>,
     configured_locale: LanguagePreference,
     native_language: Language,
     pub workspace_roots: Vec<workspace::Root>,
@@ -261,10 +252,6 @@ pub(crate) struct Owner {
     #[cfg(all(test, target_os = "macos"))]
     file_native_hints: std::sync::atomic::AtomicBool,
     stop: CancellationToken,
-}
-#[derive(Clone, Copy)]
-pub(crate) enum BuiltinBehavior {
-    WorkHub,
 }
 
 impl Owner {
@@ -338,21 +325,8 @@ impl Owner {
         input: Value,
         catalog: Arc<maka_providers::catalog::Catalog>,
     ) -> Result<Arc<Self>, String> {
-        Self::open_behavior(context, input, None, vec![], BTreeMap::new(), None, catalog).await
-    }
-    pub(crate) async fn open_behavior(
-        context: NativeContext,
-        input: Value,
-        behavior: Option<BuiltinBehavior>,
-        mut additional: Vec<maka_agent_facts::tools::ToolRegistration>,
-        mut internal_bindings: BTreeMap<String, Option<String>>,
-        graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
-        catalog: Arc<maka_providers::catalog::Catalog>,
-    ) -> Result<Arc<Self>, String> {
-        let implementation = match behavior {
-            Some(BuiltinBehavior::WorkHub) => maka_agent_api::workhub::IMPLEMENTATION,
-            None => IMPLEMENTATION,
-        };
+        let mut additional = Vec::new();
+        let mut internal_bindings = BTreeMap::new();
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
         }
@@ -368,11 +342,10 @@ impl Owner {
             deployment: persistence.source().deployment,
             namespace: context.activation().instance().clone(),
         };
-        let prefix = maka_agent_authority::session_namespace(
+        let prefix = maka_host_runtime::storage::instance_prefix(
             &persistence.source().state_domain,
             persistence.source().deployment,
             context.activation().instance(),
-            implementation != IMPLEMENTATION,
         );
         let managed_worktrees = root.canonical_path().join("subagent-worktrees");
         let workspace_roots =
@@ -389,9 +362,9 @@ impl Owner {
         let stop = CancellationToken::new();
         let revision = SourceRevision {
             kind: SourceKind::ModelProvider,
-            name: implementation.into(),
+            name: IMPLEMENTATION.into(),
             package_id: context.package().id.clone(),
-            entry_id: implementation.into(),
+            entry_id: IMPLEMENTATION.into(),
             activation: context.activation().epoch().to_string(),
             revision: context.package().revision.clone(),
         };
@@ -507,12 +480,6 @@ impl Owner {
             workers.clone(),
         )
         .and_then(|mut catalog| {
-            if graphs.as_ref().is_some_and(|graphs| graphs.enabled()) {
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(crate::workhub::tasks::graph::NAMES)
-                    .map_err(|error| error.to_string())?;
-            }
             if settings.goals {
                 catalog.tools = catalog
                     .tools
@@ -615,7 +582,6 @@ impl Owner {
             stop.child_token(),
         ));
         let owner = Arc::new(Self {
-            graphs,
             goals,
             auxiliary,
             todo,
@@ -631,7 +597,6 @@ impl Owner {
             managed_worktrees,
             home,
             revision,
-            behavior,
             configured_locale,
             native_language,
             instruction_home,
@@ -801,8 +766,8 @@ impl Owner {
                 tools: None,
             });
         };
-        // Accepted coordinator work may resume after its original turn ended.
-        // Custody, when held, selects the real caller store; workspace donors do not.
+        // Un-custodied Agent calls (such as external ACP session forwarding)
+        // resolve the session directly; custody selects the real caller store.
         let store = match scope.execution() {
             Some(_) => self.caller_store(scope)?,
             None => self
@@ -1210,7 +1175,6 @@ impl Owner {
         let selected = self.select_catalog_tools(
             &catalog.tools,
             Some(session),
-            basis.graph.is_some(),
             basis.allowed_tools.as_deref(),
             editing,
         );
@@ -1233,7 +1197,6 @@ impl Owner {
         &self,
         catalog: &maka_tools::ToolCatalog,
         session: Option<&str>,
-        graph: bool,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> maka_tools::ToolCatalog {
@@ -1245,7 +1208,6 @@ impl Owner {
             .filter(|name| {
                 let speaks = *name == bot::SEND_USER || *name == bot::SLEEP;
                 (speaks && !bot)
-                    || (!graph && crate::workhub::tasks::graph::NAMES.contains(name))
                     || (!(speaks && bot)
                         && allowed_tools.is_some_and(|allowed| {
                             !allowed.iter().any(|allowed| allowed.as_str() == *name)
@@ -1542,7 +1504,7 @@ impl Owner {
         if external && !host_bridge && selected_catalog.revision.is_some() {
             return Err("agent_executor_cannot_use_session_mcp".into());
         }
-        let mut basis = MessageBasis {
+        let basis = MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -1552,7 +1514,6 @@ impl Owner {
                 &snapshot,
                 language,
             )),
-            graph: None,
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: !external && self.settings.tool_discovery,
@@ -1592,8 +1553,6 @@ impl Owner {
                 self.tool_basis.clone()
             },
         };
-        self.prepare_graph_behavior(&id, &mut basis, queued.is_none())
-            .await?;
         let identity = self.operation_id(operation);
         let invocation = queued.clone().unwrap_or_else(|| Invocation {
             session_id: id.clone(),
@@ -1772,10 +1731,6 @@ impl Owner {
             || !self.workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()
-            || self
-                .graphs
-                .as_ref()
-                .is_some_and(|graphs| graphs.keeps_host_awake())
         {
             return None;
         }
@@ -1807,10 +1762,6 @@ impl Owner {
             let todo = owner.todo.finish().await;
             let bot = owner.bot.finish().await;
             let goals = owner.goals.finish().await;
-            let graph = match &owner.graphs {
-                Some(graphs) => graphs.finish().await,
-                None => Ok(()),
-            };
             let recap = owner.recap_storage.finish().await;
             let executors = owner.executors.finish().await;
             let auxiliary = owner.auxiliary.resources.finish().await;
@@ -1832,7 +1783,6 @@ impl Owner {
             todo?;
             bot?;
             goals?;
-            graph?;
             recap?;
             executors?;
             auxiliary.map_err(|error| error.to_string())?;

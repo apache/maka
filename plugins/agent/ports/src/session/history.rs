@@ -17,17 +17,11 @@
  * under the License.
  */
 
-use futures_util::future::BoxFuture;
 use maka_agent_facts::attachment::AttachmentRef;
 pub use maka_agent_facts::history::RowPosition;
 use maka_capabilities::authorization::CommandError;
-use maka_capabilities::call::Scope;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-
-pub use maka_agent_facts::message::EditableMessage;
-pub use maka_agent_facts::session::CopyPurpose;
 
 /// A bounded presentation preview; the original message remains in history.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -37,87 +31,6 @@ pub struct Prompt {
     pub position: RowPosition,
     #[schemars(length(max = 4096))]
     pub text: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CopySource {
-    pub session_id: String,
-    pub expected_revision: u64,
-    pub purpose: CopyPurpose,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CopySession {
-    pub source: CopySource,
-    pub root: crate::execution::CreateRoot,
-}
-impl CopySession {
-    pub fn validate(&self) -> Result<(), CommandError> {
-        self.root
-            .validate()
-            .map_err(|error| CommandError::Invalid(error.to_string()))?;
-        crate::name(&self.source.session_id)
-            .map_err(|error| CommandError::Invalid(error.to_string()))?;
-        if self.source.expected_revision == 0 || self.source.expected_revision >= 1 << 53 {
-            return Err(CommandError::Invalid(
-                "invalid source Session revision".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum CopyResult {
-    Committed {
-        session: crate::execution::ChildSession,
-    },
-    SourceRevisionConflict {
-        expected_revision: u64,
-        actual_revision: u64,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourcesRead {
-    pub session_id: String,
-    pub turn_id: String,
-}
-impl SourcesRead {
-    pub fn validate(&self) -> Result<(), CommandError> {
-        for id in [&self.session_id, &self.turn_id] {
-            crate::name(id).map_err(|_| CommandError::Invalid("invalid message source".into()))?;
-        }
-        Ok(())
-    }
-}
-
-/// Copy an uploaded historical material into an independently authorized Session.
-/// Identifiers locate content; the history call and destination capability grant access.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CopyMaterial {
-    pub session_id: String,
-    pub artifact_id: String,
-    pub target_session_id: String,
-}
-impl CopyMaterial {
-    pub fn validate(&self) -> Result<(), CommandError> {
-        for id in [&self.session_id, &self.artifact_id, &self.target_session_id] {
-            crate::name(id)
-                .map_err(|_| CommandError::Invalid("invalid history material".into()))?;
-        }
-        Ok(())
-    }
 }
 
 /// Tool output is available through source reads in both views. Conversation
@@ -508,39 +421,6 @@ pub enum Page {
         before: Option<Cursor>,
         after: Option<Cursor>,
     },
-}
-
-/// Admitted Agent tools can recall this trusted Host profile's history.
-/// Remote/background calls retain their actual principal's ReadHistory scope.
-/// Every page rechecks current access and Session existence, including old fences.
-pub trait History: Send + Sync {
-    /// A new root with owned immutable history. Source read access does not grant
-    /// destination creation; both capabilities and the source workspace are checked.
-    fn copy_session(
-        &self,
-        call: Scope,
-        target: Arc<dyn crate::execution::Commands>,
-        input: CopySession,
-    ) -> BoxFuture<'_, Result<CopyResult, CommandError>>;
-    /// Ordered preparation-free opening sources of a Turn, not its aggregated UI row.
-    /// Their identities and intent grant no execution authority.
-    fn sources(
-        &self,
-        call: Scope,
-        input: SourcesRead,
-    ) -> BoxFuture<'_, Result<Vec<EditableMessage>, CommandError>>;
-    fn list(
-        &self,
-        call: Scope,
-        input: super::catalog::List,
-    ) -> BoxFuture<'_, Result<super::catalog::Page, CommandError>>;
-    fn read(&self, call: Scope, input: Read) -> BoxFuture<'_, Result<Page, CommandError>>;
-    fn copy_material(
-        &self,
-        call: Scope,
-        target: Arc<dyn crate::execution::Commands>,
-        input: CopyMaterial,
-    ) -> BoxFuture<'_, Result<AttachmentRef, CommandError>>;
 }
 
 #[cfg(test)]

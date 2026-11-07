@@ -152,12 +152,6 @@ impl EventLog {
                     expected: request.expected_source_revision, actual,
                 });
             }
-            let manager: Option<(String, String)> = tx.query_row("SELECT package_id, scope_id FROM plugin_sessions WHERE session_id = ? AND managed = 1", params![&request.source_session_id], |row| Ok((row.get(0)?, row.get(1)?,))).optional()?;
-            if manager.is_some_and(|(package, scope)| origin.as_ref().is_none_or(|origin|
-                origin.creator.package() != package || String::from(origin.creator.scope().clone()) != scope
-            )) {
-                return Err(StoreError::ManagedSession);
-            }
             let observed: i64 = tx.query_row("SELECT COALESCE(MAX(sequence),0) FROM event_log", params![], |row| row.get(0))?;
             let through = history::resolve_cut(&tx, &request.source_session_id, &cut, observed)?;
             safety::require_safe_through(&tx, &request.source_session_id, None, through)?;

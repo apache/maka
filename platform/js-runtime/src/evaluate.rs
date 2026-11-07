@@ -107,7 +107,7 @@ pub(crate) async fn evaluate(
                 if (typeof key !== "string") throw new ErrorClass("store key must be a string");
                 const json = stringify(value);
                 if (json === undefined) throw new ErrorClass("stored value must be JSON");
-                check(save(key, JSON.parse(json)));
+                check(save(key, json));
             }},
             load: (key) => {{
                 if (typeof key !== "string") throw new ErrorClass("load key must be a string");
@@ -132,8 +132,8 @@ pub(crate) async fn evaluate(
         }};
         for (const [name, value] of Object.entries(helpers))
             Object.defineProperty(globalThis, name, {{value}});
-        const invoke = async (name, input) => {{
-            const outcome = await call(name, input);
+        const invoke = async (name, json) => {{
+            const outcome = await call(name, json);
             if (outcome.ok) return outcome.value;
             const native = outcome.error.native;
             const error = native?.name === "SkyComputerUseError"
@@ -150,7 +150,12 @@ pub(crate) async fn evaluate(
         const catalog = Object.create(null);
         for (const [alias, name] of {names}) {{
             Object.defineProperty(catalog, alias, {{
-                value: (input) => invoke(name, input), enumerable: true
+                value: (input) => {{
+                    const json = input === undefined ? "null" : stringify(input);
+                    if (json === undefined) throw new ErrorClass("value is not JSON");
+                    return invoke(name, json);
+                }},
+                enumerable: true
             }});
         }}
         Object.defineProperty(globalThis, "tools", {{value: Object.freeze(catalog)}});
@@ -228,5 +233,5 @@ pub(crate) async fn evaluate(
         Outcome::Success { json } => json,
         Outcome::Failure { error } => return Err(error),
     };
-    serde_json::from_str(&json).map_err(|error| execution(error.to_string()))
+    crate::json::decode_str(&json).map_err(|error| execution(error.to_string()))
 }

@@ -51,7 +51,6 @@ members = [
     "plugins/agent/acp-executor/engine",
     "plugins/workspace/workspace-files/engine",
     "plugins/agent/goal",
-    "plugins/agent/graph",
     "plugins/agent/insights",
     "plugins/workspace/workspace-decisions-api/engine",
     "platform/js-runtime",
@@ -150,15 +149,12 @@ maka-acp = { path = "products/maka/acp" }
 maka-agent-engine = { path = "plugins/agent/engine" }
 maka-agent-native = { path = "plugins/agent/native" }
 maka-assistant = { path = "plugins/agent/assistant" }
-maka-background-health = { path = "platform/background-health" }
 maka-config = { path = "plugins/settings/store" }
 maka-computer-use = { path = "platform/computer-use", default-features = false }
 maka-event-log = { path = "platform/event-log" }
 maka-external-agent = { path = "plugins/agent/acp-executor/engine" }
 maka-fs-tools = { path = "plugins/workspace/workspace-files/engine" }
 maka-goal = { path = "plugins/agent/goal" }
-maka-graph = { path = "plugins/agent/graph" }
-maka-insights = { path = "plugins/agent/insights" }
 maka-decisions-api = { path = "plugins/workspace/workspace-decisions-api/engine" }
 maka-js-runtime = { path = "platform/js-runtime" }
 maka-session-state = { path = "platform/session-state" }
@@ -185,7 +181,6 @@ maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
-pulldown-cmark = { version = "0.13.5", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "deflate", "socks"] }
 rusqlite = { version = "0.41.0", features = ["bundled"] }
@@ -202,7 +197,6 @@ tokio-util = { version = "0.7.20", features = ["rt"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 tracing = "0.1.44"
 unicode-segmentation = "1.13.3"
-unicode-width = "0.2.2"
 sys-locale = "0.3.2"
 termina = { path = "third-party/termina" }
 uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }

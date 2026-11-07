@@ -54,7 +54,6 @@ pub(crate) fn store_cause(error: &StoreError) -> &'static str {
         StoreError::HistoryTurnSplit => "store_history_turn_split",
         StoreError::HistoryUnsettled => "store_history_unsettled",
         StoreError::HistoryProviderEffectUnresolved => "store_history_provider_effect_unresolved",
-        StoreError::ManagedSession => "store_session_managed",
         _ => "store_error",
     }
 }

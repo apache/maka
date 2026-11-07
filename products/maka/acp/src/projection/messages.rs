@@ -401,8 +401,8 @@ mod tests {
             final_output: false,
             has_references: false,
             model: None,
-            origin: Some(maka_agent_facts::message::MessageOrigin::WorkhubTask {
-                task_id: "task-original".into(),
+            origin: Some(maka_agent_facts::message::MessageOrigin::BotWorker {
+                session_id: "worker-original".into(),
             }),
             compaction: None,
             attachments: vec![maka_agent_api::contract::HistoryAttachment {
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(
             update["_meta"]["maka"]["origin"],
             serde_json::json!({
-                "kind": "workhub_task", "taskId": "task-original"
+                "kind": "bot_worker", "sessionId": "worker-original"
             })
         );
         assert_eq!(update["_meta"]["maka"]["hostMessageId"], "u");

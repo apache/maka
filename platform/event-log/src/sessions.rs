@@ -35,9 +35,7 @@ mod origin;
 mod processes;
 pub(crate) mod removal;
 pub use origin::PluginSession;
-pub use removal::{
-    RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionRemovalResult, SessionRetirement,
-};
+pub use removal::{RemovalPlan, RemoveFamilyResult, SessionRemovalResult, SessionRetirement};
 pub(crate) mod read_state;
 pub(crate) use activity::{initialize_execution, project_execution, register_functions};
 pub use execution::{CatalogMessage, SessionExecution, SessionExecutionState};

@@ -98,10 +98,6 @@ pub struct Configuration {
     /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
-    /// Retired with planning mode and ignored. Package updates keep a saved
-    /// installation's parameters, so this key must keep validating.
-    #[serde(default, skip_serializing)]
-    pub plans: bool,
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
@@ -633,7 +629,6 @@ pub enum Rejection {
     WorkspaceUnavailable,
     SessionUnavailable,
     HistoryUnavailable,
-    ManagedSession,
     Closed,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -2134,21 +2129,6 @@ mod tests {
         ] {
             assert!(!send.is_valid(&legacy));
             assert!(serde_json::from_value::<Send>(legacy).is_err());
-        }
-    }
-
-    #[test]
-    fn a_saved_installation_with_the_retired_plans_setting_still_validates() {
-        for plans in [true, false] {
-            let saved = json!({
-                "plans": plans,
-                "permissions": {"access": "workspace_write", "requestPermissions": true},
-                "workspaceRoots": [],
-                "tools": [],
-            });
-            assert!(jsonschema::is_valid(&configuration_schema(), &saved));
-            let configuration: Configuration = serde_json::from_value(saved).unwrap();
-            assert!(serde_json::to_value(configuration).unwrap()["plans"].is_null());
         }
     }
 

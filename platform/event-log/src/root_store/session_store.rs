@@ -965,14 +965,6 @@ impl SessionStore {
             .await
     }
 
-    pub async fn session_manager(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<maka_capabilities::storage::Namespace>, StoreError> {
-        self.check_session(session_id)?;
-        self.scoped().await?.session_manager(session_id).await
-    }
-
     pub async fn admit_session_process_for(
         &self,
         invocation: &maka_agent_facts::event::Invocation,

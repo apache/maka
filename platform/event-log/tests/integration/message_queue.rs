@@ -242,8 +242,8 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
         let mut pending = admission(&first, id, Disposition::Followup);
         if id == "two" {
             pending.source.message.origin =
-                Some(maka_agent_facts::message::MessageOrigin::WorkhubGraph {
-                    graph_id: "graph-original".into(),
+                Some(maka_agent_facts::message::MessageOrigin::BotWorker {
+                    session_id: "worker-original".into(),
                 });
         }
         log.admit_message(pending).await.unwrap();
@@ -407,8 +407,8 @@ async fn queue_edits_cancel_or_deliver_once_with_atomic_revision_and_original_ow
         entry.invocation, first,
         "promotion does not rewrite original admission ownership"
     );
-    let origin = Some(maka_agent_facts::message::MessageOrigin::WorkhubGraph {
-        graph_id: "graph-original".into(),
+    let origin = Some(maka_agent_facts::message::MessageOrigin::BotWorker {
+        session_id: "worker-original".into(),
     });
     assert_eq!(entry.source.message.origin, origin);
     assert_eq!(entry.steering_target(), &second);

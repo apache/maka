@@ -277,7 +277,6 @@ CREATE TABLE plugin_sessions (
     package_id TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
-    managed INTEGER NOT NULL CHECK(managed IN (0, 1)),
     authority_session_id TEXT,
     CHECK(authority_session_id IS NULL OR authority_session_id != session_id)
 );
@@ -594,26 +593,6 @@ CREATE TABLE context_lineage_depths (
 CREATE TABLE context_lineage_jumps (
  invocation_id TEXT NOT NULL, level INTEGER NOT NULL, ancestor_id TEXT NOT NULL,
  PRIMARY KEY(invocation_id,level)
-) WITHOUT ROWID;
-
-CREATE TABLE plugin_message_receipts (
-    package_id TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
-    target_session_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json))
-        CHECK(json_extract(receipt_json, '$.invocation.session_id') IS target_session_id),
-    PRIMARY KEY(package_id, scope_id, target_session_id, operation_id)
-) WITHOUT ROWID;
-
-CREATE TABLE plugin_execution_receipts (
-    package_id TEXT NOT NULL,
-    scope_id TEXT NOT NULL,
-    target_session_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json))
-        CHECK(json_extract(receipt_json, '$.invocation.session_id') IS target_session_id),
-    PRIMARY KEY(package_id, scope_id, target_session_id, operation_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE workspace_bindings (

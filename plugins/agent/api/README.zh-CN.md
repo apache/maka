@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-包含 Agent、Session、Executor、WorkHub 的协议声明以及 Agent 配置 schema。原生服务与 SDK 生成共用这些定义。调用方只需要公开契约时，可以依赖这里，无需引入 Agent 执行引擎。
+包含 Agent、Session 与 Executor 的协议声明以及 Agent 配置 schema。原生服务与 SDK 生成共用这些定义。调用方只需要公开契约时，可以依赖这里，无需引入 Agent 执行引擎。
 
 独立 Desktop 通过同一个 Root 绑定的[公共 Host client](../../../platform/host-runtime/src/application/host/client.rs)使用持久 Agent 服务，不直接打开 Agent 存储，也不嵌入执行引擎。字段及 schema 以 [Agent 契约](src/contract.rs)和[交互契约](src/contract/interaction.rs)为准。
 
@@ -52,11 +52,11 @@ const input = {
 const operation = await context.services.agent[0].mutation('setCompactionPrompt', input);
 ```
 
-`gitStatus` 和 `gitDiff` 通过同一个 Agent 服务读取所选 Session 的仓库，也适用于 WorkHub 协调者会话。状态区分已暂存、工作区和未跟踪的变化；同一路径可以同时出现在已暂存和工作区部分。diff 分别比较 HEAD 与索引、索引与工作文件，或空文件与未跟踪文件。尚无提交的仓库返回 null `head`；没有仓库的工作区返回 null。路径以 `bytesBase64` 保留 Git 文件名的原始字节，重命名呈现为删除加新增。
+`gitStatus` 和 `gitDiff` 通过同一个 Agent 服务读取所选 Session 的仓库。状态区分已暂存、工作区和未跟踪的变化；同一路径可以同时出现在已暂存和工作区部分。diff 分别比较 HEAD 与索引、索引与工作文件，或空文件与未跟踪文件。尚无提交的仓库返回 null `head`；没有仓库的工作区返回 null。路径以 `bytesBase64` 保留 Git 文件名的原始字节，重命名呈现为删除加新增。
 
 这些查询提供当前的只读观察，不是仓库快照。状态完整返回已暂存、工作区和未跟踪的条目列表。单文件 diff 读取完整输入，区分文本、二进制、未变化和不支持的情况；文本补丁完整返回。仓库元数据、control 文件、状态条目、diff 输入和补丁在内存中缓冲。取消采用协作方式；这些查询不承诺有界内存或固定执行时限。所选工作区必须是仓库根目录；外部过滤器、稀疏检出、子模块等不支持的仓库特性会明确失败，不执行配置中的命令。工作区或比较基准变化后应重新查询。协议类型见 [Git 声明](src/contract/git.rs)；`snapshotPatch` 在工作区写者全部结清后捕获已完成工作的不可变补丁。捕获会读取完整源内容，并在发布前将完整补丁缓冲在内存中；`readPatch` 分页读取该原始产物，后续执行和 Host 重启不会改变它。
 
-`listFiles` 列出所选 Session 工作区中一个目录的直接子项，`watchFiles` 通知该目录需要重新读取；也适用于 WorkHub 协调者会话。`path` 为 null 表示工作区根目录，其他路径使用 `WorkspacePath`，以 `bytesBase64` 保留相对文件名的原始字节。符号链接作为叶子展示，不进入其目标；排除 `.git`、工作区标记及 Host 私有状态/control 目录，模型配置为无限制访问时也不例外。私有状态内仅允许读取 Session 已验证的受管 worktree。每页最多 128 项，以 512 KiB 为软字节目标，完整首项始终可以推进；路径保留完整相对字节。平台无法表示的文件名明确报错，不做有损转换。
+`listFiles` 列出所选 Session 工作区中一个目录的直接子项，`watchFiles` 通知该目录需要重新读取。`path` 为 null 表示工作区根目录，其他路径使用 `WorkspacePath`，以 `bytesBase64` 保留相对文件名的原始字节。符号链接作为叶子展示，不进入其目标；排除 `.git`、工作区标记及 Host 私有状态/control 目录，模型配置为无限制访问时也不例外。私有状态内仅允许读取 Session 已验证的受管 worktree。每页最多 128 项，以 512 KiB 为软字节目标，完整首项始终可以推进；路径保留完整相对字节。平台无法表示的文件名明确报错，不做有损转换。
 
 `skillCandidates` 和 `fileCandidates` 通过 `target` 选择补全上下文：已有对话使用 `{kind: 'session', sessionId}`；新草稿使用 `{kind: 'draft', workspace}`，其中工作区为 `WorkspaceSelection`。草稿工作区为 null 时只查询全局 skills；文件候选需要工作区。补全查询不会创建对话或工作区。`skillCandidates` 还接收 `backend` 和 `query`，按所选后端的可用工具过滤 skills。
 
@@ -126,7 +126,7 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 
 API 和私有 JSON 仍是开发中契约：不保留旧发布端点、Manifest 双轨或缺失 Workspace 字段的隐式兼容。旧形状的开发 checkpoint 数据需要显式离线迁移或重新生成。
 
-`restoreSessionCheckpoint` 输入为 `{ checkpoint: { sessionId, revision }, parent: "/absolute/allowed/directory", permissions, backend, acceptExternalWritersRisk: true }`。输入为获准根内的绝对路径或 `~` 前缀路径，目录物理身份由 Host 获取并重新验证。Host 在父目录中新建 `maka-restored-…` 子目录，不覆盖原项目。首版仅支持**同 Root、事件历史仍与存档点相同**的普通 native Session；已读、改名、置顶、之前的恢复不会使未变化的历史失效，当前元数据 revision 仅用于提交 CAS。历史已推进、Head 已移动、WorkHub、子 Session、Goal 状态和 executor backend 都拒绝。显式选择目标模型与权限，撤销旧授权；unverified 不会因恢复变成可信。
+`restoreSessionCheckpoint` 输入为 `{ checkpoint: { sessionId, revision }, parent: "/absolute/allowed/directory", permissions, backend, acceptExternalWritersRisk: true }`。输入为获准根内的绝对路径或 `~` 前缀路径，目录物理身份由 Host 获取并重新验证。Host 在父目录中新建 `maka-restored-…` 子目录，不覆盖原项目。首版仅支持**同 Root、事件历史仍与存档点相同**的普通 native Session；已读、改名、置顶、之前的恢复不会使未变化的历史失效，当前元数据 revision 仅用于提交 CAS。历史已推进、Head 已移动、子 Session、Goal 状态和 executor backend 都拒绝。显式选择目标模型与权限，撤销旧授权；unverified 不会因恢复变成可信。
 
 恢复在同一事务提交目录绑定与原操作回执，保留 Session ID 和 checkpoint Head，下一次发布仍以原 Head revision 做 CAS。不会回滚新历史，也不重建已丢失的 Root；加载/重新绑定不会自动调用模型或工具，显式发送下一条普通消息后才从新目录执行。跨 Root/Host 权威交接、任意历史回滚、完整辅助状态迁移和轮次中间恢复不在本次范围。
 

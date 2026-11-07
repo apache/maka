@@ -37,7 +37,6 @@ export const packageNames = [
   'workbench',
   'conversations',
   'composer',
-  'workhub',
   'host-logs',
   'recovery-gateway',
   'host-deployment-manager',
@@ -63,8 +62,6 @@ export type PackageName = (typeof packageNames)[number];
 export const instanceNames = [
   ...packageNames,
   'host-deployment-gateway',
-  'coordinator-workspace-processes',
-  'coordinator-protocol-processes',
   'workbench-ui',
   'conversations-ui',
   'composer-ui',
@@ -72,7 +69,7 @@ export const instanceNames = [
   'workspace-files-ui',
 ] as const;
 export type InstanceName = (typeof instanceNames)[number];
-type ExecutorInstanceName = `acp-${string}` | `coordinator-acp-${string}`;
+type ExecutorInstanceName = `acp-${string}`;
 export interface AcpExecutor {
   name: string;
   configuration: AcpExecutorConfiguration;
@@ -86,24 +83,19 @@ export interface CompositionConfiguration {
   web?: WorkspaceWebConfiguration;
   computer?: ComputerConfiguration;
   decisions_api?: WorkspaceDecisionsApiConfiguration;
-  coordinator?: AgentConfiguration;
-  coordinatorProcesses?: WorkspaceProcessConfiguration;
   acpExecutors?: AcpExecutor[];
   executorProcesses?: WorkspaceProcessConfiguration;
-  coordinatorAcpExecutors?: AcpExecutor[];
-  coordinatorExecutorProcesses?: WorkspaceProcessConfiguration;
   skills?: SkillLibraryConfiguration;
   hostDeployment: string;
 }
 /** The launcher assigns identities without knowing the product's instance structure. */
 export function installationNames(
-  configuration: Pick<CompositionConfiguration, 'acpExecutors' | 'coordinatorAcpExecutors'>,
+  configuration: Pick<CompositionConfiguration, 'acpExecutors'>,
 ): string[] {
   return [
     ...new Set([
       ...instanceNames,
       ...(configuration.acpExecutors ?? []).map((e) => `acp-${e.name}`),
-      ...(configuration.coordinatorAcpExecutors ?? []).map((e) => `coordinator-acp-${e.name}`),
     ]),
   ];
 }
@@ -158,7 +150,6 @@ const defaultUiAliases = Object.fromEntries(
 ) as UiAliases;
 const settingsUiImports = [
   'agent',
-  'agents',
   'settings',
   'authentication',
   'setup',
@@ -319,9 +310,7 @@ function settingsComposition(configuration: CompositionConfiguration) {
 }
 /** Keys and deployment belong to the installation, not to a build or shell. */
 export function composition(configuration: CompositionConfiguration): ApplicationSources {
-  const source = configuration.coordinator
-    ? workhubComposition(configuration)
-    : agentComposition(configuration);
+  const source = agentComposition(configuration);
   const bindings: Record<string, BindingTarget[]> = {
     ...source.host.instances.gateway!.bindings,
     management: [
@@ -330,10 +319,7 @@ export function composition(configuration: CompositionConfiguration): Applicatio
     receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
   };
   source.host.instances['conversations-ui']!.bindings = bindings;
-  source.host.instances['settings-ui']!.bindings = selectUiBindings(
-    { ...bindings, agents: [...(bindings.agent ?? []), ...(bindings.coordinator ?? [])] },
-    settingsUiImports,
-  );
+  source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
   source.host.instances['workspace-files-ui']!.bindings = selectUiBindings(
     bindings,
     workspaceUiImports,
@@ -519,7 +505,6 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     host.instances['protocol-processes'] = node('protocol-processes', {
       ...configuration.executorProcesses!,
       sessionOwner: [keys.agent],
-      sessionKind: 'agent',
     });
     for (const executor of executors) {
       host.instances[executorPath(executor.name)] = {
@@ -542,7 +527,6 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       {
         ...configuration.processes,
         sessionOwner: [keys.agent],
-        sessionKind: 'agent',
       },
       configuration.web && processMethods.includes('health')
         ? { web: [local('workspace-web', 'web')] }
@@ -697,171 +681,4 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       : []),
   ];
   return { host, deployment: configuration.hostDeployment, endpoints, native };
-}
-
-/** One native coordinator and an explicitly selected worker share the business Host. */
-function workhubComposition(configuration: CompositionConfiguration): ApplicationSources {
-  if (!configuration.coordinator)
-    throw new Error('WorkHub requires an explicit coordinator Agent configuration');
-  const { keys, packages } = configuration;
-  const worker = agentComposition(configuration);
-  const coordinator = agentComposition({
-    ...configuration,
-    agent: configuration.coordinator,
-    processes: configuration.coordinatorProcesses,
-    acpExecutors: configuration.coordinatorAcpExecutors,
-    executorProcesses: configuration.coordinatorExecutorProcesses,
-    keys: {
-      ...keys,
-      ...Object.fromEntries(
-        (configuration.coordinatorAcpExecutors ?? []).map((e) => [
-          `acp-${e.name}`,
-          keys[`coordinator-acp-${e.name}`],
-        ]),
-      ),
-    },
-  });
-  const local = (name: string, exportName: string): BindingTarget => ({
-    kind: 'instance',
-    path: [name],
-    export: exportName,
-  });
-  const processName = 'coordinator-workspace-processes';
-  const protocolName = 'coordinator-protocol-processes';
-  const coordinatorExecutors = new Set(
-    (configuration.coordinatorAcpExecutors ?? []).map((e) => `acp-${e.name}`),
-  );
-  const hostName = (name: string) =>
-    name === 'agent'
-      ? 'workhub'
-      : name === 'workspace-processes'
-        ? processName
-        : name === 'protocol-processes'
-          ? protocolName
-          : coordinatorExecutors.has(name)
-            ? `coordinator-${name}`
-            : name;
-  const remapHost = (target: BindingTarget): BindingTarget =>
-    target.kind === 'instance' && target.path.length === 1
-      ? {
-          ...target,
-          path: [hostName(target.path[0])],
-        }
-      : target;
-  const remapBindings = (node: CompositionNode, map: (target: BindingTarget) => BindingTarget) =>
-    Object.fromEntries(
-      Object.entries(node.bindings ?? {}).map(([name, targets]) => [name, targets?.map(map)]),
-    );
-  for (const [name, node] of Object.entries(coordinator.host.instances)) {
-    if (!node) continue;
-    if (name === 'agent' || name === 'gateway' || name === 'workspace-processes') continue;
-    const mapped = hostName(name);
-    if (!worker.host.instances[mapped])
-      worker.host.instances[mapped] = {
-        ...node,
-        ...(name === 'protocol-processes'
-          ? {
-              key: keys[protocolName],
-              configuration: {
-                values: {
-                  ...node.configuration!.values,
-                  sessionOwner: [keys.workhub],
-                  sessionKind: 'workhub',
-                },
-              },
-            }
-          : {}),
-        bindings: remapBindings(node, remapHost),
-      };
-  }
-  const agent = coordinator.host.instances.agent!;
-  worker.host.instances.workhub = {
-    ...agent,
-    key: keys.workhub,
-    package: { source: 'pinned', package: packages.workhub },
-    configuration: { values: { agent: agent.configuration!.values, workers: ['worker'] } },
-    bindings: { ...remapBindings(agent, remapHost), worker: [local('agent', 'agent')] },
-  };
-  if (configuration.coordinatorProcesses) {
-    const processes = coordinator.host.instances['workspace-processes']!;
-    worker.host.instances[processName] = {
-      ...processes,
-      key: keys[processName],
-      configuration: {
-        values: {
-          ...processes.configuration!.values,
-          sessionOwner: [keys.workhub],
-          sessionKind: 'workhub',
-        },
-      },
-    };
-  }
-  const gateway = worker.host.instances.gateway!.bindings!;
-  gateway.coordinator = [local('workhub', 'agent')];
-  gateway.workhub = [local('workhub', 'workhub')];
-  if (configuration.coordinatorProcesses)
-    gateway.coordinatorTerminal = [local(processName, 'terminal')];
-
-  const hostIdentity = (identity: string[]) =>
-    identity[0] === keys.agent
-      ? [keys.workhub]
-      : identity[0] === keys['workspace-processes']
-        ? [keys[processName]]
-        : identity[0] === keys['protocol-processes']
-          ? [keys[protocolName]]
-          : identity;
-  const endpoint = (name: string, methods: string[]) => ({
-    consumer: [keys.gateway],
-    import: name,
-    grant: { methods, recovery: true },
-  });
-  worker.endpoints.coordinator = endpoint(
-    'coordinator',
-    Object.keys(contracts.agent.interface.methods),
-  );
-  worker.endpoints.workhub = endpoint(
-    'workhub',
-    Object.keys(contracts.workhubCoordinator.interface.methods),
-  );
-  if (configuration.coordinatorProcesses)
-    worker.endpoints.coordinatorTerminal = endpoint(
-      'coordinatorTerminal',
-      Object.keys(contracts.terminal.interface.methods),
-    );
-  worker.native = [
-    ...worker.native,
-    ...coordinator.native.map((grant) => ({
-      ...grant,
-      origin: hostIdentity(grant.origin),
-      consumer: hostIdentity(grant.consumer),
-      provider: hostIdentity(grant.provider),
-    })),
-    {
-      origin: [keys.workhub],
-      consumer: [keys.workhub],
-      provider: [keys.agent],
-      export: 'agent',
-      methods: [
-        'list',
-        'directories',
-        'create',
-        'uploadAttachment',
-        'send',
-        'execution',
-        'executors',
-        'tools',
-        'snapshotPatch',
-        'readPatch',
-        'work',
-        'observe',
-        'watch',
-        'stop',
-        'resume',
-        'queue',
-        'editQueue',
-      ],
-      recovery: true,
-    },
-  ];
-  return worker;
 }

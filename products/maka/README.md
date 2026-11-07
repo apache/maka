@@ -37,7 +37,7 @@ Build the CLI, desktop shell and Python worker with `just build` (`--release` an
 
 In the terminal interface, choose the shared language under **Settings → Appearance → Language**. It saves automatically in the business Root, separately from each terminal interface’s theme and custom colors. Other open terminal interfaces refresh their language when revisiting settings or using an explicit refresh; saving does not broadcast continuous updates. Previous per-interface language choices must be selected once again; appearance data is retained.
 
-This preference also selects builtin Agent instructions for new work in existing conversations and WorkHub. Already accepted work retains its language; user content and custom instructions remain unchanged.
+This preference also selects builtin Agent instructions for new work in existing conversations. Already accepted work retains its language; user content and custom instructions remain unchanged.
 
 Sending during a response steers the current work in both Direct Mode and Code Mode. The send menu also offers **Add to queue** for a separate turn. Stop remains available beside Send. Sending frees the editor for a new draft; any failed message stays nearby for recovery or retry. Steering interrupts the current model request and tool observation, while already dispatched tools retain their original execution and later report their results.
 

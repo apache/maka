@@ -430,8 +430,8 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             source(
                 "notice",
                 "notice",
-                annotated.then(|| MessageOrigin::WorkhubTask {
-                    task_id: "wt_actual".into(),
+                annotated.then(|| MessageOrigin::BotWorker {
+                    session_id: "worker_actual".into(),
                 }),
             ),
         ];
@@ -473,9 +473,9 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             }
             assert!(rows[0].position < rows[1].position && rows[1].position < rows[2].position);
             let mut delivered = sources[1].message.clone();
-            delivered.message_id = "graph-steering".into();
-            delivered.origin = Some(MessageOrigin::WorkhubGraph {
-                graph_id: "agent_graph_actual".into(),
+            delivered.message_id = "worker-steering".into();
+            delivered.origin = Some(MessageOrigin::BotWorker {
+                session_id: "worker_steered".into(),
             });
             let mut steered = opening;
             steered.sequence += 1;
@@ -499,7 +499,7 @@ fn annotated_openings_preserve_source_identity_and_unannotated_batches_stay_aggr
             assert_eq!(rows.len(), 1);
             assert_eq!(
                 serde_json::to_value(&rows[0].message).unwrap()["origin"],
-                json!({"kind":"workhub_graph","graphId":"agent_graph_actual"})
+                json!({"kind":"bot_worker","sessionId":"worker_steered"})
             );
         } else {
             assert_eq!(rows[0].message.id, "opening");

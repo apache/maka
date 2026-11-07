@@ -537,8 +537,8 @@ async fn inherited_archives_remain_scoped_to_their_copied_owner() {
 async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history() {
     use maka_agent_facts::{
         execution::{
-            ApprovalPolicy, BehaviorId, CollaborationMode, InvocationConfiguration, SandboxMode,
-            ToolMode, WorkspaceOrigin,
+            ApprovalPolicy, CollaborationMode, InvocationConfiguration, SandboxMode, ToolMode,
+            WorkspaceOrigin,
         },
         executor::Binding,
         read::{MAX_PAGE_CHARS, ResourceAddress},
@@ -575,7 +575,6 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
                 thinking_level: None,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 collaboration_mode: CollaborationMode::Agent,
-                orchestration_mode: BehaviorId::default(),
                 tool_mode: ToolMode::Direct,
                 code_language: Default::default(),
             })),

@@ -88,7 +88,7 @@ async fn context_reports_original_prepared_request_across_completion_failure_fen
 
         todo_tests::reopen(&mut f).await;
         assert_eq!(f.query("context", json!({"sessionId":session,"through":failed["through"]})).await.unwrap(), failed);
-        assert_eq!(f.query("context", json!({"sessionId":"wh_not-owned","through":null})).await.unwrap_err(), "agent_session_unavailable");
+        assert_eq!(f.query("context", json!({"sessionId":"other_not-owned","through":null})).await.unwrap_err(), "agent_session_unavailable");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

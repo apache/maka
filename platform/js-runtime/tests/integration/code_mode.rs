@@ -64,11 +64,26 @@ async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch()
             Ok(if input.is_null() {
                 json!({
                     "nested":[42,{"fraction":1.25,"negative":-7,"zero":0}],
+                    "timestamp":1_790_320_333_732_i64,
                     "safe":9_007_199_254_740_991_u64,
+                    "minSafe":-9_007_199_254_740_991_i64,
                     "wide":1_u64 << 60,
                     "controls":[null,true,"42"]
                 })
             } else {
+                assert_eq!(
+                    serde_json::from_value::<i64>(input["timestamp"].clone()).unwrap(),
+                    1_790_320_333_732_i64
+                );
+                assert_eq!(
+                    serde_json::from_value::<u64>(input["safe"].clone()).unwrap(),
+                    9_007_199_254_740_991_u64
+                );
+                assert_eq!(
+                    serde_json::from_value::<i64>(input["minSafe"].clone()).unwrap(),
+                    -9_007_199_254_740_991_i64
+                );
+                assert!(input["wide"].is_f64(), "{input}");
                 input
             })
         })
@@ -125,6 +140,11 @@ async fn json_numbers_keep_javascript_semantics_in_tools_and_committed_scratch()
             assert!(matches!(&output[1], CellOutput::Text { text } if text == "42"));
         }
         context.commit().unwrap();
+        let stored = context.load("numbers").unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_value::<i64>(stored["timestamp"].clone()).unwrap(),
+            1_790_320_333_732_i64
+        );
     }
 }
 
@@ -444,7 +464,7 @@ fn parent_cell_can_await_child_cell_with_one_host_blocking_worker() {
             let child_engine = child_engine.clone();
             Box::pin(async move {
                 let result = child_engine
-                    .execute("return 42;".into(), echo(), cancellation)
+                    .execute("return {answer: 42, wide: 2 ** 60};".into(), echo(), cancellation)
                     .await
                     .map_err(|error| {
                         maka_agent_facts::tools::ToolError::Failed(error.to_string())
@@ -456,7 +476,7 @@ fn parent_cell_can_await_child_cell_with_one_host_blocking_worker() {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             engine.execute(
-                "return await tools.wait(null);".into(),
+                "const child = await tools.wait(null); if (child.wide !== 2 ** 60) throw Error('wide float changed'); return child.answer;".into(),
                 tools,
                 cancellation.clone(),
             ),
@@ -472,4 +492,64 @@ fn parent_cell_can_await_child_cell_with_one_host_blocking_worker() {
         );
     });
     runtime.shutdown_timeout(Duration::from_secs(5));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_and_non_json_inputs_short_circuit_before_tool_or_store_dispatch() {
+    let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tools = {
+        let dispatched = dispatched.clone();
+        Arc::new(Tools(move |_name, value, _cancel| -> ToolFuture {
+            dispatched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move { Ok(value) })
+        }))
+    };
+    let engine = executor();
+    for source in [
+        "await tools.echo({ get x() { exit(); } }); throw Error('unreachable');",
+        "tools.echo({ get x() { exit(); } }); throw Error('unreachable');",
+        "store('aborted', { get x() { exit(); } }); throw Error('unreachable');",
+    ] {
+        let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = engine
+            .execute_with_context(
+                source.into(),
+                tools.clone(),
+                CancellationToken::new(),
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.success_value(), Value::Null);
+        assert!(result.calls().is_empty(), "{source}: {result:?}");
+        context.commit().unwrap();
+        assert_eq!(context.load("aborted").unwrap(), None);
+    }
+    let result = engine
+        .execute(
+            r#"
+            const cyclic = {};
+            cyclic.self = cyclic;
+            const outcomes = [];
+            for (const bad of [1n, cyclic, Symbol('x')]) {
+                let rejected = false;
+                try {
+                    await tools.echo(bad);
+                } catch {
+                    rejected = true;
+                }
+                if (!rejected) throw Error('non-JSON tool input must fail');
+                outcomes.push(rejected);
+            }
+            return outcomes;
+            "#
+            .into(),
+            tools,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.success_value(), json!([true, true, true]));
+    assert!(result.calls().is_empty(), "{result:?}");
+    assert_eq!(dispatched.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

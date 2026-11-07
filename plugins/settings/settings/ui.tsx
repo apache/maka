@@ -123,7 +123,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   );
   const externalAgents = createExternalAgentSettings(
     host,
-    context.services.agents,
     operations,
     active('external-agents'),
     changed,

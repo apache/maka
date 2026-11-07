@@ -98,13 +98,11 @@ export async function performSessionAction(
         ? new UiError(
             'The Host cannot copy this history yet. Fork a completed turn, or wait for the current turn to finish.',
           )
-        : action.kind === 'fork' && result.reason === 'managed_session'
-          ? new UiError('WorkHub manages this conversation. Its history cannot be forked here.')
-          : result.reason === 'busy'
-            ? new UiError(
-                'This conversation is working, has queued messages, or still needs your input. Finish it before changing its lifecycle.',
-              )
-            : new UiError('Conversation action rejected: {reason}', { reason: result.reason });
+        : result.reason === 'busy'
+          ? new UiError(
+              'This conversation is working, has queued messages, or still needs your input. Finish it before changing its lifecycle.',
+            )
+          : new UiError('Conversation action rejected: {reason}', { reason: result.reason });
     throw reason;
   }
   if (result.kind === 'removed') return { kind: 'removed', sessionId: result.sessionId };

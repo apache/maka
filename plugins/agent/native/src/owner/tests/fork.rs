@@ -158,7 +158,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
 }
 
 #[tokio::test]
-async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sessions() {
+async fn fork_archived_source_narrows_current_authority() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let f = Fixture::configured(
             "http://127.0.0.1:9/v1",
@@ -217,21 +217,6 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         let no_tools = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":narrowed.revision,"position":{"kind":"end"},"title":"No model tools","labels":[]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(no_tools["kind"], "forked");
         assert_eq!(no_tools["session"]["tools"], json!([]));
-
-        let managed = format!("{}{}", f.owner.prefix, Uuid::new_v4().simple());
-        f.store.create_plugin_session(
-            &maka_event_log::sessions::PluginSession {
-                session_id: managed.clone(),
-                creator: maka_capabilities::storage::Namespace::new("fork.fixture", maka_plugin_core::scope::Scope::Profile).unwrap(),
-                fingerprint: "managed-fork".into(),
-                managed: true,
-                authority_session_id: None,
-            },
-            &f.session(&source).await.get_session::<StoredSessionConfiguration>(&source).await.unwrap().unwrap().configuration,
-            now(),
-        ).await.unwrap();
-        let revision = f.owner.session(&managed).await.unwrap().revision;
-        assert_eq!(f.mutation(2, "fork", json!({"sessionId":managed,"expectedRevision":revision,"position":{"kind":"end"},"title":"Refused managed fork","labels":[]}), Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"managed_session"}));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

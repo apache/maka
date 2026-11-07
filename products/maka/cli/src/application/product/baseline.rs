@@ -112,10 +112,8 @@ pub(super) async fn generate(
     )
     .await?;
     let roots = serde_json::to_value(&environment.roots)?;
-    for name in ["agent", "coordinator"] {
-        if let Some(agent) = configuration.get_mut(name) {
-            agent["workspaceRoots"] = roots.clone();
-        }
+    if let Some(agent) = configuration.get_mut("agent") {
+        agent["workspaceRoots"] = roots.clone();
     }
     configuration["skills"]["projectRoots"] = roots;
     let rules = Value::Array(
@@ -128,10 +126,8 @@ pub(super) async fn generate(
             })
             .collect::<Result<_, _>>()?,
     );
-    for name in ["processes", "coordinatorProcesses"] {
-        if let Some(processes) = configuration.get_mut(name) {
-            processes["filesystem"]["rules"] = rules.clone();
-        }
+    if let Some(processes) = configuration.get_mut("processes") {
+        processes["filesystem"]["rules"] = rules;
     }
     configuration["keys"] = serde_json::to_value(keys)?;
     configuration["hostDeployment"] = serde_json::to_value(deployment)?;

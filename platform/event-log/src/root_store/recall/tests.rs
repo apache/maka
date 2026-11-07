@@ -21,7 +21,7 @@ use crate::{
     recall::{ExcludedTurnTail, SearchHit, SearchQuery},
     root::{RootNamespaces, RootOwner},
     root_store::RootStore,
-    sessions::{PluginSession, RemovalAuthority, RemoveFamilyResult, SessionRetirement},
+    sessions::{PluginSession, RemoveFamilyResult, SessionRetirement},
 };
 use maka_agent_facts::import::{Content, Record, Source};
 use serde_json::{Value, json};
@@ -65,7 +65,6 @@ async fn import(root: &RootStore, id: &str, records: Vec<Record>) {
             )
             .unwrap(),
             fingerprint: format!("import-{id}"),
-            managed: false,
             authority_session_id: None,
         },
         &Source {
@@ -400,10 +399,7 @@ async fn recall_context_and_index_retirement_survive_reopen() {
         .unwrap()
         .revision;
     assert!(matches!(
-        f.root
-            .remove_session_family(&f.a, revision, RemovalAuthority::Unmanaged)
-            .await
-            .unwrap(),
+        f.root.remove_session_family(&f.a, revision).await.unwrap(),
         RemoveFamilyResult::Accepted(_)
     ));
     assert_eq!(
@@ -786,7 +782,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
         SessionCopyResult::Committed(_)
     ));
     assert!(matches!(
-        root.remove_session_family("demand-source", revision, RemovalAuthority::Unmanaged)
+        root.remove_session_family("demand-source", revision)
             .await
             .unwrap(),
         RemoveFamilyResult::Accepted(_)
@@ -814,7 +810,7 @@ async fn unindexed_copy_retains_source_material_and_last_owner_removal_clears_re
         .unwrap()
         .revision;
     assert!(matches!(
-        root.remove_session_family("demand-copy", revision, RemovalAuthority::Unmanaged)
+        root.remove_session_family("demand-copy", revision)
             .await
             .unwrap(),
         RemoveFamilyResult::Accepted(_)
@@ -1052,7 +1048,6 @@ async fn recall_indexes_tool_calls_ranks_multi_term_matches_and_exposes_compacte
             )
             .unwrap(),
             fingerprint: "import-midturn".into(),
-            managed: false,
             authority_session_id: None,
         },
         &Source {
@@ -1345,7 +1340,6 @@ async fn history_context_orders_neighbors_by_display_seat_across_interleaved_exe
                 thinking_level: None,
                 sandbox_mode: maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
                 collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
-                orchestration_mode: maka_agent_facts::execution::BehaviorId::default(),
                 tool_mode: maka_agent_facts::execution::ToolMode::Direct,
                 code_language: Default::default(),
             },

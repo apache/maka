@@ -20,8 +20,7 @@
 //! Retirement shares Session admission with accepted workers.
 use super::*;
 use crate::sessions::{
-    AbandonRevision, RemovalAuthority, RemovalPlan, RemoveFamilyResult, SessionMutation,
-    SessionRetirement,
+    AbandonRevision, RemovalPlan, RemoveFamilyResult, SessionMutation, SessionRetirement,
 };
 
 #[cfg(test)]
@@ -161,11 +160,9 @@ impl RootStore {
         &self,
         id: &str,
         expected: u64,
-        authority: RemovalAuthority,
     ) -> Result<RemoveFamilyResult, StoreError> {
         let selected = self.session(id).await?;
         let owner = selected.owner()?;
-        let authority = Arc::new(authority);
         loop {
             if let Some(receipt) = owner.session_removal_receipt(id).await? {
                 return Ok(RemoveFamilyResult::Accepted(receipt));
@@ -199,7 +196,7 @@ impl RootStore {
             // locked ancestor. Compare the exact plan again in the write tx.
             if let Some(result) = owner
                 .scoped(Arc::new((access, bindings)))
-                .remove_session_family_guarded(id, expected, authority.clone(), Some(plan))
+                .remove_session_family_guarded(id, expected, Some(plan))
                 .await?
             {
                 return Ok(result);

@@ -23,7 +23,6 @@ use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::execution::BehaviorId;
 use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_facts::execution::InvocationConfiguration;
 use maka_agent_facts::execution::SandboxMode;
@@ -72,7 +71,6 @@ async fn external_output_is_durable_observation_not_native_dispatch_and_rebuilds
             thinking_level: None,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             collaboration_mode: CollaborationMode::Agent,
-            orchestration_mode: BehaviorId::default(),
             tool_mode: ToolMode::Direct,
             code_language: Default::default(),
         })),
@@ -765,7 +763,6 @@ async fn cancellation_seals_only_the_unfinished_native_message() {
             thinking_level: None,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             collaboration_mode: CollaborationMode::Agent,
-            orchestration_mode: BehaviorId::default(),
             tool_mode: ToolMode::Direct,
             code_language: Default::default(),
         })),

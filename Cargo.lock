@@ -7325,7 +7325,6 @@ dependencies = [
  "maka-external-agent",
  "maka-fs-tools",
  "maka-goal",
- "maka-graph",
  "maka-host-runtime",
  "maka-plugin-core",
  "maka-sandbox",
@@ -7347,13 +7346,11 @@ dependencies = [
  "maka-agent-facts",
  "maka-event-log",
  "maka-host-runtime",
- "maka-plugin-core",
  "maka-sandbox",
  "serde_json",
  "sha2 0.11.1",
  "tokio",
  "tokio-util",
- "uuid",
 ]
 
 [[package]]
@@ -7452,7 +7449,6 @@ dependencies = [
  "maka-files-native",
  "maka-fs-tools",
  "maka-goal",
- "maka-graph",
  "maka-host-js",
  "maka-host-runtime",
  "maka-interactions-api",
@@ -7990,27 +7986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maka-graph"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "hex",
- "maka-agent-facts",
- "maka-agent-ports",
- "maka-capabilities",
- "maka-event-log",
- "maka-plugin-core",
- "schemars 1.2.3",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "maka-host-js"
 version = "0.2.0"
 dependencies = [
@@ -8130,8 +8105,6 @@ dependencies = [
  "deno_webidl",
  "futures-util",
  "maka-agent-facts",
- "maka-agent-ports",
- "maka-capabilities",
  "maka-code-runtime",
  "maka-plugin-core",
  "serde",

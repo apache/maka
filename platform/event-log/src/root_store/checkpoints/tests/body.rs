@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use crate::sessions::{MaterialCollection, RemovalAuthority, RemoveFamilyResult};
+use crate::sessions::{MaterialCollection, RemoveFamilyResult};
 use maka_agent_facts::{
     event::{
         EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, LogScope, RuntimeEvent,
@@ -163,7 +163,7 @@ async fn checkpoint_keeps_tool_bytes_after_source_collection_and_import() {
         .revision;
     assert!(matches!(
         store
-            .remove_session_family("source", revision, RemovalAuthority::Unmanaged)
+            .remove_session_family("source", revision)
             .await
             .unwrap(),
         RemoveFamilyResult::Accepted(_)

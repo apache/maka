@@ -53,8 +53,7 @@ async fn fixture() -> Fixture {
             "codex":{"executable":node,"args":[worker,state,trace]},
             "claude":{"executable":directory.join("not-installed-claude")}
         }});
-        configuration["agent"]["external"] = external.clone();
-        configuration["coordinator"]["external"] = external;
+        configuration["agent"]["external"] = external;
     })
     .await
 }
@@ -185,12 +184,8 @@ async fn source(client: &Client) -> (u64, Value) {
     )
 }
 
-fn externals(document: &Value) -> [Value; 2] {
-    [
-        document["input"]["instances"]["agent"]["configuration"]["values"]["external"].clone(),
-        document["input"]["instances"]["workhub"]["configuration"]["values"]["agent"]["external"]
-            .clone(),
-    ]
+fn external(document: &Value) -> Value {
+    document["input"]["instances"]["agent"]["configuration"]["values"]["external"].clone()
 }
 
 async fn open_settings(view: &mut AppView) {
@@ -206,7 +201,7 @@ async fn reopen_section(view: &mut AppView) {
 
 async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &str, enabled: bool) {
     let (revision, before) = source(client).await;
-    let mut expected = externals(&before);
+    let mut expected = external(&before);
     click(
         view,
         &format!("{} {name}", if enabled { "Enable" } else { "Disable" }),
@@ -232,17 +227,15 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
         &format!("{} {name}", if enabled { "Disable" } else { "Enable" }),
     )
     .await;
-    for external in &mut expected {
-        external["runtimes"][id] = json!(enabled);
-    }
+    expected["runtimes"][id] = json!(enabled);
     let (changed_revision, changed) = source(client).await;
     assert_eq!(
         changed_revision,
         revision + 1,
-        "both targets change in one source revision"
+        "agent target changes in one source revision"
     );
     assert_eq!(
-        externals(&changed),
+        external(&changed),
         expected,
         "only this runtime changes; preserve native launch settings and other switches"
     );

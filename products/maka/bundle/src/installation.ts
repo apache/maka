@@ -48,7 +48,7 @@ export function installation(
       description,
       result,
       confirmation: 'preapproved',
-      nestable: ['files', 'processes', 'web', 'skills'].includes(service),
+      nestable: ['files', 'processes', 'web', 'skills', 'ui'].includes(service),
     });
   add('files', 'readText', 'Read', 'Read text from a file in the selected workspace.');
   add('files', 'readImage', 'ReadImage', 'Read an image in the selected workspace.', 'image');
@@ -261,6 +261,7 @@ export function installation(
       description,
       result: 'json',
       confirmation: 'preapproved',
+      nestable: true,
     });
   const agent: CompositionConfiguration['agent'] = {
     toolDiscovery: true,
@@ -299,8 +300,6 @@ export function installation(
     computer: { desktop: 'auto', browsers: [] },
     web: { network: 'allowed' },
     decisions_api: { network: 'allowed' },
-    coordinator: agent,
-    coordinatorProcesses: processes,
     skills: {
       sources: [],
       bundled: true,

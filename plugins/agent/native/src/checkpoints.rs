@@ -44,12 +44,11 @@ pub struct Capture {
 
 impl CheckpointPublisher {
     /// Called by trusted native assembly, never with model-authored scope.
-    pub fn new(store: Arc<RootStore>, scope: Scope, coordinator: bool) -> Self {
-        let prefix = maka_agent_authority::session_namespace(
+    pub fn new(store: Arc<RootStore>, scope: Scope) -> Self {
+        let prefix = maka_host_runtime::storage::instance_prefix(
             &scope.state_domain,
             scope.deployment,
             &scope.namespace,
-            coordinator,
         );
         Self {
             store,
@@ -203,7 +202,7 @@ mod tests {
             deployment: Uuid::from_u128(1),
             namespace: InstanceId(vec![Uuid::from_u128(2)]),
         };
-        let publisher = CheckpointPublisher::new(store.clone(), scope.clone(), false);
+        let publisher = CheckpointPublisher::new(store.clone(), scope.clone());
         let id = format!("{}{}", publisher.prefix, "1".repeat(32));
         store
             .create_session(&id, "create", &serde_json::json!({}), 1)

@@ -31,7 +31,6 @@ pub(super) struct Origin {
     package: String,
     scope: String,
     fingerprint: String,
-    managed: bool,
     authority_session_id: Option<String>,
 }
 impl From<&PluginSession> for Origin {
@@ -41,7 +40,6 @@ impl From<&PluginSession> for Origin {
             package: value.creator.package().into(),
             scope: String::from(value.creator.scope().clone()),
             fingerprint: value.fingerprint.clone(),
-            managed: value.managed,
             authority_session_id: value.authority_session_id.clone(),
         }
     }
@@ -65,7 +63,6 @@ impl Origin {
             creator: maka_capabilities::storage::Namespace::new(self.package, scope)
                 .map_err(invalid)?,
             fingerprint: self.fingerprint,
-            managed: self.managed,
             authority_session_id: self.authority_session_id,
         })
     }
@@ -411,7 +408,6 @@ pub(super) async fn commit(
             StoreError::SessionConflict => CreationRejection::IdentityConflict,
             StoreError::SessionRetired => CreationRejection::Retired,
             StoreError::SessionNotFound => CreationRejection::MissingDependency,
-            StoreError::ManagedSession => CreationRejection::ManagedSource,
             StoreError::HistoryTurnMissing => CreationRejection::HistoryTurnMissing,
             StoreError::HistoryTurnSplit => CreationRejection::HistoryTurnSplit,
             StoreError::HistoryUnsettled => CreationRejection::HistoryUnsettled,
@@ -668,10 +664,10 @@ async fn committed_receipt(store: &EventLog, command: &Creation) -> Result<bool,
             let Some((stored_source, stored_count, stored_configuration)) = imported else { return Ok(false) };
             if stored_source != source || stored_count != count || serde_json::from_str::<Value>(&stored_configuration)? != configuration { return Ok(false); }
         }
-        let stored: Option<(String,String,String,bool,Option<String>)> = db.query_row("SELECT package_id,scope_id,fingerprint,managed,authority_session_id FROM plugin_sessions WHERE session_id=?", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
+        let stored: Option<(String,String,String,Option<String>)> = db.query_row("SELECT package_id,scope_id,fingerprint,authority_session_id FROM plugin_sessions WHERE session_id=?", rusqlite::params![&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
         Ok(match (stored, expected_origin) {
             (None, None) => true,
-            (Some((package,scope,fingerprint,managed,authority)), Some(origin)) => package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint && managed == origin.managed && authority == origin.authority_session_id,
+            (Some((package,scope,fingerprint,authority)), Some(origin)) => package == origin.package && scope == origin.scope && fingerprint == origin.fingerprint && authority == origin.authority_session_id,
             _ => false,
         })
     }).await

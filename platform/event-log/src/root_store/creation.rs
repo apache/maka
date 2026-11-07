@@ -33,8 +33,6 @@ pub enum CreationRejection {
     SourceRevisionConflict { expected: u64, actual: u64 },
     #[error("creation dependency is missing")]
     MissingDependency,
-    #[error("source history is managed by another owner")]
-    ManagedSource,
     #[error("source Turn does not exist")]
     HistoryTurnMissing,
     #[error("revision Turn has no editable input")]

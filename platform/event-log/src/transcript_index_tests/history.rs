@@ -589,7 +589,6 @@ async fn oversized_tool_metadata_returns_accepted_window_without_consuming_its_b
         session_id: "budget".into(),
         creator: Namespace::new("history.fixture", Scope::Profile).unwrap(),
         fingerprint: "tool-budget".into(),
-        managed: false,
         authority_session_id: None,
     };
 

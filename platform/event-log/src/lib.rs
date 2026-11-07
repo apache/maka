@@ -138,8 +138,6 @@ pub enum StoreError {
     HistoryUnsettled,
     #[error("invalid event transition: Session contains an unresolved prior provider tool effect")]
     HistoryProviderEffectUnresolved,
-    #[error("invalid event transition: managed Session history requires its owner's lifecycle")]
-    ManagedSession,
     #[error("catalog revision changed from {expected} to {actual}")]
     RevisionConflict { expected: String, actual: String },
     #[error("invalid event transition: {0}")]

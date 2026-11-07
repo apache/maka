@@ -46,12 +46,14 @@ await each emission to honor backpressure. Mutations supply the original
 [State and authority](state-and-authority.md) covers unknown results and recovery.
 
 To expose a service method to Maka's Agent, explicitly configure `agent.tools` with
-its `name`, `description`, `import`, `method`, `result` (`json` or an available
-specialized projection) and `confirmation` (`required` or `preapproved`). Bind that
-import to the service and provide the corresponding Host NativeGrant. Confirmation
-is an additional user decision, never a substitute for method authorization.
-Use the actual generated `AgentConfiguration` and `AgentServiceTool` types to check
-fields. A declaration does not add a global tool or confer filesystem/process access.
+its `name`, `description`, `target` (`{ kind: 'import' | 'export', name }`), `method`,
+`result` (`json` or an available specialized projection), `confirmation` (`required`
+or `preapproved`), and optional `nestable: true` when `json` or `image` tools should
+also be callable inside Code Mode. Bind any service import and provide the corresponding
+Host NativeGrant. Confirmation is an additional user decision, never a substitute for
+method authorization. Use the actual generated `AgentConfiguration` and
+`AgentServiceTool` types to check fields. A declaration does not add a global tool or
+confer filesystem/process access.
 
 The same Host service can be consumed by its package's UI or by another UI plugin.
 Declare the contract in `application.ui.imports`, bind its providers in the UI

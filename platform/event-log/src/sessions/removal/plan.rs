@@ -37,46 +37,6 @@ pub enum RemoveFamilyResult {
     RevisionConflict { expected: u64, actual: u64 },
 }
 
-/// Host-issued authority, checked against every directly removed family member
-/// in the commit transaction. Dependency archival is a consequence of retirement.
-pub enum RemovalAuthority {
-    Unmanaged,
-    Granted {
-        namespace: maka_capabilities::storage::Namespace,
-        sessions: BTreeSet<String>,
-    },
-}
-
-impl RemovalAuthority {
-    fn check(
-        &self,
-        connection: &rusqlite::Connection,
-        plan: &RemovalPlan,
-    ) -> Result<(), StoreError> {
-        for session in &plan.remove {
-            let manager: Option<(String, String)> = connection.query_row("SELECT package_id,scope_id FROM plugin_sessions WHERE session_id=? AND managed=1", params![session], |row| Ok((row.get(0)?, row.get(1)?,))).optional()
-            ?;
-            let allowed = match self {
-                Self::Unmanaged => manager.is_none(),
-                Self::Granted {
-                    namespace,
-                    sessions,
-                } => {
-                    sessions.contains(session)
-                        && manager.is_none_or(|(package, scope)| {
-                            package == namespace.package()
-                                && scope == String::from(namespace.scope().clone())
-                        })
-                }
-            };
-            if !allowed {
-                return Err(StoreError::SessionConflict);
-            }
-        }
-        Ok(())
-    }
-}
-
 pub(super) enum Action {
     Remove,
     Archive,
@@ -122,9 +82,8 @@ impl EventLog {
         &self,
         session: &str,
         expected: u64,
-        authority: RemovalAuthority,
     ) -> Result<RemoveFamilyResult, StoreError> {
-        self.remove_session_family_guarded(session, expected, std::sync::Arc::new(authority), None)
+        self.remove_session_family_guarded(session, expected, None)
             .await?
             .ok_or_else(|| invalid("unguarded removal changed plan"))
     }
@@ -133,7 +92,6 @@ impl EventLog {
         &self,
         session: &str,
         expected: u64,
-        authority: std::sync::Arc<RemovalAuthority>,
         locked_plan: Option<RemovalPlan>,
     ) -> Result<Option<RemoveFamilyResult>, StoreError> {
         validate_id(session)?;
@@ -165,7 +123,6 @@ impl EventLog {
                     tx.rollback()?;
                     return Ok(None);
                 }
-                authority.check(&tx, &plan)?;
                 let mut approval_revoked = false;
                 for target in &plan.remove {
                     approval_revoked |= fence(&tx, target, Action::Remove)?;

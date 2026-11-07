@@ -47,7 +47,6 @@ mod navigation;
 mod observation;
 mod observation_tools;
 mod plugin_sessions;
-mod plugins;
 mod projects;
 mod provider_call_namespace;
 mod queue_receipts;
