@@ -118,7 +118,7 @@ export function MarkdownBody(props: {
             heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
             blockquote: { borderLeftColor: C.line, color: C.secondary },
             link: { color: C.accent },
-            code: { color: props.compact ? C.muted : C.accentHover, backgroundColor: C.card },
+            code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
             codeBlock: {
               backgroundColor: C.card,
               borderColor: C.line,

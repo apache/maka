@@ -77,7 +77,7 @@ The sidebar recedes behind the conversations: navigation rows read in `secondary
 ## States
 
 - Every control shows hover, press, focus and disabled through the shared styles in `ui.tsx`, and selected where it applies.
-- Actions stay reachable without hovering.
+- Hover only reveals. Actions that show on hover also show on keyboard focus, keep their space while hidden, and stay in a context menu with the same commands.
 - A loading state occupies the box of its ready state: the switch causes no layout shift.
 - Feedback reports real state. Immediate actions get no ceremony.
 

@@ -46,6 +46,7 @@ import {
   compact,
   controlFocusStyle,
   controlStyle,
+  toolbarControlStyle,
 } from '../../../../products/maka/workbench/app/ui';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
@@ -267,6 +268,42 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           .at(-1) ?? path)
       : tr('Choose workspace');
   };
+  const workspaceControl = () => (
+    <If
+      when={props.workspacePicker}
+      else={
+        <Button
+          accessibilityLabel={tr('Choose composer workspace')}
+          tooltip={textTooltip(() => props.session()?.workspace() || tr('Choose workspace'))}
+          onPress={props.chooseWorkspace}
+          style={{
+            ...(platform.isTerminal ? controlStyle : toolbarControlStyle),
+            flexDirection: 'row',
+            alignItems: 'center',
+            maxWidth: '100%',
+            minWidth: 0,
+            flexShrink: 1,
+            gap: platform.isTerminal ? 8 : 4,
+          }}
+          hoverStyle={{ backgroundColor: platform.isTerminal ? C.card : C.line }}
+          focusStyle={{ backgroundColor: platform.isTerminal ? C.raised : C.line }}
+        >
+          <Icon name="folder" color={platform.isTerminal ? C.secondary : C.muted} />
+          <Text
+            style={[
+              { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
+              { numberOfLines: 1 },
+            ]}
+          >
+            {workspaceLabel()}
+          </Text>
+          <Icon name="down" color={platform.isTerminal ? C.secondary : C.muted} />
+        </Button>
+      }
+    >
+      {props.workspacePicker}
+    </If>
+  );
   const primaryButton = () => (
     <View
       role="button"
@@ -382,96 +419,59 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               {tr('Make something remarkable.')}
             </Text>
           </View>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexWrap: 'wrap',
-              gap: 8,
-            }}
-          >
-            <If
-              when={props.workspacePicker}
-              else={
-                <Button
-                  accessibilityLabel={tr('Choose composer workspace')}
-                  tooltip={textTooltip(
-                    () => props.session()?.workspace() || tr('Choose workspace'),
-                  )}
-                  onPress={props.chooseWorkspace}
-                  style={{
-                    ...controlStyle,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    maxWidth: '100%',
-                    minWidth: 0,
-                    flexShrink: 1,
-                    gap: 8,
-                  }}
-                  hoverStyle={{ backgroundColor: C.card }}
-                  focusStyle={{ backgroundColor: C.raised }}
-                >
-                  <Icon name="folder" color={C.secondary} />
-                  <Text
-                    style={[
-                      { color: C.secondary, fontSize: 13, flexShrink: 1 },
-                      { numberOfLines: 1 },
-                    ]}
-                  >
-                    {workspaceLabel()}
-                  </Text>
-                  <Icon name="down" color={C.secondary} />
-                </Button>
-              }
+          {/* The desktop keeps the workspace in the toolbar and asks only for a missing connection. */}
+          <If when={platform.isTerminal}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+              }}
             >
-              {props.workspacePicker}
-            </If>
-            <If
-              when={noConnections()}
-              else={
-                <Button
-                  accessibilityLabel={tr('Connections & models')}
-                  onPress={props.settings}
-                  style={{
-                    ...controlStyle,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                  hoverStyle={{ backgroundColor: C.card }}
-                  focusStyle={{ backgroundColor: C.raised }}
-                >
-                  <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
-                </Button>
-              }
-            >
+              {workspaceControl()}
               <Button
-                accessibilityLabel={tr('Add a model connection')}
+                accessibilityLabel={tr('Connections & models')}
                 onPress={props.settings}
                 style={{
                   ...controlStyle,
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
-                  backgroundColor: C.accent,
                 }}
-                hoverStyle={{ backgroundColor: C.accentHover }}
-                focusStyle={{ backgroundColor: C.accentHover }}
+                hoverStyle={{ backgroundColor: C.card }}
+                focusStyle={{ backgroundColor: C.raised }}
               >
-                <Text
-                  style={{
-                    color: C.background,
-                    fontSize: 13,
-                    fontWeight: '600',
-                  }}
-                >
-                  {tr('Add a model connection')}
-                </Text>
+                <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
               </Button>
-            </If>
-          </View>
+            </View>
+          </If>
           <If when={noConnections()}>
+            <Button
+              accessibilityLabel={tr('Add a model connection')}
+              onPress={props.settings}
+              style={{
+                ...controlStyle,
+                alignSelf: 'center',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                backgroundColor: C.accent,
+              }}
+              hoverStyle={{ backgroundColor: C.accentHover }}
+              focusStyle={{ backgroundColor: C.accentHover }}
+            >
+              <Text
+                style={{
+                  color: C.background,
+                  fontSize: 13,
+                  fontWeight: '600',
+                }}
+              >
+                {tr('Add a model connection')}
+              </Text>
+            </Button>
             <Text style={{ color: C.muted, fontSize: 13, textAlign: 'center' }}>
               {tr(
                 'Conversations need a model. Add a connection with your API key or account first.',
@@ -864,6 +864,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}
             />
+            {/* After the sandbox, so leaving the start pane moves neither. */}
+            <If when={!platform.isTerminal && hero()}>{workspaceControl()}</If>
             <If when={props.session() !== null || pending() !== null}>
               <View
                 style={[
