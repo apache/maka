@@ -24081,6 +24081,8 @@ export const contracts = {
             type: 'object',
             properties: {
               delivery: {
+                description:
+                  'Defaults to steer. Omit or use steer for updates to ongoing work;\nuse queue only when this message should wait until the current turn ends.',
                 $ref: '#/$defs/AgentSendDelivery',
               },
               expectedInvocationId: {
@@ -24122,14 +24124,15 @@ export const contracts = {
               AgentSendDelivery: {
                 oneOf: [
                   {
-                    type: 'string',
-                    enum: ['queue'],
-                  },
-                  {
                     description:
-                      'Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.',
+                      'Deliver additional context, corrections, progress updates or guidance to ongoing work.\nActive model, Codex and Claude turns accept steering; agy interrupts and resumes where supported. Other executors queue.',
                     type: 'string',
                     const: 'steer',
+                  },
+                  {
+                    description: 'Defer this message until the current turn ends.',
+                    type: 'string',
+                    const: 'queue',
                   },
                 ],
               },

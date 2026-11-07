@@ -3366,7 +3366,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
-export type AgentSendDelivery = 'queue' | 'steer';
+export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -8161,6 +8161,10 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  /**
+   * Defaults to steer. Omit or use steer for updates to ongoing work;
+   * use queue only when this message should wait until the current turn ends.
+   */
   delivery?: AgentSendDelivery;
   /**
    * An active send must not start new work after Stop fences its original Run.
