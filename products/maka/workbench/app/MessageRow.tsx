@@ -246,7 +246,7 @@ export function MessageRow({
           const line = firstLine();
           if (!line) return false;
           if (/\S/.test(text().slice(line.index + line[0].length))) return true;
-          return !/^\*\*[^*].*\*\*$/.test(line[0].trim());
+          return !/^\*\*[^*]+\*\*$/.test(line[0].trim());
         };
         const isTool = () =>
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';

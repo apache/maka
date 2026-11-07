@@ -18,7 +18,7 @@
  */
 
 import { displayText, tr } from './locale';
-import { computed, inputAction, platform, Scroll, Text, View } from 'nsh';
+import { computed, effect, inputAction, platform, Scroll, signal, Text, View } from 'nsh';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
@@ -232,6 +232,8 @@ function Field(props: {
   original(): boolean;
   userScroll(): void;
   tool(): HistoryTool;
+  /** Called once a complete result is read, with whether its view shows a process's command. */
+  showsCommand?(shown: boolean): void;
 }) {
   const host = useHost();
   const plugins = viewRuntimeContext()!;
@@ -244,6 +246,10 @@ function Field(props: {
       ? toolArguments(family, value())
       : toolResult(family, value()),
   );
+  effect(() => {
+    if (props.showsCommand && (source.complete() || source.error()))
+      props.showsCommand(!renderer() && !source.error() && projection()?.kind === 'process');
+  });
   return (
     <If
       when={!props.original() && !!renderer() && source.complete() && !source.error()}
@@ -338,7 +344,9 @@ export function ToolCard(props: {
     }
   };
   // Open at the recorded output; the complete original arguments remain below,
-  // except a process's command, which a successful recorded result already shows.
+  // except a process's command once its recorded result shows it. Until that
+  // result is read, a successful settlement is taken to show it.
+  const resultShowsCommand = signal<boolean | null>(null);
   const references = () =>
     tool()
       ? (['result', 'arguments'] as const).flatMap((field) => {
@@ -348,8 +356,7 @@ export function ToolCard(props: {
             field === 'arguments' &&
             !props.original() &&
             processFamily(family()) &&
-            result?.settlement === 'returned' &&
-            !result.isError
+            (resultShowsCommand() ?? (result?.settlement === 'returned' && !result.isError))
           )
             return [];
           return value ? [value] : [];
@@ -501,6 +508,11 @@ export function ToolCard(props: {
                   original={props.original}
                   userScroll={props.userScroll}
                   tool={() => tool()!}
+                  showsCommand={
+                    value().field === 'result'
+                      ? (shown) => resultShowsCommand.set(shown)
+                      : undefined
+                  }
                 />
               )}
             </Each>

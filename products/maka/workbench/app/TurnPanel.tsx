@@ -72,10 +72,12 @@ export function turnOutcome(turn: TurnPresentation): string | null {
   return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
 }
 
-/** Whether the turn's summary row folds its work and stands in for its groups' headers. */
 export function canFoldTurn(turn: TurnPresentation): boolean {
   return turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
 }
+
+/** On the desktop a foldable turn's summary row stands in for its groups' headers. */
+const summarizes = (turn: TurnPresentation) => !platform.isTerminal && canFoldTurn(turn);
 
 function duration(turn: TurnPresentation, now?: number): string {
   const start = turn.timing?.startedAt;
@@ -141,7 +143,7 @@ export function TurnSummary(props: {
           : time
             ? tr('Worked for {duration}', { duration: time })
             : '';
-    const counts = props.canFold() ? activityCounts(props.groups(), props.row) : '';
+    const counts = summarizes(props.turn()) ? activityCounts(props.groups(), props.row) : '';
     return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
   };
   const choose = (action: { turnId: string; answerKey: string | undefined; open: boolean }) => {
@@ -518,7 +520,7 @@ export function TurnPanel(props: {
   const counts = () => activityCounts([props.group()], props.row) || tr('Process');
   // A finished turn's summary row is the only disclosure: its groups have no
   // header of their own and show their members whenever the turn is open.
-  const summarized = () => canFoldTurn(props.turn());
+  const summarized = () => summarizes(props.turn());
   effect(() => {
     if (!summarized() || props.state.open() || !props.group().rowIds.length) return;
     props.state.opening = 'top';
