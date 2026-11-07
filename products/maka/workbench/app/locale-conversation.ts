@@ -289,7 +289,6 @@ export const conversationMessages = {
     '無法開啟連結：{reason}',
   ],
   'Action feedback': ['Action feedback', '操作反馈', '操作回饋'],
-  Activity: ['Activity', '活动', '活動'],
   'Add connections, API keys and models': [
     'Add connections, API keys and models',
     '添加连接、API 密钥和模型',
@@ -614,6 +613,11 @@ export const conversationMessages = {
   Error: ['Error', '错误', '錯誤'],
   'Expand session browser': ['Expand session browser', '展开对话侧栏', '展開對話側欄'],
   'Exit {code}': ['Exit {code}', '退出码 {code}', '結束碼 {code}'],
+  'Failed after {duration}': [
+    'Failed after {duration}',
+    '运行 {duration} 后失败',
+    '執行 {duration} 後失敗',
+  ],
   'Failed {count} times': ['Failed {count} times', '共失败 {count} 次', '共失敗 {count} 次'],
   File: msg_toolFilePath,
   Files: ['Files', '文件', '檔案'],
@@ -940,7 +944,6 @@ export const conversationMessages = {
     '正在重新連線更新…草稿已保留。',
   ],
   Recorded: ['Recorded', '已记录', '已記錄'],
-  'Recorded command': ['Recorded command', '已记录的命令', '已記錄的命令'],
   'Recorded cost': ['Recorded cost', '已记录费用', '已記錄費用'],
   'Recorded edit': ['Recorded edit', '已记录的编辑', '已記錄的編輯'],
   'Recorded lines {first}–{last}': [
@@ -1162,6 +1165,7 @@ export const conversationMessages = {
   Server: ['Server', '服务器', '伺服器'],
   Session: ['Session', '对话', '對話'],
   Sessions: ['Sessions', '对话', '對話'],
+  Shell: ['Shell', 'Shell', 'Shell'],
   'Show conversation terminals': ['Show conversation terminals', '显示对话终端', '顯示對話終端'],
   'Show formatted message': ['Show formatted message', '显示格式化消息', '顯示格式化訊息'],
   'Show formatted thinking': ['Show formatted thinking', '显示格式化思考', '顯示格式化思考'],
@@ -1197,6 +1201,11 @@ export const conversationMessages = {
   'Stop response': ['Stop response', '停止回复', '停止回覆'],
   'Stop response · Esc': ['Stop response · Esc', '停止回复 · Esc', '停止回覆 · Esc'],
   Stopped: ['Stopped', '已停止', '已停止'],
+  'Stopped after {duration}': [
+    'Stopped after {duration}',
+    '运行 {duration} 后停止',
+    '執行 {duration} 後停止',
+  ],
   'Submit answers': msg_questionSubmit,
   'Submit form': msg_formSubmit,
   'Symbolic link': ['Symbolic link', '符号链接', '符號連結'],
@@ -1549,6 +1558,7 @@ export const conversationMessages = {
   'Web query': ['Web query', '网页查询', '網頁查詢'],
   'Web result': ['Web result', '网页结果', '網頁結果'],
   'Web results': ['Web results', '网页结果', '網頁結果'],
+  'Worked for {duration}': ['Worked for {duration}', '用时 {duration}', '用時 {duration}'],
   'Working directory': msg_toolProcessCwd,
   'Working directory: {path}': [
     'Working directory: {path}',

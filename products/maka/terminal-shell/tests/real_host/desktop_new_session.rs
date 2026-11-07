@@ -1112,8 +1112,27 @@ async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
     desktop.press("Process group").await;
     let group = desktop.control("Process group").await;
     let nested = desktop.control("Toggle tool GetGoal").await;
-    assert_eq!(nested.left() - group.left(), px(32.));
+    // A turn has two lanes and no indent: each step's icon sits under the
+    // group's chevron, and an open tool card starts on that same lane.
+    assert_eq!(nested.left(), group.left());
     assert!(desktop.controls("Toggle tool exec").is_empty());
+    desktop.press("Toggle tool GetGoal").await;
+    let lane = nested.left() + px(8.);
+    let below = nested.bottom() + px(24.);
+    desktop
+        .until("the tool card did not start on the icon lane", || {
+            desktop.app.update(|cx| cx.refresh_windows());
+            desktop.pump();
+            let strip = desktop.pixels(Bounds::new(
+                point(lane - px(2.), below),
+                size(px(4.), px(1.)),
+            ))?;
+            let [outside, before, edge, inside] = strip.as_chunks::<4>().0 else {
+                return None;
+            };
+            (outside == before && before != edge && edge == inside).then_some(())
+        })
+        .await;
     desktop.artifact("script-tools");
     answer.finish().await;
     let sessions = desktop.sessions().await;
@@ -2528,7 +2547,7 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     desktop
         .retry(
             "the completed child work details did not open",
-            || !desktop.controls("Process group").is_empty(),
+            || !desktop.controls("Agent message").is_empty(),
             || {
                 let controls = desktop.controls("Turn work details");
                 if controls.len() == 1 {
@@ -2537,10 +2556,11 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             },
         )
         .await;
-    let group = desktop.control("Process group").await;
-    desktop.press("Process group").await;
+    // The finished turn's summary is its only disclosure; its steps share its icon lane.
+    assert!(desktop.controls("Process group").is_empty());
+    let summary = desktop.control("Turn work details").await;
     let message = desktop.control("Agent message").await;
-    assert_eq!(message.left() - group.left(), px(32.0));
+    assert_eq!(message.left(), summary.left());
     assert!(
         desktop
             .controls("Open source conversation beside this one")
@@ -2570,20 +2590,18 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         )
         .unwrap();
     desktop
-        .until("activity indentation did not settle after resize", || {
-            let groups = desktop.controls("Process group");
+        .until("activity lanes did not settle after resize", || {
+            let summaries = desktop.controls("Turn work details");
             let messages = desktop.controls("Agent message");
-            let ([group], [message]) = (groups.as_slice(), messages.as_slice()) else {
+            let ([summary], [message]) = (summaries.as_slice(), messages.as_slice()) else {
                 return None;
             };
-            (message.right() <= px(width as f32) && message.left() - group.left() == px(32.0))
-                .then_some(())
+            (message.right() <= px(width as f32) && message.left() == summary.left()).then_some(())
         })
         .await;
     desktop.artifact("agent-message-expanded");
     desktop.press("Agent message").await;
     desktop.artifact("agent-message-collapsed");
-    desktop.press("Process group").await;
     desktop.press("Turn work details").await;
     desktop.artifact("agent-message-default");
     desktop.close().await;

@@ -160,11 +160,11 @@ export const toolbarControlStyle = {
  */
 export const disclosureInset = (terminal: number) => (platform.isTerminal ? terminal : 8);
 /**
- * Where what belongs to a disclosure row starts: its expanded details, or a
- * process group's rows. The desktop gives them one column; the terminal keeps
- * each row's own cell layout.
+ * Where a disclosure row's text starts, past its 16-point glyph and gap: the
+ * text lane its expanded content shares. The terminal keeps each row's own
+ * cell layout.
  */
-export const disclosureContentInset = (terminal: number) => (platform.isTerminal ? terminal : 32);
+export const disclosureContentInset = (terminal: number) => (platform.isTerminal ? terminal : 24);
 /**
  * A switch or action row among labelled text fields. On the desktop it gets the
  * fields' box, so its inset text lines up with the text typed in them.
@@ -230,11 +230,14 @@ export function Disclosure(props: {
   tooltip?: string;
   open: boolean;
   foldable?: boolean;
+  /** On the desktop, what the row is, in place of the chevron. */
+  icon?: Parameters<typeof Icon>[0]['name'];
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
+  const icon = () => (platform.isTerminal ? undefined : props.icon);
   return (
     <View
       style={{
@@ -265,8 +268,23 @@ export function Disclosure(props: {
         activeStyle={quietActiveStyle()}
         focusStyle={quietFocusStyle()}
       >
-        <If when={props.foldable !== false}>
-          <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+        <If
+          when={icon()}
+          else={
+            <If
+              when={props.foldable !== false}
+              else={
+                // The label stays on the text lane where there is nothing to fold.
+                <If when={!platform.isTerminal}>
+                  <View style={{ width: 16, height: 16 }} />
+                </If>
+              }
+            >
+              <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+            </If>
+          }
+        >
+          <Icon name={icon()!} color={C.muted} />
         </If>
         {props.children}
       </Button>

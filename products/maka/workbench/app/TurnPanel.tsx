@@ -29,14 +29,7 @@ import { senderSession, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import {
-  C,
-  captionTextStyle,
-  controlStyle,
-  Disclosure,
-  disclosureContentInset,
-  disclosureTitleStyle,
-} from './ui';
+import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
@@ -50,7 +43,7 @@ const groupHeaderHeight = Math.max(
   controlStyle.minHeight,
   captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
 );
-const memberGap = 6;
+const memberGap = platform.isTerminal ? 6 : 0;
 const activityFollowThreshold = captionTextStyle.lineHeight;
 
 export type LiveActivity = {
@@ -79,6 +72,13 @@ export function turnOutcome(turn: TurnPresentation): string | null {
   return turn.finalOutputIds.length > 0 ? 'completed' : (turn.timing?.finished?.outcome ?? null);
 }
 
+export function canFoldTurn(turn: TurnPresentation): boolean {
+  return turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
+}
+
+/** On the desktop a foldable turn's summary row stands in for its groups' headers. */
+const summarizes = (turn: TurnPresentation) => !platform.isTerminal && canFoldTurn(turn);
+
 function duration(turn: TurnPresentation, now?: number): string {
   const start = turn.timing?.startedAt;
   const end = turn.timing?.finished?.at ?? now;
@@ -86,8 +86,37 @@ function duration(turn: TurnPresentation, now?: number): string {
   return formatDuration(end - start);
 }
 
+/** What a turn's work did, counted over its groups: "2 thoughts · 3 tools". */
+export function activityCounts(
+  groups: readonly ProcessGroup[],
+  row: (id: string) => Row | undefined,
+): string {
+  const ids = groups.flatMap((group) => group.rowIds);
+  const thoughts = ids.filter((id) => row(id)?.field === 'thinking').length;
+  const tools = groups.reduce((count, group) => count + group.toolIds.length, 0);
+  const messages = ids.filter((id) => {
+    const value = row(id);
+    return value?.role === 'user' && senderSession(value.origin) !== null;
+  }).length;
+  return [
+    thoughts
+      ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
+      : '',
+    tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: tools }) : '',
+    messages
+      ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
+          count: messages,
+        })
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export function TurnSummary(props: {
   turn: () => TurnPresentation;
+  groups: () => readonly ProcessGroup[];
+  row(id: string): Row | undefined;
   expanded: () => boolean;
   canFold: () => boolean;
   toggle(open: boolean): void;
@@ -101,13 +130,21 @@ export function TurnSummary(props: {
 }) {
   const label = () => {
     const outcome = turnOutcome(props.turn());
-    return outcome === 'completed'
-      ? tr('Completed')
-      : outcome === 'failed'
-        ? tr('Failed')
+    const time = duration(props.turn());
+    const status =
+      outcome === 'failed'
+        ? time
+          ? tr('Failed after {duration}', { duration: time })
+          : tr('Failed')
         : outcome === 'aborted'
-          ? tr('Stopped')
-          : tr('Activity');
+          ? time
+            ? tr('Stopped after {duration}', { duration: time })
+            : tr('Stopped')
+          : time
+            ? tr('Worked for {duration}', { duration: time })
+            : '';
+    const counts = summarizes(props.turn()) ? activityCounts(props.groups(), props.row) : '';
+    return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
   };
   const choose = (action: { turnId: string; answerKey: string | undefined; open: boolean }) => {
     const turn = props.turn();
@@ -148,9 +185,6 @@ export function TurnSummary(props: {
         >
           {label()}
         </Text>
-        <If when={turnOutcome(props.turn()) === 'completed'}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>{duration(props.turn())}</Text>
-        </If>
       </Disclosure>
     </View>
   );
@@ -284,7 +318,7 @@ function ActivityLog(props: {
         if (alive) error.set(errorText(reason));
       });
   return (
-    <View style={{ height: bodyHeight(), paddingLeft: disclosureContentInset(0) }}>
+    <View style={{ height: bodyHeight() }}>
       <If when={initial()}>
         <List
           accessibilityLabel={tr('Turn activity')}
@@ -483,31 +517,16 @@ export function TurnPanel(props: {
     const timer = setInterval(() => clock.set(Date.now()), 1000);
     cleanup(() => clearInterval(timer));
   });
-  const counts = () => {
-    const thoughts = props
-      .group()
-      .rowIds.filter((id) => props.row(id)?.field === 'thinking').length;
-    const tools = props.group().toolIds.length;
-    const messages = props.group().rowIds.filter((id) => {
-      const row = props.row(id);
-      return row?.role === 'user' && senderSession(row.origin) !== null;
-    }).length;
-    return (
-      [
-        thoughts
-          ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
-          : '',
-        tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: tools }) : '',
-        messages
-          ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
-              count: messages,
-            })
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' · ') || tr('Process')
-    );
-  };
+  const counts = () => activityCounts([props.group()], props.row) || tr('Process');
+  // A finished turn's summary row is the only disclosure: its groups have no
+  // header of their own and show their members whenever the turn is open.
+  const summarized = () => summarizes(props.turn());
+  effect(() => {
+    if (!summarized() || props.state.open() || !props.group().rowIds.length) return;
+    props.state.opening = 'top';
+    props.state.following.set(false);
+    props.state.open.set(true);
+  });
   const desiredTitle = computed(() => {
     if (!active()) return counts();
     const activity = props.activity();
@@ -544,34 +563,53 @@ export function TurnPanel(props: {
     if (action.open) props.reveal();
   };
   return (
-    <View style={panelStyle}>
-      <Disclosure
-        label={tr('Process group')}
-        open={props.state.open()}
-        foldable={props.group().rowIds.length > 0}
-        onPress={inputAction(choose, {
-          sessionId: props.sessionId,
-          key: props.group().key,
-          open: !props.state.open(),
-        })}
-      >
-        <If when={active()}>
-          <LoadingIndicator label={stableTitle()} />
-        </If>
-        <Text
-          style={[
-            { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },
-            { numberOfLines: 1, textOverflow: 'ellipsis' },
-          ]}
+    <View style={summarized() ? { ...panelStyle, marginTop: 0 } : panelStyle}>
+      <If when={!summarized()}>
+        <Disclosure
+          label={tr('Process group')}
+          open={props.state.open()}
+          foldable={props.group().rowIds.length > 0}
+          onPress={inputAction(choose, {
+            sessionId: props.sessionId,
+            key: props.group().key,
+            open: !props.state.open(),
+          })}
+          trailing={
+            platform.isTerminal ? undefined : (
+              <If when={active()}>
+                <View
+                  style={{
+                    width: 20,
+                    height: 20,
+                    marginRight: 8,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <LoadingIndicator label={stableTitle()} />
+                </View>
+              </If>
+            )
+          }
         >
-          {active() ? stableTitle() : desiredTitle()}
-        </Text>
-        <If when={active()}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {duration(props.turn(), clock())}
+          <If when={active() && platform.isTerminal}>
+            <LoadingIndicator label={stableTitle()} />
+          </If>
+          <Text
+            style={[
+              { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
+            {active() ? stableTitle() : desiredTitle()}
           </Text>
-        </If>
-      </Disclosure>
+          <If when={active()}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {duration(props.turn(), clock())}
+            </Text>
+          </If>
+        </Disclosure>
+      </If>
       <If when={props.state.open() && props.group().rowIds.length > 0}>
         <ActivityLog {...props} />
       </If>
