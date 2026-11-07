@@ -222,7 +222,7 @@ export const msg_graphEmpty: Message = [
 export const msg_graphStatus_empty: Message = ['Empty', '空', '空'];
 export const msg_graphStatus_active: Message = ['Active', '进行中', '進行中'];
 export const msg_graphStatus_waiting: Message = ['Waiting', '等待中', '等待中'];
-export const msg_graphStatus_failed: Message = ['Failed', '失败', '失敗'];
+export const msg_graphStatus_failed: Message = ['Failed', '失败', '失敗', '실패'];
 export const msg_graphStatus_finished: Message = ['Finished', '已完成', '已完成'];
 export const msg_graphStatus_stopped: Message = ['Stopped', '已停止', '已停止'];
 export const msg_graphStatus_requested: Message = ['Requested', '已请求', '已請求'];
@@ -386,7 +386,7 @@ export const msg_checklistLoading: Message = [
   '正在加载清单…',
   '正在載入清單…',
 ];
-export const msg_checklistRetry: Message = ['Retry', '重试', '重試'];
+export const msg_checklistRetry: Message = ['Retry', '重试', '重試', '다시 시도'];
 export const msg_checklistEmpty: Message = [
   'No checklist yet. The agent keeps one here as it works.',
   '还没有清单。智能体工作时会在这里维护。',
@@ -1246,7 +1246,7 @@ export const msg_helpNavigation: Message = [
   '显示 / 隐藏对话列表',
   '顯示 / 隱藏對話清單',
 ];
-export const msg_helpNew: Message = ['New conversation', '新建对话', '新增對話'];
+export const msg_helpNew: Message = ['New conversation', '新建对话', '新增對話', '새 대화'];
 export const msg_helpBack: Message = [
   'Close dialog / return to conversation',
   '关闭弹窗 / 返回对话',
@@ -2004,7 +2004,12 @@ export const msg_imageTerminal: Message = [
 export const msg_defaultModel: Message = ['Default model', '默认模型', '預設模型'];
 export const msg_modelApply: Message = ['Apply', '应用', '套用'];
 export const msg_thinking: Message = ['Thinking', '思考等级', '思考等級'];
-export const msg_thinkingUnavailable: Message = ['Unavailable', '不可用', '無法使用'];
+export const msg_thinkingUnavailable: Message = [
+  'Unavailable',
+  '不可用',
+  '無法使用',
+  '사용할 수 없음',
+];
 export const msg_thinkingDefault: Message = ['Model default', '模型默认', '模型預設'];
 export const msg_thinkingOff: Message = ['Off', '关闭', '關閉'];
 export const msg_thinkingMinimal: Message = ['Minimal', '最低', '最低'];
@@ -2455,7 +2460,7 @@ export const msg_confirmRemoveKey: Message = [
   '移除此連線已儲存的憑據？',
 ];
 export const msg_confirmRemove: Message = ['Remove credentials', '移除凭据', '移除憑據'];
-export const msg_cancel: Message = ['Cancel', '取消', '取消'];
+export const msg_cancel: Message = ['Cancel', '取消', '取消', '취소'];
 export const msg_discardKey: Message = [
   'Discard the unsaved key and leave?',
   '放弃未保存的密钥并离开？',
@@ -2566,7 +2571,7 @@ export const msg_modelSaveFailed: Message = [
   '模型选择未能保存，请重新选择以重试。',
   '模型選擇未能儲存，請重新選擇以重試。',
 ];
-export const msg_models: Message = ['Models', '模型', '模型'];
+export const msg_models: Message = ['Models', '模型', '模型', '모델'];
 export const msg_findNoResults: Message = ['No matches', '无匹配结果', '無符合結果'];
 export const msg_findFieldBody: Message = ['Message', '消息', '訊息'];
 export const msg_findFieldThinking: Message = ['Thinking', '思考', '思考'];
@@ -2648,7 +2653,7 @@ export const msg_noModels: Message = [
 ];
 export const msg_refreshModels: Message = ['Refresh models', '刷新模型', '重新整理模型'];
 
-export const msg_closeModels: Message = ['Close', '关闭', '關閉'];
+export const msg_closeModels: Message = ['Close', '关闭', '關閉', '닫기'];
 export const msg_approvalTitle: Message = ['Confirm service call', '确认服务调用', '確認服務呼叫'];
 export const msg_approvalDeny: Message = ['Deny this call', '拒绝本次调用', '拒絕本次呼叫'];
 export const msg_approvalAllow: Message = ['Allow this call', '允许本次调用', '允許本次呼叫'];
