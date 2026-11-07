@@ -18,12 +18,12 @@
  */
 
 import { tr } from './locale';
-import { Canvas, cleanup, platform, Text, untracked, View, List, type ListRef } from 'nsh';
+import { Canvas, cleanup, effect, platform, Text, untracked, View, List, type ListRef } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { C, bodyTextStyle } from './ui';
 import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
-import { checklistPosition, createChecklistState } from './checklistState';
+import { createChecklistState } from './checklistState';
 
 const itemHeight = bodyTextStyle.lineHeight + 16;
 
@@ -90,83 +90,109 @@ export function createChecklist(
         : tr('No active item')),
     problem: () => !!error(),
     content: () => {
-      // The list opens at the item in progress, or else the first one left to
-      // do. When the loaded pages are all done, it moves there once read.
-      // Read once: a new page must not remount the open list.
-      const position = untracked(() => checklistPosition(items()));
+      // Open at the active item without remounting the list when more pages arrive.
+      const initialActive = untracked(() => snapshot()?.activeIndex ?? -1);
+      const initialLoaded = untracked(() => items().length);
+      const initialScrollIndex =
+        initialActive >= 0 && initialActive < initialLoaded ? initialActive : 0;
       let list: ListRef | undefined;
       let open = true;
+      let currentDigest = untracked(() => snapshot()?.digest ?? null);
+      const close = state.open();
       cleanup(() => {
         open = false;
+        close();
       });
-      if (position < 0)
+      if (initialActive >= initialLoaded) {
         void untracked(() => state.reveal(() => open)).then((index) => {
           if (open && index > 0) list?.scrollToIndex({ index, animated: false });
         });
+      }
+      // If a brand-new checklist replaces the open one, jump to its active item.
+      effect(() => {
+        const digest = snapshot()?.digest ?? null;
+        if (digest === currentDigest) return;
+        currentDigest = digest;
+        if (digest === null) return;
+        const nextIndex = snapshot()?.activeIndex ?? -1;
+        if (nextIndex >= 0 && nextIndex < items().length) {
+          list?.scrollToIndex({ index: nextIndex, animated: false });
+        }
+      });
       return (
         <View style={{ minHeight: 0, flexShrink: 1 }}>
-          <List
-            ref={(node) => {
-              list = node;
-            }}
-            each={items()}
-            onLoadMore={() => void state.loadMore()}
-            footer={() => (
-              <If when={error()}>
-                <Text style={[{ paddingHorizontal: 16, color: C.danger }]}>{error()}</Text>
-              </If>
-            )}
-            estimatedItemSize={itemHeight}
-            initialScrollIndex={Math.max(0, position)}
-            keyExtractor={(_, index) => String(index)}
-            style={{
-              minHeight: 0,
-              flexShrink: 1,
-              height: error() ? height() : Math.min(items().length * itemHeight, height()),
-            }}
-          >
-            {(item) => (
-              <View
-                style={{
-                  minHeight: itemHeight,
-                  paddingHorizontal: 16,
-                  paddingVertical: 8,
-                  flexDirection: 'row',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                }}
-              >
-                {/* As tall as the first line, so the mark centres on it. */}
-                <View style={{ height: bodyTextStyle.lineHeight, justifyContent: 'center' }}>
-                  <If
-                    when={item().status === 'in_progress'}
-                    else={
-                      <ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />
-                    }
-                  >
-                    <Icon name="activity" color={C.accent} />
-                  </If>
-                </View>
-                <Text
-                  style={[
-                    {
-                      ...bodyTextStyle,
-                      flex: 1,
-                      color:
-                        item().status === 'in_progress'
-                          ? C.accent
-                          : item().status === 'completed'
-                            ? C.muted
-                            : C.secondary,
-                    },
-                    { userSelect: 'text' },
-                  ]}
+          <If when={items().length > 0}>
+            <List
+              ref={(node) => {
+                list = node;
+              }}
+              each={items()}
+              onLoadMore={() => void state.loadMore()}
+              estimatedItemSize={itemHeight}
+              initialScrollIndex={initialScrollIndex}
+              keyExtractor={(_, index) => String(index)}
+              style={{
+                minHeight: 0,
+                flexShrink: 1,
+                height: Math.min(
+                  items().length * itemHeight,
+                  error() ? Math.max(itemHeight, height() - itemHeight) : height(),
+                ),
+              }}
+            >
+              {(item) => (
+                <View
+                  style={{
+                    minHeight: itemHeight,
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                  }}
                 >
-                  {item().content}
-                </Text>
-              </View>
-            )}
-          </List>
+                  {/* As tall as the first line, so the mark centres on it. */}
+                  <View style={{ height: bodyTextStyle.lineHeight, justifyContent: 'center' }}>
+                    <If
+                      when={item().status === 'in_progress'}
+                      else={
+                        <ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />
+                      }
+                    >
+                      <Icon name="activity" color={C.accent} />
+                    </If>
+                  </View>
+                  <Text
+                    style={[
+                      {
+                        ...bodyTextStyle,
+                        flex: 1,
+                        color:
+                          item().status === 'in_progress'
+                            ? C.accent
+                            : item().status === 'completed'
+                              ? C.muted
+                              : C.secondary,
+                      },
+                      { userSelect: 'text' },
+                    ]}
+                  >
+                    {item().content}
+                  </Text>
+                </View>
+              )}
+            </List>
+          </If>
+          <If when={error()}>
+            <Text
+              style={[
+                { ...bodyTextStyle, paddingHorizontal: 16, paddingVertical: 8, color: C.danger },
+                { userSelect: 'text' },
+              ]}
+            >
+              {error()}
+            </Text>
+          </If>
         </View>
       );
     },

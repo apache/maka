@@ -81,6 +81,7 @@ export function ComposerDetails(props: {
     messages: createMessagesDock(session, height),
   };
   type Panel = keyof typeof panels;
+  type OtherPanel = Exclude<Panel, 'todo'>;
   const keys: Panel[] = ['goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
@@ -90,11 +91,11 @@ export function ComposerDetails(props: {
     computer: () => tr('Computer access'),
     messages: () => tr('Messages'),
   };
-  const icons = {
+  const icons: Record<OtherPanel, 'statusPending' | 'shield' | 'queue'> = {
     goal: 'statusPending',
     computer: 'shield',
     messages: 'queue',
-  } as const;
+  };
   const accessibilityLabels = {
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
@@ -123,39 +124,36 @@ export function ComposerDetails(props: {
       color={C.muted}
     />
   );
-  const mark = (key: Panel) =>
-    key === 'todo' ? (
-      todo.mark()
-    ) : (
-      <If
-        when={
-          (key === 'goal' && goal()?.status === 'active') ||
-          (key === 'messages' && session.sends().some((item) => item.busy))
-        }
-        else={
-          <Icon
-            name={key === 'goal' && goal()?.status === 'achieved' ? 'statusSuccess' : icons[key]}
-            color={panels[key].problem() ? C.warning : C.secondary}
-          />
-        }
-      >
-        <LoadingIndicator color={C.secondary} />
-      </If>
-    );
-  const summary = (key: Panel) => (
-    <Text style={{ ...captionTextStyle, color: panels[key].problem() ? C.warning : C.muted }}>
-      {panels[key].summary()}
-    </Text>
+  const otherMark = (key: OtherPanel) => (
+    <If
+      when={
+        (key === 'goal' && goal()?.status === 'active') ||
+        (key === 'messages' && session.sends().some((item) => item.busy))
+      }
+      else={
+        <Icon
+          name={key === 'goal' && goal()?.status === 'achieved' ? 'statusSuccess' : icons[key]}
+          color={panels[key].problem() ? C.warning : C.secondary}
+        />
+      }
+    >
+      <LoadingIndicator color={C.secondary} />
+    </If>
   );
-  // On the desktop the checklist's current item says what is happening, so it
-  // reads as text. Beside chips it wraps to its own line rather than shrink away.
-  const preview = (key: Panel, besideChips: boolean) => (
+  const summary = (key: Panel) => (
+    <If when={!!panels[key].summary()}>
+      <Text style={{ ...captionTextStyle, color: panels[key].problem() ? C.warning : C.muted }}>
+        {panels[key].summary()}
+      </Text>
+    </If>
+  );
+  const preview = (key: Panel) => (
     <Text
       style={[
         {
           ...captionTextStyle,
           flex: 1,
-          minWidth: besideChips ? 120 : 0,
+          minWidth: 0,
           color: panels[key].problem()
             ? C.warning
             : key === 'todo' && !platform.isTerminal
@@ -168,89 +166,155 @@ export function ComposerDetails(props: {
       {panels[key].preview()}
     </Text>
   );
-  // What follows the chips: the checklist's current item on the desktop; in the
-  // terminal, as before, the only panel's preview while it is closed.
-  const lead = (): Panel | null =>
-    platform.isTerminal
-      ? available().length === 1 && selected() === null
-        ? available()[0]
-        : null
-      : todo.shown()
-        ? 'todo'
-        : null;
-  const button = (key: Panel, wide: boolean) => (
+  const hideButton = () => (
     <Button
-      accessibilityLabel={accessibilityLabels[key]()}
-      tooltip={textTooltip(panels[key].preview)}
-      selected={selected() === key}
-      onPress={inputAction(toggle, key)}
+      accessibilityLabel={tr('Hide todo')}
+      tooltip={textTooltip(() => tr('Hide todo'))}
+      onPress={inputAction(hideTodo, null)}
       style={{
         ...controlStyle,
-        flexDirection: 'row',
-        gap: 8,
-        alignItems: 'center',
-        ...(wide ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
-        backgroundColor: !wide && selected() === key ? C.raised : 'transparent',
+        paddingHorizontal: 8,
+        flexShrink: 0,
+        backgroundColor: 'transparent',
       }}
       hoverStyle={{ backgroundColor: C.raised }}
       focusStyle={{ backgroundColor: C.line }}
     >
-      {mark(key)}
-      {wide && key === 'todo' ? (
-        <>
-          {preview(key, false)}
-          {summary(key)}
-        </>
-      ) : (
-        <>
-          <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
-          {summary(key)}
-          {wide ? preview(key, false) : null}
-        </>
-      )}
-      {chevron(key)}
+      <Icon name="close" color={C.muted} />
     </Button>
   );
-  const row = () => (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4, flexShrink: 0 }}>
-      <If
-        when={available().length === 1 && !platform.isTerminal}
-        else={
-          <View
+  // Keep Todo, its active step, and its Hide button inside one cohesive unit so
+  // sibling panels (Messages, Computer access) never separate Todo from its text
+  // or leave an ambiguous corner close button above another open panel.
+  const todoItem = () => {
+    const single = () => available().length === 1;
+    if (platform.isTerminal) {
+      return (
+        <View
+          style={{
+            ...(single() ? { flex: 1, minWidth: 0, gap: 4 } : { flexShrink: 0 }),
+            flexDirection: 'row',
+            alignItems: 'center',
+            borderRadius: controlStyle.borderRadius,
+            backgroundColor: !single() && selected() === 'todo' ? C.raised : 'transparent',
+          }}
+        >
+          <Button
+            accessibilityLabel={accessibilityLabels.todo()}
+            tooltip={textTooltip(panels.todo.preview)}
+            selected={selected() === 'todo'}
+            onPress={inputAction(toggle, 'todo')}
             style={{
-              flex: 1,
-              minWidth: 0,
+              ...controlStyle,
               flexDirection: 'row',
-              flexWrap: 'wrap',
+              gap: 8,
               alignItems: 'center',
-              gap: 4,
+              flexShrink: 0,
+              backgroundColor: single() && selected() === 'todo' ? C.raised : 'transparent',
             }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.line }}
           >
-            <Each of={available()} key={(key) => key}>
-              {(key) => button(key(), false)}
-            </Each>
-            <Each of={lead() === null ? [] : [lead()!]} key={(key) => key}>
-              {(key) => preview(key(), true)}
-            </Each>
-          </View>
-        }
+            {todo.mark()}
+            <Text style={{ ...captionTextStyle, color: C.text }}>{labels.todo()}</Text>
+            {summary('todo')}
+            {chevron('todo')}
+          </Button>
+          <If when={single()}>
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' }}>
+              <If when={selected() === null}>{preview('todo')}</If>
+            </View>
+          </If>
+          {hideButton()}
+        </View>
+      );
+    }
+    return (
+      <View
+        style={{
+          flex: 1,
+          minWidth: single() ? 0 : 200,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: single() ? 4 : 0,
+          borderRadius: controlStyle.borderRadius,
+          backgroundColor: !single() && selected() === 'todo' ? C.raised : 'transparent',
+        }}
       >
-        <Each of={available()} key={(key) => key}>
-          {(key) => button(key(), true)}
-        </Each>
-      </If>
-      <If when={todo.shown()}>
         <Button
-          accessibilityLabel={tr('Hide todo')}
-          tooltip={textTooltip(() => tr('Hide todo'))}
-          onPress={inputAction(hideTodo, null)}
-          style={{ ...controlStyle, paddingHorizontal: 8, flexShrink: 0 }}
+          accessibilityLabel={accessibilityLabels.todo()}
+          tooltip={textTooltip(panels.todo.preview)}
+          selected={selected() === 'todo'}
+          onPress={inputAction(toggle, 'todo')}
+          style={{
+            ...controlStyle,
+            flex: 1,
+            minWidth: 0,
+            flexDirection: 'row',
+            gap: 8,
+            alignItems: 'center',
+            backgroundColor: 'transparent',
+          }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.line }}
         >
-          <Icon name="close" color={C.muted} />
+          {todo.mark()}
+          {preview('todo')}
+          {summary('todo')}
+          {chevron('todo')}
         </Button>
-      </If>
+        {hideButton()}
+      </View>
+    );
+  };
+  const otherItem = (key: OtherPanel) => {
+    const singleDesktop = () => available().length === 1 && !platform.isTerminal;
+    const singleTerminal = () => available().length === 1 && platform.isTerminal;
+    return (
+      <>
+        <Button
+          accessibilityLabel={accessibilityLabels[key]()}
+          tooltip={textTooltip(panels[key].preview)}
+          selected={selected() === key}
+          onPress={inputAction(toggle, key)}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            gap: 8,
+            alignItems: 'center',
+            ...(singleDesktop() ? { flex: 1, minWidth: 0 } : { flexShrink: 0 }),
+            backgroundColor: !singleDesktop() && selected() === key ? C.raised : 'transparent',
+          }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+        >
+          {otherMark(key)}
+          <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
+          {summary(key)}
+          {singleDesktop() ? preview(key) : null}
+          {chevron(key)}
+        </Button>
+        <If when={singleTerminal() && selected() === null}>{preview(key)}</If>
+      </>
+    );
+  };
+  const row = () => (
+    <View
+      style={{
+        flexDirection: 'row',
+        flexWrap: available().length > 1 ? 'wrap' : 'nowrap',
+        alignItems: 'center',
+        gap: 4,
+        padding: 4,
+        flexShrink: 0,
+      }}
+    >
+      <Each of={available()} key={(key) => key}>
+        {(key) => {
+          const current = key();
+          return current === 'todo' ? todoItem() : otherItem(current);
+        }}
+      </Each>
     </View>
   );
   const detail = () => (

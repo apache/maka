@@ -195,7 +195,7 @@ export interface ComposerPrediction {
 }
 
 export interface ComposerChecklistSource {
-  read(offset: number): Promise<AgentChecklist>;
+  read(offset: number, limit?: number): Promise<AgentChecklist>;
   watch(offset: number): Promise<UiSubscription<AgentChecklist>>;
 }
 

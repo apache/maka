@@ -2189,6 +2189,11 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
     desktop.artifact(&format!("todo-strip-expanded-{theme}-{layout}"));
     assert_eq!(desktop.control(toggle).await, row);
     desktop.press(toggle).await;
+    desktop
+        .until("the todo list did not close above its row", || {
+            (sample(above)? != surface).then_some(())
+        })
+        .await;
 
     desktop.press("Hide todo").await;
     desktop
@@ -2196,7 +2201,9 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
-    // Progress on the same list leaves it closed.
+    desktop.press("Process group").await;
+    desktop.control("Toggle tool todo_write").await;
+    // Progress on the same list leaves it closed, fenced on the rendered tool disclosure.
     running
         .tool_call(
             "todo_write",
@@ -2204,27 +2211,55 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
         )
         .await;
     let running = desktop.request(&mut fixture).await;
-    let settled = std::time::Instant::now();
     desktop
-        .until("waiting for the progress update to settle", || {
-            assert!(
-                desktop.controls(toggle).is_empty(),
-                "a progress update reopened the closed todo"
-            );
-            (settled.elapsed() >= Duration::from_secs(1)).then_some(())
-        })
-        .await;
-    // A different list is new work and shows again.
-    running
-        .tool_call(
-            "todo_write",
-            json!({"todos":[
-                {"content":"Publish the release notes", "status":"completed"},
-                {"content":"Announce the release", "status":"completed"},
-            ]}),
+        .until(
+            "the progress todo_write did not render in the transcript",
+            || (desktop.controls("Toggle tool todo_write").len() == 2).then_some(()),
         )
         .await;
-    let answer = desktop.request(&mut fixture).await;
+    assert!(
+        desktop.controls(toggle).is_empty(),
+        "a progress update reopened the closed todo"
+    );
+    // A >20-item checklist opens above the row, hides cleanly, and re-shows when an item past page 1 changes.
+    let long_list = |step_25: &str, all_done: bool| {
+        json!({"todos": (1..=25).map(|index| {
+            let content = if index == 25 {
+                step_25.to_owned()
+            } else {
+                format!("Release step {index}")
+            };
+            let status = if all_done || index < 23 {
+                "completed"
+            } else if index == 23 {
+                "in_progress"
+            } else {
+                "pending"
+            };
+            json!({"content": content, "status": status})
+        }).collect::<Vec<_>>()})
+    };
+    running
+        .tool_call("todo_write", long_list("Verify checksums", false))
+        .await;
+    let running = desktop.request(&mut fixture).await;
+    desktop.press(toggle).await;
+    desktop
+        .until(
+            "the multi-page todo list did not open above its row",
+            || (sample(above)? == surface).then_some(()),
+        )
+        .await;
+    desktop.press("Hide todo").await;
+    desktop
+        .until("the hidden multi-page todo strip remained", || {
+            desktop.controls(toggle).is_empty().then_some(())
+        })
+        .await;
+    running
+        .tool_call("todo_write", long_list("Publish signed checksums", true))
+        .await;
+    let running = desktop.request(&mut fixture).await;
     desktop.control(toggle).await;
     desktop.artifact(&format!("todo-strip-complete-{theme}-{layout}"));
     desktop.press("Hide todo").await;
@@ -2233,6 +2268,15 @@ async fn desktop_todo_strip_keeps_its_row_in_place_and_closes_until_the_list_cha
             desktop.controls(toggle).is_empty().then_some(())
         })
         .await;
+    // Writing the earlier 4-item list again is fresh work (ABA) and must show again.
+    running
+        .tool_call(
+            "todo_write",
+            release(["in_progress", "pending", "pending", "pending"]),
+        )
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.control(toggle).await;
     answer.finish().await;
     desktop.close().await;
     fixture.finish().await;

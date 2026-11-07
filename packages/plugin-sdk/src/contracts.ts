@@ -1865,6 +1865,11 @@ export const contracts = {
                 minimum: 0,
                 default: 0,
               },
+              limit: {
+                type: ['integer', 'null'],
+                format: 'uint',
+                minimum: 0,
+              },
             },
             additionalProperties: false,
             required: ['sessionId'],
@@ -1882,6 +1887,9 @@ export const contracts = {
                 format: 'uint64',
                 minimum: 0,
               },
+              digest: {
+                type: ['string', 'null'],
+              },
               total: {
                 type: 'integer',
                 format: 'uint',
@@ -1889,6 +1897,11 @@ export const contracts = {
               },
               completed: {
                 type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              activeIndex: {
+                type: ['integer', 'null'],
                 format: 'uint',
                 minimum: 0,
               },
@@ -1912,7 +1925,6 @@ export const contracts = {
                 items: {
                   $ref: '#/$defs/AgentTodoItem',
                 },
-                maxItems: 20,
               },
               nextOffset: {
                 type: ['integer', 'null'],
@@ -28477,6 +28489,11 @@ export const contracts = {
                 minimum: 0,
                 default: 0,
               },
+              limit: {
+                type: ['integer', 'null'],
+                format: 'uint',
+                minimum: 0,
+              },
             },
             additionalProperties: false,
             required: ['sessionId'],
@@ -28494,6 +28511,9 @@ export const contracts = {
                 format: 'uint64',
                 minimum: 0,
               },
+              digest: {
+                type: ['string', 'null'],
+              },
               total: {
                 type: 'integer',
                 format: 'uint',
@@ -28501,6 +28521,11 @@ export const contracts = {
               },
               completed: {
                 type: 'integer',
+                format: 'uint',
+                minimum: 0,
+              },
+              activeIndex: {
+                type: ['integer', 'null'],
                 format: 'uint',
                 minimum: 0,
               },
@@ -28524,7 +28549,6 @@ export const contracts = {
                 items: {
                   $ref: '#/$defs/AgentTodoItem',
                 },
-                maxItems: 20,
               },
               nextOffset: {
                 type: ['integer', 'null'],

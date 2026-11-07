@@ -21,16 +21,30 @@ import { batch, cleanup, signal } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Subscription } from './history';
-import { createText, errorText, isObservationCancelled, UiError } from './text';
+import { createText, errorText, isObservationCancelled, UiError, type UiText } from './text';
 
-// The list each conversation's strip was hidden for, so switching away and
-// back does not bring it back. A different list is new work and shows again.
+// Each entry is a session UUID and a 64-byte SHA-256 hex digest (~100 B),
+// cleared as soon as that session's checklist changes or clears, and bounded so
+// deleted conversations cannot accumulate unbounded process-wide state.
+const MAX_HIDDEN_SESSIONS = 512;
 const hidden = new Map<string, string>();
 
-/** The item in progress, or else the first one left to do; -1 when neither is among `items`. */
-export function checklistPosition(items: readonly AgentTodoItem[]): number {
-  const active = items.findIndex((item) => item.status === 'in_progress');
-  return active >= 0 ? active : items.findIndex((item) => item.status !== 'completed');
+function rememberHidden(sessionId: string, digest: string) {
+  hidden.delete(sessionId);
+  if (hidden.size >= MAX_HIDDEN_SESSIONS) {
+    const oldest = hidden.keys().next().value;
+    if (oldest !== undefined) hidden.delete(oldest);
+  }
+  hidden.set(sessionId, digest);
+}
+
+function isStaleRevision(
+  next: AgentChecklist['revision'],
+  current: AgentChecklist['revision'],
+): boolean {
+  if (current === null || current === undefined) return false;
+  if (next === null || next === undefined) return true;
+  return next < current;
 }
 
 export function createChecklistState(source: ComposerChecklistSource, sessionId: string) {
@@ -39,22 +53,86 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
   const nextOffset = signal<AgentChecklist['nextOffset']>(null);
   const loading = signal(false);
   const error = createText();
+  const dismissed = signal<string | null>(hidden.get(sessionId) ?? null);
   let alive = true;
   let generation = 0;
+  let openPanels = 0;
   let stream: Subscription | null = null;
   let reading: Promise<void> = Promise.resolve();
-  const read = async () => {
+
+  const shouldAcceptHead = (incoming: AgentChecklist): boolean => {
+    const current = snapshot();
+    if (!current) return true;
+    if (isStaleRevision(incoming.revision, current.revision)) return false;
+    if (
+      (incoming.revision ?? null) === (current.revision ?? null) &&
+      incoming.enabled === current.enabled &&
+      (incoming.digest ?? null) === (current.digest ?? null)
+    ) {
+      return incoming.offset === 0 && incoming.items.length > items().length;
+    }
+    return true;
+  };
+
+  const commitHead = (head: AgentChecklist, headError: UiText = '') => {
+    if (!alive || !shouldAcceptHead(head)) return false;
+    const currentDismissed = dismissed();
+    const clearDismissed = currentDismissed !== null && (head.digest ?? null) !== currentDismissed;
+    if (clearDismissed) hidden.delete(sessionId);
+    generation += 1;
+    batch(() => {
+      if (clearDismissed) dismissed.set(null);
+      snapshot.set(head);
+      items.set(head.items);
+      nextOffset.set(head.nextOffset);
+      loading.set(false);
+      error.set(headError);
+    });
+    return true;
+  };
+
+  const desiredOpenWindow = (head: AgentChecklist): number => {
+    if (openPanels <= 0) return head.items.length;
+    const activeWindow =
+      head.activeIndex !== null && head.activeIndex !== undefined ? head.activeIndex + 20 : 20;
+    return Math.min(head.total, Math.max(items().length, activeWindow));
+  };
+
+  const readWindow = async (targetCount?: number) => {
     const page = snapshot();
     const offset = nextOffset();
     if (!alive || loading() || !page || offset === null || offset === undefined) return;
+    const needed =
+      targetCount === undefined ? 20 : Math.max(20, Math.min(page.total, targetCount) - offset);
+    if (needed <= 0) return;
     const currentGeneration = generation;
     loading.set(true);
     error.set('');
     try {
-      const next = await source.read(offset);
-      // A replacement invalidates every previously loaded page. Never stitch
-      // pages from two checklist revisions; the watch supplies the new head.
-      if (!alive || currentGeneration !== generation || next.revision !== page.revision) return;
+      const next = await source.read(offset, needed);
+      if (!alive || currentGeneration !== generation) return;
+      if (next.revision !== page.revision) {
+        // Storage moved ahead of the watch stream; adopt the new head directly
+        // in one read instead of spinning against the superseded revision.
+        if (!isStaleRevision(next.revision, page.revision)) {
+          const activeTarget =
+            next.activeIndex !== null && next.activeIndex !== undefined
+              ? next.activeIndex + 20
+              : 20;
+          const refreshLimit = Math.min(
+            next.total,
+            Math.max(targetCount ?? 20, items().length, activeTarget),
+          );
+          const fresh =
+            next.offset === 0 && next.items.length >= refreshLimit
+              ? next
+              : await source.read(0, Math.max(20, refreshLimit));
+          if (!alive || currentGeneration !== generation) return;
+          commitHead(fresh);
+        }
+        return;
+      }
+      if (next.offset !== offset) return;
       batch(() => {
         items.set([...items(), ...next.items]);
         nextOffset.set(next.nextOffset);
@@ -65,17 +143,24 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
       if (alive && currentGeneration === generation) loading.set(false);
     }
   };
-  // Settles once the page being read, if any, has arrived.
+
   const loadMore = () => {
-    if (!loading()) reading = read();
+    if (!loading()) reading = readWindow();
     return reading;
   };
+
+  const loadThrough = (targetCount: number) => {
+    if (!loading()) reading = readWindow(targetCount);
+    return reading;
+  };
+
   cleanup(() => {
     alive = false;
     const previous = stream;
     stream = null;
     if (previous) void previous.close().catch(() => {});
   });
+
   void (async () => {
     for (let reconnects = 0; alive; ) {
       let opened: Subscription | null = null;
@@ -91,15 +176,20 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
           if (!alive) return;
           if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
           reconnects = 0;
-          if (snapshot() && page.revision === snapshot()!.revision) continue;
-          generation += 1;
-          batch(() => {
-            snapshot.set(page);
-            items.set(page.items);
-            nextOffset.set(page.nextOffset);
-            loading.set(false);
-            error.set('');
-          });
+          if (!shouldAcceptHead(page)) continue;
+          const windowSize = desiredOpenWindow(page);
+          if (windowSize > page.items.length) {
+            try {
+              const expanded = await source.read(0, windowSize);
+              if (!alive) return;
+              commitHead(expanded);
+            } catch (reason) {
+              if (!alive) return;
+              commitHead(page, errorText(reason));
+            }
+          } else {
+            commitHead(page);
+          }
         }
       } catch (reason) {
         if (!alive) return;
@@ -119,53 +209,57 @@ export function createChecklistState(source: ComposerChecklistSource, sessionId:
   })().catch((reason) => {
     if (alive) error.set(errorText(reason));
   });
-  // Statuses change as work moves on; the items' text and count identify the list.
-  const identity = () =>
-    error()
-      ? `error:${error()}`
-      : JSON.stringify([
-          snapshot()?.total ?? 0,
-          (snapshot()?.items ?? []).map((item) => item.content),
-        ]);
-  const hiddenList = signal(hidden.get(sessionId) ?? null);
+
+  const isDismissed = () => {
+    const digest = snapshot()?.digest ?? null;
+    return digest !== null && dismissed() === digest;
+  };
   const complete = () => !!snapshot()?.total && snapshot()!.completed === snapshot()!.total;
+
   return {
     snapshot,
     items,
     error,
     loadMore,
     complete,
+    open() {
+      openPanels += 1;
+      let closed = false;
+      return () => {
+        if (!closed) {
+          closed = true;
+          openPanels -= 1;
+        }
+      };
+    },
     shown: () =>
-      (!!error() || (!!snapshot()?.enabled && snapshot()!.total > 0)) &&
-      hiddenList() !== identity(),
+      !isDismissed() && (!!error() || (!!snapshot()?.enabled && (snapshot()?.total ?? 0) > 0)),
     hide() {
-      const list = identity();
-      hidden.set(sessionId, list);
-      hiddenList.set(list);
+      const digest = snapshot()?.digest ?? null;
+      if (digest !== null) {
+        rememberHidden(sessionId, digest);
+        dismissed.set(digest);
+      } else if (error()) {
+        error.set('');
+      }
     },
     /**
-     * Reads on while every loaded item is done but more remain, until the
-     * item in progress or the first one left to do arrives, and gives its
-     * index (-1 when the reads stop first). Stops early once `wanted` fails.
+     * Ensures the checklist's active item is loaded and returns its index
+     * (-1 when no active item exists, `wanted` turns false, or a read fails).
      */
-    async reveal(wanted: () => boolean) {
-      // The list has fewer pages than items, which bounds reads that keep
-      // being discarded while a replacement is on its way.
-      for (let reads = 0; reads < (snapshot()?.total ?? 0); reads += 1) {
-        const offset = nextOffset();
-        if (
-          !alive ||
-          !wanted() ||
-          checklistPosition(items()) >= 0 ||
-          complete() ||
-          error() ||
-          offset === null ||
-          offset === undefined
-        )
-          break;
-        await loadMore();
+    async reveal(wanted: () => boolean): Promise<number> {
+      if (!alive || !wanted() || error()) return -1;
+      if (loading()) await reading;
+      const page = snapshot();
+      if (!alive || !wanted() || error() || !page) return -1;
+      const target = page.activeIndex ?? -1;
+      if (target < 0) return -1;
+      if (target >= items().length && nextOffset() !== null && nextOffset() !== undefined) {
+        await loadThrough(target + 20);
       }
-      return checklistPosition(items());
+      if (!alive || !wanted() || error()) return -1;
+      const resolved = snapshot()?.activeIndex ?? -1;
+      return resolved >= 0 && resolved < items().length ? resolved : -1;
     },
   };
 }
