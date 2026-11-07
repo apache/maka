@@ -114,11 +114,14 @@ export function BotReply(props: {
                   code: { color: C.accentHover, backgroundColor: C.card },
                 }}
               />
+              <If when={props.compact && message().sequence === props.messages().at(-1)?.sequence}>
+                <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
+              </If>
             </View>
           </View>
         )}
       </Each>
-      <View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} />
+      <If when={!props.compact}><View ref={(node) => props.tailRef?.(node)} style={{ height: 1 }} /></If>
       <If when={props.worker?.exists()}>
         <Button
           accessibilityLabel={recordLabel()}

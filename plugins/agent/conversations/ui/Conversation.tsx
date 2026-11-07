@@ -444,6 +444,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'idle' }
     | { kind: 'reserving'; frozen: FrozenSend }
     | { kind: 'failed'; frozen: FrozenSend; error: UiText };
+  let panelSubmission: Promise<void> | undefined;
   const freezeState = signal<FreezeState>({ kind: 'idle' });
   const checkingModel = signal(false);
   const sending = () => freezeState().kind === 'reserving' || checkingModel();
@@ -2072,7 +2073,8 @@ export function Conversation(props: ConversationProps) {
       if (!ownsReservation()) return;
       releaseHeld();
       freezeState.set({ kind: 'idle' });
-      void confirmFrozen(operation, frozen);
+      const confirmation = confirmFrozen(operation, frozen);
+      if (props.quickTools) await confirmation;
     } catch (reason) {
       if (ownsReservation()) freezeState.set({ kind: 'failed', frozen, error: errorText(reason) });
     }
@@ -2508,7 +2510,11 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
-      void send(event.text);
+      const submission = send(event.text);
+      if (props.quickTools && !panelSubmission) {
+        panelSubmission = submission;
+        void submission.finally(() => { if (panelSubmission === submission) panelSubmission = undefined; });
+      }
     },
     sendRendered,
     invocation,
@@ -2518,6 +2524,8 @@ export function Conversation(props: ConversationProps) {
       return group?.kind === 'process' ? group.turnId : null;
     },
     async flushDraft() {
+      // Escape may follow Return before the Host accepts the send.
+      if (panelSubmission) await panelSubmission;
       if (!draftReady()) {
         notice.set(uiMessage('Wait for the saved draft before switching.'));
         return false;
