@@ -325,11 +325,7 @@ impl Rv {
         });
         let editable = {
             let rv = self.clone();
-            computed(move || {
-                rv.notified.get();
-                rv.props.editable.get();
-                rv.editable()
-            })
+            computed(move || rv.tracked_editable())
         };
         let rv = self.clone();
         effect(move || {
@@ -529,6 +525,13 @@ impl Rv {
         if let Err(e) = self.session.dispatch(tr) {
             log::warn!("RichEditor: a transaction was refused: {e}");
         }
+    }
+
+    /// [`Self::editable`], subscribed to the prop and session state that change it.
+    pub(crate) fn tracked_editable(&self) -> bool {
+        self.notified.get();
+        self.props.editable.get();
+        self.editable()
     }
 
     /// Whether the document can be edited: the prop and every plugin.

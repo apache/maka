@@ -1297,7 +1297,8 @@ fn sink(rv: Rv) -> impl IntoElement {
         })
     };
     let props = rv.props;
-    let (change, composition, key, paste, focus, blur) = (
+    let (change, composition, key, paste, focus, blur, readonly) = (
+        rv.clone(),
         rv.clone(),
         rv.clone(),
         rv.clone(),
@@ -1329,6 +1330,9 @@ fn sink(rv: Rv) -> impl IntoElement {
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)
+        // Platforms admit text input by the sink's state; it must refuse what
+        // the document refuses.
+        .readonly(move || !readonly.tracked_editable())
         .value(move || value.get())
         .label(move || props.accessibility_label.get().unwrap_or_default())
         .on_change(move |text: &str| change.sink_changed(text))

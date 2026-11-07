@@ -88,7 +88,7 @@ pub fn configuration(
 #[cfg(test)]
 mod tests {
     use nsh_core::{
-        Size,
+        Point, Size,
         element::Instance,
         platform::{Environment, Os, Renderer},
         prelude::px,
@@ -234,7 +234,9 @@ mod tests {
         );
         compose(&mut app, false);
         app.wait_for(r#"text:Draft "ab文""#).unwrap();
-        app.type_text("label:前😀 /skill:review 后", "").unwrap();
+        // A sent message is read-only and refuses typing, so a press focuses it.
+        app.press_at("text:/^前/", Point::new(px(1.0), px(1.0)))
+            .unwrap();
         app.press_key("mod+a").unwrap();
         app.press_key("mod+c").unwrap();
         assert_eq!(app.screen().clipboard(), Some("前😀 /skill:review 后"));

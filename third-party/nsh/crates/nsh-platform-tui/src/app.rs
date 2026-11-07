@@ -1790,8 +1790,7 @@ mod tests {
         }
     }
 
-    #[component]
-    fn RichEditorFocusProbe() -> impl IntoElement {
+    fn rich_editor_probe(editable: bool) -> impl IntoElement {
         use nsh_base::rich_editor::{
             extensions::starter,
             state::{EditorState, EditorStateConfig},
@@ -1808,6 +1807,7 @@ mod tests {
             .child(
                 rich_editor()
                     .editor(session)
+                    .editable(editable)
                     .accessibility_label("Focus probe input")
                     .auto_focus(true)
                     .w(px(400.0))
@@ -1820,6 +1820,40 @@ mod tests {
             .child(text(move || {
                 format!("Probe focused:{} value:{}", focused.get(), value.get())
             }))
+    }
+
+    #[component]
+    fn RichEditorFocusProbe() -> impl IntoElement {
+        rich_editor_probe(true)
+    }
+
+    #[component]
+    fn ReadOnlyRichEditorProbe() -> impl IntoElement {
+        rich_editor_probe(false)
+    }
+
+    #[test]
+    fn a_read_only_rich_editor_reports_a_read_only_native_sink() {
+        let mut view = AppView::new(AppOptions::default());
+        let loaded = Instant::now();
+        view.load(Root::of::<ReadOnlyRichEditorProbe>().into())
+            .unwrap();
+        wait_focus_probe(
+            &mut view,
+            "RichEditor",
+            loaded,
+            |view| view.snapshot().contains("Probe focused:true"),
+            "read-only RichEditor autofocus did not reach its native sink",
+        );
+        // Embedders admit typing and paste by the input context; it must not
+        // offer an editor that refuses them.
+        assert!(
+            view.surface()
+                .input_context()
+                .is_some_and(|input| !input.editable),
+            "a read-only RichEditor reported an editable native sink"
+        );
+        view.stop();
     }
 
     #[test]
