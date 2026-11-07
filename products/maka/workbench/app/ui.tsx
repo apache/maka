@@ -179,7 +179,7 @@ export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };
 // Focus styles apply to keyboard focus only, so a ring keeps it apart from hover.
-const quietFocusStyle = () =>
+export const quietFocusStyle = () =>
   platform.isTerminal
     ? { backgroundColor: C.raised }
     : {
@@ -188,8 +188,8 @@ const quietFocusStyle = () =>
         outlineColor: C.accent,
         outlineOffset: -2,
       };
-const quietHoverStyle = () => ({ backgroundColor: C.card });
-const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
+export const quietHoverStyle = () => ({ backgroundColor: C.card });
+export const quietActiveStyle = () => ({ backgroundColor: C.cardRaised });
 
 export function IconButton(props: {
   label: string;

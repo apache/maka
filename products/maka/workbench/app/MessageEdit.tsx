@@ -30,6 +30,7 @@ import {
   userAuthored,
 } from './history';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
+import type { MessageMenu } from './messageMenu';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Icon } from './Icon';
 import {
@@ -67,6 +68,7 @@ export function MessageEdit(props: {
   regenerate?: boolean;
   sessionId: string;
   through(): number;
+  menu?: MessageMenu;
   /** Whether the row is the message that opened its turn; a steering message is not. */
   opensTurn(): boolean;
   /** Resolves whether the fork was opened; `send` sends the text there. */
@@ -135,6 +137,14 @@ export function MessageEdit(props: {
       if (alive) pending.set(false);
     }
   };
+  const label = () =>
+    props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend in a fork');
+  props.menu?.add({
+    kind: props.regenerate ? 'regenerate' : 'edit',
+    label,
+    busy: pending,
+    action: () => (target() === null ? null : inputAction(edit, target())),
+  });
   // Render nothing when hidden, so the row of actions keeps its spacing.
   return (
     <If when={Boolean(notice()) || target() !== null}>
@@ -146,7 +156,7 @@ export function MessageEdit(props: {
         </If>
         <If when={target() !== null}>
           <IconButton
-            label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend in a fork')}
+            label={label()}
             tooltip={pending() ? tr('Creating fork…') : undefined}
             icon={props.regenerate ? 'refresh' : 'edit'}
             disabled={pending()}

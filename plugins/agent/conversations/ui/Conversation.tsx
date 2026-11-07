@@ -3251,13 +3251,14 @@ export function Conversation(props: ConversationProps) {
                               return;
                             innerReader.set(key);
                           }}
-                          finalActions={(row, ownerKey) => (
+                          finalActions={(row, ownerKey, menu) => (
                             <FinalActions
                               row={row}
                               ownerKey={ownerKey}
                               sessionId={sessionId}
                               through={() => latestKnown}
                               fork={props.fork}
+                              menu={menu}
                               extra={
                                 !platform.isTerminal && props.edit ? (
                                   <MessageEdit
@@ -3265,6 +3266,7 @@ export function Conversation(props: ConversationProps) {
                                     row={() => loadedOpening(row().turnId)}
                                     sessionId={sessionId}
                                     through={() => latestKnown}
+                                    menu={menu}
                                     opensTurn={() => true}
                                     edit={props.edit!}
                                   />
@@ -3298,12 +3300,13 @@ export function Conversation(props: ConversationProps) {
                           }
                           editMessage={
                             !platform.isTerminal && props.edit
-                              ? (row, ownerKey) => (
+                              ? (row, ownerKey, menu) => (
                                   <MessageEdit
                                     row={row}
                                     ownerKey={ownerKey}
                                     sessionId={sessionId}
                                     through={() => latestKnown}
+                                    menu={menu}
                                     opensTurn={() => opensTurn(row())}
                                     edit={props.edit!}
                                   />

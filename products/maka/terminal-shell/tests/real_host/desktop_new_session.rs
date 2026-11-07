@@ -489,6 +489,23 @@ impl Desktop {
         self.click_at(bounds.center(), MouseButton::Right);
     }
 
+    fn hover_at(&self, position: gpui::Point<gpui::Pixels>) {
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.pump();
+    }
+
+    /// Whether the last frame draws anything inside `bounds`.
+    fn draws_in(&self, bounds: Bounds<gpui::Pixels>) -> bool {
+        self.pixels(bounds)
+            .is_some_and(|pixels| pixels.as_chunks::<4>().0.windows(2).any(|w| w[0] != w[1]))
+    }
+
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         self.click_at(position, MouseButton::Left);
     }
@@ -1088,6 +1105,102 @@ async fn desktop_retries_a_failed_turn_in_place() {
         .unwrap();
     fixture.idle(&desktop.client, session).await;
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_message_actions_show_on_hover_or_focus_and_in_a_context_menu() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("ACTIONS_QUESTION").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply.delta("ACTIONS_REPLY").await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let copy = desktop.control("Copy message").await;
+    let composer = desktop.control("Focus message composer").await.center();
+    // Inside the reply, above its row of actions.
+    let body = point(copy.center().x + px(64.), copy.top() - px(16.));
+    desktop.hover_at(composer);
+    desktop
+        .until("the reply's actions showed at rest", || {
+            (!desktop.draws_in(copy)).then_some(())
+        })
+        .await;
+    desktop.hover_at(body);
+    desktop
+        .until("the reply's actions did not show on hover", || {
+            desktop.draws_in(copy).then_some(())
+        })
+        .await;
+    assert_eq!(desktop.control("Copy message").await, copy);
+    desktop.hover_at(composer);
+    desktop
+        .until("the reply's actions stayed after the pointer left", || {
+            (!desktop.draws_in(copy)).then_some(())
+        })
+        .await;
+    desktop
+        .retry(
+            "keyboard focus did not reveal the reply's actions",
+            || desktop.draws_in(copy),
+            || {
+                desktop.key_with(
+                    "tab",
+                    Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                )
+            },
+        )
+        .await;
+
+    // On a control rather than the text, which keeps its own Copy menu in GPUI.
+    desktop.click_at(copy.center(), MouseButton::Right);
+    let menu = desktop
+        .until(
+            "the reply's context menu did not offer its commands",
+            || {
+                let copies = desktop.controls("Copy message");
+                (copies.len() == 2
+                    && desktop.controls("Fork from this turn").len() == 2
+                    && desktop.controls("Regenerate in a fork").len() == 2
+                    && desktop.controls("Show message source").len() == 2)
+                    .then(|| copies.into_iter().find(|item| *item != copy).unwrap())
+            },
+        )
+        .await;
+    let _ = desktop.platform.take_clipboard_write();
+    desktop.press_at(menu.center());
+    let copied = desktop
+        .until("the context menu did not copy the reply", || {
+            desktop
+                .platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await;
+    assert_eq!(copied, "ACTIONS_REPLY");
+
+    let own = desktop.control("Copy user message").await;
+    desktop.click_at(own.center(), MouseButton::Right);
+    desktop
+        .until(
+            "the user message's context menu did not offer its commands",
+            || {
+                (desktop.controls("Copy user message").len() == 2
+                    && desktop.controls("Edit and resend in a fork").len() == 2
+                    && desktop.controls("Show message source").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.key("escape", false);
     desktop.close().await;
     fixture.finish().await;
 }
