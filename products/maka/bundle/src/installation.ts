@@ -206,7 +206,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send a task or follow-up to a conversation. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering by default; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. Set delivery=queue to wait for the current turn without interrupting. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt means admission, not completion: use SessionWork/SessionHistory to read actual results before reporting success.',
+      'Send a task or follow-up to a conversation. For additional context, corrections, progress updates or guidance for ongoing work, omit delivery or use delivery=steer (the default). Use delivery=queue only when the message should wait until the current turn ends. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model, Codex and Claude turns accept steering; Antigravity uses soft interrupt/resume where supported. Other executors queue follow-ups. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt confirms admission, not completion; queued may also mean pending steering. Use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
     [
       'stop',

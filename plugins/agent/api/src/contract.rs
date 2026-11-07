@@ -635,9 +635,11 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
-    /// Steer an active model, Codex or Claude turn; agy interrupts and resumes where supported. Other executors queue.
+    /// Deliver additional context, corrections, progress updates or guidance to ongoing work.
+    /// Active model, Codex and Claude turns accept steering; agy interrupts and resumes where supported. Other executors queue.
     #[default]
     Steer,
+    /// Defer this message until the current turn ends.
     Queue,
 }
 
@@ -645,6 +647,8 @@ pub enum SendDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    /// Defaults to steer. Omit or use steer for updates to ongoing work;
+    /// use queue only when this message should wait until the current turn ends.
     #[serde(default)]
     pub delivery: SendDelivery,
     /// An active send must not start new work after Stop fences its original Run.
