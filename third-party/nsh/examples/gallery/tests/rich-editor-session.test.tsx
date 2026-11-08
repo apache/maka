@@ -47,6 +47,8 @@ test("Enter twice at the end of a list leaves it for a paragraph", async () => {
   const app = await openDemo();
   // The numbered list's last item: replace its text, leaving the caret at
   // its end.
+  // The item sits under the bottom bar until the document scrolls.
+  await app.scroll("Code, quotes and rules are blocks of their own", 200);
   await selectBlock(app, "Code, quotes and rules are blocks of their own");
   await typeKeys(app, "Last");
   await app.waitFor("Last");

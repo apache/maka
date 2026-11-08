@@ -1,9 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): what the
 // platform reports when a context menu is asked for (the secondary
-// button, a long press): `onContextMenu`'s positions and modifier keys,
-// heard by the nearest listener around the view under the pointer. The
-// handler shows what it gets as text. Its script
-// checks each.
+// button, a long press, the keyboard): `onContextMenu`'s positions,
+// modifier keys and `pointerType` (`null` without a pointer), heard by the
+// nearest listener around the view under the pointer. The handler shows
+// what it gets as text. Its script checks each.
 import { Text, View, signal } from "nsh";
 
 function App() {
@@ -18,7 +18,8 @@ function App() {
             menu.set(
               `at ${e.position.x},${e.position.y} page ${e.pagePosition.x},${e.pagePosition.y}` +
                 `${e.modifiers.alt ? " alt" : ""}${e.modifiers.control ? " ctrl" : ""}` +
-                `${e.modifiers.platform ? " meta" : ""}${e.modifiers.shift ? " shift" : ""}`,
+                `${e.modifiers.platform ? " meta" : ""}${e.modifiers.shift ? " shift" : ""}` +
+                ` by ${e.pointerType ?? "keyboard"}`,
             )
           }
         >

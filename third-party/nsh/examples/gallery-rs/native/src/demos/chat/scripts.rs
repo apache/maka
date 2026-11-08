@@ -188,7 +188,7 @@ pub(crate) struct Scenario {
     pub(crate) steps: Vec<Step>,
 }
 
-pub(crate) const PHOTO: &str = "https://picsum.photos/seed/harbor/640/480";
+pub(crate) const PHOTO: &str = "https://pbs.twimg.com/media/HS6UIKjWcAAIFCz?format=jpg&name=small";
 
 /// The notes attached with the photo.
 pub(crate) const NOTES: FileRef = FileRef {

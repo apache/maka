@@ -23,7 +23,8 @@ use super::{
     ticket::{Side, TicketEvent},
 };
 use crate::ui::{
-    Button, ButtonVariant, Finish, Finished, IconName, Stat, colors, icon, lengths, radius, sheet,
+    Button, ButtonVariant, Finish, Finished, IconName, Stat, TERMINAL_COLUMN, TERMINAL_ROW, colors,
+    icon, lengths, radius, sheet, terminal,
 };
 
 /// The props of a part of a stock's screen.
@@ -124,7 +125,15 @@ pub(crate) fn StockView(props: StockViewProps, cx: Scope<NoEvent>) -> impl IntoE
     })
     .px_4()
     .pt_2()
-    .pb(move || px(96.0 + bottom()))
+    .pb(move || {
+        // Room for the trade bar over the content (a terminal's is below
+        // it).
+        if terminal() {
+            px(0.0)
+        } else {
+            px(96.0 + bottom())
+        }
+    })
     .text_size(px(12.0))
     .text_color(colors::FAINT)
     .tabular_nums();
@@ -176,26 +185,36 @@ pub(crate) fn StockView(props: StockViewProps, cx: Scope<NoEvent>) -> impl IntoE
             .child(footer)
     };
     let change = computed(move || quote.get().percent());
-    // The trade bar, over the content.
+    // The trade bar, over the content; below it in a terminal, which draws
+    // nothing through it.
     let bar = view()
-        .absolute()
-        .left_0()
-        .right_0()
-        .bottom_0()
+        .when(!terminal(), |v| v.absolute().left_0().right_0().bottom_0())
         .flex_row()
         .items_center()
-        .gap(px(10.0))
-        .px_4()
-        .pt(px(10.0))
-        .pb(move || px(10.0 + bottom()))
-        // Glass: the page shows through, blurred, as it scrolls under.
-        .finish(Finish::Glass)
+        .when(!terminal(), |v| {
+            v.gap(px(10.0))
+                .px_4()
+                .pt(px(10.0))
+                .pb(move || px(10.0 + bottom()))
+                // Glass: the page shows through, blurred, as it scrolls
+                // under.
+                .finish(Finish::Glass)
+                .when_some(Finish::Glass.border_color(), |v, c| v.border_t_color(c))
+        })
+        // Its rule is a row of its own in a terminal (the rest of it is
+        // padding).
+        .when(terminal(), |v| {
+            v.gap(px(2.0 * TERMINAL_COLUMN))
+                .px(px(TERMINAL_COLUMN))
+                .pt(px(TERMINAL_ROW - 1.0))
+                .bg(colors::BACKGROUND)
+                .border_t_color(colors::LINE)
+        })
         .border_t_1()
-        .when_some(Finish::Glass.border_color(), |v, c| v.border_t_color(c))
         .child(
             view()
-                .w(px(92.0))
-                .gap(px(1.0))
+                .when(!terminal(), |v| v.w(px(92.0)).gap(px(1.0)))
+                .when(terminal(), |v| v.flex_row().gap(px(2.0 * TERMINAL_COLUMN)))
                 .child(
                     text(move || price(quote.get().last, decimals))
                         .text_size(px(15.0))
@@ -670,6 +689,9 @@ fn Ranges(props: StockProps) -> impl IntoElement {
         second.get();
         market.borrow().ranges.clone()
     });
+    if terminal() {
+        return terminal_ranges(ranges, decimals).into_element();
+    }
     let width = signal(0.0_f32);
     Block::new()
         .title("Ranges")
@@ -683,4 +705,72 @@ fn Ranges(props: StockProps) -> impl IntoElement {
             .label("Price ranges")
             .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0)),
         )
+        .into_element()
+}
+
+/// The ranges in the terminal, where a canvas's dots would fall on its
+/// labels: a table, today's range first, then the horizons'.
+fn terminal_ranges(ranges: Memo<(Vec<Range>, Quote)>, decimals: u32) -> impl IntoElement {
+    let gap = px(2.0 * TERMINAL_COLUMN);
+    let days = px(5.0 * TERMINAL_COLUMN);
+    let column = px(10.0 * TERMINAL_COLUMN);
+    // Row 0 is today's, then one per horizon.
+    let row = move |i: usize| {
+        ranges.with(|(rows, q)| {
+            if i == 0 {
+                Some((q.low, q.high))
+            } else {
+                rows.get(i - 1).map(|r| (r.lo, r.hi))
+            }
+        })
+    };
+    let cell = move |i: usize, high: bool| {
+        text(move || {
+            row(i)
+                .map(|(lo, hi)| price(if high { hi } else { lo }, decimals))
+                .unwrap_or_default()
+        })
+        .w(column)
+        .text_right()
+        .text_size(px(13.0))
+        .tabular_nums()
+        .text_color(if high { colors::UP } else { colors::DOWN })
+    };
+    let head = |label: &'static str, width: Points, right: bool| {
+        text(label)
+            .w(width)
+            .when(right, |t| t.text_right())
+            .text_size(px(11.0))
+            .text_color(colors::FAINT)
+    };
+    Block::new()
+        .title("Ranges")
+        .note("low → high")
+        .child(
+            view()
+                .flex_row()
+                .gap(gap)
+                .child(head("DAYS", days, false))
+                .child(head("LOW", column, true))
+                .child(head("HIGH", column, true)),
+        )
+        .child(view().children((0..=HORIZONS.len()).map(move |i| {
+            let label = if i == 0 {
+                "Today".to_string()
+            } else {
+                format!("{}d", HORIZONS[i - 1])
+            };
+            view()
+                .h(px(TERMINAL_ROW))
+                .flex_row()
+                .gap(gap)
+                .child(
+                    text(label)
+                        .w(days)
+                        .text_size(px(13.0))
+                        .text_color(colors::MUTED),
+                )
+                .child(cell(i, false))
+                .child(cell(i, true))
+        })))
 }

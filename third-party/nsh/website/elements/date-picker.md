@@ -126,7 +126,8 @@ change with `onChange({ value })`; the app sets `value` to follow it. Left out, 
   reported. On the desktops, picking a day keeps the popup open for the time and reports the date with its time; a
   press on the selected day again closes the popup. On phones and tablets, a tap on a day picks it at its time and
   closes the sheet, as a single date does; the sheet opens again for the time. A day picked before any time gets
-  `defaultTime` (default `00:00`). `hourCycle` is how the field counts the hours.
+  `defaultTime` (default `00:00`). `hourCycle` is how the field counts the hours, as
+  [TimeField](./time-field.md)'s, the user's included.
 
 `cleanable` adds a clear button while there is a value: a press clears it (`onChange({ value: null })`). It comes
 after the trigger, not inside it, so a press on it never opens the popup; the app places it and fills it

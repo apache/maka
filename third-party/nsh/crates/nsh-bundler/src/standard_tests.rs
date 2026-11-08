@@ -130,7 +130,7 @@ fn modules_nsh_does_not_have_do_not_bundle() {
             "{message}"
         );
         assert!(
-            message.contains("`nsh`, `nsh/desktop`, `nsh/mobile`"),
+            message.contains("`nsh`, `nsh/desktop`, `nsh/i18n`, `nsh/mobile`"),
             "{message}"
         );
     }

@@ -44,7 +44,7 @@ const groupHeaderHeight = Math.max(
   controlStyle.minHeight,
   captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
 );
-const memberGap = platform.isTerminal ? 6 : 0;
+const memberGap = platform.idiom === 'terminal' ? 6 : 0;
 const activityFollowThreshold = captionTextStyle.lineHeight;
 
 export type LiveActivity = {
@@ -83,7 +83,7 @@ export function turnOutcome(turn: TurnPresentation): string | null {
 export function canFoldTurn(turn: TurnPresentation): boolean {
   if (!turn.worked || turn.interleavedInput) return false;
   const outcome = turnOutcome(turn);
-  if (platform.isTerminal) return outcome === 'completed' && !turn.active;
+  if (platform.idiom === 'terminal') return outcome === 'completed' && !turn.active;
   return outcome === null || outcome === 'completed';
 }
 
@@ -181,14 +181,16 @@ export function TurnSummary(props: {
             ? tr('Worked for {duration}', { duration: time })
             : '';
     const counts =
-      !platform.isTerminal && props.canFold() ? activityCounts(props.groups(), props.row) : '';
+      platform.idiom !== 'terminal' && props.canFold()
+        ? activityCounts(props.groups(), props.row)
+        : '';
     return [status, counts].filter(Boolean).join(' · ') || tr('Completed');
   };
   const choose = (action: { turnId: string; open: boolean }) => {
     if (props.turn().turnId === action.turnId && props.canFold()) props.toggle(action.open);
   };
   return (
-    <View style={{ marginTop: 8, marginBottom: platform.isTerminal ? 0 : 8 }}>
+    <View style={{ marginTop: 8, marginBottom: platform.idiom === 'terminal' ? 0 : 8 }}>
       <Disclosure
         label={tr('Turn work details')}
         open={props.expanded()}
@@ -324,7 +326,7 @@ function ActivityLog(props: {
       2 * (panelStyle.marginVertical + panelStyle.padding + panelStyle.borderWidth);
     const viewportHeight = props.viewport().height;
     const available = Math.max(16, Math.min(windowSize().height / 2, viewportHeight - chrome));
-    return platform.isTerminal ? Math.floor(available / 16) * 16 : available;
+    return platform.idiom === 'terminal' ? Math.floor(available / 16) * 16 : available;
   };
   const bodyHeight = () => {
     measurements();
@@ -411,7 +413,7 @@ function ActivityLog(props: {
               props.reading(true);
             }
           }}
-          contentStyle={{ paddingLeft: platform.isTerminal ? 0 : 8, paddingRight: 8 }}
+          contentStyle={{ paddingLeft: platform.idiom === 'terminal' ? 0 : 8, paddingRight: 8 }}
           ref={(node) => {
             ownList = node;
             state.list = node;
@@ -426,7 +428,7 @@ function ActivityLog(props: {
               node.focus();
             }
           }}
-          style={{ height: bodyHeight(), marginLeft: platform.isTerminal ? 0 : -8 }}
+          style={{ height: bodyHeight(), marginLeft: platform.idiom === 'terminal' ? 0 : -8 }}
         >
           {(id) => (
             <Each of={[id()]} key={(key: string) => key}>
@@ -554,7 +556,7 @@ type TurnPanelProps = {
 export function TurnPanel(props: TurnPanelProps) {
   // On the desktop the turn's summary row is the only disclosure: groups have no
   // header of their own and show their members whenever the turn is open.
-  if (!platform.isTerminal)
+  if (platform.idiom !== 'terminal')
     effect(() => {
       if (props.state.open() || !props.group().rowIds.length) return;
       const live = !props.group().closed;
@@ -563,14 +565,16 @@ export function TurnPanel(props: TurnPanelProps) {
       props.state.open.set(true);
     });
   return (
-    <View style={platform.isTerminal ? panelStyle : { ...panelStyle, marginTop: 0, gap: 0 }}>
-      <If when={platform.isTerminal}>
+    <View
+      style={platform.idiom === 'terminal' ? panelStyle : { ...panelStyle, marginTop: 0, gap: 0 }}
+    >
+      <If when={platform.idiom === 'terminal'}>
         <GroupHeader {...props} />
       </If>
       <If when={props.state.open() && props.group().rowIds.length > 0}>
         <ActivityLog {...props} />
       </If>
-      <If when={!platform.isTerminal}>
+      <If when={platform.idiom !== 'terminal'}>
         <Each of={props.liveTools()} key={(tool: ToolActivity) => tool.toolUseId}>
           {(tool) => <LiveToolRow activity={tool} />}
         </Each>

@@ -39,6 +39,8 @@ export interface CommonProps<S = ViewStyle, R = ViewRef> extends TouchProps, Hos
   ios?: IOSProps;
   /** Android-only props (ignored elsewhere). */
   android?: AndroidProps;
+  /** macOS-only props (`macos={{…}}`; ignored elsewhere). */
+  macos?: MacOSProps;
   /** Desktop-only props (macOS, Windows, Linux and desktop browsers;
    * ignored on mobile). */
   desktop?: DesktopProps;
@@ -92,6 +94,9 @@ export interface WebProps {}
 
 /** Android-only props of every element (`android={{…}}`). */
 export interface AndroidProps extends AndroidHostProps {}
+
+/** macOS-only props of every element (`macos={{…}}`); elements add their own. */
+export interface MacOSProps extends MacOSHostProps {}
 
 /** `<View>` */
 export interface ViewProps extends CommonProps, ViewHostProps {
@@ -271,7 +276,7 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
         "InputRef",
         Some("ViewRef"),
         "An `<Input>`'s ref.",
-        &["setSelection", "replaceRange"],
+        &["setSelection"],
     ),
     (
         "ScrollRef",
@@ -297,6 +302,7 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
             "injectJavaScript",
             "postMessage",
             "sendInput",
+            "load",
         ],
     ),
     ("VideoRef", Some("ViewRef"), "A `<Video>`'s ref.", &["seek"]),
@@ -362,6 +368,7 @@ fn generated(module: &str) -> String {
     match module {
         "nsh/animated" => nsh_core::js::animation::declarations(),
         "nsh/canvas" => nsh_core::js::canvas::declarations(),
+        "nsh/desktop" => nsh_core::desktop::window::declarations(),
         _ => String::new(),
     }
 }
@@ -1093,6 +1100,7 @@ declare const text: "export default ignored";
         }
         assert!(unused.is_empty(), "declared but used nowhere: {unused:?}");
         assert!(all.contains("export interface IOSProps extends IOSHostProps {}"));
+        assert!(all.contains("export interface MacOSProps extends MacOSHostProps {}"));
         assert!(all.contains("export interface DesktopProps extends DesktopHostProps {}"));
     }
 
@@ -1109,6 +1117,59 @@ declare const text: "export default ignored";
                 );
             }
         }
+    }
+
+    /// Each file declares a type alias once, never as itself (`export type
+    /// X = X;` is circular), and never beside an interface, class or enum of
+    /// the same name: type aliases do not merge. Interfaces merging with a
+    /// class, and a type beside a value of its name, stay allowed.
+    #[test]
+    fn no_module_declares_a_type_twice() {
+        let files = bodies(&[nsh_base::registry().into()]);
+        let mut problems = Vec::new();
+        for (path, body) in &files {
+            let mut aliases: BTreeMap<String, u32> = BTreeMap::new();
+            let mut others = Vec::new();
+            for line in code_only(body).lines() {
+                let Some(rest) = line.strip_prefix("export ") else {
+                    continue;
+                };
+                let rest = rest.trim_start_matches("declare ");
+                let rest = rest.trim_start_matches("abstract ");
+                let mut parts = rest.split_whitespace();
+                let (Some(keyword), Some(name)) = (parts.next(), parts.next()) else {
+                    continue;
+                };
+                let name: String = name.chars().take_while(|c| is_ident(*c)).collect();
+                if name.is_empty() {
+                    continue;
+                }
+                match keyword {
+                    "type" => {
+                        *aliases.entry(name.clone()).or_default() += 1;
+                        let value = rest
+                            .split_once('=')
+                            .map(|(_, v)| v.trim().trim_end_matches(';').trim());
+                        if value == Some(name.as_str()) {
+                            problems.push(format!("{path}: `type {name} = {name}`"));
+                        }
+                    }
+                    "interface" | "class" | "enum" => others.push(name),
+                    _ => {}
+                }
+            }
+            for (name, count) in &aliases {
+                if *count > 1 {
+                    problems.push(format!("{path}: type `{name}` declared {count} times"));
+                }
+                if others.contains(name) {
+                    problems.push(format!(
+                        "{path}: type `{name}` beside a declaration of its name"
+                    ));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
     }
 
     /// A name a file imports is declared in one file only.

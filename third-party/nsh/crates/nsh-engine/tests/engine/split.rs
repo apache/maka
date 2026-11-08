@@ -113,6 +113,8 @@ fn config(bundle: Bundle) -> EngineConfig {
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     }
 }
 

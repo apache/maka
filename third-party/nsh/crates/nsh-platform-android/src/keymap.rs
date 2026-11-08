@@ -29,7 +29,7 @@ use jni::{
 };
 use nsh_core::{
     EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, KeyMatch, Keymap, Keystroke, Modifiers},
+    keymap::{Key, Keymap, Keystroke, Modifiers},
 };
 
 /// `KeyEvent.META_*_ON`.
@@ -107,7 +107,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_keyDown(
         }
         found
     };
-    if let KeyMatch::Fire(id) = found {
+    if let Some(id) = found.fired() {
         host.dispatch(
             ROOT_ID,
             EventKind::KeyCommand,

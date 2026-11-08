@@ -176,7 +176,7 @@ export function MessageRow({
         };
         // On the desktop the replies between tool calls carry no actions, so
         // only the final reply (or one already showing its source) has a row.
-        const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
+        const actionRow = () => platform.idiom === 'terminal' || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
         if (sender())
@@ -265,7 +265,7 @@ export function MessageRow({
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
-        const menu = platform.isTerminal || compact() || quickTools ? undefined : createMessageMenu();
+        const menu = platform.idiom === 'terminal' || compact() || quickTools ? undefined : createMessageMenu();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
@@ -337,7 +337,7 @@ export function MessageRow({
                             alignItems: 'center',
                             gap: 8,
                             // The first glyph starts where the message does.
-                            marginLeft: platform.isTerminal ? 0 : -8,
+                            marginLeft: platform.idiom === 'terminal' ? 0 : -8,
                           }}
                         >
                           <If
@@ -412,7 +412,7 @@ export function MessageRow({
                             </If>
                           }
                         >
-                          <If when={platform.isTerminal}>
+                          <If when={platform.idiom === 'terminal'}>
                             <Icon name="thinking" color={C.muted} />
                           </If>
                           <Text
@@ -526,7 +526,7 @@ export function MessageRow({
                   gap: 8,
                   paddingTop: 4,
                   // The last glyph ends where the bubble does.
-                  marginRight: platform.isTerminal ? 0 : -8,
+                  marginRight: platform.idiom === 'terminal' ? 0 : -8,
                 }}
               >
                 <If when={messageTime(row().timestamp)}>

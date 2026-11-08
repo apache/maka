@@ -13,7 +13,7 @@
 // scroll view whose `scrollbar` is `true` the app's (`null` takes it back);
 // a multiline `Input` shows one over its text the same way.
 // Where the target is told to scroll is how its script sees the presses.
-import { cleanup, Scroll, View, type ScrollRef } from "nsh";
+import { cleanup, Scroll, View, type ViewRef } from "nsh";
 import { Input, Scrollbar, type ScrollbarLook } from "nsh/base";
 
 const look = (label: string): ScrollbarLook => ({
@@ -25,9 +25,9 @@ const look = (label: string): ScrollbarLook => ({
 function App() {
   Scrollbar.setTheme({ mode: "always", vertical: look("App") });
   cleanup(() => Scrollbar.setTheme(null));
-  let pages: ScrollRef | undefined;
-  let feed: ScrollRef | undefined;
-  let strip: ScrollRef | undefined;
+  let pages: ViewRef | undefined;
+  let feed: ViewRef | undefined;
+  let strip: ViewRef | undefined;
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 8 }}>
       <View style={{ width: 300, height: 200 }}>

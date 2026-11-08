@@ -51,7 +51,7 @@ describe("on a phone", () => {
   test("search filters the fonts by title, and a search with no match shows the empty state", async () => {
     await app.press("role:combobox[Font]");
     await app.waitFor("role:option[Georgia]");
-    expect(app.texts()).toContain("SERIF");
+    expect(app.texts()).toContain("Serif");
     // A font that is not installed takes no press.
     expect(app.enabled("role:option[Playfair Display]")).toBe(false);
     await expect(() => app.press("role:option[Playfair Display]")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
@@ -65,8 +65,8 @@ describe("on a phone", () => {
     await app.type("text:/^M$/", "ONO");
     await app.waitUntil(() => app.count("role:option") === 2);
     expect(app.shows("role:option[JetBrains Mono]")).toBe(true);
-    expect(app.texts()).toContain("MONOSPACE");
-    expect(app.texts()).not.toContain("SERIF");
+    expect(app.texts()).toContain("Monospace");
+    expect(app.texts()).not.toContain("Serif");
     await app.press("role:option[SF Mono]");
     await app.waitFor("Font: SF Mono");
     // Each opening starts with an empty search.
@@ -106,7 +106,7 @@ describe("on a phone", () => {
   test("countries show their flags and codes by region, search narrows them, and one is not shipped to", async () => {
     await app.press("role:combobox[Country]");
     await app.waitFor("role:option[Japan]");
-    expect(app.texts()).toContain("EUROPE");
+    expect(app.texts()).toContain("Europe");
     await app.type("text:Search countries", "bra");
     await app.waitUntil(() => app.count("role:option") === 1);
     expect(app.enabled("role:option[Brazil]")).toBe(false);

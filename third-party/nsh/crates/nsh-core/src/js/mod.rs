@@ -15,7 +15,7 @@
 /// add theirs (`Registry::specifier`: `nsh/base`, an app's set) or the
 /// functions of nsh's own (`Image.getSize` on `nsh`, `nsh/mobile`'s
 /// `BackHandler`).
-pub const NATIVE_MODULES: &[&str] = &["nsh", "nsh:rt", "nsh/desktop", "nsh/mobile"];
+pub const NATIVE_MODULES: &[&str] = &["nsh", "nsh:rt", "nsh/desktop", "nsh/i18n", "nsh/mobile"];
 
 /// The exact gpui-shell standard catalog, using canonical bare specifiers.
 /// Privileged entries route through NSH capability adapters.
@@ -137,6 +137,7 @@ mod tests {
             ("transform", "string | TransformStep[]"),
             ("rotate", "string | number | AnimatedNode"),
             ("tintColor", "ColorValue"),
+            ("glassTintColor", "ColorValue"),
             (
                 "display",
                 "\"flex\" | \"grid\" | \"block\" | \"flow-root\" | \"none\"",
@@ -158,6 +159,18 @@ mod tests {
         assert!(style[text..].contains("  textDecorationStyle?:"));
         // Each host prop and event in the interface of the elements it is for.
         let elements = super::host::declarations();
+        assert!(
+            elements.contains("export interface MacOsBackdrop {\n  material?: MacOsBackdropMaterial;\n  blending?: MacOsBackdropBlending;\n  state?: MacOsBackdropState;\n}")
+        );
+        assert!(elements.contains("export type MacOsBackdropMaterial = \"titlebar\" | \"selection\" | \"menu\" | \"popover\" | \"sidebar\" | \"headerView\" | \"sheet\" | \"windowBackground\" | \"hudWindow\" | \"fullScreenUI\" | \"toolTip\" | \"contentBackground\" | \"underWindowBackground\" | \"underPageBackground\";"));
+        assert!(
+            elements.contains(
+                "export type MacOsBackdropBlending = \"withinWindow\" | \"behindWindow\";"
+            )
+        );
+        assert!(elements.contains(
+            "export type MacOsBackdropState = \"followsWindowActiveState\" | \"active\" | \"inactive\";"
+        ));
         for (interface, prop) in [
             ("HostProps", "  onPress?: (e: PressEvent) => void;"),
             ("HostProps", "  onLongPress?: (e: PressEvent) => void;"),
@@ -166,6 +179,7 @@ mod tests {
             ("HostProps", "  onLayout?: (e: { bounds: Bounds }) => void;"),
             ("AndroidHostProps", "  elevation?: number;"),
             ("IOSHostProps", "  backdropMaterial?: BackdropMaterial;"),
+            ("MacOSHostProps", "  backdrop?: MacOsBackdrop;"),
             ("InputHostProps", "  keyboardType?: KeyboardType;"),
             (
                 "InputHostProps",
@@ -177,7 +191,6 @@ mod tests {
             ),
             ("InputHostProps", "  masked?: boolean;"),
             ("InputHostProps", "  readonly?: boolean;"),
-            ("InputHostProps", "  tokens?: InputTokenRule[];"),
             ("IOSInputHostProps", "  inputAccessoryViewID?: string;"),
             (
                 "IOSInputHostProps",

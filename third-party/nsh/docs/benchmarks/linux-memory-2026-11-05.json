@@ -1,0 +1,2949 @@
+{
+  "revision": "e4cc287dd",
+  "date": "2026-11-05",
+  "host": "Intel i7-13700KF, 31 GiB RAM, NVIDIA RTX 3060 Ti GDDR6X, driver 615.78.08, GTK 4.24.1, Hyprland Wayland, display scale 1.6",
+  "units": "MiB, 1024 ** 2 bytes",
+  "method": "Two fresh processes per renderer; snapshots at 3 and 8 seconds after floating/resizing. Page and driver caches not flushed. Process only; excludes compositor, GPU-only allocations and subprocesses. No startup peak measurement.",
+  "runs": {
+    "bare-fixed": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 110.83,
+            "Pss": 47.96,
+            "Private_Clean": 5.66,
+            "Private_Dirty": 31.64,
+            "Swap": 0.0,
+            "USS": 37.29
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 110.83,
+            "Pss": 47.96,
+            "Private_Clean": 5.66,
+            "Private_Dirty": 31.64,
+            "Swap": 0.0,
+            "USS": 37.29
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 110.98,
+            "Pss": 48.37,
+            "Private_Clean": 6.35,
+            "Private_Dirty": 31.36,
+            "Swap": 0.0,
+            "USS": 37.71
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 110.99,
+            "Pss": 48.38,
+            "Private_Clean": 6.35,
+            "Private_Dirty": 31.38,
+            "Swap": 0.0,
+            "USS": 37.73
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 129.43,
+            "Pss": 49.07,
+            "Private_Clean": 2.48,
+            "Private_Dirty": 34.76,
+            "Swap": 0.0,
+            "USS": 37.24
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 129.43,
+            "Pss": 49.07,
+            "Private_Clean": 2.48,
+            "Private_Dirty": 34.76,
+            "Swap": 0.0,
+            "USS": 37.24
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 129.23,
+            "Pss": 48.83,
+            "Private_Clean": 1.4,
+            "Private_Dirty": 35.62,
+            "Swap": 0.0,
+            "USS": 37.02
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 129.23,
+            "Pss": 48.83,
+            "Private_Clean": 1.4,
+            "Private_Dirty": 35.62,
+            "Swap": 0.0,
+            "USS": 37.02
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 110.54,
+            "Pss": 47.96,
+            "Private_Clean": 4.45,
+            "Private_Dirty": 32.84,
+            "Swap": 0.0,
+            "USS": 37.29
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 110.54,
+            "Pss": 47.96,
+            "Private_Clean": 4.45,
+            "Private_Dirty": 32.84,
+            "Swap": 0.0,
+            "USS": 37.29
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 110.73,
+            "Pss": 48.06,
+            "Private_Clean": 4.97,
+            "Private_Dirty": 32.38,
+            "Swap": 0.0,
+            "USS": 37.35
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 110.73,
+            "Pss": 48.06,
+            "Private_Clean": 4.97,
+            "Private_Dirty": 32.38,
+            "Swap": 0.0,
+            "USS": 37.35
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 81.45,
+            "Pss": 24.7,
+            "Private_Clean": 0.11,
+            "Private_Dirty": 15.16,
+            "Swap": 0.0,
+            "USS": 15.27
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 81.45,
+            "Pss": 24.7,
+            "Private_Clean": 0.11,
+            "Private_Dirty": 15.16,
+            "Swap": 0.0,
+            "USS": 15.27
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 81.5,
+            "Pss": 24.73,
+            "Private_Clean": 0.14,
+            "Private_Dirty": 15.16,
+            "Swap": 0.0,
+            "USS": 15.3
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 81.5,
+            "Pss": 24.73,
+            "Private_Clean": 0.14,
+            "Private_Dirty": 15.16,
+            "Swap": 0.0,
+            "USS": 15.3
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7608,
+          "Pss": 2693,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 4920,
+          "Pss": 4920,
+          "Private_Clean": 0,
+          "Private_Dirty": 4920,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 2656,
+          "Pss": 2656,
+          "Private_Clean": 0,
+          "Private_Dirty": 2656,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1732,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 33,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libharfbuzz.so.0.61460.0": {
+          "Rss": 1260,
+          "Pss": 54,
+          "Private_Clean": 0,
+          "Private_Dirty": 12,
+          "Swap": 0
+        },
+        "libglib-2.0.so.0.9000.1": {
+          "Rss": 1232,
+          "Pss": 64,
+          "Private_Clean": 0,
+          "Private_Dirty": 8,
+          "Swap": 0
+        },
+        "923e285e415b1073c8df160bee08820f-le64.cache-12": {
+          "Rss": 1128,
+          "Pss": 102,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        }
+      }
+    },
+    "minimal-full": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 229.23,
+            "Pss": 138.72,
+            "Private_Clean": 19.98,
+            "Private_Dirty": 104.49,
+            "Swap": 0.0,
+            "USS": 124.47
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 229.23,
+            "Pss": 138.72,
+            "Private_Clean": 19.98,
+            "Private_Dirty": 104.49,
+            "Swap": 0.0,
+            "USS": 124.47
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 163.63,
+            "Pss": 80.05,
+            "Private_Clean": 20.09,
+            "Private_Dirty": 47.23,
+            "Swap": 0.0,
+            "USS": 67.32
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 163.63,
+            "Pss": 80.09,
+            "Private_Clean": 20.12,
+            "Private_Dirty": 47.23,
+            "Swap": 0.0,
+            "USS": 67.35
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 161.79,
+            "Pss": 78.21,
+            "Private_Clean": 20.18,
+            "Private_Dirty": 45.3,
+            "Swap": 0.0,
+            "USS": 65.48
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 161.79,
+            "Pss": 78.21,
+            "Private_Clean": 20.18,
+            "Private_Dirty": 45.3,
+            "Swap": 0.0,
+            "USS": 65.48
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 162.14,
+            "Pss": 78.48,
+            "Private_Clean": 20.28,
+            "Private_Dirty": 45.47,
+            "Swap": 0.0,
+            "USS": 65.75
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 162.14,
+            "Pss": 78.48,
+            "Private_Clean": 20.28,
+            "Private_Dirty": 45.47,
+            "Swap": 0.0,
+            "USS": 65.75
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 166.21,
+            "Pss": 96.7,
+            "Private_Clean": 21.41,
+            "Private_Dirty": 60.23,
+            "Swap": 0.0,
+            "USS": 81.63
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 166.21,
+            "Pss": 96.7,
+            "Private_Clean": 21.41,
+            "Private_Dirty": 60.23,
+            "Swap": 0.0,
+            "USS": 81.63
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 143.5,
+            "Pss": 77.51,
+            "Private_Clean": 21.8,
+            "Private_Dirty": 44.11,
+            "Swap": 0.0,
+            "USS": 65.91
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 143.5,
+            "Pss": 77.51,
+            "Private_Clean": 21.8,
+            "Private_Dirty": 44.11,
+            "Swap": 0.0,
+            "USS": 65.91
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 114.88,
+            "Pss": 54.59,
+            "Private_Clean": 20.21,
+            "Private_Dirty": 24.0,
+            "Swap": 0.0,
+            "USS": 44.21
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 114.88,
+            "Pss": 54.59,
+            "Private_Clean": 20.21,
+            "Private_Dirty": 24.0,
+            "Swap": 0.0,
+            "USS": 44.21
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 114.24,
+            "Pss": 54.07,
+            "Private_Clean": 19.67,
+            "Private_Dirty": 24.0,
+            "Swap": 0.0,
+            "USS": 43.67
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 114.24,
+            "Pss": 54.07,
+            "Private_Clean": 19.67,
+            "Private_Dirty": 24.0,
+            "Swap": 0.0,
+            "USS": 43.67
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-full": {
+          "Rss": 16448,
+          "Pss": 16448,
+          "Private_Clean": 14952,
+          "Private_Dirty": 1496,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7672,
+          "Pss": 2715,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "libwebkitgtk-6.0.so.4.19.4": {
+          "Rss": 5660,
+          "Pss": 5660,
+          "Private_Clean": 2456,
+          "Private_Dirty": 3204,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5068,
+          "Pss": 5068,
+          "Private_Clean": 0,
+          "Private_Dirty": 5068,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 5040,
+          "Pss": 5040,
+          "Private_Clean": 0,
+          "Private_Dirty": 5040,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 34,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libjavascriptcoregtk-6.0.so.1.8.8": {
+          "Rss": 1512,
+          "Pss": 1512,
+          "Private_Clean": 1052,
+          "Private_Dirty": 460,
+          "Swap": 0
+        }
+      }
+    },
+    "hello-full": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 225.61,
+            "Pss": 134.85,
+            "Private_Clean": 19.96,
+            "Private_Dirty": 100.53,
+            "Swap": 0.0,
+            "USS": 120.48
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 225.61,
+            "Pss": 134.85,
+            "Private_Clean": 19.96,
+            "Private_Dirty": 100.53,
+            "Swap": 0.0,
+            "USS": 120.48
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 163.07,
+            "Pss": 79.08,
+            "Private_Clean": 20.48,
+            "Private_Dirty": 45.79,
+            "Swap": 0.0,
+            "USS": 66.27
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 163.07,
+            "Pss": 79.09,
+            "Private_Clean": 20.48,
+            "Private_Dirty": 45.79,
+            "Swap": 0.0,
+            "USS": 66.27
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 164.15,
+            "Pss": 80.23,
+            "Private_Clean": 20.01,
+            "Private_Dirty": 47.38,
+            "Swap": 0.0,
+            "USS": 67.39
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 164.38,
+            "Pss": 80.42,
+            "Private_Clean": 20.01,
+            "Private_Dirty": 47.55,
+            "Swap": 0.0,
+            "USS": 67.56
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 164.34,
+            "Pss": 80.44,
+            "Private_Clean": 20.14,
+            "Private_Dirty": 47.48,
+            "Swap": 0.0,
+            "USS": 67.63
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 164.46,
+            "Pss": 80.52,
+            "Private_Clean": 20.14,
+            "Private_Dirty": 47.54,
+            "Swap": 0.0,
+            "USS": 67.69
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 158.96,
+            "Pss": 92.61,
+            "Private_Clean": 21.96,
+            "Private_Dirty": 58.94,
+            "Swap": 0.0,
+            "USS": 80.9
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 158.97,
+            "Pss": 92.61,
+            "Private_Clean": 21.96,
+            "Private_Dirty": 58.95,
+            "Swap": 0.0,
+            "USS": 80.91
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 144.95,
+            "Pss": 78.7,
+            "Private_Clean": 22.23,
+            "Private_Dirty": 44.82,
+            "Swap": 0.0,
+            "USS": 67.05
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 144.96,
+            "Pss": 78.72,
+            "Private_Clean": 22.23,
+            "Private_Dirty": 44.83,
+            "Swap": 0.0,
+            "USS": 67.06
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 115.91,
+            "Pss": 55.37,
+            "Private_Clean": 20.2,
+            "Private_Dirty": 24.73,
+            "Swap": 0.0,
+            "USS": 44.93
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 115.91,
+            "Pss": 55.37,
+            "Private_Clean": 20.2,
+            "Private_Dirty": 24.73,
+            "Swap": 0.0,
+            "USS": 44.93
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 115.57,
+            "Pss": 54.9,
+            "Private_Clean": 20.08,
+            "Private_Dirty": 24.34,
+            "Swap": 0.0,
+            "USS": 44.42
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 115.57,
+            "Pss": 54.91,
+            "Private_Clean": 20.08,
+            "Private_Dirty": 24.34,
+            "Swap": 0.0,
+            "USS": 44.42
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-full": {
+          "Rss": 16992,
+          "Pss": 16992,
+          "Private_Clean": 15496,
+          "Private_Dirty": 1496,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7736,
+          "Pss": 2736,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "libwebkitgtk-6.0.so.4.19.4": {
+          "Rss": 5660,
+          "Pss": 5660,
+          "Private_Clean": 2456,
+          "Private_Dirty": 3204,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5236,
+          "Pss": 5236,
+          "Private_Clean": 0,
+          "Private_Dirty": 5236,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 5216,
+          "Pss": 5216,
+          "Private_Clean": 0,
+          "Private_Dirty": 5216,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 34,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libjavascriptcoregtk-6.0.so.1.8.8": {
+          "Rss": 1512,
+          "Pss": 1512,
+          "Private_Clean": 1052,
+          "Private_Dirty": 460,
+          "Swap": 0
+        }
+      }
+    },
+    "gallery-full": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 326.3,
+            "Pss": 225.78,
+            "Private_Clean": 26.72,
+            "Private_Dirty": 181.81,
+            "Swap": 0.0,
+            "USS": 208.53
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 326.36,
+            "Pss": 225.84,
+            "Private_Clean": 26.78,
+            "Private_Dirty": 181.81,
+            "Swap": 0.0,
+            "USS": 208.59
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 256.58,
+            "Pss": 162.9,
+            "Private_Clean": 27.02,
+            "Private_Dirty": 120.18,
+            "Swap": 0.0,
+            "USS": 147.2
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "default",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 256.64,
+            "Pss": 162.96,
+            "Private_Clean": 27.08,
+            "Private_Dirty": 120.18,
+            "Swap": 0.0,
+            "USS": 147.26
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 256.31,
+            "Pss": 162.75,
+            "Private_Clean": 26.83,
+            "Private_Dirty": 120.25,
+            "Swap": 0.0,
+            "USS": 147.08
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 256.51,
+            "Pss": 162.95,
+            "Private_Clean": 26.95,
+            "Private_Dirty": 120.33,
+            "Swap": 0.0,
+            "USS": 147.28
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 257.43,
+            "Pss": 163.93,
+            "Private_Clean": 25.01,
+            "Private_Dirty": 123.31,
+            "Swap": 0.0,
+            "USS": 148.32
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 257.43,
+            "Pss": 163.93,
+            "Private_Clean": 25.01,
+            "Private_Dirty": 123.31,
+            "Swap": 0.0,
+            "USS": 148.32
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 297.43,
+            "Pss": 199.82,
+            "Private_Clean": 48.73,
+            "Private_Dirty": 134.0,
+            "Swap": 0.0,
+            "USS": 182.73
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 297.43,
+            "Pss": 199.83,
+            "Private_Clean": 48.7,
+            "Private_Dirty": 134.02,
+            "Swap": 0.0,
+            "USS": 182.73
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 271.5,
+            "Pss": 179.23,
+            "Private_Clean": 27.55,
+            "Private_Dirty": 136.27,
+            "Swap": 0.0,
+            "USS": 163.81
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "vulkan",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 268.57,
+            "Pss": 176.3,
+            "Private_Clean": 27.56,
+            "Private_Dirty": 133.32,
+            "Swap": 0.0,
+            "USS": 160.88
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 207.38,
+            "Pss": 141.55,
+            "Private_Clean": 24.95,
+            "Private_Dirty": 103.71,
+            "Swap": 0.0,
+            "USS": 128.66
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 207.38,
+            "Pss": 141.55,
+            "Private_Clean": 24.95,
+            "Private_Dirty": 103.71,
+            "Swap": 0.0,
+            "USS": 128.66
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 207.79,
+            "Pss": 141.84,
+            "Private_Clean": 24.91,
+            "Private_Dirty": 104.02,
+            "Swap": 0.0,
+            "USS": 128.93
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 207.85,
+            "Pss": 141.88,
+            "Private_Clean": 24.98,
+            "Private_Dirty": 104.02,
+            "Swap": 0.0,
+            "USS": 129.0
+          },
+          "windows": [
+            {
+              "size": [
+                1181,
+                643
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "[anonymous]": {
+          "Rss": 46636,
+          "Pss": 46636,
+          "Private_Clean": 0,
+          "Private_Dirty": 46636,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 45408,
+          "Pss": 45408,
+          "Private_Clean": 0,
+          "Private_Dirty": 45408,
+          "Swap": 0
+        },
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-full": {
+          "Rss": 21956,
+          "Pss": 21956,
+          "Private_Clean": 20460,
+          "Private_Dirty": 1496,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 8056,
+          "Pss": 2843,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 7600,
+          "Pss": 3800,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "libwebkitgtk-6.0.so.4.19.4": {
+          "Rss": 5660,
+          "Pss": 5660,
+          "Private_Clean": 2456,
+          "Private_Dirty": 3204,
+          "Swap": 0
+        },
+        "AdwaitaSans-Regular.ttf": {
+          "Rss": 4320,
+          "Pss": 244,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 34,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        }
+      }
+    },
+    "minimal-lean-480x640": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 211.45,
+            "Pss": 124.19,
+            "Private_Clean": 11.52,
+            "Private_Dirty": 99.26,
+            "Swap": 0.0,
+            "USS": 110.79
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 211.45,
+            "Pss": 124.2,
+            "Private_Clean": 11.52,
+            "Private_Dirty": 99.26,
+            "Swap": 0.0,
+            "USS": 110.79
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 145.69,
+            "Pss": 65.37,
+            "Private_Clean": 11.98,
+            "Private_Dirty": 41.53,
+            "Swap": 0.0,
+            "USS": 53.52
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 145.69,
+            "Pss": 65.38,
+            "Private_Clean": 11.98,
+            "Private_Dirty": 41.54,
+            "Swap": 0.0,
+            "USS": 53.52
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 97.05,
+            "Pss": 40.07,
+            "Private_Clean": 11.99,
+            "Private_Dirty": 18.59,
+            "Swap": 0.0,
+            "USS": 30.59
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 97.18,
+            "Pss": 40.15,
+            "Private_Clean": 11.99,
+            "Private_Dirty": 18.66,
+            "Swap": 0.0,
+            "USS": 30.65
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 96.93,
+            "Pss": 40.06,
+            "Private_Clean": 11.88,
+            "Private_Dirty": 18.71,
+            "Swap": 0.0,
+            "USS": 30.59
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 96.93,
+            "Pss": 40.06,
+            "Private_Clean": 11.88,
+            "Private_Dirty": 18.71,
+            "Swap": 0.0,
+            "USS": 30.59
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-lean": {
+          "Rss": 13132,
+          "Pss": 13132,
+          "Private_Clean": 12116,
+          "Private_Dirty": 1016,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7736,
+          "Pss": 2736,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5536,
+          "Pss": 5536,
+          "Private_Clean": 0,
+          "Private_Dirty": 5536,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 4660,
+          "Pss": 4660,
+          "Private_Clean": 0,
+          "Private_Dirty": 4660,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 124,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 35,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libharfbuzz.so.0.61460.0": {
+          "Rss": 1260,
+          "Pss": 71,
+          "Private_Clean": 0,
+          "Private_Dirty": 12,
+          "Swap": 0
+        },
+        "libglib-2.0.so.0.9000.1": {
+          "Rss": 1232,
+          "Pss": 66,
+          "Private_Clean": 0,
+          "Private_Dirty": 8,
+          "Swap": 0
+        }
+      }
+    },
+    "hello-lean-480x640": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 209.89,
+            "Pss": 122.31,
+            "Private_Clean": 12.55,
+            "Private_Dirty": 96.27,
+            "Swap": 0.0,
+            "USS": 108.82
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 209.89,
+            "Pss": 122.29,
+            "Private_Clean": 12.54,
+            "Private_Dirty": 96.27,
+            "Swap": 0.0,
+            "USS": 108.8
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 144.72,
+            "Pss": 64.08,
+            "Private_Clean": 11.97,
+            "Private_Dirty": 40.17,
+            "Swap": 0.0,
+            "USS": 52.14
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 144.72,
+            "Pss": 64.08,
+            "Private_Clean": 11.97,
+            "Private_Dirty": 40.17,
+            "Swap": 0.0,
+            "USS": 52.14
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 97.27,
+            "Pss": 39.83,
+            "Private_Clean": 11.7,
+            "Private_Dirty": 18.54,
+            "Swap": 0.0,
+            "USS": 30.24
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 97.63,
+            "Pss": 40.19,
+            "Private_Clean": 11.7,
+            "Private_Dirty": 18.9,
+            "Swap": 0.0,
+            "USS": 30.6
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 97.26,
+            "Pss": 39.97,
+            "Private_Clean": 11.91,
+            "Private_Dirty": 18.52,
+            "Swap": 0.0,
+            "USS": 30.43
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 97.62,
+            "Pss": 40.33,
+            "Private_Clean": 11.91,
+            "Private_Dirty": 18.88,
+            "Swap": 0.0,
+            "USS": 30.79
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.hello"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5617,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-lean": {
+          "Rss": 13044,
+          "Pss": 13044,
+          "Private_Clean": 12028,
+          "Private_Dirty": 1016,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7736,
+          "Pss": 2736,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2619,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5536,
+          "Pss": 5536,
+          "Private_Clean": 0,
+          "Private_Dirty": 5536,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 4828,
+          "Pss": 4828,
+          "Private_Clean": 0,
+          "Private_Dirty": 4828,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 112,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 124,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 35,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libharfbuzz.so.0.61460.0": {
+          "Rss": 1324,
+          "Pss": 73,
+          "Private_Clean": 0,
+          "Private_Dirty": 12,
+          "Swap": 0
+        },
+        "AdwaitaSans-Regular.ttf": {
+          "Rss": 1308,
+          "Pss": 93,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        }
+      }
+    },
+    "bare-software": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 82.1,
+            "Pss": 24.85,
+            "Private_Clean": 0.08,
+            "Private_Dirty": 15.68,
+            "Swap": 0.0,
+            "USS": 15.76
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 82.1,
+            "Pss": 24.85,
+            "Private_Clean": 0.08,
+            "Private_Dirty": 15.68,
+            "Swap": 0.0,
+            "USS": 15.76
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 82.05,
+            "Pss": 24.87,
+            "Private_Clean": 0.12,
+            "Private_Dirty": 15.67,
+            "Swap": 0.0,
+            "USS": 15.79
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 82.05,
+            "Pss": 24.87,
+            "Private_Clean": 0.12,
+            "Private_Dirty": 15.67,
+            "Swap": 0.0,
+            "USS": 15.79
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.bare"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5335,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7672,
+          "Pss": 2715,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2550,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5444,
+          "Pss": 5444,
+          "Private_Clean": 0,
+          "Private_Dirty": 5444,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 2656,
+          "Pss": 2656,
+          "Private_Clean": 0,
+          "Private_Dirty": 2656,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 110,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 34,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libharfbuzz.so.0.61460.0": {
+          "Rss": 1324,
+          "Pss": 73,
+          "Private_Clean": 0,
+          "Private_Dirty": 12,
+          "Swap": 0
+        },
+        "libglib-2.0.so.0.9000.1": {
+          "Rss": 1200,
+          "Pss": 58,
+          "Private_Clean": 0,
+          "Private_Dirty": 8,
+          "Swap": 0
+        },
+        "923e285e415b1073c8df160bee08820f-le64.cache-12": {
+          "Rss": 1128,
+          "Pss": 102,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        }
+      }
+    },
+    "minimal-software": {
+      "size": "480x640",
+      "samples": [
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 97.29,
+            "Pss": 39.8,
+            "Private_Clean": 12.0,
+            "Private_Dirty": 18.68,
+            "Swap": 0.0,
+            "USS": 30.67
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 97.29,
+            "Pss": 39.8,
+            "Private_Clean": 12.0,
+            "Private_Dirty": 18.68,
+            "Swap": 0.0,
+            "USS": 30.67
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 96.84,
+            "Pss": 39.39,
+            "Private_Clean": 11.6,
+            "Private_Dirty": 18.64,
+            "Swap": 0.0,
+            "USS": 30.25
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        },
+        {
+          "renderer": "cairo",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 96.84,
+            "Pss": 39.39,
+            "Private_Clean": 11.6,
+            "Private_Dirty": 18.64,
+            "Swap": 0.0,
+            "USS": 30.25
+          },
+          "windows": [
+            {
+              "size": [
+                480,
+                640
+              ],
+              "floating": true,
+              "class": "com.example.memory"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 27796,
+          "Pss": 5335,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "runner-lean": {
+          "Rss": 12772,
+          "Pss": 12772,
+          "Private_Clean": 11756,
+          "Private_Dirty": 1016,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 7736,
+          "Pss": 2736,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 6992,
+          "Pss": 2550,
+          "Private_Clean": 0,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "[heap]": {
+          "Rss": 5464,
+          "Pss": 5464,
+          "Private_Clean": 0,
+          "Private_Dirty": 5464,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 4660,
+          "Pss": 4660,
+          "Private_Clean": 0,
+          "Private_Dirty": 4660,
+          "Swap": 0
+        },
+        "memfd:gdk-wayland (deleted)": {
+          "Rss": 3072,
+          "Pss": 1536,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgio-2.0.so.0.9000.1": {
+          "Rss": 1728,
+          "Pss": 111,
+          "Private_Clean": 0,
+          "Private_Dirty": 40,
+          "Swap": 0
+        },
+        "libstdc++.so.6.0.36": {
+          "Rss": 1520,
+          "Pss": 122,
+          "Private_Clean": 0,
+          "Private_Dirty": 72,
+          "Swap": 0
+        },
+        "libc.so.6": {
+          "Rss": 1516,
+          "Pss": 34,
+          "Private_Clean": 0,
+          "Private_Dirty": 24,
+          "Swap": 0
+        },
+        "libharfbuzz.so.0.61460.0": {
+          "Rss": 1260,
+          "Pss": 70,
+          "Private_Clean": 0,
+          "Private_Dirty": 12,
+          "Swap": 0
+        },
+        "libglib-2.0.so.0.9000.1": {
+          "Rss": 1204,
+          "Pss": 62,
+          "Private_Clean": 0,
+          "Private_Dirty": 8,
+          "Swap": 0
+        }
+      }
+    },
+    "gallery-full-1200x800": {
+      "size": "1200x800",
+      "samples": [
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 306.54,
+            "Pss": 206.33,
+            "Private_Clean": 37.43,
+            "Private_Dirty": 151.74,
+            "Swap": 0.0,
+            "USS": 189.18
+          },
+          "windows": [
+            {
+              "size": [
+                283,
+                317
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 0,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 306.54,
+            "Pss": 206.32,
+            "Private_Clean": 37.4,
+            "Private_Dirty": 151.78,
+            "Swap": 0.0,
+            "USS": 189.18
+          },
+          "windows": [
+            {
+              "size": [
+                283,
+                317
+              ],
+              "floating": false,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 3.0,
+          "mib": {
+            "Rss": 336.56,
+            "Pss": 235.82,
+            "Private_Clean": 28.52,
+            "Private_Dirty": 190.09,
+            "Swap": 0.0,
+            "USS": 218.61
+          },
+          "windows": [
+            {
+              "size": [
+                1200,
+                800
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        },
+        {
+          "renderer": "ngl",
+          "repeat": 1,
+          "seconds": 8.0,
+          "mib": {
+            "Rss": 336.88,
+            "Pss": 236.14,
+            "Private_Clean": 28.63,
+            "Private_Dirty": 190.3,
+            "Swap": 0.0,
+            "USS": 218.93
+          },
+          "windows": [
+            {
+              "size": [
+                1200,
+                800
+              ],
+              "floating": true,
+              "class": "dev.nsh.memory.gallery"
+            }
+          ]
+        }
+      ],
+      "last_sample_top_mappings_kib": {
+        "[heap]": {
+          "Rss": 90608,
+          "Pss": 90608,
+          "Private_Clean": 0,
+          "Private_Dirty": 90608,
+          "Swap": 0
+        },
+        "[anonymous]": {
+          "Rss": 55740,
+          "Pss": 55740,
+          "Private_Clean": 0,
+          "Private_Dirty": 55740,
+          "Swap": 0
+        },
+        "libnvidia-gpucomp.so.615.78.08": {
+          "Rss": 34236,
+          "Pss": 6940,
+          "Private_Clean": 0,
+          "Private_Dirty": 2832,
+          "Swap": 0
+        },
+        "nvidiactl": {
+          "Rss": 32540,
+          "Pss": 32532,
+          "Private_Clean": 3776,
+          "Private_Dirty": 28756,
+          "Swap": 0
+        },
+        "runner-full": {
+          "Rss": 21772,
+          "Pss": 21772,
+          "Private_Clean": 20276,
+          "Private_Dirty": 1496,
+          "Swap": 0
+        },
+        "libLLVM.so.23.1": {
+          "Rss": 15708,
+          "Pss": 3300,
+          "Private_Clean": 108,
+          "Private_Dirty": 1376,
+          "Swap": 0
+        },
+        "libnvidia-eglcore.so.615.78.08": {
+          "Rss": 14216,
+          "Pss": 3575,
+          "Private_Clean": 0,
+          "Private_Dirty": 1752,
+          "Swap": 0
+        },
+        "libnvidia-glcore.so.615.78.08": {
+          "Rss": 11616,
+          "Pss": 3841,
+          "Private_Clean": 64,
+          "Private_Dirty": 2000,
+          "Swap": 0
+        },
+        "libgtk-4.so.1.2400.1": {
+          "Rss": 9592,
+          "Pss": 3387,
+          "Private_Clean": 0,
+          "Private_Dirty": 240,
+          "Swap": 0
+        },
+        "libwebkitgtk-6.0.so.4.19.4": {
+          "Rss": 5660,
+          "Pss": 5660,
+          "Private_Clean": 2456,
+          "Private_Dirty": 3204,
+          "Swap": 0
+        },
+        "AdwaitaSans-Regular.ttf": {
+          "Rss": 4304,
+          "Pss": 239,
+          "Private_Clean": 0,
+          "Private_Dirty": 0,
+          "Swap": 0
+        },
+        "libgallium-26.2.5-arch1.1.so": {
+          "Rss": 3188,
+          "Pss": 1814,
+          "Private_Clean": 0,
+          "Private_Dirty": 1608,
+          "Swap": 0
+        }
+      }
+    }
+  },
+  "excluded_experiments": {
+    "split": "App startup failed: could not load module ui.js. Excluded all split memory readings. Linux release runner does not provide the bundle chunks or a chunk loader.",
+    "source_maps": "Exploratory no-map runs changed gallery restored state and/or launch override. Excluded from controlled comparisons; no claimed savings.",
+    "gallery_software": "Exploratory GDK_DISABLE gallery runs changed restored state/launch override. Excluded; bare GTK and minimal TSX comparisons retained."
+  }
+}

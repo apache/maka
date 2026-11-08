@@ -58,7 +58,7 @@ mount(App);
 
 值是 24 小时制的一天中的时间，与 HTML `<input type="time">` 的相同：`"HH:MM"`，在 `precision="second"` 时为 `"HH:MM:SS"`，不论输入框显示哪种 `hourCycle`。有 `value` 时，值由应用持有：输入框显示它，并用 `onChange({ value })` 报告每次编辑；应用把 `value` 设为报告的值以跟随它。省略 `value` 时，输入框自己保存时间，初始为 `defaultValue`（默认 `00:00`）。
 
-`precision` 是输入框编辑的最小单位，`"minute"`（默认）或 `"second"`。`hourCycle` 是小时的计法：`"h23"`（默认）从 00 到 23，`"h12"` 从 12 到 11，并在数字后加一个上午/下午段。
+`precision` 是输入框编辑的最小单位，`"minute"`（默认）或 `"second"`。`hourCycle` 是小时的计法：`"h23"`（默认）从 00 到 23，`"h12"` 从 12 到 11，并在数字后加一个上午/下午段。`localeSettings().hourCycle` 为 `"h11"` 或 `"h12"` 时用户的是 `"h12"`，否则是 `"h23"`（[地区偏好](../docs/device-and-environment.md#地区偏好)）。
 
 <a id="editing"></a>
 

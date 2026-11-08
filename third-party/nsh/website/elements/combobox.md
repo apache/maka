@@ -132,7 +132,8 @@ Left out, the combobox keeps its own value, from `defaultValue` at first.
   closes it.
 
 `onConfirm({ value })` tells the value as the list closes: once per opening, however it closes (a choice, Escape, a
-press outside, the trigger button), with the value as the user left it. Cmd+Return on a Mac (Ctrl+Return elsewhere) closes
+press outside, the trigger button, Tab or Shift+Tab from the open list, `reason: "focus"`), with the value as the user
+left it. Cmd+Return on a Mac (Ctrl+Return elsewhere) closes
 the list and confirms.
 
 `cleanable` adds a clear button while an item is selected: a press empties the value (`onChange({ value: [] })`).
@@ -146,7 +147,8 @@ app's `prefix` before it (the chosen items as chips, an icon) and, after it, the
 `triggerButton` (a chevron) and `suffix`.
 
 - Typing opens the list and filters the items by title, ignoring case; `empty` shows while nothing matches. Down and
-  Up open it too, a press on the trigger button opens and closes it, and on touch screens a tap on the input opens it.
+  Up open it too, and a press on the input or the trigger button opens and closes it; on touch screens the tap that
+  focuses the input opens it.
 - With one value, the input shows the chosen item's title (`placeholder` while there is none). It is selected when
   the input gets the focus, so what is typed replaces it.
 - With `multiple`, the input shows the query; the app shows the chosen items, in `prefix` or beside the combobox.
@@ -232,7 +234,8 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 The keys are a select's (see [Keyboard](./select.md#keyboard)) while the input keeps the focus, with these
 differences: letters and digits are typed into the input, which filters the list, rather than typeahead; Down and Up
 open the closed list; Return toggles the highlighted item with `multiple` and keeps the list open; Cmd+Return on a
-Mac (Ctrl+Return elsewhere) closes it and confirms. When the list closes on the desktops, the input keeps the focus.
+Mac (Ctrl+Return elsewhere) closes it and confirms. Tab and Shift+Tab close the open list and move the focus to the
+next or previous control. When the list closes otherwise on the desktops, the input keeps the focus.
 
 ## Accessibility
 

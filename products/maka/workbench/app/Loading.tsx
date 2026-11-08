@@ -36,7 +36,7 @@ export function LoadingIndicator(props: { label?: string; size?: number; color?:
         justifyContent: 'center',
       }}
     >
-      <If when={platform.isTerminal}>
+      <If when={platform.idiom === 'terminal'}>
         <Text
           accessibilityElementsHidden
           style={{ color: props.color ?? C.muted, lineHeight: size }}
@@ -44,7 +44,7 @@ export function LoadingIndicator(props: { label?: string; size?: number; color?:
           ◌
         </Text>
       </If>
-      <If when={!platform.isTerminal}>
+      <If when={platform.idiom !== 'terminal'}>
         <View
           accessibilityElementsHidden
           style={{
@@ -76,7 +76,7 @@ export function LoadingState(props: { label?: string }) {
       }}
     >
       <LoadingIndicator size={24} label={props.label} />
-      <If when={platform.isTerminal}>
+      <If when={platform.idiom === 'terminal'}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{props.label ?? tr('Loading…')}</Text>
       </If>
     </View>

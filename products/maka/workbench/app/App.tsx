@@ -88,7 +88,7 @@ function App(
   });
   const nativeQuickTools = surfaceHost.params.nativeQuickTools === true;
   const quickToolsOpened = signal(false);
-  if (!platform.isTerminal)
+  if (platform.idiom !== 'terminal')
     cleanup(
       keymap.bind(
         'alt+space',
@@ -107,7 +107,7 @@ function App(
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
-  const restoredSides = platform.isTerminal ? [] : (saved?.sideSessionIds ?? []);
+  const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map(createSide));
   const besides = () => sides().map((pane) => pane.id());
   const sideFor = (id: string) => sides().find((pane) => pane.id() === id);
@@ -283,9 +283,9 @@ function App(
       return true;
     },
     get openBeside() {
-      return !platform.isTerminal && sideRoom() > 0 ? openBeside : undefined;
+      return platform.idiom !== 'terminal' && sideRoom() > 0 ? openBeside : undefined;
     },
-    ...(platform.isTerminal ? {} : { besideSessionIds: besides }),
+    ...(platform.idiom === 'terminal' ? {} : { besideSessionIds: besides }),
   };
   async function openBeside(id: string) {
     if (!alive || blocked() || id === selected() || sideFor(id)) return;
@@ -337,10 +337,10 @@ function App(
       style={{
         flex: 1,
         minHeight: 0,
-        backgroundColor: platform.isTerminal ? C.background : C.chrome,
+        backgroundColor: platform.idiom === 'terminal' ? C.background : C.chrome,
       }}
     >
-      <If when={!platform.isTerminal && !nativeQuickTools}>
+      <If when={platform.idiom !== 'terminal' && !nativeQuickTools}>
         <QuickToolsSurface
           opened={quickToolsOpened}
           close={() => quickToolsOpened.set(false)}

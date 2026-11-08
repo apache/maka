@@ -88,11 +88,11 @@ type ModelOwner = Pick<
   ConversationHandle,
   'sessionId' | 'backend' | 'modelDetails' | 'refreshModel'
 >;
-const modelRowHeight = platform.isTerminal ? 48 : 40;
+const modelRowHeight = platform.idiom === 'terminal' ? 48 : 40;
 // Notes under the model list start where the rows' text does.
-const listFill = () => (platform.isTerminal ? C.surface : C.background);
+const listFill = () => (platform.idiom === 'terminal' ? C.surface : C.background);
 const listTextInset = {
-  paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal,
+  paddingHorizontal: platform.idiom === 'terminal' ? 0 : controlStyle.paddingHorizontal,
 };
 
 export function ModelSelect(props: {
@@ -143,7 +143,7 @@ export function ModelSelect(props: {
       margin={8}
       style={{ minWidth: 0, alignItems: 'flex-end' }}
       popupStyle={{
-        width: platform.isTerminal ? 420 : 340,
+        width: platform.idiom === 'terminal' ? 420 : 340,
         maxWidth: Math.max(0, windowSize().width - 16),
         maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
         minHeight: 0,
@@ -170,7 +170,7 @@ export function ModelSelect(props: {
             flexDirection: 'row',
             justifyContent: 'flex-end',
             alignItems: 'center',
-            gap: platform.isTerminal ? 8 : 4,
+            gap: platform.idiom === 'terminal' ? 8 : 4,
           }}
           hoverStyle={{ backgroundColor: C.line }}
           focusStyle={{ backgroundColor: C.line }}
@@ -492,7 +492,7 @@ function ModelMenu(props: {
 
   return (
     <View style={{ minHeight: 0, flexShrink: 1, gap: 4 }}>
-      <If when={platform.isTerminal || pane() !== 'root'}>
+      <If when={platform.idiom === 'terminal' || pane() !== 'root'}>
         <View
           style={{
             flexDirection: 'row',
@@ -673,7 +673,9 @@ function ModelMenu(props: {
             flexShrink: 1,
             // On the desktop the list is a field like the search above it, so
             // a row cut off at its edge does not run into the count below.
-            ...(platform.isTerminal ? {} : { borderRadius: 8, backgroundColor: C.background }),
+            ...(platform.idiom === 'terminal'
+              ? {}
+              : { borderRadius: 8, backgroundColor: C.background }),
           }}
         >
           {(id) => (
@@ -694,7 +696,7 @@ function ModelMenu(props: {
                     style={{
                       height: modelRowHeight,
                       paddingHorizontal: 12,
-                      paddingVertical: platform.isTerminal ? 8 : 4,
+                      paddingVertical: platform.idiom === 'terminal' ? 8 : 4,
                       borderRadius: 8,
                       flexDirection: 'row',
                       alignItems: 'center',
@@ -833,7 +835,7 @@ function ModelMenu(props: {
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
         </Button>
       </If>
-      <If when={!platform.isTerminal}>
+      <If when={platform.idiom !== 'terminal'}>
         <View style={{ height: 1, backgroundColor: C.line }} />
       </If>
       <Button
@@ -862,13 +864,13 @@ function ModelMenu(props: {
         <Text
           style={{
             ...captionTextStyle,
-            color: platform.isTerminal ? C.accent : C.secondary,
+            color: platform.idiom === 'terminal' ? C.accent : C.secondary,
             flex: 1,
           }}
         >
           {tr('Manage connections & models')}
         </Text>
-        <If when={!platform.isTerminal}>
+        <If when={platform.idiom !== 'terminal'}>
           <Icon name="right" color={C.muted} />
         </If>
       </Button>

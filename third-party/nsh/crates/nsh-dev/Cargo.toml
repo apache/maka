@@ -13,7 +13,7 @@ workspace = true
 
 [features]
 client = ["dep:tungstenite"]
-server = ["dep:axum", "dep:tokio"]
+server = ["dep:axum", "dep:tokio", "dep:nsh-core"]
 
 [dependencies]
 dunce.workspace = true
@@ -21,6 +21,7 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
+nsh-core = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "fs"] }
 tungstenite = { workspace = true, optional = true }
@@ -28,3 +29,4 @@ tungstenite = { workspace = true, optional = true }
 [dev-dependencies]
 # Enables both sides for the round-trip test.
 nsh-dev = { path = ".", features = ["client", "server"] }
+tungstenite.workspace = true

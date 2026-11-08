@@ -126,7 +126,7 @@ module:
   `ErrorBoundary` is above it, which then shows `fallback(error, reset)`; what fails in the fallback goes to the
   boundary above. A handler's exception goes to the boundary of the owner its node was made under
   (`dom::catch_listener_failure`). Without a boundary nothing changes.
-- Platform-only props (`ios={{…}}`, `android={{…}}`, `desktop={{…}}`, `web={{…}}`): only the current platform's object
+- Platform-only props (`ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}`, `web={{…}}`): only the current platform's object
   is sent, each key as a prop of its own (`platform_props`; the browser runtime's renderer has its own, `platformProps`
   in `nsh-platform-web`'s `browser/dom.js`).
 - The reactive graph and the renderer share one per-context state (`state.rs`).

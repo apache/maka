@@ -78,3 +78,17 @@ test("focus() leaves views that take presses alone where Tab skips them", async 
   await app.wait(100);
   expect(app.texts()).toContain("Key focus: none");
 });
+
+test("back acts on the stack that shows, not on a tab not selected", async () => {
+  const app = await open("./Tabs.tsx");
+  await app.press("Push A");
+  await app.press("Switch");
+  await expect(() => app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+  expect(app.texts()).toContain("A: a0>a1 B: b0");
+  await app.press("Push B");
+  await app.back();
+  expect(app.texts()).toContain("A: a0>a1 B: b0");
+  await app.press("Switch");
+  await app.back();
+  expect(app.texts()).toContain("A: a0 B: b0");
+});

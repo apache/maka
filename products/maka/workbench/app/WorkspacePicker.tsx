@@ -427,8 +427,9 @@ export function WorkspacePicker(props: {
               style={{
                 width: '100%',
                 maxWidth: 680,
-                height: Math.min(500, windowSize().height - 32),
-                maxHeight: '100%',
+                flex: 1,
+                minHeight: 0,
+                maxHeight: Math.min(500, windowSize().height - 32),
                 backgroundColor: C.surface,
                 borderWidth: 1,
                 borderRadius: 16,

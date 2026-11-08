@@ -19,7 +19,7 @@ use nsh_core::{
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained, runtime::AnyObject};
 use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGColor, CGImage, CGMutablePath};
-use objc2_foundation::{NSArray, NSNumber};
+use objc2_foundation::{NSArray, NSNumber, ns_string};
 use objc2_quartz_core::{
     CACornerMask, CALayer, CAMediaTiming, CAShapeLayer, CATransaction, kCACornerCurveCircular,
     kCACornerCurveContinuous, kCAFillRuleEvenOdd, kCAGravityResize, kCALineCapRound,
@@ -539,7 +539,9 @@ impl Decor {
                 layer.setBorderWidth(0.0);
                 c.setFrame(local);
                 let cl = c.layer();
-                set_corners(&cl, r, corners, raw.continuous);
+                crate::interaction::animate_geometry(&cl, ns_string!("cornerRadius"), || {
+                    set_corners(&cl, r, corners, raw.continuous);
+                });
                 match shared {
                     Some(_) => {
                         cl.setMasksToBounds(true);

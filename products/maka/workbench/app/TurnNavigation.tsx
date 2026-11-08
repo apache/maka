@@ -18,19 +18,19 @@
  */
 
 import { textTooltip } from './ui';
-import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
+import { Canvas, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import type { ListRef } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, Tooltip } from 'nsh/base';
 import { reduceMotion, platform, windowSize } from 'nsh';
 import type { Position } from './history';
 import { C, controlStyle, captionTextStyle, isDark } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
 
-const markPitch = () => (platform.isTerminal ? 16 : 12);
-const railInset = platform.isTerminal ? 0 : 6;
+const markPitch = () => (platform.idiom === 'terminal' ? 16 : 12);
+const railInset = platform.idiom === 'terminal' ? 0 : 6;
 const railMargin = 32;
-export const railWidth = () => (platform.isTerminal ? 24 : 26);
+export const railWidth = () => (platform.idiom === 'terminal' ? 24 : 26);
 
 function RailFade(props: { bottom: boolean }) {
   return (
@@ -88,9 +88,9 @@ function NavigationMark(props: {
           label: props.item().label || tr('Recorded turn'),
         })}
         tooltip={
-          <Overlay
+          <Tooltip
             placement="right"
-            hintDelay={0}
+            delay={0}
             offset={12}
             margin={16}
             style={{
@@ -121,7 +121,7 @@ function NavigationMark(props: {
             <If when={props.busy}>
               <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
             </If>
-          </Overlay>
+          </Tooltip>
         }
         selected={props.active}
         onPress={inputAction(props.navigate, props.item())}
@@ -129,17 +129,17 @@ function NavigationMark(props: {
           height: markPitch(),
           width: railWidth(),
           alignItems: 'flex-start',
-          paddingLeft: platform.isTerminal ? 0 : 7,
+          paddingLeft: platform.idiom === 'terminal' ? 0 : 7,
           justifyContent: 'center',
         }}
         focusStyle={{ backgroundColor: C.raised }}
       >
-        <If when={platform.isTerminal}>
+        <If when={platform.idiom === 'terminal'}>
           <Text style={{ color: props.active ? C.text : C.line }}>
             {props.busy ? '◌' : props.active ? '●' : '━'}
           </Text>
         </If>
-        <If when={!platform.isTerminal}>
+        <If when={platform.idiom !== 'terminal'}>
           <View
             style={{
               height: 2,
@@ -185,7 +185,7 @@ export function TurnNavigation(props: {
     const available = Math.min(420, Math.max(0, height() - railMargin * 2));
     return Math.min(
       contentHeight(),
-      platform.isTerminal ? Math.floor(available / markPitch()) * markPitch() : available,
+      platform.idiom === 'terminal' ? Math.floor(available / markPitch()) * markPitch() : available,
     );
   });
   const activeIndex = computed(() => {
@@ -238,7 +238,7 @@ export function TurnNavigation(props: {
             <NavigationMark
               item={item}
               active={
-                platform.isTerminal
+                platform.idiom === 'terminal'
                   ? props.active() === item().turnId
                   : (props.visible?.().has(item().turnId) ?? props.active() === item().turnId)
               }
@@ -253,10 +253,10 @@ export function TurnNavigation(props: {
             />
           )}
         </List>
-        <If when={!platform.isTerminal && offset() > 0}>
+        <If when={platform.idiom !== 'terminal' && offset() > 0}>
           <RailFade bottom={false} />
         </If>
-        <If when={!platform.isTerminal && offset() + frameHeight() < contentHeight()}>
+        <If when={platform.idiom !== 'terminal' && offset() + frameHeight() < contentHeight()}>
           <RailFade bottom />
         </If>
         <If when={props.busy()}>
@@ -268,9 +268,9 @@ export function TurnNavigation(props: {
               position: 'absolute',
               right: 0,
               top: '100%',
-              marginTop: platform.isTerminal ? 0 : 8,
+              marginTop: platform.idiom === 'terminal' ? 0 : 8,
               width: railWidth(),
-              height: platform.isTerminal ? 32 : markPitch(),
+              height: platform.idiom === 'terminal' ? 32 : markPitch(),
               borderRadius: 8,
               alignItems: 'center',
               justifyContent: 'center',

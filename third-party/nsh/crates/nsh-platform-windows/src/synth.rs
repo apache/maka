@@ -6,9 +6,13 @@
 
 use std::rc::Rc;
 
+use nsh_core::{NodeId, ROOT_ID};
+use windows::Win32::Foundation::HWND;
+
 use crate::{
     input::{KeyEvent, Modifiers, PointerEvent, PointerKind},
     surface::Surface,
+    view::NshView,
 };
 
 /// A pointer event of the mouse's `button` (0: primary, 3: back) at `x`,
@@ -173,11 +177,32 @@ pub(crate) fn resize(surface: &Rc<Surface>, w: f32, h: f32) {
 /// `PW_RENDERFULLCONTENT`, whatever covers the window); drawn offscreen
 /// at that scale when the window cannot be captured.
 pub(crate) fn screenshot(surface: &Rc<Surface>) -> Result<Vec<u8>, String> {
-    let (rgba, w, h) = match capture(surface) {
+    picture(surface, surface.hwnd(), None)
+}
+
+/// [`screenshot`] of the window of the app's own that shows dialog root
+/// `window` (`ROOT_ID`: the main window).
+pub(crate) fn window_screenshot(surface: &Rc<Surface>, window: NodeId) -> Result<Vec<u8>, String> {
+    if window == ROOT_ID {
+        return screenshot(surface);
+    }
+    let (Some(hwnd), Some(root)) = (
+        crate::app_window::hwnd_of(surface, window),
+        crate::app_window::root_view(surface, window),
+    ) else {
+        return Err(format!("no window \"{window}\" is open"));
+    };
+    picture(surface, hwnd, Some(&root))
+}
+
+/// A PNG of native window `hwnd`, which shows `root` (`None`: the main
+/// window's tree).
+fn picture(surface: &Rc<Surface>, hwnd: HWND, root: Option<&NshView>) -> Result<Vec<u8>, String> {
+    let (rgba, w, h) = match capture(hwnd) {
         Ok(captured) => captured,
         Err(err) => {
             log::debug!("windows: PrintWindow: {err}; drawing the window offscreen");
-            drawn(surface)?
+            drawn(surface, hwnd, root)?
         }
     };
     let image = image::RgbaImage::from_raw(w, h, rgba).ok_or("a picture of no size")?;
@@ -189,7 +214,7 @@ pub(crate) fn screenshot(surface: &Rc<Surface>) -> Result<Vec<u8>, String> {
 }
 
 /// The window's client area as DWM composes it: straight RGBA rows.
-fn capture(surface: &Rc<Surface>) -> Result<(Vec<u8>, u32, u32), String> {
+fn capture(hwnd: HWND) -> Result<(Vec<u8>, u32, u32), String> {
     use windows::Win32::{
         Foundation::RECT,
         Graphics::Gdi::{
@@ -201,7 +226,6 @@ fn capture(surface: &Rc<Surface>) -> Result<(Vec<u8>, u32, u32), String> {
     };
     // PW_CLIENTONLY | PW_RENDERFULLCONTENT.
     const FLAGS: u32 = 0x1 | 0x2;
-    let hwnd = surface.hwnd();
     let mut rect = RECT::default();
     // SAFETY: plain GDI calls on this thread's window and the objects made
     // here, released before returning; the DIB's bits are read while it is
@@ -257,9 +281,13 @@ fn capture(surface: &Rc<Surface>) -> Result<(Vec<u8>, u32, u32), String> {
 
 /// The surface drawn offscreen at the window's scale: straight RGBA rows
 /// (no web views: the system composes their pages).
-fn drawn(surface: &Rc<Surface>) -> Result<(Vec<u8>, u32, u32), String> {
-    let scale = crate::window::dpi(surface.hwnd()) as f32 / 96.0;
-    let pixels = crate::render::snapshot(surface, scale).map_err(|e| e.to_string())?;
+fn drawn(
+    surface: &Rc<Surface>,
+    hwnd: HWND,
+    root: Option<&NshView>,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let scale = crate::window::dpi(hwnd) as f32 / 96.0;
+    let pixels = crate::render::snapshot(surface, scale, root).map_err(|e| e.to_string())?;
     let mut rgba = pixels.data;
     for px in rgba.as_chunks_mut::<4>().0 {
         // Premultiplied BGRA to straight RGBA.

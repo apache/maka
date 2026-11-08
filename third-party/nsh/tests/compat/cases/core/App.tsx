@@ -7,10 +7,9 @@ import Context from "./context";
 import CoreAnimated from "./core-animated";
 import CoreCanvas from "./core-canvas";
 import CoreElements from "./core-elements";
-import CoreInputAction from "./core-input-action";
 import CoreErrorBoundary from "./core-error-boundary";
+import CoreFrameRate from "./core-frame-rate";
 import CoreList from "./core-list";
-import CoreListBinding from "./core-list-binding";
 import CoreMotion from "./core-motion";
 import CoreOverlay from "./core-overlay";
 import CorePrimitives from "./core-primitives";
@@ -20,6 +19,7 @@ import CoreResource from "./core-resource";
 import CoreShader from "./core-shader";
 import CoreShaderEffects from "./core-shader-effects";
 import ModuleUrl from "./module-url";
+import WebLoad from "./web-load";
 import Steps from "./steps";
 
 const cases: Record<string, () => JSX.Element> = {
@@ -27,10 +27,9 @@ const cases: Record<string, () => JSX.Element> = {
   "core-animated": CoreAnimated,
   "core-canvas": CoreCanvas,
   "core-elements": CoreElements,
-  "core-input-action": CoreInputAction,
   "core-error-boundary": CoreErrorBoundary,
+  "core-frame-rate": CoreFrameRate,
   "core-list": CoreList,
-  "core-list-binding": CoreListBinding,
   "core-motion": CoreMotion,
   "core-overlay": CoreOverlay,
   "core-primitives": CorePrimitives,
@@ -41,6 +40,7 @@ const cases: Record<string, () => JSX.Element> = {
   "core-shader-effects": CoreShaderEffects,
   "module-url": ModuleUrl,
   "steps": Steps,
+  "web-load": WebLoad,
 };
 const shown = signal("");
 

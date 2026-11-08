@@ -9,8 +9,6 @@ demo: text-view
 
 `TextView` 显示用 Markdown、HTML 或应用自己构建的文档块写成的文档：标题、段落、强调、链接、列表与任务列表、引用和 GitHub 的提示块（alert）、代码、表格、图片、公式、脚注和折叠块。它为 AI 模型在聊天中的回复而设计：回复以 Markdown 流式到达，每来一段，文本就带着格式显示出来。解析在 Rust 中完成，文档用 [`Text`](./text.md) 元素和视图绘制。
 
-根文档块随外层滚动视口按需挂载。`contentStyle` 用点数设置文档行的内边距和间距，默认为 `{ rowGap: 11.25 }`；根节点的类和样式控制外层几何与文字外观。
-
 它负责行为，并自带一套阅读排版：15pt 正文、宽松的 25.5pt 行高，半粗体标题且上方留有空间，链接以主题的 `primary` 色加下划线，代码使用主题的 `font-mono`，放在带边框的圆角框中，表格四边都有线、表头行带底色，引用在一侧带一条线，提示块是带图标、采用 GitHub 提示色的着色框。颜色取自主题的令牌（`foreground`、`muted-foreground`、`border`、`muted`、`primary`，警示（caution）用 `destructive`），因此主题和深色外观都会作用于它。每个部件在这些默认样式之上接收应用的样式：TSX 中是 `classes` 和 `styles`，Rust 中是按部件给出的类型化样式（`TextViewParts`）。Rust 用 `nsh_base::text_view()` 创建它，TSX 用从 `nsh/base` 导入的 `<TextView>`。
 
 ```rust tabs
@@ -84,7 +82,7 @@ mount(App);
 
 `TextView` 由 [`Text`](./text.md) 元素组成，其中的文本行为与 Text 页面描述的完全一致。每个段落、标题、表格单元格和代码块都是一个原生 `Text`：一个独立排版、换行、跟随字体缩放的文本块，设置 `selectable` 后可以选择和复制。加粗、强调、删除线等行内标记是它的[片段](./text.md#片段)；行内代码是带[片段背景](./text.md#片段背景)的片段，因此 `code: "rounded bg-neutral-100"` 会给它一个圆角背景；链接是[可点击的片段](./text.md#链接)；图片和行内自定义节点是[行内附件](./text.md#行内视图和图片)。根节点上的文本样式会传给每个部件，就像[文本样式](./text.md#文本样式)从 `Text` 传给它的片段一样。
 
-设置 `selectable` 后，已挂载的文字共享一个选区：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个已挂载的段落、列表项、单元格或代码块延伸到下一个，复制取得选中的文字。设置了 `selectable` 的 `TextView` 本身就是一个 [`View selectable`](./text-selection.md)；放在 `View selectable` 里时，它的选区还会延伸到周围已挂载的文字和其他 `TextView`。复制完整文档时使用完整源码或 `TextView.plainText(document)`（[文档模型](#the-document-model)）。
+设置 `selectable` 后，整个文档作为一体选择，就像网页一样：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个段落、列表项、单元格或代码块延伸到下一个，复制会取得它们全部的文字。设置了 `selectable` 的 `TextView` 自己作为一体选择；放在[可选择视图](./text-selection.md)里时，它的选区还会延伸到周围的文字和其他 `TextView`。
 
 `TextView` 增加的是其余部分：把 Markdown、HTML 或文档读成文档块，文本周围的视图（列表、引用、表格、代码块、折叠块、脚注），流式输出，按部件设定样式，渲染函数和扩展。
 
@@ -94,7 +92,7 @@ mount(App);
 
 内容来自以下三个属性之一，按此顺序读取：
 
-- **`markdown`**：CommonMark 加上 GitHub 的扩展（表格、任务列表、删除线、自动链接、脚注、提示块）、公式（`$…$` 和 `$$…$$`）以及 Markdown 中的 HTML。
+- **`markdown`**：CommonMark 加上 GitHub 的扩展（表格、任务列表、删除线、自动链接、脚注、提示块）、公式（`$…$` 和 `$$…$$`）以及 Markdown 中的 HTML。中日韩文字旁的强调按 CommonMark 的 CJK 友好修订判定，`**涨幅：**5%` 会加粗到冒号为止；裸网址遇到中日韩文字或弯引号即结束：`https://example.com。下一句` 只链接 `https://example.com`。写在尖括号里（`<https://zh.wikipedia.org/wiki/中文>`）或写成链接的网址保留全部字符。标签名既不是 HTML 元素、也不是 `tag` 扩展时（`<US tech>`、`<公司名>`），按原样显示为文字。
 - **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。
 - **`document`**：应用构建或保存的文档块：TSX 中是普通对象，Rust 中是 `nsh_base::text_view::Document`（[文档模型](#the-document-model)）。
 
@@ -132,7 +130,7 @@ fn total() -> impl IntoElement {
 
 ## 部件样式
 
-`class` 和 `style` 设置原生文档视口的外层几何与文字外观；其中的文本样式（颜色、字号、字体）会传给每个部件。`contentStyle` 用点数设置文档行的内边距和间距。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
+`class` 和 `style` 设定根节点（各文档块组成的一列）的样式；在那里设置的文本样式（颜色、字号、字体）会传给每个部件。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
 
 ```rust tabs
 use nsh_base::{TextViewPart, TextViewParts, text_view, theme};
@@ -159,10 +157,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     );
     text_view()
         .markdown(move || markdown.get())
-        .content_style(nsh_core::ListContentStyle {
-            row_gap: px(12.0),
-            ..nsh_core::ListContentStyle::default()
-        })
+        .gap_3()
         .text_size(px(15.0))
         .line_height(px(24.0))
         .text_color(rgb(0x262626))
@@ -173,8 +168,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 ```tsx tabs
 <TextView
   markdown={reply()}
-  contentStyle={{ rowGap: 12 }}
-  class="text-[15px] leading-6 text-neutral-800"
+  class="gap-3 text-[15px] leading-6 text-neutral-800"
   classes={{
     heading: "text-neutral-950",
     heading2: "text-xl mt-2",
@@ -195,7 +189,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 
 | 部件 | Rust | 说明 |
 |---|---|---|
-| `root` | `Root` | 原生文档视口的外层几何与继承的文字外观；文档行的内边距和间距使用 `contentStyle`。 |
+| `root` | `Root` | 文本视图本身，即各文档块组成的一列；这里的文本样式传给每个部件。 |
 | `paragraph` | `Paragraph` | 每个段落。 |
 | `heading` | `Heading` | 每个标题，在其级别的部件之前。 |
 | `heading1` … `heading6` | `Heading1` … `Heading6` | 对应级别的标题（27、20、17，其余 15pt，半粗体）。 |
@@ -212,7 +206,6 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 | `listItemContent` | `ListItemContent` | 列表项的文档块组成的一列。 |
 | `codeBlock` | `CodeBlock` | 代码块：带边框的圆角框，标题行浮在代码之上。 |
 | `codeBlockHeader` | `CodeBlockHeader` | 代码块操作按钮（`codeBlockActions`）所在的行，浮在代码块右上角。 |
-| `codeBlockLanguage` | `CodeBlockLanguage` | 代码块标注的语言（```` ```rust ````），位于标题行开头；未标注时为空。 |
 | `codeBlockScroll` | `CodeBlockScroll` | 包住代码块代码的水平滚动视图。 |
 | `codeBlockCode` | `CodeBlockCode` | 代码块的代码（等宽，按原样）。 |
 | `code` | `Code` | 文本中的代码（等宽，带圆角底色）。 |
@@ -294,7 +287,7 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 
 ## 链接
 
-链接是[可点击的片段](./text.md#链接)。点击链接会以 `{ url }` 调用 `onLinkPress`；打开什么由应用决定（应用自己的页面、[`WebView`](./web-view.md)、滚动到某个标题）。标题带有锚点（GitHub 的规则：`## Getting started` 是 `#getting-started`），因此指向 `#getting-started` 的链接会以这个字符串到达，脚注引用则以 `#footnote-<label>` 到达。
+链接是[可点击的片段](./text.md#链接)。点击链接会以 `{ url }` 调用 `onLinkPress`；打开什么由应用决定（应用自己的页面、[`WebView`](./web-view.md)、滚动到某个标题）。标题带有锚点（GitHub 的规则：`## Getting started` 是 `#getting-started`），因此指向 `#getting-started` 的链接会以这个字符串到达，脚注引用则以 `#footnote-<label>` 到达。在终端里，Tab 依次到达每个链接和脚注引用，Return 按下获得焦点的那一个：`onLinkPress` 收到它，与收到点击一样。事件还带有按下时按住的修饰键（`modifiers`，与点击事件的相同），应用可以把按住 Command（macOS 以外是 Control）的点击交给浏览器，普通点击自己处理；键盘或辅助技术触发的按下不带修饰键。
 
 ```rust tabs
 use nsh_base::{TextViewLinkPressEvent, text_view};
@@ -556,7 +549,7 @@ function Custom(props: { node: TextViewCustomNode }) {
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `math` | `boolean` | `true` | 公式：文本中的 `$…$`，`$$…$$` 公式块。 |
+| `math` | `boolean` | `true` | 公式：文本中的 `$…$` 和 `\(…\)`，`$$…$$` 和 `\[…\]` 公式块。转义方括号里是引用编号或中日韩文字时（`\[1\]\[3\]`、`\[注\]`）按文字显示。 |
 | `html` | `boolean` | `true` | Markdown 中的 HTML 按 `html` 属性的方式读取；`false` 时显示为文本。 |
 | `alerts` | `boolean` | `true` | GitHub 的提示块：`> [!NOTE]`、`[!TIP]`、`[!IMPORTANT]`、`[!WARNING]`、`[!CAUTION]`。 |
 | `frontmatter` | `boolean` | `false` | 开头的 YAML front matter（`---` … `---`）成为名为 `frontmatter` 的自定义节点，其 `text` 是 YAML。 |
@@ -739,8 +732,7 @@ fn chat() -> impl IntoElement {
 | `extensions` | `.extensions(..)` | `MarkdownExtension[]` | `[]` | 应用自己的语法，生成自定义节点（[Markdown 扩展](#markdown-extensions)）。 |
 | `classes` | `.classes(..)` | `TextViewClasses` | `{}` | 按部件设定的 Tailwind 类。 |
 | `styles` | `.styles(..)` | `TextViewStyles` | `{}` | 按部件设定的内联样式（每个都是 `StyleProp<TextStyle>`），优先于类。 |
-| `contentStyle` | `.content_style(..)` | `ListContentStyle` | `{ rowGap: 11.25 }` | 原生文档行的内边距和间距，单位为点；显式值替换整个内容布局。 |
-| `selectable` | `.selectable(..)` | `boolean` | `false` | 已挂载的文字共享选区，可跨越段落、标题、单元格和代码块（[Text selection](./text-selection.md)）。 |
+| `selectable` | `.selectable(..)` | `boolean` | `false` | 整个文档作为一体可选择：选区可以跨越它的段落、标题、单元格和代码块（[文字选择](./text-selection.md)）。 |
 | `links` | `.links(..)` | `"report" \| "open"` | `"report"` | 按下链接时的行为：报告它（`onLinkPress`），设为 `"open"` 时还会在应用之外打开指向其他网站或应用的链接（[链接](#链接)）。 |
 | `codeBlockScrollbar` | `.code_block_scrollbar(..)` | `boolean` | `true` | 代码块显示其水平滚动指示器。 |
 | `tableScrollbar` | `.table_scrollbar(..)` | `boolean` | `true` | 表格显示其水平滚动指示器。 |
@@ -752,7 +744,7 @@ fn chat() -> impl IntoElement {
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `(table: TextViewTable) => JSX.Element` | | 每个表格上方的内容。 |
 | `renderMath` | `.render_math(\|math\| ..)` | `(math: TextViewMath) => JSX.Element` | | 显示公式。 |
 | `renderImage` | `.render_image(\|image\| ..)` | `(image: TextViewImage) => JSX.Element` | | 显示图片。 |
-| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | | 原生文档视口的外层几何与文字外观（带类型的文本样式：`styles.root`）；文档行的内边距和间距使用 `contentStyle`。 |
+| `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | | 根节点，即各文档块组成的一列；其文本样式传给每个部件（带类型的文本样式：`styles.root`）。 |
 
 在 Rust 中，按部件给出的类和样式是 `TextViewClasses` 和 `TextViewStyles`；Rust 视图通常用 [`TextViewParts`](#typed-part-styles) 设定部件样式。
 
@@ -762,8 +754,17 @@ fn chat() -> impl IntoElement {
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onLinkPress` | `.on_link_press(\|event: &TextViewLinkPressEvent\| ..)` | 链接被点击：`{ url }`，其 URL；标题为 `#anchor`，脚注为 `#footnote-<label>`。 |
+| `onLinkPress` | `.on_link_press(\|event: &TextViewLinkPressEvent\| ..)` | 链接被点击：`{ url, modifiers }`，其 URL（标题为 `#anchor`，脚注为 `#footnote-<label>`）和按住的修饰键。 |
 | `onCodeBlockAction` | `.on_code_block_action(\|event: &TextViewCodeActionEvent\| ..)` | 代码块的操作被按下（`copy` 会在复制后报告）。 |
+| `onSelectionChange` | `.on_selection_change(\|event: &TextViewSelectionEvent\| ..)` | 设置了 `selectable` 的 `TextView` 的选区变化：`{ text, start }`，与复制得到的内容相同的选中文字及其起始位置；不再有选中内容时为 `""`（[读取选中的文字](./text-selection.md#读取选中的文字)）。放在可选择视图里时改由外层视图报告。 |
+
+## 方法
+
+`ref` 提供 `TextViewRef`（Rust 中通过 `component_ref::<TextView>()` 取得 `TextViewApi`）。JS 中的方法返回 `Promise`。
+
+| 方法 | Rust | 说明 |
+|---|---|---|
+| `selectedText({ format? })` | `selected_text(Option<TextSelectionOptions>)` | 读取 `selectable` 视图的选区：`format` 为 `"plain"`（默认，与复制相同）、`"markdown"` 或 `"html"`，由选中的节点重新生成；选中全部时返回原样的源文（[读取为 Markdown 或 HTML](./text-selection.md#读取为-markdown-或-html)）。没有选中内容时返回 `""`。 |
 | `onImagePress` | `.on_image_press(\|image: &Image\| ..)` | 不在链接中的图片被点击：`{ image }` 是该图片，由应用放大显示（应用自己的可缩放查看器）。 |
 
 <a id="accessibility"></a>

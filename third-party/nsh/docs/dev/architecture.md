@@ -29,6 +29,12 @@ Input                        native gestures -> EngineControl::dispatch_event ->
 - One `Surface` (Apple, Linux, Windows) / `NshView` (Android) is one engine (one QuickJS runtime), with no global singletons, so NSH can be embedded in
   existing apps with several instances. `AppView` (Apple: a `UIView` or, on macOS, an `NSView`; Linux: a GTK widget; Windows: a window; GPUI: a GPUI view) wraps a surface for embedding and owns its dev session; a standalone app is
   just "one AppView filling the window".
+- Mount `Insert` items describe native stacking order, including `zIndex`. A sink that needs logical document
+  order opts in with `MountSink::needs_tree_order`; the core includes `TreeOrder` in the completed batch when
+  nodes are mounted, moved or detached. The terminal uses it for focus traversal independently of paint order.
+- Anchored overlays include their resolved anchor bounds, optional anchor node and final placement side in
+  `ViewProps::overlay_anchor`. The terminal uses this to keep a popup outside the anchor's occupied Cells;
+  other native backends continue using the core's point frames.
 - **Android**: the engine thread typesets with `StaticLayout` through JNI; each commit is encoded once and handed to
   `Mounter.java` on the UI thread (`crates/nsh-platform-android/src/encode.rs`).
   Display-density changes update the shared text density and remount the existing views. Sticky ranges are replayed
@@ -51,12 +57,6 @@ Input                        native gestures -> EngineControl::dispatch_event ->
   element per surface with GPUI's primitives (`DrawCx` keeps the transform and opacity GPUI lacks); each commit is one
   closure on GPUI's main thread (`rt::invoke`), and every main-thread entry point ends with `rt::flush`, which
   notifies the views of changed surfaces; native animations run on the window's frames.
-- **Terminal** (`tui.md`): one retained `Surface` per engine, drawn into a Ratatui buffer. The engine typesets
-  terminal graphemes with `TerminalTextEngine`; the terminal loop applies each mount batch and handles focus,
-  editing, scrolling and native animation locally. Layout remains in points (8×16 per cell by default); one
-  per-surface worker rasterizes images and canvases and encodes supported terminal graphics protocols. Embedding hosts own terminal IO and event routing;
-  `run_app` supplies raw-mode lifecycle and a full-screen loop. `Renderer::Terminal` keeps the rendering medium
-  separate from the host OS.
 - **Web APIs** (TS apps only; Rust code uses crates of its choice): `fetch` with `Headers` / `Request` / `Response`, the
   Streams API (readable streams with byte streams and BYOB readers, writable and transform streams, `pipeTo` /
   `pipeThrough`, `TextEncoderStream` / `TextDecoderStream`), `Blob` / `File` / `FormData`, `URL` / `URLSearchParams`,
@@ -64,8 +64,10 @@ Input                        native gestures -> EngineControl::dispatch_event ->
   classes in `crates/nsh-js/src/web/` (module docs there), made on first use of any of those globals (zero startup cost
   otherwise), as in browsers so libraries such as axios work (`fetch.rs` lists where they differ). `Intl`
   (`NumberFormat`, `DateTimeFormat`) and the `toLocaleString`s of numbers, BigInts and dates, which QuickJS lacks, are
-  there too (`web/intl/`): formatted in Rust for the common languages (limits in its module doc), in `Environment::locale` by
-  default (the platform's region format: `NSLocale.currentLocale`, `Locale.getDefault()`).
+  there too (`web/format/`): formatted in Rust for the common languages (limits in its module doc), in `Environment::locale` by
+  default (the platform's region format: `NSLocale.currentLocale`, `Locale.getDefault()`), local time `Date`'s,
+  named as the zone the C library computes it in (`TZ`, `/etc/localtime`; on Windows and Android as the platform
+  reports it, `LocaleSettings::time_zone`, `localeSettings().timeZone`).
 - **Time**: an engine runs on a `nsh_core::time::Clock` (`EngineConfig::clock`), its thread's while it runs
   (`Clock::enter`): JS's timers, Rust tasks' timers, throttled scroll events, mouse moves and the frames' time read it
   through `nsh_core::time::now()`, `Intl` and `Date` through `unix_ms()`. The system's clock is the default. A manual

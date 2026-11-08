@@ -2,7 +2,7 @@ import { Canvas, computed, Scroll, signal, Text, View } from "nsh";
 import { createAnimatedValue, type AnimatedValue, type PanEvent } from "nsh";
 import { windowSize } from "nsh";
 import { Icon } from "../icons";
-import { Appear, Badge, colors, finish, hint, IconTile, mono, radius, Segmented, Stat, tints } from "../ui";
+import { Appear, Badge, colors, finish, hint, IconTile, mono, radius, Segmented, Stat, terminal, tints } from "../ui";
 
 const CARD = 128;
 /** Windows shorter than this scroll the demo, with the stage this tall:
@@ -84,7 +84,9 @@ export function Physics() {
   const follow = [{ translateX: x }, { translateY: y }] as const;
 
   // Short windows scroll, with a stage of fixed height; the rest fills.
-  const short = computed(() => windowSize().height < SHORT_WINDOW);
+  // A terminal's stage always fills: its boxes take their content's rows,
+  // so a fixed height would leave it one row tall.
+  const short = computed(() => !terminal && windowSize().height < SHORT_WINDOW);
   const body = (short: boolean) => (
     <View style={short ? { padding: 16, gap: 12 } : { flex: 1, padding: 16, gap: 12, backgroundColor: colors.background }}>
       <Appear index={0}>

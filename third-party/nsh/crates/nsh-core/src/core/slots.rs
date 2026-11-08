@@ -103,6 +103,7 @@ pub(super) fn split(attrs: &Attrs) -> (Attrs, Attrs) {
         src: attrs.src.clone(),
         drawing: attrs.drawing.clone(),
         selectable_view: attrs.selectable_view,
+        continues_text: attrs.continues_text,
         render: attrs.render.clone(),
         ..Attrs::default()
     };
@@ -140,6 +141,7 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
             expanded: own.state.expanded.or(js.state.expanded),
             pressed: own.state.pressed.or(js.state.pressed),
             current: own.state.current.or(js.state.current),
+            has_popup: own.state.has_popup || js.state.has_popup,
         },
         value: own.value.clone().or_else(|| js.value.clone()),
         pointer_events: if own.pointer_events == PointerEvents::default() {

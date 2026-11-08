@@ -27,10 +27,10 @@ This directory initially imported the complete tracked source of
 at `de176695240d550f2b303643b8019146c7989e7f`. The maintained upstream is
 [`longbridge/nsh`](https://github.com/longbridge/nsh).
 
-The complete upstream tree is synchronized through release `v0.4.0`
-(`e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3`). Earlier selective imports are
-consolidated into this baseline; the terminal backend and other local
-adaptations remain in this tree.
+The complete upstream tree is synchronized through `longbridge/nsh` revision
+`323a8663f6fdb63340c634a50da9bbb820037b69`. Earlier selective imports are
+consolidated into this baseline; the pixel terminal transport and minimal
+retained adaptations remain in this tree.
 
 `upstream.json` retains the initial fork's `repository` and `revision`.
 `upstream_revision` records the integrated upstream revision. `files` contains
@@ -58,22 +58,24 @@ reactive-owner cleanup; callers no longer expect subscription objects with
 `remove()`. Migrate consumers and rebuild declarations and bundles together,
 then remove superseded APIs rather than retaining aliases.
 
-`platform.desktop` is the canonical graphical-desktop check, including desktop
-browsers and excluding terminal rendering. `platform.idiom` describes the
-device, so a terminal on a desktop OS may still report `"desktop"`.
-`platform.select` on terminals selects `terminal`, the host OS, `native`, then
-`default`; `nsh/desktop.isAvailable` includes the terminal title and menu APIs.
+`platform.idiom` reports `"terminal"` on cell-based terminals while
+`platform.desktop` remains `true` on desktop and terminal surfaces alike; use
+`platform.idiom === "terminal"` to distinguish cell terminals from graphical
+desktop windows. `Environment::ctrl_for_command` remaps `Command`-based keymap
+shortcuts to `Ctrl` on terminal surfaces (including pixel-terminal offscreen
+AppKit/Direct2D surfaces). `nsh/desktop` window operations take an explicit
+`WindowRef` (`mainWindow()`).
 
 ## Retained local capabilities
 
 Local modifications in `third-party/nsh` are kept minimal to ease periodic synchronization with `longbridge/nsh`:
 
-- **GPUI removal and `nsh-terminal`**: `crates/gpui`, `third-party/gpui-wgpu` and `examples/embed-gpui` are removed. `crates/nsh-terminal` provides Kitty, Sixel and iTerm2 pixel frame encoding and damage/slot state shared with `nsh-platform-macos` and `nsh-platform-windows` (`terminal` feature).
-- **Focus-fence input ordering (`nsh-engine`, `nsh-platform-macos`, `nsh-platform-windows`, `nsh-platform-linux`)**: `EngineControl::events_sent` pairs with `MountSink::handled` so editing keys, shortcuts, IME/composition, paste and `pause_input` barriers wait for in-flight focus-triggering engine events and pending `autoFocus` targets even when no text is queued. Terminal composition commits and pastes re-validate `(NodeId, focus_generation)` before applying.
-- **Desktop and terminal composing `Escape`**: Pressing `Escape` during active IME/marked-text preedit cancels composition without firing `onKeyPress("Escape")`, blurring the editor, matching `keymap` `Escape` bindings, or dismissing an enclosing `Modal`/popover across AppKit, Win32/DirectWrite and GTK4.
-- **Scoped/fallback key bindings and `replaceRange` across desktop and TUI**: AppKit, Win32, GTK4 and TUI advertise `native_focus_scopes` and `fallback_key_bindings`, run `fallback` bindings only after focused editing, selection, scrolling and navigation leave a key unhandled, and implement `Command::ReplaceRange` (`InputRef.replaceRange`) with UTF-16 boundary, `maxLength`, selection and edit-count checks. GTK4 also honors `Command::Focus`/`Blur` on focus-stop `NshView`s.
-- **Desktop shell and terminal-surface host hooks**: AppKit (`load_with_config`, `run_app_with_config`, `with_running_view`, `choose_directory`, `min_size`, `frame_autosave_name`, `pressable_bounds`, clean Apple Event quit), Windows (`AppSource::Config`, `load_with_config`, `run_app` activation observer, `with_running_view`, `quit_app`, modal-scoped `pressable_bounds`, hidden/detached focus invalidation, keyboard Enter/Space press state machine, Direct2D/DirectWrite thread-local teardown before graphics device state) and GTK4 (`load_with_config`, `run_app_with_config`, `with_running_view`, `quit_app`, `pause_input`/`resume_input`, host `image_assets`) expose the hooks required by Maka's desktop shell and real-Host integration tests.
-- **Terminal backend (`nsh-platform-tui`) and `RichEditor` / headless fixes**: `nsh-platform-tui` retains `AppView::load_with_config`, cell-aware selection and `TextEngine::measure_canvas`, `Input` `tokens` and `replaceRange`. `nsh-base`'s `RichEditor` forwards reactive `readonly` state to its native `Input` sink, and `nsh-testing`'s headless list falls back to the surface viewport on reinsertion before parent layout bounds arrive.
+- **GPUI removal and `nsh-terminal`**: `crates/gpui`, `third-party/gpui-wgpu` and `examples/embed-gpui` are removed. `crates/nsh-terminal` and `third-party/icy_sixel` provide Kitty, Sixel and iTerm2 pixel frame encoding and damage/slot state shared with `nsh-platform-macos` (`terminal` feature), `nsh-platform-windows` (`terminal` feature) and `nsh-platform-tui` (`ImageStore`).
+- **Chunk loading, `ScrollIntent` and `inputAction`**: `nsh-engine` exposes `ChunkLoader` (`EngineConfig::chunk_loader`) for lazy plugin chunk evaluation; `nsh-core` and `nsh-js` retain `EventKind::ScrollIntent` and `inputAction` for structured editor/reader interactions.
+- **Text reading and `RichEditor` integration (`nsh-core`, `nsh-base`)**: `TextView` retains its piecewise `Source` mapping and reading-anchor pipeline alongside upstream Markdown selection, and `RichEditor` exposes `geometry_handle` and honors `Environment::ctrl_for_command` on macOS terminal surfaces.
+- **Reactive list and component event fixes (`nsh-core`, `nsh-js`)**: `Core::deliver_component_event` preserves sibling listeners and nested emits, and `ListState` separates deferred length updates from reactive binds while refreshing retained keyed cell `item` values even when zero structural splices occur.
+- **Focus-fence ordering, composing `Escape`, and scoped/fallback key bindings**: `EngineControl::events_sent` pairs with `MountSink::handled` so editing keys, shortcuts, IME/composition, paste and `pause_input` barriers wait for in-flight focus-triggering engine events and pending `autoFocus` targets across AppKit, Win32/Direct2D, GTK4 and TUI. Composing `Escape` cancels active preedit cleanly, and `within`/`fallback` key bindings run in scope order without stealing keys handled by focused controls.
+- **Desktop shell and terminal-surface host hooks**: AppKit, Win32/Direct2D, GTK4 and `nsh-platform-tui` (`AppView` + `LocalEngine` driver) retain `load_with_config`, `run_app_with_config`, `with_running_view`, `quit_app`, `pause_input`/`resume_input`, `pressable_bounds`, and headless inspection helpers required by Maka's desktop shell, terminal shell and real-Host integration tests.
 
 ## Verification and future synchronization
 

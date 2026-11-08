@@ -26,7 +26,7 @@ export const quickFieldStyle = () => ({
 const makaMark = new Path2D('M6.1 1.3h3.8 M1.35 14.35 8 3.55l6.65 10.8 M4.95 8.5 8 13.6l3.05-5.1');
 export function QuickToolsMark() {
   const color = '#47A3E2';
-  if (platform.isTerminal)
+  if (platform.idiom === 'terminal')
     return (
       <Text accessibilityElementsHidden style={{ color }}>
         M

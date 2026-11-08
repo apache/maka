@@ -10,7 +10,8 @@
 use std::time::Duration;
 
 use crate::{
-    EdgeInsets, EventPayload, ModalAnimation, NodeId, PayloadValue, Points, ScreenAnimation, Size,
+    Bounds, EdgeInsets, EventPayload, ModalAnimation, NodeId, PayloadValue, Points,
+    ScreenAnimation, Size,
 };
 
 /// Push and pop.
@@ -97,10 +98,14 @@ struct Transition<M> {
 }
 
 impl<M> Transition<M> {
+    /// Its length in milliseconds, at least one.
+    fn ms(&self) -> f64 {
+        (self.duration.as_micros() as f64 / 1000.0).max(1.0)
+    }
+
     /// Its progress at `now` (0 to 1 and beyond, not eased).
     fn progress(&self, now: f64) -> f64 {
-        let ms = self.duration.as_micros() as f64 / 1000.0;
-        self.start.map_or(0.0, |s| (now - s) * 1000.0 / ms.max(1.0))
+        self.start.map_or(0.0, |s| (now - s) * 1000.0 / self.ms())
     }
 }
 
@@ -159,6 +164,21 @@ impl<M> Transitions<M> {
             }
         }
         taken
+    }
+
+    /// When the next transition ends (seconds, the clock
+    /// [`Transitions::tick`] is given), or `now` when one has to be ticked
+    /// to start: what a surface that draws no frames (a hidden window)
+    /// ticks them at, so screens settle and report it on time without
+    /// frames. `None` when none runs.
+    pub fn deadline(&self, now: f64) -> Option<f64> {
+        self.list
+            .iter()
+            .map(|t| t.start.map_or(now, |s| s + t.ms() / 1000.0))
+            .reduce(f64::min)
+            // A millisecond past it: a tick there finds it ended whatever
+            // the rounding.
+            .map(|t| t + 0.001)
     }
 
     /// A frame at `now` (seconds): the transitions that end are taken out,
@@ -277,6 +297,18 @@ pub fn back_target(
     back_stack(None).map(Back::Stack)
 }
 
+/// Whether a stack may take going back as far as its layout goes: it and
+/// every view around it (`frames`, the root's aside) have a size. The core
+/// lays out `display: none` (a tab not selected) and everything in it at no
+/// size, and a page of a stack so laid out at its stack's, which no
+/// platform's own hidden state sees; such a stack keeps its screens while
+/// another shows. Every backend with a global back asks this beside its own
+/// check (the web's `stackShown` and Android's `StackBox` as well); apps
+/// have no use for it.
+pub fn shown_in_layout(frames: impl IntoIterator<Item = Bounds<Points>>) -> bool {
+    frames.into_iter().all(|frame| !frame.is_empty())
+}
+
 /// The first of `candidates` that contains none of the others
 /// (`contains(a, b)`: `b` is inside `a`): of the stacks that take going
 /// back, the innermost.
@@ -328,6 +360,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_stack_laid_out_at_no_size_takes_no_going_back() {
+        let at = |w: f32, h: f32| Bounds::new(Default::default(), Size::new(Points(w), Points(h)));
+        assert!(shown_in_layout([at(390.0, 844.0), at(390.0, 844.0)]));
+        // `display: none`: the core lays it out at no size.
+        assert!(!shown_in_layout([Bounds::default()]));
+        assert!(!shown_in_layout([at(390.0, 0.0)]));
+        assert!(!shown_in_layout([at(0.0, 844.0)]));
+        // A stack of a fixed size in a page of a stack so laid out.
+        assert!(!shown_in_layout([
+            at(390.0, 300.0),
+            Bounds::default(),
+            at(390.0, 844.0)
+        ]));
+    }
+
+    #[test]
     fn eases_out() {
         assert_eq!(ease(0.0), 0.0);
         assert_eq!(ease(1.0), 1.0);
@@ -359,6 +407,27 @@ mod tests {
         assert_eq!(t.progress(2.0), 0.0);
         assert!((t.progress(2.15) - 0.5).abs() < 1e-9);
         assert!(t.progress(2.3) >= 1.0 - 1e-9);
+    }
+
+    #[test]
+    fn transitions_end_at_their_deadlines() {
+        let mut t = Transitions::default();
+        assert_eq!(t.deadline(5.0), None);
+        t.push(SLIDE, 'a');
+        t.push(FADE, 'b');
+        // Not started: tick now.
+        assert_eq!(t.deadline(5.0), Some(5.001));
+        t.tick(5.0);
+        let first = t.deadline(5.0).expect("two run");
+        assert!((first - 5.201).abs() < 1e-9, "{first}");
+        assert!(matches!(
+            t.tick(first)[..],
+            [Tick::At(0, _), Tick::Ended('b')]
+        ));
+        let last = t.deadline(first).expect("one runs");
+        assert!((last - 5.301).abs() < 1e-9, "{last}");
+        assert!(matches!(t.tick(last)[..], [Tick::Ended('a')]));
+        assert_eq!(t.deadline(last), None);
     }
 
     #[test]

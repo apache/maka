@@ -41,12 +41,15 @@ pub enum OpenChangeReason {
     /// tooltip's); left its trigger and itself (a hover card's).
     Hover,
     /// The keyboard focus came to its trigger, or left it (a hover
-    /// card's).
+    /// card's); Tab or Shift+Tab moved it on from a select or combobox
+    /// whose list was open (the focus goes where Tab takes it).
     Focus,
     /// A finger was held on its trigger (a context menu's on touch
     /// screens).
     LongPress,
-    /// The secondary button was pressed on its trigger (a context menu's).
+    /// A context menu was asked for on its trigger (a context menu's): the
+    /// secondary button, the keyboard's menu keys or an assistive
+    /// technology's "show menu" action.
     ContextMenu,
     /// The user typed in its input (a combobox's).
     InputChange,
@@ -693,6 +696,29 @@ pub(crate) fn dropdown(
         }
         let room = signal(None::<Points>);
         let dismiss = presence.dismiss.clone();
+        // A terminal's trigger is only as wide as its value: a list there
+        // is at least that wide, so its rows keep what is beside their
+        // titles (the chosen item's mark).
+        let terminal = crate::terminal::is_terminal();
+        let fit = fit || terminal;
+        // A terminal draws a popup's line a Cell outside its box on each
+        // side (the core places it with that frame): the list there is two
+        // Cells narrower than the trigger, so its frame, lines included,
+        // runs from the trigger's first column to its last, whichever side
+        // it is aligned on.
+        let ring = if terminal {
+            crate::terminal::cell_width() * 2.0
+        } else {
+            Points::ZERO
+        };
+        let least = move || {
+            let width = width.get().unwrap_or_default();
+            if width > ring {
+                width - ring
+            } else {
+                Points::ZERO
+            }
+        };
         let popup = overlay()
             // The trigger itself: in a TSX app the app's element, whose
             // box is what shows (not the slot's view, which a column
@@ -705,9 +731,7 @@ pub(crate) fn dropdown(
             // A list as wide as the trigger, unless the app's popup style
             // sets a width (`gpui-component`'s `menu_width`); a calendar
             // at least that wide.
-            .when(fit, |p| {
-                p.min_w(move || Length::from(width.get().unwrap_or_default()))
-            })
+            .when(fit, |p| p.min_w(move || Length::from(least())))
             .when(!fit, |p| {
                 p.w(move || Length::from(width.get().unwrap_or_default()))
             })

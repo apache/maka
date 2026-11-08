@@ -49,7 +49,7 @@ are methods of the `Scrollable` trait, which lists share.
 |---|---|---|---|---|
 | `horizontal` | `.horizontal()` | `boolean` | `false` | Scrolls sideways. |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll it. |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | Overscroll past the edges. |
 | `pagingEnabled` | `.paging(..)` | `boolean` | `false` | Stops at multiples of the viewport. |
 | `snapToInterval` | `.snap_interval(px(..))` | `number` | `0` | Stops at multiples of this length (0: off). |

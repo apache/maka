@@ -67,6 +67,10 @@ pub(crate) struct DisplayMap {
     /// A setting changed since the last rebuild: an edit lays everything
     /// out again.
     dirty: bool,
+    /// Presses land on whole Cells (a terminal's): a point anywhere in a
+    /// grapheme's Cells is before it, as a terminal's cursor stands on the
+    /// character it is before. Elsewhere the nearer edge wins.
+    cells: bool,
 }
 
 impl DisplayMap {
@@ -92,7 +96,14 @@ impl DisplayMap {
             rope: Rope::new(),
             scratch: String::new(),
             dirty: false,
+            cells: false,
         }
+    }
+
+    /// Whether presses land on whole Cells ([`Self::offset_at`]): a
+    /// terminal reports a press at its Cell's center.
+    pub(crate) fn set_cells(&mut self, cells: bool) {
+        self.cells = cells;
     }
 
     /// A new font: the widths measured are dropped. Takes effect with the
@@ -104,6 +115,11 @@ impl DisplayMap {
     }
 
     /// Takes effect with the next [`Self::rebuild`].
+    /// The columns between tab stops.
+    pub(crate) fn tab_size(&self) -> u32 {
+        self.metrics.tab_size
+    }
+
     pub(crate) fn set_tab_size(&mut self, tab_size: u32) {
         if self.metrics.tab_size != tab_size {
             self.metrics.tab_size = tab_size;
@@ -353,7 +369,8 @@ impl DisplayMap {
     }
 
     /// The offset in display row `row` nearest to `x` (see
-    /// [`RowLayout::offset_at`]).
+    /// [`RowLayout::offset_at`]); on whole Cells ([`Self::set_cells`]),
+    /// before the grapheme `x` is in.
     pub(crate) fn offset_at(&self, buffer: &Buffer, row: usize, x: Points) -> usize {
         let index = row.min(self.rows.len() - 1);
         let row = &self.rows[index];
@@ -363,7 +380,8 @@ impl DisplayMap {
         let mut last = None;
         for (at, grapheme) in graphemes(&text) {
             let width = self.metrics.advance(grapheme, cx);
-            if target < cx + width / 2.0 {
+            let edge = if self.cells { width } else { width / 2.0 };
+            if target < cx + edge {
                 return row.range.start + at;
             }
             cx += width;
@@ -1111,6 +1129,20 @@ mod tests {
         assert_eq!(map.x_of(&buffer, 9), px(30.0));
         assert_eq!(map.offset_at(&buffer, 0, px(18.0)), 1);
         assert_eq!(map.offset_at(&buffer, 0, px(22.0)), 9);
+    }
+
+    #[test]
+    fn a_press_on_a_cell_is_before_its_grapheme_on_whole_cells() {
+        let buffer = Buffer::new("abc");
+        let mut map = map(&buffer, None, vec![]);
+        // A terminal presses at a Cell's center: `b`'s is 15 points.
+        assert_eq!(map.offset_at(&buffer, 0, px(15.0)), 2, "nearer edge");
+        map.set_cells(true);
+        assert_eq!(map.offset_at(&buffer, 0, px(15.0)), 1);
+        assert_eq!(map.offset_at(&buffer, 0, px(10.0)), 1);
+        assert_eq!(map.offset_at(&buffer, 0, px(19.0)), 1);
+        assert_eq!(map.offset_at(&buffer, 0, px(25.0)), 2);
+        assert_eq!(map.offset_at(&buffer, 0, px(40.0)), 3, "past the end");
     }
 
     #[test]

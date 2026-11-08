@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`.
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/animated`.
 // The animations themselves run on the UI thread, which a headless run has
 // not, so the script checks what JS sees synchronously: the curves the
 // native drivers run (`Easing.sample`, `Animated.sampleSpring` /

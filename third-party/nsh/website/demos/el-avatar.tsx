@@ -1,6 +1,6 @@
 import { type JSX, mount, reduceMotion, signal, Text, View } from "nsh";
 import { Avatar, AvatarGroup, Button } from "nsh/base";
-import { AVATAR_BROKEN, avatarIdentity, avatarPortrait, button, buttonText, desktop, focusRing, hoverFill, Log, Panel, Segmented, Split, ui } from "./palette";
+import { AVATAR_BROKEN, avatarIdentity, avatarPortrait, button, buttonText, desktop, focusRing, hoverFill, Log, Panel, Segmented, Split, ui, sectionSurface } from "./palette";
 
 // The look is the demo's: initials on a tint of the person's hue, the
 // picture round over them (the parts are rounded, not the avatar, so a
@@ -43,8 +43,8 @@ function Person(props: {
   );
 }
 
-const TEAM = ["Ada Lovelace", "Grace Hopper", "Alan Turing"];
-const MEMBERS = ["Ada Lovelace", "Grace Hopper", "Alan Turing", "Katherine Johnson", "Edsger Dijkstra", "Barbara Liskov", "Donald Knuth", "Frances Allen", "Radia Perlman", "Ken Thompson"];
+const TEAM = ["Jason Lee", "Sunli", "Floyd Wang"];
+const MEMBERS = ["Jason Lee", "Sunli", "Floyd Wang", "Alan Turing", "Edsger Dijkstra", "Barbara Liskov", "Donald Knuth", "Frances Allen", "Radia Perlman", "Ken Thompson"];
 
 function App() {
   const presence = signal<Presence[]>(["online", "busy", "away"]);
@@ -68,10 +68,10 @@ function App() {
             <Panel title="AvatarGroup · limit">
               <Segmented options={[2, 3, 4]} value={limit()} onChange={(v) => (limit.set(v), log(`limit ${v}`))} />
               <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
-                <Button onPress={() => (members.set(Math.min(MEMBERS.length, members() + 1)), log(`members ${members()}`))} disabled={members() >= MEMBERS.length} {...button("secondary")}>
+                <Button onPress={() => (members.set(Math.min(MEMBERS.length, members() + 1)), log(`members ${members()}`))} disabled={members() >= MEMBERS.length} {...button("secondary", { disabled: () => members() >= MEMBERS.length })}>
                   <Text style={buttonText()}>Add</Text>
                 </Button>
-                <Button onPress={() => (members.set(Math.max(1, members() - 1)), log(`members ${members()}`))} disabled={members() <= 1} {...button("ghost")}>
+                <Button onPress={() => (members.set(Math.max(1, members() - 1)), log(`members ${members()}`))} disabled={members() <= 1} {...button("ghost", { disabled: () => members() <= 1 })}>
                   <Text style={buttonText("ghost")}>Remove</Text>
                 </Button>
               </View>
@@ -80,7 +80,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 12 : 16, gap: 14 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 14 }}>
           <View>
             {TEAM.map((name, i) => (
               <Button
@@ -93,7 +93,7 @@ function App() {
                 hoverStyle={hoverFill()}
                 focusStyle={focusRing()}
               >
-                <Person name={name} side={side} src={i === 2 ? undefined : avatarPortrait(name)} label={`${name}, ${presence()[i]}`} onStatus={(s) => log(`${name}: ${s}`)}>
+                <Person name={name} side={side} src={avatarPortrait(name)} label={`${name}, ${presence()[i]}`} onStatus={(s) => log(`${name}: ${s}`)}>
                   <View
                     class={reduceMotion() ? "" : "transition-colors duration-200"}
                     style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: 6, borderWidth: 2, borderColor: surface(), backgroundColor: dotColor(presence()[i]) }}
@@ -120,7 +120,7 @@ function App() {
               <Each of={MEMBERS.slice(0, members())}>
                 {(name, i) => (
                   <View style={{ marginLeft: i() === 0 ? 0 : -side / 4 }}>
-                    <Person name={name()} side={side} ring src={i() % 3 === 2 ? undefined : avatarPortrait(name())} />
+                    <Person name={name()} side={side} ring src={avatarPortrait(name())} />
                   </View>
                 )}
               </Each>

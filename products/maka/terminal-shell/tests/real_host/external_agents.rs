@@ -90,20 +90,19 @@ async fn scroll_to(
     })
     .await;
     for _ in 0..160 {
-        view.poll().unwrap();
         support::tick(view);
         let nodes = view.accessibility_snapshot();
         let scroll = nodes.iter().find(|node| node.label == RUNTIMES).unwrap();
         let target = nodes.iter().find(|node| matches(node)).unwrap();
         let top = scroll.frame.origin.y.0.max(0.0);
-        let bottom = (scroll.frame.origin.y.0 + scroll.frame.size.height.0)
-            .min(view.surface().viewport().height.0);
+        let bottom =
+            (scroll.frame.origin.y.0 + scroll.frame.size.height.0).min(view.viewport().height.0);
         let target_top = target.frame.origin.y.0;
         let target_bottom = target_top + target.frame.size.height.0;
         if target_top >= top && target_bottom <= bottom {
             return target.clone();
         }
-        let metrics = view.surface().metrics();
+        let metrics = view.cells();
         let column = ((scroll.frame.origin.x.0 + scroll.frame.size.width.0 / 2.0)
             / metrics.width().0)
             .floor() as u16;

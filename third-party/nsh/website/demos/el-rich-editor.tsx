@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { RichEditor, StarterKit, command, createRichEditor, redo, undo } from "nsh/base";
-import { button, buttonText, desktop, Log, Panel, Split, ui, wide } from "./palette";
+import { Button, RichEditor, type RichCommand, StarterKit, command, createRichEditor, redo, Toggle, ToggleGroup, Toolbar, ToolbarSeparator, undo } from "nsh/base";
+import { desktop, Icon, Log, Panel, Split, toggleGlyph, toggleLabel, toggleLook, toolbarRule, toolbarTrack, ui, wide, sectionSurface, richEditorClasses } from "./palette";
 
 const CONTENT = `# A document
 
@@ -10,21 +10,55 @@ Type **Markdown** as you go: \`#\` makes a heading, \`-\` a list, \`[ ]\` a task
 - Undo and redo keep every step
 `;
 
+/** The toolbar's formats: small, each its label. */
+const tool = { size: "small", text: true } as const;
+/** Its actions: small and square, an icon each, so the bar fits a phone's width. */
+const iconTool = { size: "small" } as const;
+
 // The session owns the document; the view renders it and turns input into
-// transactions. The toolbar runs Tiptap's named commands on the session.
+// transactions. The toolbar runs Tiptap's named commands on the session; its
+// toggles show what is active at the selection, its buttons what can run.
 function App() {
   const editor = createRichEditor({ extensions: [StarterKit], content: CONTENT, format: "markdown" });
   const markdown = signal(editor.getMarkdown());
+  const revision = signal(0);
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 4));
-  editor.on("revision", () => markdown.set(editor.getMarkdown()));
+  editor.on("revision", ({ revision: r }) => {
+    revision.set(r);
+    markdown.set(editor.getMarkdown());
+  });
   editor.on("focus", () => log("focus"));
   editor.on("blur", () => log("blur"));
 
-  const action = (label: string, run: () => void) => (
-    <View onPress={run} role="button" accessibilityLabel={label} {...button("secondary", { size: "sm" })}>
-      <Text style={buttonText()}>{label}</Text>
-    </View>
+  // Read again on every change of the session, the selection's included.
+  const active = (name: string, attrs?: Record<string, unknown>) => (revision(), editor.isActive(name, attrs));
+  const can = (cmd: RichCommand) => (revision(), editor.can(cmd));
+  const run = (cmd: RichCommand) => {
+    editor.run(cmd);
+    editor.focus();
+  };
+
+  /** A format that is on or off at the selection: a `Toggle`. */
+  const format = (label: string, on: () => boolean, cmd: RichCommand) => (
+    <Toggle pressed={on()} onChange={() => run(cmd)} {...toggleLook(tool)}>
+      <Text style={toggleLabel(on, tool)}>{label}</Text>
+    </Toggle>
+  );
+  /** An action (undo, redo): a `Button` in the same look, its icon named
+   * for screen readers, enabled while it can run. Redo is undo's arrow
+   * mirrored. */
+  const action = (label: string, cmd: () => RichCommand, mirrored?: boolean) => (
+    <Button
+      accessibilityLabel={label}
+      disabled={!can(cmd())}
+      onPress={() => run(cmd())}
+      {...toggleLook({ ...iconTool, disabled: () => !can(cmd()) })}
+    >
+      <View style={mirrored ? { transform: [{ scaleX: -1 }] } : undefined}>
+        <Icon name="undo" {...toggleGlyph(() => false, iconTool)} />
+      </View>
+    </Button>
   );
 
   return (
@@ -46,21 +80,27 @@ function App() {
           </>
         }
       >
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          {action("Bold", () => editor.run(command("toggleBold")))}
-          {action("Italic", () => editor.run(command("toggleItalic")))}
-          {action("Heading", () => editor.run(command("toggleHeading", { level: 2 })))}
-          {action("List", () => editor.run(command("toggleBulletList")))}
-          {action("Task", () => editor.run(command("toggleTaskList")))}
-          {action("Undo", () => editor.run(undo))}
-          {action("Redo", () => editor.run(redo))}
-        </View>
-        <View style={{ height: wide() ? 360 : 300, ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        <Toolbar accessibilityLabel="Formatting" style={{ ...toolbarTrack(), alignSelf: "flex-start", flexWrap: "wrap" }}>
+          <ToggleGroup style={{ flexDirection: "row", gap: 2 }}>
+            {format("Bold", () => active("bold"), command("toggleBold"))}
+            {format("Italic", () => active("italic"), command("toggleItalic"))}
+          </ToggleGroup>
+          <ToolbarSeparator style={toolbarRule()} />
+          <ToggleGroup style={{ flexDirection: "row", gap: 2 }}>
+            {format("Heading", () => active("heading", { level: 2 }), command("toggleHeading", { level: 2 }))}
+            {format("List", () => active("bulletList"), command("toggleBulletList"))}
+            {format("Task", () => active("taskList"), command("toggleTaskList"))}
+          </ToggleGroup>
+          <ToolbarSeparator style={toolbarRule()} />
+          {action("Undo", undo)}
+          {action("Redo", redo, true)}
+        </Toolbar>
+        <View style={{ height: wide() ? 360 : 300, ...sectionSurface(), overflow: "hidden" }}>
           <RichEditor
             editor={editor}
             accessibilityLabel="Document"
             placeholder="Write something"
-            classes={CLASSES}
+            classes={richEditorClasses}
             style={{ flex: 1 }}
           />
         </View>
@@ -68,31 +108,5 @@ function App() {
     </View>
   );
 }
-
-/** The document's look: NSH's editor draws nothing of its own. */
-const CLASSES = {
-  content: "p-4 gap-3",
-  taskCheckbox: "size-4 mr-2 mt-0.5 rounded border border-border checked:bg-primary checked:border-primary",
-  listMarker: "text-muted-foreground",
-  nodes: {
-    "heading[level=1]": "text-2xl font-bold",
-    "heading[level=2]": "text-xl font-semibold",
-    "heading[level=3]": "text-lg font-semibold",
-    blockquote: "border-l-4 border-border pl-3 text-muted-foreground",
-    codeBlock: "font-mono text-sm bg-muted rounded-md px-3 py-2",
-    bulletList: "gap-1 pl-5",
-    orderedList: "gap-1 pl-5",
-    taskList: "gap-1",
-    taskItem: "flex-row",
-    horizontalRule: "h-px bg-border my-2",
-  },
-  marks: {
-    bold: "font-semibold",
-    italic: "italic",
-    strike: "line-through",
-    code: "font-mono text-sm bg-muted rounded px-1",
-    link: "text-primary underline",
-  },
-};
 
 mount(App);

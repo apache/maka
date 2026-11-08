@@ -103,7 +103,6 @@ impl Mounter {
             item,
             MountItem::Text { .. }
                 | MountItem::Insert { .. }
-                | MountItem::ProjectRoot { .. }
                 | MountItem::Remove { .. }
                 | MountItem::Delete { .. }
                 | MountItem::ViewProps { .. }
@@ -134,73 +133,35 @@ impl Mounter {
                 parent,
                 child,
                 before,
-            } => self.insert(surface, *parent, *child, *before),
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
             } => {
-                let before =
-                    self.views
-                        .get(*parent)
-                        .zip(self.views.get(*id))
-                        .and_then(|(parent, child)| {
-                            if matches!(
-                                child.kind(),
-                                ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
-                            ) {
-                                return None;
-                            }
-                            following.iter().find_map(|id| {
-                                let candidate = self.views.get(*id)?;
-                                (candidate.parent_view().as_ref() == Some(&parent)
-                                    && !matches!(
-                                        candidate.kind(),
-                                        ViewKind::Modal
-                                            | ViewKind::HeaderItem
-                                            | ViewKind::InputAccessory
-                                    )
-                                    && (child.kind() != ViewKind::Screen
-                                        || candidate.kind() == ViewKind::Screen))
-                                    .then_some(*id)
-                            })
-                        });
-                self.insert(surface, *parent, *id, before);
-            }
-            MountItem::RetireListCell { id, request, roots } => {
-                let path = surface.focus_path();
-                if roots.iter().any(|id| path.contains(id)) {
-                    surface.control(|control| {
-                        control.set_focus_path(path);
-                        control.retire_list_cell(*id, *request, false);
-                    });
+                let (Some(parent), Some(child)) = (&self.get(*parent), &self.get(*child)) else {
                     return;
-                }
-                for root in roots {
-                    let Some(view) = &self.get(*root) else {
-                        continue;
-                    };
-                    crate::text_input::retire_cell(view);
-                    crate::input::retire_cell(surface, view);
-                    crate::scroll::detached(surface, view);
-                    crate::selectable_view::tree_changed();
-                    // A native child window must stop receiving input before
-                    // Core is allowed to release this row's current owner.
-                    crate::native::detached(view);
-                    let mut pending = vec![view.clone()];
-                    while let Some(node) = pending.pop() {
-                        pending.extend(node.child_views());
-                        crate::transition::retired(&node);
+                };
+                match child.kind() {
+                    ViewKind::Modal => return crate::navigation::present(surface, child),
+                    ViewKind::HeaderItem => {
+                        return crate::navigation::header_item(surface, parent, child);
                     }
-                    crate::navigation::park_retired_root(surface, view);
+                    ViewKind::InputAccessory => {
+                        return crate::text_input::accessory(surface, parent, child);
+                    }
+                    _ => {}
                 }
-                surface.control(|control| control.retire_list_cell(*id, *request, true));
+                let before = before
+                    .and_then(|id| self.views.get(id))
+                    .filter(|before| before.parent_view().as_ref() == Some(parent));
+                child.insert_before(parent, before.as_ref());
+                crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+                if parent.kind() == ViewKind::Stack {
+                    crate::navigation::stack_changed(surface, parent, Some(child));
+                }
+                if parent.kind() == ViewKind::Scroll {
+                    crate::scroll::child_inserted(parent);
+                }
             }
-            // The roots were synchronously parked before our true reply.
-            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = &self.get(*id) {
-                    crate::input::retire_cell(surface, view);
+                    crate::input::removing(surface, view);
                     crate::text_input::removing(surface, view);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
@@ -212,10 +173,9 @@ impl Mounter {
             MountItem::Delete { id } => {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(*id) {
-                    crate::input::retire_cell(surface, &view);
+                    crate::input::removing(surface, &view);
                     crate::text_input::removing(surface, &view);
                     crate::navigation::removing(surface, &view);
-                    crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
                     crate::navigation::deleted(surface, &view);
@@ -229,7 +189,9 @@ impl Mounter {
             }
             MountItem::Frame { id, frame } => {
                 let Some(view) = &self.get(*id) else { return };
-                if *id == ROOT_ID {
+                // A window's root takes its window's size, which the core
+                // lays it out at (`set_root_size`).
+                if *id == ROOT_ID || crate::app_window::is_window(surface, *id) {
                     return;
                 }
                 let mut frame = *frame;
@@ -451,7 +413,9 @@ impl Mounter {
             // The animator's (`Surface::apply`).
             MountItem::Animation(_)
             | MountItem::AnimationBindings { .. }
-            | MountItem::ComponentPropSlots { .. } => {}
+            | MountItem::ComponentPropSlots { .. }
+            | MountItem::TreeOrder(_)
+            | MountItem::ProjectStates { .. } => {}
         }
         // What the item may change on screen is drawn again, whether or not
         // what applied it said so: a partial frame draws only that.
@@ -463,32 +427,6 @@ impl Mounter {
                 }
             }
             Redraw::Window => surface.invalidate(),
-        }
-    }
-
-    /// Inserts through the existing native host for this kind of child.
-    fn insert(&self, surface: &Rc<Surface>, parent: NodeId, child: NodeId, before: Option<NodeId>) {
-        let (Some(parent), Some(child)) = (&self.get(parent), &self.get(child)) else {
-            return;
-        };
-        match child.kind() {
-            ViewKind::Modal => return crate::navigation::present(surface, child),
-            ViewKind::HeaderItem => return crate::navigation::header_item(surface, parent, child),
-            ViewKind::InputAccessory => {
-                return crate::text_input::accessory(surface, parent, child);
-            }
-            _ => {}
-        }
-        let before = before
-            .and_then(|id| self.views.get(id))
-            .filter(|before| before.parent_view().as_ref() == Some(parent));
-        child.insert_before(parent, before.as_ref());
-        crate::transition::inserted(surface, child, self.layout_animation.as_ref());
-        if parent.kind() == ViewKind::Stack {
-            crate::navigation::stack_changed(surface, parent, Some(child));
-        }
-        if parent.kind() == ViewKind::Scroll {
-            crate::scroll::child_inserted(parent);
         }
     }
 
@@ -521,11 +459,6 @@ impl Mounter {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
                 _ => crate::text_input::blur_all(surface),
             },
-            Command::ReplaceRange { .. } => {
-                if let Some(view) = view {
-                    crate::text_input::replace_range(surface, view, command);
-                }
-            }
             Command::SetSelection { start, end } => {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);
@@ -559,11 +492,17 @@ impl Mounter {
             | Command::StopLoading
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
+            | Command::Load(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {
                     crate::native::command(surface, view, command);
                 }
+            }
+            // A window of the app's own (`Window.open`) shows dialog root
+            // `id`.
+            Command::Desktop(desktop) if id != ROOT_ID => {
+                crate::app_window::command(surface, id, view, desktop);
             }
             other => crate::system::command(surface, id, other),
         }
@@ -588,9 +527,6 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::Insert { .. }
         | MountItem::Remove { .. }
         | MountItem::Delete { .. }
-        | MountItem::ProjectRoot { .. }
-        | MountItem::RetireListCell { .. }
-        | MountItem::ListCellRetired { .. }
         | MountItem::TrackStates { .. }
         | MountItem::Events { .. }
         | MountItem::AccessibilityLabel { .. }
@@ -600,6 +536,8 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::Animation(_)
         | MountItem::AnimationBindings { .. }
         | MountItem::ComponentPropSlots { .. }
+        | MountItem::TreeOrder(_)
+        | MountItem::ProjectStates { .. }
         | MountItem::NavShader { .. } => Redraw::Nothing,
         MountItem::Frame { id, .. }
         | MountItem::ViewStyle { id, .. }

@@ -1,6 +1,6 @@
 import { LayoutAnimation, signal, Text, View } from "nsh";
 import { dismissToast, toast, updateToast } from "../toast";
-import { Button, Caption, Card, colors, DemoPage, Row, Tip, Toggle } from "../ui";
+import { Button, Caption, Card, colors, DemoPage, Row, terminal, Tip, Toggle } from "../ui";
 import { Avatar, createEvents, pointer, Trigger } from "./OverlayUi";
 
 type Message = { id: number; from: string; subject: string };
@@ -11,7 +11,8 @@ type Message = { id: number; from: string; subject: string };
  * an action where there is something to do; a loading toast that counts
  * its progress and becomes its result in place; an undo for what was just
  * done; a burst that stacks. They come in from below, leave shrinking, and
- * a swipe takes one away.
+ * a swipe takes one away. A terminal shows one at a time on its bottom
+ * row: a new one replaces the last, Escape or its × closes it.
  */
 export function Toasts() {
   const { log, Events } = createEvents("Show a toast");
@@ -107,7 +108,7 @@ export function Toasts() {
                     <Text style={{ numberOfLines: 1, fontSize: pointer ? 13 : 15, fontWeight: "500", color: colors.text }}>{m().from}</Text>
                     <Text style={{ numberOfLines: 1, fontSize: pointer ? 12 : 13, color: colors.muted }}>{m().subject}</Text>
                   </View>
-                  <Trigger icon="archive" variant="ghost" accessibilityLabel={`Archive ${m().subject}`} tip={<Tip label="Archive" />} onPress={() => void archive(m())} />
+                  <Trigger icon="archive" variant="ghost" accessibilityLabel={`Archive ${m().subject}`} short="Archive" tip={<Tip label="Archive" />} onPress={() => void archive(m())} />
                 </Row>
               )}
             </Each>
@@ -120,7 +121,11 @@ export function Toasts() {
   function Burst() {
     let count = 0;
     return (
-      <Card icon="layers" title="A stack" subtitle="Three show at once; the others wait their turn">
+      <Card
+        icon="layers"
+        title={terminal ? "One at a time" : "A stack"}
+        subtitle={terminal ? "Each new toast takes the bottom row from the last" : "Three show at once; the others wait their turn"}
+      >
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <Button
             label="Copy the link"
@@ -132,7 +137,15 @@ export function Toasts() {
           />
           <Button label="Dismiss all" variant="ghost" onPress={() => dismissToast()} />
         </View>
-        <Caption label={pointer ? "The pointer on the stack spreads it and stops their time; swipe one away" : "Touch the stack to spread it; swipe one away"} />
+        <Caption
+          label={
+            terminal
+              ? "Escape or its × closes the toast"
+              : pointer
+                ? "The pointer on the stack spreads it and stops their time; swipe one away"
+                : "Touch the stack to spread it; swipe one away"
+          }
+        />
       </Card>
     );
   }

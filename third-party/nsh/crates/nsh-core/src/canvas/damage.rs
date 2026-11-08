@@ -376,6 +376,29 @@ impl DamageScan {
         value: impl Fn(u16) -> f32,
         changed: impl Fn(u16) -> bool,
     ) -> Damage {
+        self.scan(ops, value, changed, usize::MAX)
+    }
+
+    /// Bounds of everything painted from `first` on, with the state and
+    /// current path established by the preceding operations. Clips may make
+    /// the result smaller; this conservatively includes the unclipped shapes.
+    /// Non-source-over compositing and unbounded geometry return `All`.
+    pub fn painted_after(
+        &mut self,
+        ops: &[CanvasOp],
+        first: usize,
+        value: impl Fn(u16) -> f32,
+    ) -> Damage {
+        self.scan(ops, value, |_| false, first)
+    }
+
+    fn scan(
+        &mut self,
+        ops: &[CanvasOp],
+        value: impl Fn(u16) -> f32,
+        changed: impl Fn(u16) -> bool,
+        first: usize,
+    ) -> Damage {
         let n = |v: Num| v.get(&value);
         let dep = |v: &Num| matches!(*v, Num::Slot(s) if changed(s));
         let paint_dep = |p: &Paint| matches!(*p, Paint::Slot(s) if changed(s));
@@ -385,7 +408,8 @@ impl DamageScan {
         let mut state = State::default();
         let mut path = PathBounds::EMPTY;
         let mut area = Bounds::EMPTY;
-        for op in ops {
+        for (index, op) in ops.iter().enumerate() {
+            let all = index >= first;
             // What the operation paints, if it reads a changed value.
             let painted: Option<Bounds> = match op {
                 CanvasOp::Save => {
@@ -435,11 +459,12 @@ impl DamageScan {
                 }
                 CanvasOp::Fill(p, _) => {
                     let (bounds, d) = shape(p.as_deref(), &path, &state, &n, &path_dep);
-                    (d || state.alpha_dep || state.fill_dep).then_some(bounds)
+                    (all || d || state.alpha_dep || state.fill_dep).then_some(bounds)
                 }
                 CanvasOp::Stroke(p) => {
                     let (bounds, d) = shape(p.as_deref(), &path, &state, &n, &path_dep);
-                    (d || state.alpha_dep
+                    (all || d
+                        || state.alpha_dep
                         || state.stroke_dep
                         || state.line_width_dep
                         || state.dash_dep)
@@ -454,13 +479,15 @@ impl DamageScan {
                 }
                 CanvasOp::FillRect(r) | CanvasOp::ClearRect(r) => {
                     let fill = matches!(op, CanvasOp::FillRect(_));
-                    let d = r.iter().any(dep)
+                    let d = all
+                        || r.iter().any(dep)
                         || state.ctm_dep
                         || (fill && (state.alpha_dep || state.fill_dep));
                     d.then(|| rect(&state.ctm, r.map(n)))
                 }
                 CanvasOp::StrokeRect(r) => {
-                    let d = r.iter().any(dep)
+                    let d = all
+                        || r.iter().any(dep)
                         || state.ctm_dep
                         || state.alpha_dep
                         || state.stroke_dep
@@ -542,7 +569,8 @@ impl DamageScan {
                     max_width,
                 } => {
                     let fill = matches!(op, CanvasOp::FillText { .. });
-                    let d = dep(x)
+                    let d = all
+                        || dep(x)
                         || dep(y)
                         || state.ctm_dep
                         || state.alpha_dep
@@ -561,7 +589,7 @@ impl DamageScan {
                     })
                 }
                 CanvasOp::DrawImage { dest, .. } => {
-                    let d = dest.iter().any(dep) || state.ctm_dep || state.alpha_dep;
+                    let d = all || dest.iter().any(dep) || state.ctm_dep || state.alpha_dep;
                     if d {
                         let [x, y, w, h] = dest.map(n);
                         if w.is_nan() || h.is_nan() {
@@ -971,6 +999,32 @@ mod tests {
         assert_eq!(scan(&ops, f32::NAN, 0.0), Damage::All);
         assert_eq!(Damage::None.union(Damage::All), Damage::All);
         assert_eq!(scan(&[], 0.0, 0.0), Damage::None);
+    }
+
+    #[test]
+    fn suffix_bounds_include_constant_paints_and_prefix_state() {
+        let ops = vec![
+            CanvasOp::FillRect([c(500.0), c(500.0), c(20.0), c(20.0)]),
+            CanvasOp::Translate(c(10.0), c(20.0)),
+            CanvasOp::Save,
+            CanvasOp::FillRect([S0, c(0.0), c(10.0), c(10.0)]),
+            CanvasOp::Restore,
+            CanvasOp::FillRect([c(20.0), c(0.0), c(5.0), c(5.0)]),
+        ];
+        let mut scan = DamageScan::default();
+        assert_eq!(
+            scan.painted_after(&ops, 3, |_| 0.0),
+            r(8.0, 18.0, 29.0, 14.0)
+        );
+        assert_eq!(scan.painted_after(&ops, ops.len(), |_| 0.0), Damage::None);
+        let unsafe_ops = vec![
+            CanvasOp::Composite(Composite::Copy),
+            CanvasOp::Save,
+            CanvasOp::Composite(Composite::SourceOver),
+            CanvasOp::Restore,
+            CanvasOp::FillRect([c(0.0), c(0.0), c(10.0), c(10.0)]),
+        ];
+        assert_eq!(scan.painted_after(&unsafe_ops, 2, |_| 0.0), Damage::All);
     }
 
     #[test]

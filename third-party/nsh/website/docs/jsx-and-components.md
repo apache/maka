@@ -38,7 +38,7 @@ In Rust, styles are typed methods named as Tailwind's utilities are (`.px_4()`, 
 listeners are methods too (`.on_press(..)`); platform-only settings have methods of their own. In TSX, props keep
 their camelCase names (`onPress`, `allowFontScaling`, `backgroundColor`); every element accepts `style`, `class` /
 `classList` ([Tailwind](./tailwind.md)), `ref`, touch handlers, accessibility props and `testID`, and platform-only
-props go in `ios={{…}}` and `android={{…}}`, where only the current platform's object is sent:
+props go in `ios={{…}}`, `android={{…}}`, `macos={{…}}`, `desktop={{…}}` or `web={{…}}`, where only the current platform's object is sent:
 
 ```rust tabs
 view()

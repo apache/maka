@@ -1,10 +1,11 @@
 import { mount, signal, Text, View } from "nsh";
 import { Area, Bar, Grid, Line, Plot, PlotAxis } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, ui, sectionSurface, plotAxisText, plotBaseline, plotCrossLine, plotDotClass, plotGrid, plotHoverDot, plotReference, plotWash, seriesColor } from "./palette";
 
 // A price chart built from the plot's parts: the rows are the app's, the
-// look is the palette's (paint as styles: `stroke`, `fill`,
-// `strokeDasharray`). The y domain is the app's, and its axis labels the
+// look is the shared plot look's (paint as styles: `stroke`, `fill`,
+// `strokeDasharray`; `plotGrid`, `plotCrossLine`, `plotHoverDot`, the
+// series' `seriesColor`). The y domain is the app's, and its axis labels the
 // grid's values; the axes lay their labels along the plot's edges. The row
 // under the pointer drives the value in the header, and the plot's cross
 // line, dot and tooltip follow it natively. Grid lines
@@ -95,7 +96,7 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
   const tip = { topLeft: 3, topRight: 3 };
   const labelStyle = () => ({ fontSize: 11, paddingBottom: 3, color: ui().muted, fontVariant: ["tabular-nums" as const] });
   return (
-    <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+    <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
       <View class="flex-row items-baseline gap-3">
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>Sales</Text>
@@ -104,8 +105,8 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
         <Text style={{ fontSize: 20, fontWeight: "600", color: ui().text, ...num }}>{`${total(shown())}k`}</Text>
       </View>
       <View class="flex-row gap-4">
-        <Key color={ui().info} label="Online" value={`${shown().online}k`} />
-        <Key color={ui().violet} label="In store" value={`${shown().store}k`} />
+        <Key color={seriesColor(0)} label="Online" value={`${shown().online}k`} />
+        <Key color={seriesColor(1)} label="In store" value={`${shown().store}k`} />
       </View>
       <View>
         <Plot
@@ -119,16 +120,15 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
           appearGeneration={stacked() ? 1 : 0}
           motion={{ appear: { duration: 600, easing: "easeOut" }, enter: { duration: 150 }, exit: { duration: 180 }, pointer: { stiffness: 320, damping: 32 } }}
           // The month under the pointer: a faint band over its bars.
-          crossLineClass="w-full h-full"
-          crossLineStyle={{ backgroundColor: tint(ui().text, 0.05) }}
+          {...plotCrossLine({ band: true })}
           onHoverChange={({ index }) => {
             hovered.set(index);
             props.onHover(index);
           }}
           style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
         >
-          <Grid y={[40, 80, 120]} style={{ stroke: tint(ui().text, 0.08) }} />
-          <Grid y={[0]} style={{ stroke: tint(ui().text, 0.2) }} />
+          <Grid y={[40, 80, 120]} style={plotGrid()} />
+          <Grid y={[0]} style={plotBaseline()} />
           <Bar
             value="online"
             stack={stacked() ? "sales" : undefined}
@@ -137,7 +137,7 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
             inactiveOpacity={0.45}
             label={stacked() ? undefined : "online"}
             labelStyle={labelStyle()}
-            style={{ fill: ui().info }}
+            style={{ fill: seriesColor(0) }}
           />
           <Bar
             value="store"
@@ -148,15 +148,15 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
             // Stacked, the top bar's label is the month's total.
             label={stacked() ? (d: Sale) => String(total(d)) : "store"}
             labelStyle={labelStyle()}
-            style={{ fill: ui().violet }}
+            style={{ fill: seriesColor(1) }}
           />
           {/* The grid's values right of the plot, a month centered under each band. */}
           <PlotAxis
             placement="right"
             tickValues={[0, 40, 80, 120]}
-            labelStyle={{ width: 36, paddingLeft: 8, textAlign: "right", fontSize: 11, color: ui().muted, ...num }}
+            labelStyle={{ ...plotAxisText(), width: 36, paddingLeft: 8, textAlign: "right" }}
           />
-          <PlotAxis format={(i) => SALES[i].month} labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }} />
+          <PlotAxis format={(i) => SALES[i].month} labelStyle={{ ...plotAxisText(), lineHeight: 14, paddingTop: 12 }} />
         </Plot>
       </View>
     </View>
@@ -241,7 +241,7 @@ function App() {
             />
           }
         >
-          <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+          <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
             <View class="flex-row items-baseline gap-3">
               <View style={{ flex: 1, gap: 2 }}>
                 <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>NSH Labs</Text>
@@ -268,9 +268,8 @@ function App() {
                 // hover fades and glides; reduced motion shows it all at once.
                 appearGeneration={["1D", "1W", "1M"].indexOf(range())}
                 motion={{ appear: { duration: 700, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 300, damping: 30 } }}
-                crossLineClass="w-px h-full"
-                crossLineStyle={{ backgroundColor: ui().muted }}
-                dotClass="size-2.5 rounded-full border-2"
+                {...plotCrossLine()}
+                dotClass={plotDotClass}
                 // The time of the row, at the foot of the cross line, kept
                 // within the plot's width.
                 tooltipOffset={height + 9}
@@ -287,32 +286,32 @@ function App() {
                 }}
                 style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
               >
-                <Grid y={[(lo() + hi()) / 2, hi()]} style={{ stroke: tint(ui().text, 0.08) }} />
+                <Grid y={[(lo() + hi()) / 2, hi()]} style={plotGrid()} />
                 {/* A wash that fades out toward the baseline; the line has the dot. */}
                 <Area
                   curve={curve()}
-                  backgroundStyle={{ backgroundImage: `linear-gradient(to bottom, ${tint(color(), 0.16)}, ${tint(color(), 0)})` }}
+                  backgroundStyle={plotWash(color(), 0.16)}
                   hoverDotClass="hidden"
                 />
-                <Grid y={[lo()]} style={{ stroke: tint(ui().text, 0.2) }} />
-                <Grid y={[open()]} style={{ stroke: ui().faint, strokeDasharray: "3 3" }} />
-                {/* Its dot in its color, ringed in the card's: it cuts out of the line. */}
+                <Grid y={[lo()]} style={plotBaseline()} />
+                <Grid y={[open()]} style={plotReference()} />
+                {/* Its dot in its color, ringed: it cuts out of the line. */}
                 <Line
                   curve={curve()}
                   style={{ stroke: color(), strokeWidth: 2 }}
-                  hoverDotStyle={{ backgroundColor: color(), borderColor: ui().card.backgroundColor }}
+                  hoverDotStyle={plotHoverDot(color())}
                 />
                 {/* The grid's values right of the plot, the range's times under it. */}
                 <PlotAxis
                   placement="right"
                   tickValues={[lo(), (lo() + hi()) / 2, hi()]}
                   format={label}
-                  labelStyle={{ fontSize: 11, paddingLeft: 8, color: ui().muted, ...num }}
+                  labelStyle={{ ...plotAxisText(), paddingLeft: 8 }}
                 />
                 <PlotAxis
                   ticks={RANGES[range()].ticks.length}
                   format={(_, i) => RANGES[range()].ticks[i]}
-                  labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }}
+                  labelStyle={{ ...plotAxisText(), lineHeight: 14, paddingTop: 12 }}
                 />
               </Plot>
             </View>

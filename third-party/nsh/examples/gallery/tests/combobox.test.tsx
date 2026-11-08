@@ -98,7 +98,7 @@ describe("on a phone", () => {
     expect(app.texts()).toContain("Nothing run yet");
     await app.press("id:command-toggle");
     await app.waitFor("role:option[New file]");
-    expect(app.texts()).toContain("APPEARANCE");
+    expect(app.texts()).toContain("Appearance");
     expect(app.enabled("role:option[Reset zoom]")).toBe(false);
     await app.type("role:combobox[Command]", "term");
     await app.waitUntil(() => app.count("role:option") === 1);

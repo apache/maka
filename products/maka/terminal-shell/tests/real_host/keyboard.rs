@@ -21,7 +21,7 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_the_current_run() {
-    use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
+    use ratatui::style::Modifier;
 
     let mut fixture = Fixture::open().await;
     let client = fixture.client().await;
@@ -199,15 +199,8 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
     let result =
         support::wait_enabled_button(&mut view, "Open matching passage in NSH real Agent").await;
     wait_view(&mut view, |screen| screen.contains("RECALL_TAIL_")).await;
-    let viewport = view.surface().viewport();
-    let area = Rect::new(
-        0,
-        0,
-        (viewport.width.0 / 8.0) as u16,
-        (viewport.height.0 / 16.0) as u16,
-    );
-    let mut buffer = Buffer::empty(area);
-    view.render(area, &mut buffer);
+    let buffer = view.buffer();
+    let area = buffer.area;
     let left = (result.frame.origin.x.0 / 8.0).floor().max(0.0) as u16;
     let right = ((result.frame.origin.x.0 + result.frame.size.width.0) / 8.0)
         .ceil()
@@ -233,7 +226,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
             .contains(Modifier::BOLD)),
         "the actual matching excerpt must retain its native span highlight"
     );
-    shortcut(&mut view, 'a');
+    select_all_input(&mut view);
     view.handle_event(Event::Paste("RECALL_NO_CONVERSATION_MATCH".into()));
     view.control().unwrap().dispatch_event(
         result.id,
@@ -245,7 +238,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
     })
     .await;
     wait_focused_input(&mut view, "Search conversation history").await;
-    shortcut(&mut view, 'a');
+    select_all_input(&mut view);
     view.handle_event(Event::Paste(RECALL_QUERY.into()));
     support::click_button(&mut view, "Open matching passage in NSH real Agent").await;
     wait_view_state(&mut view, |view, screen| {
@@ -285,25 +278,28 @@ async fn model_and_source_search_preserves_focus_and_keyboard_selection() {
     )));
     support::tick(&mut view);
     assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
+        view.input_context().unwrap().text.as_deref(),
         Some("no-such-model")
     );
-    shortcut(&mut view, 'a');
+    select_all_input(&mut view);
     view.handle_event(Event::Paste("NSH fixture".into()));
+    commit_native_events(&mut view).await;
     support::wait_enabled_button(&mut view, "Use fixture-model · NSH fixture").await;
     support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
     wait_focused_input(&mut view, "Search models and sources").await;
     assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
+        view.input_context().unwrap().text.as_deref(),
         Some("NSH fixture")
     );
-    shortcut(&mut view, 'a');
+    select_all_input(&mut view);
     view.handle_event(Event::Paste("fixture-model-alt".into()));
+    commit_native_events(&mut view).await;
     // The editor shows pasted text before asynchronous model results arrive.
+    wait_view(&mut view, |screen| screen.contains("1 model")).await;
     support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
     wait_focused_input(&mut view, "Search models and sources").await;
     assert_eq!(
-        view.surface().input_context().unwrap().text.as_deref(),
+        view.input_context().unwrap().text.as_deref(),
         Some("fixture-model-alt")
     );
     view.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));

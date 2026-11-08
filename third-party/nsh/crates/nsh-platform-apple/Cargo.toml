@@ -1,0 +1,29 @@
+[package]
+name = "nsh-platform-apple"
+description = "Code shared by the macOS and iOS backends: sound playback, the Speech recognizer, the notification center and the URL schemes web views serve from the app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# Empty off Apple platforms (like the platform crates off their targets).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+libc.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+nsh-engine.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit.workspace = true

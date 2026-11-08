@@ -150,9 +150,18 @@ thread_local! {
 
 /// Exports one `nsh_part_<name>` per part of `nsh/base`: the page calls
 /// those of the parts its app uses, and a runtime linked for the app keeps
-/// only the parts it exports.
+/// only the parts it exports. The list must name every part of
+/// [`nsh_base::parts::ALL`] (checked at compile time): a part without its
+/// gate is never registered, and an app importing one of its exports fails
+/// to link ("does not provide an export named …").
 macro_rules! base_parts {
-    ($($name:ident => $export:ident),* $(,)?) => {$(
+    ($($name:ident => $export:ident),* $(,)?) => {
+        #[cfg(feature = "base-full")]
+        const _: () = assert!(
+            covers_every_part(&[$(stringify!($name)),*]),
+            "base_parts! must list every part of nsh_base::parts::ALL",
+        );
+        $(
         /// Adds this part of `nsh/base` to the apps started from now on.
         #[cfg(feature = "base-full")]
         #[unsafe(no_mangle)]
@@ -165,11 +174,55 @@ macro_rules! base_parts {
                 }
             });
         }
-    )*};
+        )*
+    };
+}
+
+/// Whether `names` are exactly the parts of [`nsh_base::parts::ALL`].
+#[cfg(feature = "base-full")]
+const fn covers_every_part(names: &[&str]) -> bool {
+    const fn same(a: &str, b: &str) -> bool {
+        let (a, b) = (a.as_bytes(), b.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+    let all = nsh_base::parts::ALL;
+    if names.len() != all.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < all.len() {
+        let mut j = 0;
+        let mut found = false;
+        while j < names.len() {
+            found |= same(all[i].0, names[j]);
+            j += 1;
+        }
+        if !found {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 base_parts!(
     core => nsh_part_core,
+    menu => nsh_part_menu,
+    overlays => nsh_part_overlays,
+    select => nsh_part_select,
+    command => nsh_part_command,
+    combobox => nsh_part_combobox,
+    toast => nsh_part_toast,
     pickers => nsh_part_pickers,
     color_picker => nsh_part_color_picker,
     carousel => nsh_part_carousel,
@@ -184,6 +237,7 @@ base_parts!(
     dock => nsh_part_dock,
     resizable => nsh_part_resizable,
     plot => nsh_part_plot,
+    term => nsh_part_term,
 );
 
 /// Makes `TextView`'s formulas typeset: no app imports this. A published
@@ -202,6 +256,12 @@ fn base_set() -> Registry {
     use nsh_base::parts::{self, Part};
     nsh_base::registry_of([
         parts::core as Part,
+        parts::menu,
+        parts::overlays,
+        parts::select,
+        parts::command,
+        parts::combobox,
+        parts::toast,
         parts::pickers,
         parts::color_picker,
         parts::carousel,
@@ -410,7 +470,6 @@ fn environment(width: f32, height: f32, dark: bool, pixel_ratio: f32) -> Environ
 fn page() -> Environment {
     PAGE.with(Cell::get).unwrap_or(Environment {
         os: Os::Web,
-        renderer: nsh_engine::Renderer::Web,
         ..Environment::default()
     })
 }
@@ -453,6 +512,49 @@ pub unsafe extern "C" fn nsh_environment(ptr: *const u8, len: usize) -> f64 {
     {
         env.locale = locale;
     }
+    if let Some(languages) = value
+        .get("languages")
+        .and_then(|v| v.as_array())
+        .and_then(|tags| {
+            nsh_core::platform::Languages::parse(tags.iter().filter_map(|t| t.as_str()))
+        })
+    {
+        env.locale_settings.languages = languages;
+    }
+    if let Some(regional) = value.get("regional") {
+        // The region's preferences, with the browser's hour cycle and first
+        // day of the week where it has them.
+        let locale = regional.get("locale").and_then(|v| v.as_str());
+        let parsed =
+            nsh_core::platform::LocaleSettings::parse(locale.unwrap_or(env.locale.as_str()));
+        let preferences = &mut env.locale_settings;
+        preferences.hour_cycle = parsed.hour_cycle;
+        preferences.first_day_of_week = parsed.first_day_of_week;
+        preferences.measurement_system = parsed.measurement_system;
+        preferences.temperature_unit = parsed.temperature_unit;
+        if let Some(cycle) = regional
+            .get("hourCycle")
+            .and_then(|v| v.as_str())
+            .and_then(nsh_core::platform::HourCycle::parse)
+        {
+            preferences.hour_cycle = cycle;
+        }
+        if let Some(day) = regional
+            .get("firstDay")
+            .and_then(|v| v.as_u64())
+            .and_then(|d| u8::try_from(d).ok())
+            .and_then(nsh_core::platform::Weekday::from_number)
+        {
+            preferences.first_day_of_week = day;
+        }
+    }
+    if let Some(zone) = value
+        .get("timeZone")
+        .and_then(|v| v.as_str())
+        .and_then(nsh_core::platform::TimeZone::parse)
+    {
+        env.locale_settings.time_zone = zone;
+    }
     env.rtl = flag("rtl").unwrap_or(env.rtl);
     env.apple_keyboard = flag("appleKeyboard").unwrap_or(env.apple_keyboard);
     env.reduce_motion = flag("reduceMotion").unwrap_or(env.reduce_motion);
@@ -485,10 +587,13 @@ pub unsafe extern "C" fn nsh_environment(ptr: *const u8, len: usize) -> f64 {
         None => env.lifecycle,
     };
     env.screen_color = flag("screenColor").unwrap_or(env.screen_color);
+    env.notifications = flag("notifications").unwrap_or(env.notifications);
+    env.audio = flag("audio").unwrap_or(env.audio);
     PAGE.with(|p| p.set(Some(env)));
     send(|app| {
         let e = &mut app.environment;
         e.locale = env.locale;
+        e.locale_settings = env.locale_settings;
         e.rtl = env.rtl;
         e.apple_keyboard = env.apple_keyboard;
         e.reduce_motion = env.reduce_motion;
@@ -499,6 +604,8 @@ pub unsafe extern "C" fn nsh_environment(ptr: *const u8, len: usize) -> f64 {
         e.keyboard_height = env.keyboard_height;
         e.lifecycle = env.lifecycle;
         e.screen_color = env.screen_color;
+        e.notifications = env.notifications;
+        e.audio = env.audio;
         app.control.set_environment(app.environment);
         // The DOM draws emoji as wide as the pixel ratio makes them.
         if rescaled && app.text.emoji_measured() {
@@ -601,6 +708,8 @@ fn run(app: App, width: f32, height: f32, environment: Environment, limits: Limi
         host: Default::default(),
         picker: None,
         speech: None,
+        audio: None,
+        windows: None,
     };
     // A test session's app: the test's storage, network and trace.
     #[cfg(feature = "dev")]
@@ -868,9 +977,9 @@ fn flush() {
         request_frames();
         return;
     }
-    let retirements = APP.with(|a| {
+    APP.with(|a| {
         let mut app = a.borrow_mut();
-        let Some(app) = app.as_mut() else { return None };
+        let Some(app) = app.as_mut() else { return };
         let mut out = Out::new();
         for batch in &batches {
             for item in &batch.items {
@@ -905,37 +1014,11 @@ fn flush() {
         }
         // Bound properties follow the styles just applied.
         app.animation.outputs(&mut out);
-        let retired = if out.is_empty() {
-            Vec::new()
-        } else {
-            ffi::submit(&out.finish())
-        };
+        if !out.is_empty() {
+            ffi::submit(&out.finish());
+        }
         finish_animations(app);
-        Some((app.control.clone(), retired))
     });
-    if let Some((control, retirements)) = retirements {
-        let changed = !retirements.is_empty();
-        for retired in retirements {
-            control.set_focus_path(retired.focus);
-            for contact in retired.cancelled {
-                control.cancel_touch(contact);
-            }
-            for (id, states) in retired.states {
-                control.set_states(id, states);
-            }
-            control.retire_list_cell(
-                retired.id,
-                retired
-                    .request
-                    .parse()
-                    .expect("invalid DOM retirement request"),
-                retired.retired,
-            );
-        }
-        if changed {
-            ffi::request_pump();
-        }
-    }
     request_frames();
 }
 
@@ -993,7 +1076,8 @@ fn send(f: impl FnOnce(&mut Running)) -> f64 {
     pump()
 }
 
-/// A display frame (`requestAnimationFrame`, `now` in ms): ticks the
+/// A display frame (`requestAnimationFrame`, `now` in ms), or one the page
+/// runs at a deadline while frames stop ([`nsh_deadline`]): ticks the
 /// native animations and runs JS's frame callbacks. Returns the pump
 /// delay.
 #[unsafe(no_mangle)]
@@ -1007,7 +1091,7 @@ pub extern "C" fn nsh_frame(now: f64) -> f64 {
             let mut out = Out::new();
             app.animation.outputs(&mut out);
             if !out.is_empty() {
-                let _ = ffi::submit(&out.finish());
+                ffi::submit(&out.finish());
             }
             finish_animations(app);
         }
@@ -1016,6 +1100,21 @@ pub extern "C" fn nsh_frame(now: f64) -> f64 {
         }
     });
     pump()
+}
+
+/// When the native animations next have something to end that the app
+/// hears of (an animation's `finished`): a time in ms on [`nsh_frame`]'s
+/// clock, given the time `now` on it, or -1 for nothing (none runs, or
+/// only ones that loop forever). While animation frames stop (a hidden
+/// tab), the page runs an [`nsh_frame`] by then (`Player.keepDeadline`).
+#[unsafe(no_mangle)]
+pub extern "C" fn nsh_deadline(now: f64) -> f64 {
+    let at = APP.with(|a| {
+        let app = a.borrow();
+        // The animation graph's clock is in seconds.
+        app.as_ref()?.animation.deadline(now / 1000.0)
+    });
+    at.map_or(-1.0, |at| at * 1000.0)
 }
 
 /// An event on view `id`, named by its prop (`onPress`), with its payload
@@ -1262,8 +1361,9 @@ fn key_of(code: u32) -> Option<Key> {
 /// it, `modifiers` bits 1 Ctrl, 2 Alt, 4 Shift, 8 Meta (Command, the
 /// Windows key), `editing` when a text field has the focus, `repeat` for
 /// an auto-repeat. Returns the binding that fires, -1 for none (the key
-/// goes on) or -2 for a held key's repeat (consumed, nothing fires). JS
-/// reports a firing binding with [`nsh_key_command`].
+/// goes on), -2 for a held key's repeat (consumed, nothing fires) or
+/// `-3 - id` for binding `id` passing the key through (it fires, then the
+/// key goes on). JS reports a firing binding with [`nsh_key_command`].
 ///
 /// `f64` keeps every `u32` binding ID positive in JS, including Rust
 /// shortcuts (`1 << 31` and up) and overlay Escape (`u32::MAX`), while
@@ -1289,6 +1389,7 @@ pub extern "C" fn nsh_key(key: u32, modifiers: u32, editing: u32, repeat: u32) -
         KeyMatch::None => -1.0,
         KeyMatch::Held => -2.0,
         KeyMatch::Fire(id) => id as f64,
+        KeyMatch::Notify(id) => -3.0 - id as f64,
     }
 }
 
@@ -1314,7 +1415,7 @@ pub extern "C" fn nsh_scroll(id: u32, x: f32, y: f32, applied: u32) -> f64 {
             let mut out = Out::new();
             app.animation.outputs(&mut out);
             if !out.is_empty() {
-                let _ = ffi::submit(&out.finish());
+                ffi::submit(&out.finish());
             }
         }
         app.control.scroll(id, point(px(x), px(y)), applied);
@@ -1384,7 +1485,7 @@ pub extern "C" fn nsh_pan(id: u32, phase: u32, tx: f32, ty: f32, vx: f32, vy: f3
         let mut out = Out::new();
         app.animation.outputs(&mut out);
         if !out.is_empty() {
-            let _ = ffi::submit(&out.finish());
+            ffi::submit(&out.finish());
         }
         let (value_x, value_y) = app.animation.pan_values(id);
         let payload = if phase == 3 {
@@ -1426,7 +1527,7 @@ pub extern "C" fn nsh_transform_gesture(id: u32, rotation: u32, phase: u32, amou
         let mut out = Out::new();
         app.animation.outputs(&mut out);
         if !out.is_empty() {
-            let _ = ffi::submit(&out.finish());
+            ffi::submit(&out.finish());
         }
         let key = if rotation { "rotation" } else { "scale" };
         let payload = EventPayload::Map(vec![

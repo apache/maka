@@ -13,6 +13,7 @@ import android.graphics.drawable.Drawable;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.Toolbar;
@@ -30,6 +31,16 @@ final class StackBox extends FrameLayout implements Node {
     final Mounter mounter;
     final int id;
     final Decor decor = new Decor();
+
+    /** An outer box shadow draws outside the bounds, and compositing the
+     * view at alpha < 1 into the bounds-clipped offscreen buffer would cut
+     * it; such a view reports no overlapping rendering, so the alpha
+     * applies per draw op and the shadow fades with the content. */
+    @Override
+    public boolean hasOverlappingRendering() {
+        return !decor.hasOuterShadows();
+    }
+
     /** The app's screens, bottom to top. */
     final List<Integer> screens = new ArrayList<>();
     /** Screens the user popped natively, until the app removes them. */
@@ -70,7 +81,7 @@ final class StackBox extends FrameLayout implements Node {
         for (int s : screens) {
             if (popped.contains(s)) continue;
             View v = mounter.views.get(s);
-            if (v instanceof ScreenBox && !((ScreenBox) v).parked) desired.add((ScreenBox) v);
+            if (v instanceof ScreenBox) desired.add((ScreenBox) v);
         }
         if (desired.equals(shown)) return;
         // A change through a shader still running ends first: its screens
@@ -105,21 +116,6 @@ final class StackBox extends FrameLayout implements Node {
             return;
         }
         animate(pushing ? oldTop : newTop, pushing ? newTop : oldTop, pushing, animation == 1, 0, leaving);
-    }
-
-    /** Retirement parks an SDK screen until its own projection returns. */
-    void park(ScreenBox screen) {
-        finishNav();
-        if (transition != null) {
-            transition.removeAllListeners();
-            transition.cancel();
-            transition = null;
-        }
-        backProgress = -1;
-        screen.parked = true;
-        shown.remove(screen);
-        removeView(screen);
-        settle(new ArrayList<>());
     }
 
     /**
@@ -259,13 +255,33 @@ final class StackBox extends FrameLayout implements Node {
     /** Whether the back button pops a screen of this stack. */
     boolean canPop() {
         ScreenBox top = top();
-        return shown.size() > 1 && top != null && !top.preventBack && isShown();
+        return shown.size() > 1 && top != null && !top.preventBack && showsForBack();
     }
 
     /** Whether the top screen keeps the user (`popOnBack` false): back only tells JS. */
     boolean preventsBack() {
         ScreenBox top = top();
-        return top != null && top.preventBack && isShown();
+        return top != null && top.preventBack && showsForBack();
+    }
+
+    /**
+     * Whether going back may act on this stack: shown, and it and every
+     * view of the app around it laid out with a size
+     * (`nsh_core::navigation::shown_in_layout`: `display: none`, a tab not
+     * selected, is laid out at no size, which `isShown` does not see). The
+     * frames are the core's (`Box.Frame`), set when a batch lands: a screen
+     * just added has not been measured yet, and the views the platform
+     * places between (screens, a scroll view's content) have none.
+     */
+    private boolean showsForBack() {
+        if (!isShown()) return false;
+        for (ViewParent p = this; p instanceof View && !(p instanceof NshView); p = p.getParent()) {
+            if (((View) p).getLayoutParams() instanceof Box.Frame) {
+                Box.Frame f = (Box.Frame) ((View) p).getLayoutParams();
+                if (f.right <= f.left || f.bottom <= f.top) return false;
+            }
+        }
+        return true;
     }
 
     /** Whether a back gesture may drag the top screen away (`popOnSwipe`). */
@@ -281,7 +297,7 @@ final class StackBox extends FrameLayout implements Node {
      */
     void back() {
         ScreenBox top = top();
-        if (top == null || !isShown()) return;
+        if (top == null || !showsForBack()) return;
         if (mounter.wants(top.id, Native.BACK_REQUEST)) mounter.event(top.id, Native.BACK_REQUEST);
         if (!top.preventBack) pop();
     }
@@ -359,7 +375,6 @@ final class StackBox extends FrameLayout implements Node {
         boolean gestureEnabled = true;
         /** `popOnBack` false: the back buttons only send `onBackPress`. */
         boolean preventBack;
-        boolean parked;
         private final BackArrow arrow;
 
         ScreenBox(Context context, Mounter mounter, int id) {
@@ -448,7 +463,6 @@ final class StackBox extends FrameLayout implements Node {
 
         private void add(Mounter m, int itemId, int gravity) {
             if (itemId < 0) return;
-            if (!m.headerMounted(itemId, id)) return;
             View item = m.views.get(itemId);
             if (item == null) return;
             if (item.getParent() instanceof ViewGroup) ((ViewGroup) item.getParent()).removeView(item);

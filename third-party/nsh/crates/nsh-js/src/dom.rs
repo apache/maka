@@ -100,7 +100,7 @@ struct NodeData {
     /// The children in order (owned objects).
     children: Vec<JsValue>,
     /// Event handlers (owned).
-    handlers: Vec<Handler>,
+    handlers: Vec<(EventKind, JsValue)>,
     /// Touch and responder handlers, by `touch::TOUCH_PROPS` index (owned).
     touch: Vec<(u8, JsValue)>,
     /// Has a `panActivation`: becomes the responder when the platform
@@ -122,11 +122,6 @@ struct NodeData {
     /// The owner it was made under (`reactive::owner_handle`): its
     /// listeners' failures go to that owner's error boundary.
     owner: (u32, u32),
-}
-
-struct Handler {
-    event: EventKind,
-    value: JsValue,
 }
 
 /// The renderer of `cx`.
@@ -358,16 +353,6 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         decl!("Inputs: selects `start..end` (UTF-16 units; a caret without `end`)."),
     ),
     (
-        "replaceRange",
-        1,
-        decl!(
-            "(edit: { start: number; end: number; text: string; expectedText: string; expectedSelection: { start: number; end: number } }): void"
-        ),
-        decl!(
-            "Inputs: atomically replaces a UTF-16 range as one undoable edit while the observed text and selection still match. GPUI and terminal backends."
-        ),
-    ),
-    (
         "command",
         2,
         decl!("(name: string, args?: unknown): void"),
@@ -402,7 +387,7 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
             "(options: { index: number; animated?: boolean; automatic?: boolean; viewPosition?: number; viewOffset?: number }): void"
         ),
         decl!(
-            "`List`: scrolls item `index` into view. `viewPosition` places it: 0 at the start of the viewport (default), 0.5 in the middle, 1 at the end; `viewOffset` shifts it further. Resolved natively with the current (measured or estimated) item sizes. On GPUI and terminal backends, `automatic` retains only the latest target while native hover or keyboard focus is within the list, and resumes when idle."
+            "`List`: scrolls item `index` into view. `viewPosition` places it: 0 at the start of the viewport (default), 0.5 in the middle, 1 at the end; `viewOffset` shifts it further. Resolved natively with the current (measured or estimated) item sizes. On terminal backends, `automatic` retains only the latest target while native hover or keyboard focus is within the list, and resumes when idle."
         ),
     ),
     (
@@ -463,6 +448,14 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         ),
         decl!(
             "`WebView`: gives the page input as the user's own, so its events are trusted (`isTrusted`), which `injectJavaScript` cannot do: a click at a point of the viewport in CSS pixels (as `getBoundingClientRect()` reports), text typed into what has the page's focus, or a key. A click's events can still be on their way when the next call starts: let it settle (a frame or so) before typing after it. It takes the keyboard focus for the web view. Needs `\"webview\": { \"input\": true }` in `nsh.json`'s capabilities, also when the app declares none. macOS only for now; elsewhere it does nothing (`WebView.inputAvailable()` tells)."
+        ),
+    ),
+    (
+        "load",
+        1,
+        decl!("(options: { src: string; headers?: Record<string, string> }): void"),
+        decl!(
+            "`WebView`: loads `src`, sending `headers` with the page's own request only, not with its images, scripts or other subresources, its later navigations or reloads; e.g. `Authorization` for a signed-in page, without putting the token in the URL. The page then shows as with `src` (a later change of the `src` prop loads that instead). Its host must be one `webview.hosts` allows, else nothing loads. A header whose name is not an HTTP token or whose value holds a line break throws. Header values are not logged. macOS, iOS, Android, Windows, Linux and the GPUI backend send them; the browser backend has no way to and does nothing."
         ),
     ),
     (
@@ -700,6 +693,11 @@ pub(crate) fn merge_values(cx: *mut JsContext, values: &mut [JsValue]) -> JsValu
     unsafe { merge(cx, UNDEFINED, values.len() as c_int, values.as_mut_ptr()) }
 }
 
+/// The surface's root node (borrowed).
+pub(crate) fn root_value(cx: *mut JsContext) -> JsValue {
+    dom(cx).root.get()
+}
+
 /// Queues `op` (for the components' glue).
 pub(crate) fn push_op(cx: *mut JsContext, op: Op) -> Result<(), JsValue> {
     dom(cx).push(cx, op)
@@ -875,12 +873,12 @@ unsafe extern "C" fn node_finalize(rt: *mut qjs::JSRuntime, obj: JsValue) {
             && let Some(i) = data
                 .handlers
                 .iter()
-                .position(|h| h.event == EventKind::Dismiss)
+                .position(|&(e, _)| e == EventKind::Dismiss)
         {
-            let handler = data.handlers.swap_remove(i);
+            let (_, handler) = data.handlers.swap_remove(i);
             let oldest = {
                 let mut dismissed = d.dismissed.borrow_mut();
-                dismissed.push((data.id, handler.value));
+                dismissed.push((data.id, handler));
                 (dismissed.len() > MAX_DISMISSED).then(|| dismissed.remove(0).1)
             };
             if let Some(v) = oldest {
@@ -896,7 +894,7 @@ unsafe extern "C" fn node_finalize(rt: *mut qjs::JSRuntime, obj: JsValue) {
     for v in data
         .handlers
         .into_iter()
-        .map(|h| h.value)
+        .map(|(_, v)| v)
         .chain(data.touch.into_iter().map(|(_, v)| v))
         .chain(data.retained.into_iter().map(|(_, v)| v))
     {
@@ -915,8 +913,8 @@ unsafe extern "C" fn node_mark(rt: *mut qjs::JSRuntime, obj: JsValue, mark: qjs:
     for &v in &data.children {
         unsafe { qjs::JS_MarkValue(rt, v, mark) };
     }
-    for handler in &data.handlers {
-        unsafe { qjs::JS_MarkValue(rt, handler.value, mark) };
+    for &(_, v) in &data.handlers {
+        unsafe { qjs::JS_MarkValue(rt, v, mark) };
     }
     for v in data
         .touch
@@ -1261,7 +1259,7 @@ fn set_prop(
         }
         // SAFETY: live node data.
         "component" | "componentSlot" => unsafe { (*p).places = true },
-        "ios" | "android" | "desktop" | "web" => {
+        "ios" | "android" | "macos" | "desktop" | "web" => {
             return platform_props(cx, node, name, value, prev);
         }
         "contentStyle" | "contentClass" if unsafe { (*p).tag } == Some(Tag::Scroll) => {
@@ -1395,22 +1393,20 @@ fn set_event(
 ) -> Result<(), JsValue> {
     // SAFETY: live node data; an inline check, then a dup the node owns.
     let id = unsafe { (*p).id };
+    let handler =
+        unsafe { qjs::JS_IsFunction(cx, value) }.then(|| unsafe { qjs::JS_DupValue(cx, value) });
     let handlers = unsafe { &mut (*p).handlers };
-    let at = handlers.iter().position(|h| h.event == event);
-    let handler = unsafe { qjs::JS_IsFunction(cx, value) }.then(|| Handler {
-        event,
-        value: unsafe { qjs::JS_DupValue(cx, value) },
-    });
-    let now = handler.is_some();
+    let at = handlers.iter().position(|&(e, _)| e == event);
     let (was, old) = match (at, handler) {
-        (Some(i), Some(h)) => (true, Some(std::mem::replace(&mut handlers[i], h))),
-        (Some(i), None) => (true, Some(handlers.remove(i))),
+        (Some(i), Some(h)) => (true, Some(std::mem::replace(&mut handlers[i].1, h))),
+        (Some(i), None) => (true, Some(handlers.remove(i).1)),
         (None, Some(h)) => {
-            handlers.push(h);
+            handlers.push((event, h));
             (false, None)
         }
         (None, None) => (false, None),
     };
+    let now = handler.is_some();
     let pushed = if was != now {
         dom(cx).push(
             cx,
@@ -1424,7 +1420,7 @@ fn set_event(
         Ok(())
     };
     if let Some(old) = old {
-        unsafe { qjs::JS_FreeValue(cx, old.value) };
+        unsafe { qjs::JS_FreeValue(cx, old) };
     }
     pushed
 }
@@ -1508,9 +1504,10 @@ pub(crate) fn is_ancestor_of(cx: *mut JsContext, node: NodeId, of: NodeId) -> bo
     is_ancestor(cx, node, of)
 }
 
-/// `ios={{…}}` / `android={{…}}` / `web={{…}}` / `desktop={{…}}`: the
-/// props of this platform only, each set (or cleared) on its own. Desktop
-/// props apply on the desktop OSes and in desktop-class browsers.
+/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `web={{…}}` /
+/// `desktop={{…}}`: the props of this platform only, each set (or cleared)
+/// on its own. Desktop props apply on the desktop OSes and in
+/// desktop-class browsers.
 fn platform_props(
     cx: *mut JsContext,
     node: JsValue,
@@ -3121,10 +3118,10 @@ unsafe extern "C" fn setup(
     {
         crate::env::take_theme(cx, &json);
     }
-    // Checked by the bundler; a hand-made bundle's wrong value is ignored.
+    // What this runtime cannot read (a newer NSH's) is left out.
     let status_bar = string_arg(cx, arg(argc, argv, 3))
         .and_then(|json| serde_json::from_str(&json).ok())
-        .and_then(|v| nsh_core::StatusBarSetting::from_json(&v).ok());
+        .map(|v| nsh_core::StatusBarSetting::from_json(&v));
     if let Some(setting) = status_bar
         && let Err(e) = push_op(
             cx,
@@ -3162,8 +3159,8 @@ pub(crate) fn handler(cx: *mut JsContext, id: NodeId, event: EventKind) -> Optio
     // SAFETY: live node data; a dup of the handler.
     unsafe { &(*p).handlers }
         .iter()
-        .find(|h| h.event == event)
-        .map(|h| unsafe { qjs::JS_DupValue(cx, h.value) })
+        .find(|&&(e, _)| e == event)
+        .map(|&(_, h)| unsafe { qjs::JS_DupValue(cx, h) })
 }
 
 // --- The primitives as components -----------------------------------------------------
@@ -3561,6 +3558,11 @@ pub(crate) const RT_EXPORTS: &[crate::modules::Item] = &[
     ("merge", Export::Function(merge, 2), Ts::Internal),
     ("list", Export::Function(crate::list::list, 1), Ts::Internal),
     ("setup", Export::Function(setup, 4), Ts::Internal),
+    (
+        "i18n",
+        Export::Function(crate::i18n::setup, 1),
+        Ts::Internal,
+    ),
     ("font", Export::Function(font, 2), Ts::Internal),
     ("assetUrl", Export::Function(asset_url, 2), Ts::Internal),
     ("metaUrl", Export::Function(meta_url, 1), Ts::Internal),
@@ -3730,6 +3732,33 @@ mod tests {
             [
                 r#"["effect 2 1","cleanup","effect 4 2","cleanup","effect 6 3","cleanup","effect 8 4","function","function",true,false]"#
             ]
+        );
+    }
+
+    #[test]
+    fn a_signals_methods_passed_on_their_own_write_it() {
+        let host = Host::new().unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+            import {{ signal }} from "nsh";
+            const n = signal(1);
+            const other = signal(0);
+            const {{ set, update }} = n;
+            [5].forEach(n.set);
+            const first = n();
+            update((x) => x + 1);
+            const second = n();
+            set.call(other, 9);
+            const proto = Object.getPrototypeOf(n);
+            let thrown = "";
+            try {{ Reflect.get(proto, "set", proto)(1); }} catch (e) {{ thrown = e.message; }}
+            report([first, second, n(), other(), n.set === n.set, n.set === other.set, n.set.name, thrown]);
+            "#
+        ))
+        .unwrap();
+        assert_eq!(
+            reported(&host),
+            [r#"[5,6,9,0,true,false,"set","not a live signal"]"#]
         );
     }
 
@@ -4343,7 +4372,6 @@ mod tests {
             const i = element("input");
             i.focus();
             i.setSelection(2);
-            i.replaceRange({ start: 0, end: 2, text: "😀\nskill", expectedText: "ab", expectedSelection: { start: 2, end: 2 } });
             // A view that takes presses: the platforms move the keyboard
             // focus to it, as Tab does.
             const v = element("view");
@@ -4365,7 +4393,6 @@ mod tests {
                 "Command { id: 2, command: ScrollToIndex { index: 7, animated: false, automatic: true, view_position: 50%, view_offset: 0pt } }",
                 "Command { id: 4, command: Focus }",
                 "Command { id: 4, command: SetSelection { start: 2, end: 2 } }",
-                r#"Command { id: 4, command: ReplaceRange { range: 0..2, text: "😀\nskill", expected_text: "ab", expected_selection: 2..2, count: 0 } }"#,
                 "Command { id: 6, command: Focus }",
                 "Command { id: 6, command: Blur }",
             ]

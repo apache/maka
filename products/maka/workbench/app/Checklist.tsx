@@ -72,7 +72,7 @@ export function createChecklist(
           />
         }
       >
-        {platform.isTerminal ? (
+        {platform.idiom === 'terminal' ? (
           <Icon name="activity" color={C.accent} />
         ) : (
           <ChecklistProgress

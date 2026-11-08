@@ -1,8 +1,0 @@
-{
-  "name": "Operations Workbench",
-  "id": "com.longbridge.nsh.terminal-workbench",
-  "version": "1.0.0",
-  "build": 1,
-  "appearance": "dark",
-  "theme": "theme.json"
-}

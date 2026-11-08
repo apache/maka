@@ -259,6 +259,14 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                 .flex_row()
                 .items_stretch()
                 .h(move || Length::from(px(height_dt.geo().y.extent() as f32)))
+                .on_layout({
+                    let dt = dt.clone();
+                    move |b: &Bounds<Points>| {
+                        if dt.rows_width.get_untracked() != Some(b.size.width) {
+                            dt.rows_width.set(Some(b.size.width));
+                        }
+                    }
+                })
                 .child(
                     scroll()
                         .horizontal()
@@ -503,10 +511,13 @@ fn body(dt: Dt, custom: bool) -> impl IntoElement {
     let w = windows(&dt);
     let top_dt = dt.clone();
     let (lead_dt, fixed_dt, scroll_dt) = (dt.clone(), dt.clone(), dt.clone());
+    let right_dt = dt.clone();
     view()
         .absolute()
         .left_0()
-        .right_0()
+        // Clear of a terminal's scroll bar column, whose bar is not drawn
+        // over content.
+        .right(move || Length::from(px(right_dt.geo().bar)))
         .bottom_0()
         .top(move || Length::from(px(top_dt.geo().header)))
         .overflow_hidden()
@@ -896,6 +907,7 @@ fn cell(
     };
     let left_dt = dt.clone();
     let width_dt = dt.clone();
+    let height_dt = dt.clone();
     let col_dt = dt.clone();
     let el = column_parts(
         view()
@@ -904,9 +916,11 @@ fn cell(
                 selected: flags.get().selected || flags.get().column_selected,
                 ..AccessibilityState::default()
             })
+            // Out of flow at a size of fixed points, as the row is: a text
+            // that changes as the table scrolls lays out its cell alone.
             .absolute()
             .top_0()
-            .bottom_0()
+            .h(move || Length::from(px(height_dt.row_height())))
             .style_when(move || def.get().is_none(), |s| s.hidden())
             .left(move || {
                 left_dt.layout_rev.get();
@@ -974,14 +988,28 @@ fn cell(
         }))
     } else {
         let text_dt = dt;
-        el.child(
-            text(move || match (row.get(), def.get()) {
-                (Some(row), Some(def)) => text_dt.cell_text(row, def),
-                _ => SharedString::default(),
-            })
-            .number_of_lines(1)
-            .min_w(px(0.0)),
+        let line_dt = text_dt.clone();
+        let label = text(move || match (row.get(), def.get()) {
+            (Some(row), Some(def)) => text_dt.cell_text(row, def),
+            _ => SharedString::default(),
+        })
+        .number_of_lines(1)
+        // The cell's whole box, its one line as tall as the row: a text
+        // never resizes it, so a cell whose text changes as the table
+        // scrolls is neither measured nor laid out again, only drawn.
+        .w_full()
+        .h_full()
+        .min_w(px(0.0))
+        .line_height(move || nsh_core::LineHeight::from(px(line_dt.row_height())))
+        .style_when(
+            move || align.get() == DataTableAlign::Center,
+            |s| s.text_center(),
         )
+        .style_when(
+            move || align.get() == DataTableAlign::End,
+            |s| s.text_right(),
+        );
+        el.child(label)
     }
 }
 
@@ -1046,14 +1074,15 @@ fn group_cells(dt: &Dt, scroll: bool, window: &[usize], origin: usize) -> Vec<Gr
 fn header(dt: Dt, custom: bool) -> impl IntoElement {
     let props = dt.props;
     let w = windows(&dt);
-    let height_dt = dt.clone();
+    let (height_dt, right_dt) = (dt.clone(), dt.clone());
     let (corner_dt, fixed_dt, scroll_dt) = (dt.clone(), dt.clone(), dt.clone());
     part(
         view()
             .absolute()
             .top_0()
             .left_0()
-            .right_0()
+            // As wide as the body, its columns over the body's.
+            .right(move || Length::from(px(right_dt.geo().bar)))
             .h(move || Length::from(px(height_dt.geo().header)))
             .overflow_hidden(),
         props,
@@ -1456,10 +1485,32 @@ fn sort_button(
 
 /// The original pair of Lucide chevrons. Paint follows the app's inherited
 /// stroke/text color; each direction exposes its selected state for styling.
-fn sort_icon(
-    props: DataTableProps,
-    sorted: Memo<Option<DataTableSortDirection>>,
-) -> impl IntoElement {
+/// In a terminal, one glyph: `▲` ascending, `▼` descending, `↕` unsorted,
+/// each the part of its direction (an unsorted column's `↕` the ascending
+/// part's, not selected: as faint as an unsorted chevron).
+fn sort_icon(props: DataTableProps, sorted: Memo<Option<DataTableSortDirection>>) -> AnyElement {
+    // A terminal draws no chevrons: the direction is one Cell's glyph.
+    if crate::terminal::is_terminal() {
+        return dynamic(move || {
+            let (glyph, which) = match sorted.get() {
+                Some(DataTableSortDirection::Ascending) => ("▲", DataTablePart::SortAscending),
+                Some(DataTableSortDirection::Descending) => ("▼", DataTablePart::SortDescending),
+                None => ("↕", DataTablePart::SortAscending),
+            };
+            Some(part(
+                text(glyph)
+                    .number_of_lines(1)
+                    .accessible(false)
+                    .accessibility_state(move || AccessibilityState {
+                        selected: sorted.get().is_some(),
+                        ..AccessibilityState::default()
+                    }),
+                props,
+                which,
+            ))
+        })
+        .into_element();
+    }
     const K: f32 = 12.0 / 24.0;
     let chevron = move |points: [f32; 6], direction, which| {
         part(
@@ -1501,6 +1552,7 @@ fn sort_icon(
             DataTableSortDirection::Descending,
             DataTablePart::SortDescending,
         ))
+        .into_element()
 }
 
 /// The band at a title's trailing edge that a drag resizes the column
@@ -1520,6 +1572,9 @@ fn resize_handle(dt: Dt, def: usize) -> impl IntoElement {
 
 fn handle(props: DataTableProps, start: Dt, drag: Dt, end: Dt, def: usize) -> impl IntoElement {
     let id = format!("resize:{}", drag.st.borrow().defs[def].key);
+    // The mouse's alone, as `gpui-component`'s: a terminal's handle would
+    // be a stop of Tab per column after the table.
+    provide_context(crate::resizable::PointerOnly);
     resize_handle_component()
         .edge(HandleEdge::Trailing)
         .on_drag_start(move || start.resize_start(def))

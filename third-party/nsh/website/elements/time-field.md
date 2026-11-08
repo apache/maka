@@ -66,7 +66,9 @@ reports each edit with `onChange({ value })`; the app sets `value` to follow it.
 time, from `defaultValue` at first (default `00:00`).
 
 `precision` is the smallest unit the field edits, `"minute"` (the default) or `"second"`. `hourCycle` is how it counts
-the hours: `"h23"` (the default) from 00 to 23, `"h12"` from 12 to 11 with an AM/PM segment after the numbers.
+the hours: `"h23"` (the default) from 00 to 23, `"h12"` from 12 to 11 with an AM/PM segment after the numbers. The
+user's is `"h12"` where `localeSettings().hourCycle` is `"h11"` or `"h12"`, else `"h23"`
+([Regional preferences](../docs/device-and-environment.md#regional-preferences)).
 
 ## Editing
 

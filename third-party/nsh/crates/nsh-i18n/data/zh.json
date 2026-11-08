@@ -1,0 +1,76 @@
+{
+  "numbers": {
+    "decimal": ".",
+    "group": ",",
+    "minGrouping": 1,
+    "indian": false,
+    "minus": "-",
+    "percent": "%",
+    "currencyBefore": true,
+    "currencySpace": "",
+    "compactShort": [[4, "万"], [8, "亿"], [12, "万亿"]],
+    "compactLong": []
+  },
+  "dates": {
+    "hour12": false,
+    "padHour24": true,
+    "am": "上午",
+    "pm": "下午",
+    "periodFirst": true,
+    "periodSpace": "",
+    "hourSuffix": "时",
+    "numeric": [["year", "/"], ["month", "/"], ["day", ""]],
+    "shortYear2digit": false,
+    "text": [["year", "年"], ["month", "月"], ["day", "日"]],
+    "textLong": null,
+    "weekdayFirst": false,
+    "weekdaySep": "",
+    "dateTimeSep": " ",
+    "names": {
+      "months": ["", "", "", "", "", "", "", "", "", "", "", ""],
+      "monthsShort": ["", "", "", "", "", "", "", "", "", "", "", ""],
+      "weekdays": ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"],
+      "weekdaysShort": ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+    },
+    "cjk": true
+  },
+  "regions": {
+    "TW": {
+      "numbers": {"compactShort": [[4, "萬"], [8, "億"], [12, "兆"]]},
+      "dates": {
+        "names": {
+          "months": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "monthsShort": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "weekdays": ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"],
+          "weekdaysShort": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"]
+        },
+        "hour12": true,
+        "padHour24": false
+      }
+    },
+    "HK": {
+      "numbers": {"compactShort": [[4, "萬"], [8, "億"], [12, "兆"]]},
+      "dates": {
+        "names": {
+          "months": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "monthsShort": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "weekdays": ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"],
+          "weekdaysShort": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"]
+        },
+        "hour12": true,
+        "padHour24": false
+      }
+    },
+    "MO": {
+      "numbers": {"compactShort": [[4, "萬"], [8, "億"], [12, "兆"]]},
+      "dates": {
+        "names": {
+          "months": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "monthsShort": ["", "", "", "", "", "", "", "", "", "", "", ""],
+          "weekdays": ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"],
+          "weekdaysShort": ["週日", "週一", "週二", "週三", "週四", "週五", "週六"]
+        }
+      }
+    }
+  }
+}

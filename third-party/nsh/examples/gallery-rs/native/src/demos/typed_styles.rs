@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// The photo of the filters' card.
-const PHOTO: &str = "https://picsum.photos/seed/nsh-tailwind/600/400";
+const PHOTO: &str = "https://pbs.twimg.com/media/HS6UGjvXkAAyHtp?format=jpg&name=small";
 
 /// The citrus accent as a fill (TS `bg-citrus`).
 const CITRUS: u32 = 0xc8f26d;

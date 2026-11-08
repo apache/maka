@@ -844,3 +844,43 @@ mount(App);
 
     surface.shutdown();
 }
+
+pub(super) fn box_none_input_focus() {
+    for pointer_events in ["box-none", "none"] {
+        let sink_app = format!(
+            r#"
+import {{ mount, View }} from "nsh";
+import {{ Input }} from "nsh/base";
+
+function App() {{
+  return <View style={{{{ flex: 1 }}}}>
+    <Input autoFocus defaultValue="sink" style={{{{ width: 1, height: 20, pointerEvents: "{pointer_events}" }}}} />
+  </View>;
+}}
+mount(App);
+"#
+        );
+
+        let code = nsh_bundler::compile_module("Sink.tsx", &sink_app, &[]).unwrap();
+        let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+        config.ui_sets = vec![nsh_base::registry()];
+        let surface = TerminalSurface::new(
+            config,
+            size(DevicePixels(200), DevicePixels(120)),
+            1.0,
+            Box::new(|_| {}),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        pump_until(&surface, || {
+            surface.editor_text().as_deref() == Some("sink")
+        });
+        surface.set_selected_text_range(4..4).unwrap();
+        key(&surface, "q");
+        pump_until(&surface, || {
+            surface.editor_text().as_deref() == Some("sinkq")
+        });
+
+        surface.shutdown();
+    }
+}

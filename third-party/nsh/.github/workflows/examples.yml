@@ -15,10 +15,15 @@ on:
     paths:
       - "examples/**"
       - ".github/workflows/examples.yml"
+      - ".github/actions/cargo/**"
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "examples/**"
       - ".github/workflows/examples.yml"
+      - ".github/actions/cargo/**"
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -27,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: examples-${{ github.ref }}
+  group: examples-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -40,25 +45,33 @@ env:
 
 jobs:
   check:
+    # Nothing for drafts or a pull request being closed.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       # QuickJS is C (bindgen needs libclang). The Rust gallery also
       # links GTK through its native desktop entry's dependencies.
-      - name: Install clang and GTK 4
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev jq
+      - name: Install clang, GTK 4 and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev jq
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      # Dependencies only: main's runs save it, pull requests restore it.
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: examples
 
       - name: Find the Rust examples
         id: crates

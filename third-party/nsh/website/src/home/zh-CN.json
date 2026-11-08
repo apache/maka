@@ -1,0 +1,179 @@
+{
+  "title": "Native Shell — 一次构建，全平台 Native | Rust 跨平台 UI 框架",
+  "description": "Native Shell 是 Rust First 的全平台 Native UI 框架：一套代码构建 iOS、Android、macOS、Windows、Linux 和 Web 应用，每个平台都使用系统自己的界面与交互。",
+  "slogan": "一次构建，全平台 Native",
+  "lead": "只写 TSX，就能做出媲美 Rust 的高性能 Native 客户端。一份代码运行在 8 个平台上，每个平台都用系统自己的界面与交互。",
+  "idle": "中间是你的应用，外面每道拱是一个平台。",
+  "start": "快速开始",
+  "gallery": "示例",
+  "try": "在线试用",
+  "heroStats": [
+    "FPS",
+    "首帧",
+    "平台"
+  ],
+  "numbersTitle": "TSX 写的客户端，和 Rust 站在一起",
+  "numbersLead": "在 NSH 里，只有你的应用代码是 JS。响应式图、渲染器、布局和所有模块都是 Rust，TSX 和 Rust 应用共享同一套原生执行管线。",
+  "stats": [
+    "22 条实时走势线、盘口和成交明细同时刷新，帧耗时 p95 不到 4 ms",
+    "引擎启动（75–155 µs）",
+    "计数器应用的首帧",
+    "一次点击，从事件到提交",
+    "Hello World 的应用代码",
+    "Web 上 TSX 应用的下载量（Wasm 运行时）"
+  ],
+  "compareHead": "小应用实测：只比系统自带窗口多几 MB",
+  "compareCols": [
+    "",
+    "TSX",
+    "Rust",
+    "系统自带窗口"
+  ],
+  "compareRows": [
+    "内存 footprint，macOS",
+    "私有脏页，Linux（GTK，GL）",
+    "比系统窗口多，macOS / Linux",
+    "私有工作集，Windows"
+  ],
+  "sizeHead": "各平台的体积：nsh init 的 Hello World",
+  "sizeCols": [
+    "",
+    "TSX 可执行文件",
+    "TSX 发布包",
+    "Rust 可执行文件",
+    "Rust 发布包"
+  ],
+  "sizeRows": [
+    "macOS（Apple silicon）",
+    "Linux（x86_64）",
+    "Windows（x86_64）",
+    "Web"
+  ],
+  "sizeWeb": "~1.1 MB 下载",
+  "numbersNote": "发布版构建，内存为静止时：macOS 在 Apple M3 上测 footprint（计数器应用与 Rust 模板，1200 × 800；系统窗口只有一个标签，480 × 640）；Linux 在 NVIDIA RTX 3060 Ti 上测私有脏页（nsh init 的 TSX 与 Rust 模板，和只有一个标签的 GTK 窗口，同为 480 × 640）；Windows 为私有工作集。各平台口径和 RSS、USS 见性能报告。体积：nsh package 的发布构建（链接时优化并去除符号），TSX 的可执行文件包含 QuickJS 运行时，应用代码不到 1 KB；发布包为 macOS 的 .app zip、Linux 的 .tar.gz、Windows 的 .zip；Web 为浏览器下载的运行时与应用。",
+  "numbersCta": "完整的性能报告",
+  "zeroTitle": "TSX 开发，0 依赖",
+  "zeroLead": "一个应用就是下面这几个文件。nsh 一个命令行自带打包器和工具链，模块都是 Native 的，代码里只需 import。",
+  "zeroPoints": [
+    "nsh 一个可执行文件，负责创建、运行、测试和打包",
+    "保存到看到新版本 ~120 ms",
+    "nsh check 用 TypeScript 7 的原生 tsc 做类型检查"
+  ],
+  "viewsTitle": "8 个平台，每个都是系统自己的控件",
+  "viewsLead": "NSH 用每个平台已有的东西构建界面，文本输入、选区、输入法和无障碍都来自系统，新系统版本带来的改进应用直接获得。",
+  "cols": [
+    "平台",
+    "视图",
+    "文本",
+    "输入框",
+    "要求"
+  ],
+  "embedNote": "地图、网页视图、视频和宿主注册的 Native 视图只是同一层级里的又一个子视图，一起布局、裁剪、滚动和接收触摸。",
+  "embedCta": "各平台的后端",
+  "formTitle": "一个应用，每种设备各有形态",
+  "formLead": "同一份编译好的代码，这里同时运行两次，只有设备不同。桌面上是带会话列表的窗口；手机上按钮和输入框是悬浮的 Liquid Glass，消息从它们下面滚过；终端里画在字符网格上。应用只写一次。",
+  "desktop": "桌面",
+  "phone": "手机",
+  "terminal": "终端",
+  "formHint": "可以操作：输入一句话试试",
+  "formCaption": "桌面与手机是 Native Shell 的 Web 运行时在你的浏览器里实时运行；终端是 nsh run --target tui 的真实输出。",
+  "pending": "在线预览尚未构建：运行 bun run dev（或 cargo xtask web）。",
+  "tuiCta": "了解 TUI",
+  "langTitle": "需要时，同一个引擎也可以用 Rust",
+  "langLead": "Rust 是编写完整应用的一等语言，界面、逻辑和组件都编译成 Native 代码，适合繁重的业务逻辑。两者使用同样的元素和 signal，TSX 页面还能直接导入你的 Rust 组件。",
+  "langCta": "用 Rust 开发",
+  "fastTitle": "只更新变化的那几个视图",
+  "fastLead": "每个元素都是平台保留着的视图。一次变化只重新运行读到那个 signal 的表达式，每帧一次批量提交；主线程从不等待 JS，Native 动画不经过 JS 逐帧计算。滚动和动画稳定在 120 FPS，静止时几乎不占 CPU。",
+  "fastPress": "点一次 +1",
+  "fastLegend": "读到 signal 的两个 Text 更新，历史多出一行，其余视图不动。",
+  "fastIdle": "24 个节点，静止",
+  "fastTouched": "这次更新的视图",
+  "fastKept": "没被碰到的视图",
+  "fastStat": "1 次提交 · 7 个 mount item",
+  "fastCta": "性能设计",
+  "shipTitle": "发布之后，应用还能接收新界面",
+  "shipLead": "界面可以由团队编写，也可以由模型为每次请求生成。它以签名模块到达设备，运行在宿主设定的沙箱里，并以 Native 方式显示。",
+  "trust": "信任边界",
+  "flow": [
+    {
+      "title": "编写",
+      "body": "团队或模型写一个 TSX 模块。"
+    },
+    {
+      "title": "检查",
+      "body": "类型检查，再无界面地运行测试。"
+    },
+    {
+      "title": "签名",
+      "body": "Ed25519 签名的 .nshpkg，发布密钥由离线根密钥认证。"
+    },
+    {
+      "title": "运行",
+      "body": "设备校验签名、证书和吊销列表。每个视图一个虚拟机，内存、调用时长和节点数都有上限，只能使用宿主授予的能力。"
+    }
+  ],
+  "waysHead": "三种交付方式，同一个引擎",
+  "foundTitle": "行为来自 NSH，外观来自你",
+  "foundLead": "nsh/base 提供无样式的基础组件，负责状态、焦点、键盘和无障碍；每个部分的样式由应用决定。一个 nsh 命令行负责其余的事。",
+  "closeTitle": [
+    "原生视图与交互，",
+    "视觉由应用设计"
+  ],
+  "closeBody": "装好 nsh，一分钟内跑起第一个 TSX 应用。",
+  "closeCta": "开始构建",
+  "platforms": "支持的平台",
+  "chat": "聊天",
+  "terminalLabel": "终端里的聊天",
+  "surfaces": {
+    "Windows": {
+      "input": "NSH 编辑器，IMM32"
+    },
+    "Web": {
+      "text": "浏览器",
+      "needs": "现代浏览器"
+    },
+    "Android": {
+      "views": "Android View"
+    },
+    "TUI": {
+      "text": "终端字体",
+      "input": "readline 按键，输入法"
+    },
+    "GPUI": {
+      "text": "GPUI 文本系统",
+      "input": "NSH 编辑器",
+      "needs": "嵌入 GPUI Kit 应用"
+    }
+  },
+  "ways": [
+    {
+      "label": "独立应用",
+      "body": "用 Rust、TSX 或两者编写，打包成可安装的 iOS、Android、macOS、Windows、Linux 应用或静态网站。",
+      "cta": "快速上手"
+    },
+    {
+      "label": "动态界面与插件",
+      "body": "在任意页面嵌入一个视图，运行时加载签名的 TSX 模块；宿主可以注册自己的 Native 组件。",
+      "cta": "各平台的嵌入方式"
+    },
+    {
+      "label": "AI 生成的界面",
+      "body": "模型为每次请求写一个模块，用界面回答，服务器检查并签名。",
+      "cta": "签名与沙箱"
+    }
+  ],
+  "found": [
+    {
+      "title": "无样式的基础组件",
+      "body": "导航、对话框、菜单、弹出层、标签页、选择器、数据表格、代码编辑器、富文本内核。用 Tailwind 类或类型化样式设计每个部分。"
+    },
+    {
+      "title": "一个工具链，人和 AI 都能用",
+      "body": "创建、构建、类型检查、热更新、测试、打包和签名都在一个 nsh 可执行文件里。API 声明从 Rust 源码生成，文档以 llms.txt 提供，AI agent 用同样的命令走完整个循环。"
+    },
+    {
+      "title": "在每个目标上验证",
+      "body": "同样的测试可以无界面运行，也可以在真实窗口、iOS 模拟器、Android 设备和浏览器里用平台自己的输入运行。"
+    }
+  ]
+}

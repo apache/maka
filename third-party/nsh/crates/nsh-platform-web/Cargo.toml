@@ -47,10 +47,9 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 nsh-core = { workspace = true, features = ["glsl"] }
 nsh-engine.workspace = true
-nsh-base = { workspace = true, features = ["highlight", "math"] }
+nsh-base = { workspace = true, features = ["editor", "highlight", "math", "plot", "rich-editor", "term"] }
 nsh-bundler = { workspace = true, optional = true }
 serde_json.workspace = true
-serde.workspace = true
 sha2 = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 md-5 = { workspace = true, optional = true }
@@ -69,11 +68,13 @@ ttf-parser.workspace = true
 unicode-bidi.workspace = true
 unicode-properties.workspace = true
 
-# The text rules (`src/text/css.rs`, `src/text/wrap.rs`) and the event
-# payloads (`src/event.rs`) depend on nothing of the browser: `tests/text`
+# The text rules (`src/text/css.rs`, `src/text/wrap.rs`), the event
+# payloads (`src/event.rs`) and the bound animated values
+# (`src/animation.rs`) depend on nothing of the browser: `tests/text`
 # builds them on the host and tests them there.
 [dev-dependencies]
 nsh-core.workspace = true
+rustc-hash.workspace = true
 serde_json.workspace = true
 unicode-bidi.workspace = true
 unicode-properties.workspace = true

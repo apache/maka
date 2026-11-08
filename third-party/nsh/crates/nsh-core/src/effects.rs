@@ -591,6 +591,95 @@ impl BackdropMaterial {
     }
 }
 
+/// `macos={{ backdrop }}`: the `NSVisualEffectView` material a view draws with
+/// on macOS.
+///
+/// Unlike iOS's [`BackdropMaterial`], which always blurs a `backdropFilter`,
+/// this is a material of its own: an explicit backdrop draws its native
+/// view whether or not the style has a blur, and it wins over
+/// [`GlassEffect`] and `backdropFilter` on macOS. Its fields default to
+/// `popover`, `withinWindow` and `active`, the blur macOS has always drawn.
+///
+/// There is no CSS for this -- `backdrop-filter` only describes filters --
+/// so the names follow AppKit's `NSVisualEffectMaterial`,
+/// `NSVisualEffectBlendingMode` and `NSVisualEffectState` in camel case.
+///
+/// Fields may be added: start with [`Self::default`] and set what it
+/// needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct MacOsBackdrop {
+    /// The material: what is blurred and how it is tinted.
+    pub material: MacOsBackdropMaterial,
+    /// What it blurs: the view's window, or what is behind the window.
+    pub blending: MacOsBackdropBlending,
+    /// Whether it follows the window's active state, or is always active
+    /// or inactive.
+    pub state: MacOsBackdropState,
+}
+
+/// `NSVisualEffectMaterial`: the material of a [`MacOsBackdrop`].
+///
+/// The roles AppKit still documents: the newer content and under-window
+/// roles, and the older named roles apps still use (which AppKit marks
+/// deprecated in favor of the newer ones).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+pub enum MacOsBackdropMaterial {
+    /// The title bar's material.
+    Titlebar,
+    /// The selected content's material.
+    Selection,
+    /// A menu's material.
+    Menu,
+    /// A popover's material.
+    #[default]
+    Popover,
+    /// A source list's (sidebar's) material.
+    Sidebar,
+    /// A table header's material.
+    HeaderView,
+    /// A sheet's material.
+    Sheet,
+    /// The window's background material.
+    WindowBackground,
+    /// A heads-up display's material.
+    HudWindow,
+    /// A full-screen UI's material.
+    FullScreenUI,
+    /// A tooltip's material.
+    ToolTip,
+    /// The content's background material.
+    ContentBackground,
+    /// The material under the window's background.
+    UnderWindowBackground,
+    /// The material under a page's background.
+    UnderPageBackground,
+}
+
+/// `NSVisualEffectBlendingMode`: what a [`MacOsBackdrop`] blurs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+pub enum MacOsBackdropBlending {
+    /// What is in the view's window behind it.
+    #[default]
+    WithinWindow,
+    /// What is behind the window, so the window must be transparent for
+    /// it to show.
+    BehindWindow,
+}
+
+/// `NSVisualEffectState`: whether a [`MacOsBackdrop`] follows the window's
+/// active state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
+pub enum MacOsBackdropState {
+    /// Active while the window is, inactive otherwise.
+    FollowsWindowActiveState,
+    /// Always active.
+    #[default]
+    Active,
+    /// Always inactive.
+    Inactive,
+}
+
 /// `glassEffect`: a glass material drawn behind the view's content.
 ///
 /// Apple's "Liquid Glass", new in iOS 26. No CSS property describes it --
@@ -894,6 +983,10 @@ pub struct KeyframeAnimation {
     pub easing: [f32; 4],
     /// `None` repeats forever.
     pub iterations: Option<u32>,
+    /// The highest frame rate it needs, in Hz (`animationFrameRate`);
+    /// `None`: the screen's highest. Platforms that can lower their frame
+    /// rate honor it.
+    pub frame_rate: Option<f32>,
 }
 
 impl KeyframeAnimation {
@@ -906,6 +999,7 @@ impl KeyframeAnimation {
             delay: 0.0,
             easing: [0.0, 0.0, 1.0, 1.0],
             iterations: None,
+            frame_rate: None,
         }
     }
 
@@ -930,6 +1024,13 @@ impl KeyframeAnimation {
     /// `count` iterations, then it stops.
     pub const fn iterations(mut self, count: u32) -> Self {
         self.iterations = Some(count);
+        self
+    }
+
+    /// Needs at most `hz` frames per second (a slow spinner: 30), so the
+    /// screen may refresh less often while it is all that moves.
+    pub const fn frame_rate(mut self, hz: f32) -> Self {
+        self.frame_rate = Some(hz);
         self
     }
 }

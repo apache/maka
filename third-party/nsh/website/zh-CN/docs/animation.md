@@ -363,6 +363,7 @@ view().h_4().w_40().rounded(px(4.0)).bg(ZINC.shade(200)).animate_pulse()
 | `animationDelay` | `KeyframeAnimation::delay(ms)` | `number \| "200ms" \| …` | 开始前的延迟。 |
 | `animationTimingFunction` | `KeyframeAnimation::easing([x1, y1, x2, y2])` | 同 `transitionTimingFunction` | 缓动曲线。 |
 | `animationIterationCount` | `KeyframeAnimation::iterations(n)` | `number \| "infinite"` | 默认 `"infinite"`。 |
+| `animationFrameRate` | `KeyframeAnimation::frame_rate(hz)` | `number` | 它需要的最高帧率，单位 Hz（见[帧率](#帧率)）。默认为屏幕的最高帧率。 |
 
 Tailwind：`animate-spin`、`animate-ping`、`animate-pulse`、`animate-bounce`、`animate-none`。
 
@@ -459,9 +460,9 @@ const color = flash.interpolate({ inputRange: [0, 1], outputRange: ["#1f2328", "
 | `setOffset(offset)` | `set_offset(offset)` | 在显示值上加上 `offset`：绑定看到的是值 + 偏移，而 `set`、动画和拖动改变的是值本身。 |
 | `flattenOffset()` | `flatten_offset()` | 把偏移加到值上，并把偏移设为 0。 |
 | `extractOffset()` | `extract_offset()` | 把值移入偏移并把值设为 0：下一次拖动就从 0 开始，叠加在上一次停下的位置上。 |
-| `timing(to, { duration?, easing?, delay? })` | `timing(to, ms, easing)`、`timing_with(to, Timing { .. })` | 在 `duration` 毫秒内动画到 `to`（默认 300 毫秒，缓动 `"easeInOut"`）。 |
-| `spring(to, { stiffness?, damping?, mass?, velocity? })` | `spring(to, Spring { .. })` | 以弹簧运动到 `to`（默认 stiffness 170、damping 26、mass 1）。 |
-| `decay({ velocity?, deceleration?, clamp?, bounce? })` | `decay(velocity, deceleration)`、`decay_within(velocity, deceleration, (min, max), bounce)` | 以 `velocity`（每秒单位数）开始滑行并逐渐减速（默认每毫秒 deceleration 0.998）。设置范围 `[min, max]` 时，它停在边界上，或以 `bounce`（0..1）保留的速度从边界反弹。 |
+| `timing(to, { duration?, easing?, delay?, frameRate? })` | `timing(to, ms, easing)`、`timing_with(to, Timing { .. })` | 在 `duration` 毫秒内动画到 `to`（默认 300 毫秒，缓动 `"easeInOut"`）。 |
+| `spring(to, { stiffness?, damping?, mass?, velocity?, frameRate? })` | `spring(to, Spring { .. })` | 以弹簧运动到 `to`（默认 stiffness 170、damping 26、mass 1）。 |
+| `decay({ velocity?, deceleration?, clamp?, bounce?, frameRate? })` | `decay(velocity, deceleration)`、`decay_within(velocity, deceleration, (min, max), bounce)` | 以 `velocity`（每秒单位数）开始滑行并逐渐减速（默认每毫秒 deceleration 0.998）。设置范围 `[min, max]` 时，它停在边界上，或以 `bounce`（0..1）保留的速度从边界反弹。 |
 
 每个动画都给出一个可以 await 的结果，表示它是否完成：播放到终点时为 `true`，被打断时（`stop()`、`set()`，或同一个值上启动了新动画）为 `false`。在 TSX 中它是 `Promise<{ finished: boolean }>`，在 Rust 中是 `AnimationEnd`，任务 await 它得到这个 `bool`。在运动中的值上启动新动画会平滑地接替旧动画：没有指定速度的弹簧或衰减会沿用该值当前的速度。
 
@@ -840,7 +841,37 @@ view()
 
 `requestAnimationFrame`（TSX 中跟随屏幕刷新的全局函数）只用于无法事先描述的情况，例如在你的代码中运行的物理模拟。凡是能用动画值表达的，都应该用动画值。
 
+## 帧率
+
+每个动画默认以屏幕的最高帧率运行：ProMotion 屏幕上是 120 Hz。小而慢的动效（如加载指示器、轻柔的脉动）在较低帧率下看起来一样，为它声明一个帧率，就能在只有它在动时让屏幕降低刷新频率，更省电。`frameRate` 是动画需要的最高帧率，单位 Hz：可写在 `timing`、`spring`、`decay` 的选项里，`Animated.*` 的步骤、关键帧和动效（`play`）的选项里，以及关键帧动画的样式键 `animationFrameRate` 里。
+
+```rust tabs
+// 每秒 30 帧就够的加载指示器。
+view().size(px(16.0)).animation(KeyframeAnimation::new(Keyframes::Spin).frame_rate(30.0))
+
+// 缓慢的淡入，最多 30 Hz。
+opacity.timing_with(1.0, Timing::new(600.0, Easing::Linear).frame_rate(30.0));
+// 以 24 Hz 循环的关键帧。
+glow.keyframes([Keyframe::new(0.4), Keyframe::new(1.0), Keyframe::new(0.4)], KeyframeTiming::new(1600.0).infinite().frame_rate(24.0));
+```
+
+```tsx tabs
+// 每秒 30 帧就够的加载指示器。
+<View style={{ width: 16, height: 16, animationName: "spin", animationFrameRate: 30 }} />
+
+// 缓慢的淡入，最多 30 Hz。
+opacity.timing(1, { duration: 600, easing: Easing.linear, frameRate: 30 });
+// 以 24 Hz 循环的关键帧。
+glow.keyframes([0.4, 1, 0.4], { duration: 1600, iterations: "infinite", frameRate: 24 });
+```
+
+屏幕以其上所有内容所需的最高帧率运行：没有 `frameRate` 的动画、过渡、滚动、手势或 `requestAnimationFrame` 循环运行时，屏幕回到最高帧率；组合动画以其步骤中最高的帧率运行。动画的时间与帧率无关：它在全帧率下结束的时刻结束。macOS 和 iOS 会按这些声明降低屏幕帧率；其他平台以屏幕的帧率运行所有动画。
+
 ## 减少动态效果
+
+在终端目标（`--target tui`）上，宿主逐帧推进动画值和组合动画，并调用完成回调。透明度、颜色和二维
+变换映射到 Cell 网格；文字保持直立的终端字形，画布路径使用盲文点阵。终端报告减少动态效果：动效、
+导航、模态框、布局和样式过渡立即落在终点，显式动画值驱动器和 `Animated` 组合动画按原样播放。
 
 当用户要求减少动态效果时（iOS 的"减弱动态效果"、Android 的"移除动画"），Rust 中的 `reduce_motion()` 和 TSX 中 `nsh` 的 `reduceMotion()` 为 `true`，Tailwind 的 `motion-reduce:` / `motion-safe:` 变体随之生效。
 

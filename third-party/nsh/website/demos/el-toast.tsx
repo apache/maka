@@ -1,7 +1,7 @@
 import { mount, Overlay, signal, Text, View } from "nsh";
 import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
 import { safeArea } from "nsh";
-import { button, buttonText, desktop, Log, size, ui, wide } from "./palette";
+import { button, buttonText, desktop, Log, toastActionLabel, toastActionLook, toastLook, toastText, toastTitle, ui, wide } from "./palette";
 
 /** What the demo's toasts show. */
 type Content = { title: string; description?: string; undo?: boolean };
@@ -80,17 +80,17 @@ function App() {
                   startingClass="opacity-0 translate-y-4"
                   endingClass="opacity-0 scale-95"
                   swipingClass="transition-none"
-                  style={{ ...ui().card, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12 }}
+                  style={toastLook()}
                 >
                   <View style={{ flex: 1, gap: 2 }}>
-                    <Text style={{ fontSize: 14, fontWeight: "600", color: ui().text }}>{content().title}</Text>
+                    <Text style={toastTitle()}>{content().title}</Text>
                     <If when={content().description}>
-                      <Text style={{ fontSize: 13, color: ui().muted }}>{content().description}</Text>
+                      <Text style={toastText()}>{content().description}</Text>
                     </If>
                   </View>
                   <If when={content().undo}>
-                    <View onPress={() => dismiss(t().id)} {...button("primary", { size: "sm" })}>
-                      <Text style={buttonText("primary")}>Undo</Text>
+                    <View role="button" onPress={() => dismiss(t().id)} {...toastActionLook()}>
+                      <Text style={toastActionLabel()}>Undo</Text>
                     </View>
                   </If>
                 </Toast>

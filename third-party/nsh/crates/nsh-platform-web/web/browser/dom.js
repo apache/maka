@@ -1,12 +1,12 @@
 // The JSX facade delegates node ownership, value reconciliation, prop
 // decoding and layout operations to Rust.
-const PLATFORM_PROPS = new Set(["ios", "android", "desktop", "web"]);
+const PLATFORM_PROPS = new Set(["ios", "android", "macos", "desktop", "web"]);
 
 export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
   let touches, measure, hot, platform;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "sendInput", "seek"]) {
+  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "sendInput", "load", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
   prototype.setSelection = function (start, end = start) { return call(314, [values.nodeIds.get(this), "setSelection", { start: Number(start), end: Number(end) }]); };
@@ -81,11 +81,10 @@ export function createDom(invoke, values, reactive, live, wake) {
     for (const key of Object.keys(next)) prop(node, key, next[key]);
   };
   const dynamic = (value, depth = 0) => typeof value === "function" || (depth < 64 && Array.isArray(value) && value.some(item => dynamic(item, depth + 1)));
-  const memoized = (value, depth = 0) => typeof value === "function" ? itemMemo(value)
-    : depth < 64 && Array.isArray(value) && dynamic(value, depth) ? value.map(item => memoized(item, depth + 1))
-    : value;
-  const itemMemo = fn => reactive.computed(() => memoized(fn()));
-  const memoize = items => items.length === 1 && typeof items[0] === "function" ? items : memoized(items);
+  const itemMemo = fn => reactive.computed(() => { const value = fn(); return typeof value === "function" ? itemMemo(value) : value; });
+  const memoize = items => items.length > 1 && items.some(item => typeof item === "function")
+    ? items.map(item => typeof item === "function" ? itemMemo(item) : item)
+    : items;
   // As QuickJS's insert (Solid's insertExpression): a returned function gets
   // an effect of its own and each function of an array a memo of its own;
   // tracked by the outer effect, what they read would make the components again.

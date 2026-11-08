@@ -39,7 +39,11 @@ struct State {
     host: nsh_engine::HostEnvironment,
     /// The embedding app's theme overrides.
     host_tokens: Option<nsh_engine::Tokens>,
+    /// Font files the embedding app registers.
+    fonts: Vec<Vec<u8>>,
     on_error: Option<ErrorHandler>,
+    /// URLs opened ([`AppView::open_url`]) before any app was loaded.
+    urls: Vec<String>,
     #[cfg(feature = "dev")]
     dev: Option<crate::dev::DevSession>,
     /// A test session's model of the app, for every surface from now on.
@@ -63,7 +67,9 @@ impl AppView {
                     options,
                     host: nsh_engine::HostEnvironment::default(),
                     host_tokens: None,
+                    fonts: Vec::new(),
                     on_error: None,
+                    urls: Vec::new(),
                     #[cfg(feature = "dev")]
                     dev: None,
                     #[cfg(feature = "dev")]
@@ -87,6 +93,12 @@ impl AppView {
     /// the running app.
     pub fn run(&self, root: Root) {
         Inner::load(&self.inner, App::Rust(root));
+    }
+
+    /// Hands `url`, a link the system opened the standalone app with, to
+    /// the running app (`UrlScheme`).
+    pub(crate) fn url_scheme(&self, url: String) {
+        self.inner.url_scheme(url);
     }
 
     /// Sets where `asset:/…` files (images, fonts) are read from. A change
@@ -124,6 +136,13 @@ impl AppView {
             .options
             .components
             .register(name, factory);
+    }
+
+    /// Hands `url`, one of the embedding app's URLs, to the running app as
+    /// the system opening it would (`UrlScheme.on("open")`, `nsh`); before an
+    /// app runs, the next one loaded gets it. On the main thread.
+    pub fn open_url(&self, url: &str) {
+        self.inner.url_scheme(url.to_owned());
     }
 
     /// The channel with the apps this view runs (`nsh/host`): their
@@ -197,6 +216,24 @@ impl AppView {
         Ok(())
     }
 
+    /// Registers a font file (TrueType, OpenType, WOFF or WOFF2) the host
+    /// ships, so every app this view loads can name its family in
+    /// `fontFamily` without bundling the file. A font registered before a
+    /// load is in that app's first frame; one registered while an app runs
+    /// is used from the next layout. Fails, registering nothing, when
+    /// `data` is not a font; a file registered again is kept once.
+    pub fn register_font(&self, data: &[u8]) -> Result<(), String> {
+        nsh_core::font_family(data)?;
+        let mut state = self.inner.state.borrow_mut();
+        if !nsh_core::keep_font(&mut state.fonts, data) {
+            return Ok(());
+        }
+        if let Some(surface) = &state.surface {
+            surface.add_font(data.to_vec());
+        }
+        Ok(())
+    }
+
     fn set_host(&self, change: impl FnOnce(&mut nsh_engine::HostEnvironment)) {
         let mut state = self.inner.state.borrow_mut();
         change(&mut state.host);
@@ -266,6 +303,7 @@ impl Inner {
         );
         surface.set_host_environment(state.host);
         surface.set_host_tokens(state.host_tokens.clone());
+        surface.set_host_fonts(state.fonts.clone());
         #[cfg(feature = "dev")]
         surface.set_test_model(state.test_model.clone());
         let weak: Weak<Inner> = Rc::downgrade(this);
@@ -285,7 +323,21 @@ impl Inner {
         }
         // Below development overlays.
         this.container.insertSubview_atIndex(surface.view(), 0);
+        for url in std::mem::take(&mut state.urls) {
+            surface.url_scheme(url);
+        }
         state.surface = Some(surface);
+    }
+
+    /// Hands `url`, a link the system opened the app with, to the running
+    /// app ([`Surface::url_scheme`]); before an app runs, the next one
+    /// loaded gets it.
+    pub(crate) fn url_scheme(&self, url: String) {
+        let mut state = self.state.borrow_mut();
+        match &state.surface {
+            Some(surface) => surface.url_scheme(url),
+            None => state.urls.push(url),
+        }
     }
 
     /// Applies a development update in place; false when no app runs.

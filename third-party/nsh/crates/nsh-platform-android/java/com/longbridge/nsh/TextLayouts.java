@@ -65,6 +65,9 @@ final class TextLayouts {
             Typeface typeface = Typeface.createFromFile(file);
             synchronized (FAMILIES) {
                 List<Face> faces = FAMILIES.computeIfAbsent(family, k -> new ArrayList<>());
+                for (Face face : faces) {
+                    if (file.equals(face.file)) return null;
+                }
                 faces.add(new Face(weight, italic, typeface, file));
             }
             // Resolutions made before this font existed are stale.

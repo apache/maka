@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { Button, DockArea, type DockAreaLayout, type DockAreaRef } from "nsh/base";
-import { button, buttonText, desktop, focusRing, Log, Panel, Split, ui, wide } from "./palette";
+import { Button, DockArea, type DockAreaLayout, type DockAreaRef, Toggle } from "nsh/base";
+import { button, buttonText, desktop, focusRing, Log, Panel, Split, toggleLabel, toggleLook, ui, wide, sectionSurface, dockClasses, DockDragPreview, DockTab, dockTabCloseClass } from "./palette";
 
 // The panels' keys and what each shows. The layout lists the keys; the app
 // renders a panel's content from its key, and the content moves with it.
@@ -46,9 +46,17 @@ function App() {
   const log = (line: string) => events.set([line, ...events()].slice(0, 4));
   let area!: DockAreaRef;
 
-  const toolbarButton = (label: string, onPress: () => void, on?: () => boolean) => (
-    <Button onPress={onPress} selected={on?.() ?? false} {...button("secondary", { size: "sm", on })}>
-      <Text style={buttonText("secondary", { on })}>{label}</Text>
+  // A dock shown or the layout locked is on or off: a `Toggle` in the
+  // toggles' look. Reset is an action: a `Button`.
+  const toggleOptions = { size: "small", variant: "outline", text: true } as const;
+  const toolbarToggle = (label: string, on: () => boolean, set: (on: boolean) => void) => (
+    <Toggle pressed={on()} onChange={({ pressed }) => set(pressed)} {...toggleLook(toggleOptions)}>
+      <Text style={toggleLabel(on, toggleOptions)}>{label}</Text>
+    </Toggle>
+  );
+  const toolbarButton = (label: string, onPress: () => void) => (
+    <Button onPress={onPress} {...button("secondary", { size: "sm" })}>
+      <Text style={buttonText("secondary", { size: "sm" })}>{label}</Text>
     </Button>
   );
 
@@ -68,9 +76,9 @@ function App() {
           <>
             <Panel title="docks">
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                {toolbarButton("Files", () => area.toggleDock("left"), () => shown().left)}
-                {toolbarButton("Terminal", () => area.toggleDock("bottom"), () => shown().bottom)}
-                {toolbarButton("Lock", () => locked.set(!locked()), locked)}
+                {toolbarToggle("Files", () => !!shown().left, () => area.toggleDock("left"))}
+                {toolbarToggle("Terminal", () => !!shown().bottom, () => area.toggleDock("bottom"))}
+                {toolbarToggle("Lock", locked, (on) => locked.set(on))}
                 {toolbarButton("Reset", () => layout.set(initial))}
               </View>
             </Panel>
@@ -78,7 +86,7 @@ function App() {
           </>
         }
       >
-        <View style={{ height: wide() ? 420 : 460, ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        <View style={{ height: wide() ? 420 : 460, ...sectionSurface(), overflow: "hidden" }}>
           <DockArea
             ref={area}
             class="flex-1"
@@ -97,38 +105,29 @@ function App() {
             // wide window, the phone presentation in one column. Without `compact`
             // the area decides by its own width (under 600 points: compact).
             compact={!wide()}
-            groupClass="flex-1"
-            tabBarClass="flex-row border-b border-border"
-            tabClass="group px-3 py-1.5 selected:bg-muted"
-            contentClass="flex-1"
-            handleClass="bg-border group-hover:bg-muted-foreground group-active:bg-primary"
+            // The parts, the tabs and the drag preview in the shared look
+            // (`dockClasses`, `DockTab`, `DockDragPreview`): groups and docks
+            // on the inset, the shown tab underlined in the brand color, the
+            // handles' hairlines and their thumbs, the drop target tinted.
+            {...dockClasses}
             handleAccessibilityLabel="Resize"
-            dockClass="bg-muted/40"
-            dropIndicatorClass="rounded-(--radius) border-2 border-primary bg-primary/10"
-            drawerClass="bg-background border-r border-border"
-            sheetClass="rounded-t-(--radius-lg) bg-background"
-            backdropClass="bg-black/30"
             renderTab={(tab) => (
-              // One view inside the tab: a row holding the title and the close button.
-              <View class="flex-row items-center gap-1.5">
-                <Text class="text-[13px] text-muted-foreground group-selected:text-foreground">{titles[tab.panel]}</Text>
-                {tab.closable && desktop ? (
+              // The title, then the close button: with a pointer it fades in
+              // over the tab's end; a touch screen shows it on the shown tab.
+              <DockTab title={titles[tab.panel]} active={tab.active}>
+                {tab.closable && (desktop || tab.active) ? (
                   <Button
                     onPress={() => area.closePanel(tab.panel)}
                     accessibilityLabel={`Close ${titles[tab.panel]}`}
-                    class="rounded-sm px-1 hover:bg-muted active:opacity-70"
+                    class={dockTabCloseClass}
                     focusStyle={focusRing()}
                   >
-                    <Text class="text-xs text-muted-foreground">×</Text>
+                    <Text class="text-[13px] text-muted-foreground">×</Text>
                   </Button>
                 ) : null}
-              </View>
+              </DockTab>
             )}
-            renderDragPreview={(tab) => (
-              <View class="rounded-(--radius) border border-border bg-background px-3 py-1.5 shadow-md">
-                <Text class="text-[13px] text-foreground">{titles[tab.panel]}</Text>
-              </View>
-            )}
+            renderDragPreview={(tab) => <DockDragPreview title={titles[tab.panel]} />}
             renderPanel={(panel) => (
               <View class="flex-1 gap-1 p-3">
                 {(lines[panel.id] ?? []).map((line) => (

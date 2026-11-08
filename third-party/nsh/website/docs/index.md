@@ -192,7 +192,7 @@ NSH is designed for software written with AI, whole apps as much as generated sc
 
 - **One app model for every platform.** A model learns one way to write UI, and the result runs on phones, desktops and the web; NSH adapts the interaction per platform, so nothing is generated six times.
 - **Rust or TSX, by task.** Rust for whole apps and performance-critical modules, TSX for screens, plugins and UI generated per request — on one engine.
-- **A precise, generated contract.** Every element, prop, style key and module has TypeScript declarations generated from the Rust sources (`.nsh/types`), and Rust APIs are typed, so generated code is checked by a compiler. These docs are served as plain text for models ([`llms.txt`](/llms.txt), [`llms-full.txt`](/llms-full.txt)).
+- **A precise, generated contract.** Every element, prop, style key and module has TypeScript declarations generated from the Rust sources (`.nsh/types`), and Rust APIs are typed, so generated code is checked by a compiler. These docs are served as plain text for models ([`llms.txt`](/llms.txt), [`llms-full.txt`](/llms-full.txt)), and `npx skills add longbridge/nsh` installs the Coding and Design Guides as skills for coding agents.
 - **One command line for the whole loop.** An agent creates the app, builds it, runs it on a target, runs its tests, reads the result, fixes and packages it, all through `nsh`. `nsh test` runs headless, without a device, and reports errors and the views produced; the compiler also runs in-process (`nsh_bundler::compile_module`) and in the browser ([Playground](/playground)).
 - **Safe to run when it is not trusted.** Generated code delivered at run time is untrusted code: it arrives signed, runs in a VM with limits and reaches only the capabilities the host grants.
 
@@ -206,6 +206,7 @@ NSH is designed for software written with AI, whole apps as much as generated sc
 | [Windows](./windows.md) | Windows 10 1809+ | Win32, Direct2D | `AppView` |
 | [Linux](./linux.md) | GTK 4.14+ | GTK 4 | `AppView` |
 | [Web](./web.md) | Modern browsers | HTML | `createPlayer`, iframe |
+| [TUI](./tui.md) | Terminals on macOS, Windows and Linux | ratatui | `AppView` (ratatui area) |
 | [GPUI](./gpui.md) | Desktops | GPUI | `AppView` (GPUI, GPUI Kit apps) |
 | Mac Catalyst | macOS | UIKit | For development (`--target catalyst`) |
 

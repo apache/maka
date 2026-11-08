@@ -193,6 +193,7 @@ pub(crate) fn start(view: &Rc<AppView>, url: String) {
         DispatchQueue::main().exec_async(move || {
             if let Some(surface) = crate::surface::Surface::with_key(key_of_surface) {
                 surface.set_test_model(Some(model));
+                crate::system::testing_started(&surface);
             }
         });
         Box::new(crate::agent::MacNative::new(key_of_surface))
@@ -353,6 +354,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             capabilities,
             app_id,
             limits,
+            window,
         } => {
             hide_status(ui);
             let mut bundle = match format {
@@ -377,6 +379,9 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             if let Some(map) = source_map {
                 bundle = bundle.with_source_map(map);
             }
+            // The window is open already: the engine applies its
+            // attributes with the first commit.
+            bundle = bundle.with_main_window(window.as_deref());
             bundle = match bundle
                 .with_app_id(app_id.as_deref())
                 .with_capabilities_json(capabilities.as_deref())

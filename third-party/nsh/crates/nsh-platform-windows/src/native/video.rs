@@ -3,14 +3,14 @@
 //! The engine decodes on the thread's Direct3D device (shared through a
 //! DXGI device manager, with Direct3D's multithread protection on, since
 //! Media Foundation's worker threads use the device too). While a video
-//! plays, a frame client of its surface ([`Surface::on_frame`]) asks the
-//! engine for a new frame at every display frame (`OnVideoStreamTick`) and
-//! copies it into a texture Direct2D draws as a bitmap
+//! plays, a frame client of its surface ([`Surface::on_draw_frame`]) asks
+//! the engine for a new frame at every display frame (`OnVideoStreamTick`)
+//! and copies it into a texture Direct2D draws as a bitmap
 //! (`TransferVideoFrame`): the picture is ordinary view content, clipped,
 //! transformed and covered like any other.
 //!
 //! The engine reports to [`Notify`] on its own threads; each notification
-//! is posted to the main thread ([`crate::window::invoke`]) and finds its
+//! is posted to the UI thread of its surface ([`UiThread::invoke`]) and finds its
 //! video again by surface key and node id, with the serial of the source
 //! it was opened for (so a late notification of a replaced source is
 //! dropped).
@@ -81,6 +81,7 @@ use crate::{
     render::{DrawCx, rect_f},
     surface::Surface,
     view::{Hosted, ItemPointer},
+    window::UiThread,
 };
 
 /// The control bar's height (points).
@@ -218,7 +219,7 @@ impl VideoItem {
             }
         };
         let serial = self.serial.get();
-        let engine = match make_engine(self.key, self.id, serial) {
+        let engine = match make_engine(self.key, surface.ui_thread(), self.id, serial) {
             Ok(engine) => engine,
             Err(err) => {
                 self.status.failed.set(true);
@@ -376,7 +377,7 @@ impl VideoItem {
             return;
         }
         let weak: Weak<Self> = Rc::downgrade(self);
-        surface.on_frame(move |surface, now| {
+        surface.on_draw_frame(move |surface, now| {
             let Some(item) = weak.upgrade() else {
                 return false;
             };
@@ -855,15 +856,21 @@ fn protect(gfx: &gfx::Gfx) {
 }
 
 /// A media engine reporting to a [`Notify`] for video `id` of surface
-/// `key`, source `serial`.
-fn make_engine(key: u64, id: NodeId, serial: u64) -> Result<IMFMediaEngine> {
+/// `key` (which lives on `ui`), source `serial`.
+fn make_engine(key: u64, ui: UiThread, id: NodeId, serial: u64) -> Result<IMFMediaEngine> {
     if !mf_started() {
         return Err(windows::core::Error::from_hresult(
             windows::Win32::Foundation::E_FAIL,
         ));
     }
     let manager = device_manager()?;
-    let notify: IMFMediaEngineNotify = Notify { key, id, serial }.into();
+    let notify: IMFMediaEngineNotify = Notify {
+        key,
+        ui,
+        id,
+        serial,
+    }
+    .into();
     // SAFETY: COM calls with valid attributes; the factory needs Media
     // Foundation started (above).
     unsafe {
@@ -960,10 +967,12 @@ fn time_format() -> Option<IDWriteTextFormat> {
 }
 
 /// Receives the media engine's notifications (on Media Foundation's
-/// threads) and posts them to the main thread.
+/// threads) and posts them to the surface's UI thread.
 #[implement(IMFMediaEngineNotify)]
 struct Notify {
     key: u64,
+    /// The UI thread of the surface, where notifications return to.
+    ui: UiThread,
     id: NodeId,
     serial: u64,
 }
@@ -971,7 +980,7 @@ struct Notify {
 impl IMFMediaEngineNotify_Impl for Notify_Impl {
     fn EventNotify(&self, event: u32, param1: usize, param2: u32) -> Result<()> {
         let (key, id, serial) = (self.key, self.id, self.serial);
-        crate::window::invoke(move || {
+        self.ui.invoke(move || {
             let Some(surface) = Surface::by_key(key) else {
                 return;
             };

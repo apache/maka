@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { button, buttonText, ui } from "./palette";
+import { button, buttonText, ui, sectionSurface } from "./palette";
 
 function Button(props: { label: string; accent?: boolean; onPress: () => void }) {
   return (
@@ -22,7 +22,7 @@ function App() {
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 24, paddingTop: 64, gap: 24 }}>
       <Text style={{ fontSize: 28, fontWeight: "bold", color: ui().text }}>nsh counter</Text>
-      <View style={{ ...ui().card, borderRadius: 16, padding: 24, alignItems: "center", gap: 8 }}>
+      <View style={{ ...sectionSurface(), padding: 24, alignItems: "center", gap: 8 }}>
         <Text style={{ fontSize: 14, color: ui().muted }}>Current value</Text>
         <Text style={{ fontSize: 64, fontWeight: "bold", fontVariant: ["tabular-nums"], color: count() < 0 ? ui().down : ui().text }}>
           {count()}

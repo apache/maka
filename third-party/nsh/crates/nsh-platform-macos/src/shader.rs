@@ -199,11 +199,12 @@ fn is_screen(role: ShaderRole) -> bool {
     matches!(role, ShaderRole::Screen | ShaderRole::ScreenTransition)
 }
 
-/// The view whose children `view`'s shader draws: itself, or the surface's
-/// root for a screen effect or transition.
+/// The view whose children `view`'s shader draws: itself, or the root of
+/// its window (the surface's, or a window of the app's own) for a screen
+/// effect or transition.
 fn host(surface: &Surface, view: &NshView, role: ShaderRole) -> NshView {
     if is_screen(role) {
-        surface.root.clone()
+        crate::window::root_containing(surface, view).unwrap_or_else(|| surface.root.clone())
     } else {
         view.clone()
     }
@@ -283,7 +284,7 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, layer: Option<Arc<Shade
         }
         let shader = state
             .shader
-            .get_or_insert_with(|| ShaderState::new(Rc::downgrade(surface)));
+            .get_or_insert_with(|| Box::new(ShaderState::new(Rc::downgrade(surface))));
         if layer.is_none() {
             // SAFETY: clearing the contents.
             unsafe { shader.layer.setContents(None) };
@@ -409,8 +410,8 @@ pub(crate) fn ui_changed(view: &NshView) {
 
 fn ui_changed_in(surface: &Rc<Surface>, view: &NshView) {
     // Another surface's view (an app embedding two): none of this one's
-    // pictures holds it.
-    if !view.ns().isDescendantOf(surface.root.ns()) {
+    // pictures holds it. A window of the app's own is this surface's.
+    if crate::window::root_containing(surface, view).is_none() {
         return;
     }
     // A page's or a dialog's overlay pictures its side again.
@@ -734,7 +735,8 @@ fn take_pictures(surface: &Surface, view: &NshView, renderer: &Renderer, now: In
         pictures.push((input, p));
     }
     if backdrop
-        && let (Some(root), Some(layer)) = (surface.root.ns().layer(), view.ns().layer())
+        && let Some(root) = crate::window::root_containing(surface, view)
+        && let (Some(root), Some(layer)) = (root.ns().layer(), view.ns().layer())
         && let Some(picture) = picture_size(size, overflow, scale)
         && let Some(backdrop) = Canvas::of(&mut backdrop_canvas, picture)
     {
@@ -795,24 +797,17 @@ pub(crate) fn deleted(surface: &Surface, view: &NshView) {
     };
     track(surface, view, false);
     if screen {
+        // The view may have left its window already: every root's mask.
         sync_mask(surface, &surface.root);
+        for root in crate::window::roots(surface) {
+            sync_mask(surface, &root);
+        }
     }
 }
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
-    if view.state().shader.is_none() {
-        return;
-    }
-    let scale = view.ns().window().map_or(2.0, |w| w.backingScaleFactor()) as f32;
-    {
-        let mut state = view.state_mut();
-        let size = state.frame.size;
-        if let Some(shader) = state.shader.as_mut() {
-            shader.view.set_size(size, scale);
-        }
-    }
-    if tick(view) {
+    if view.state().shader.is_some() && tick(view) {
         start(surface);
     }
 }
@@ -865,6 +860,9 @@ pub(crate) fn clear(surface: &Surface) {
         }
     }
     crate::decor::hide_children(&surface.root, false);
+    for root in crate::window::roots(surface) {
+        crate::decor::hide_children(&root, false);
+    }
     let key = surface.key();
     PICTURING.with(|p| p.borrow_mut().retain(|&k| k != key));
     surface.shaders.views.borrow_mut().clear();
@@ -913,7 +911,7 @@ fn start(surface: &Rc<Surface>) {
         return;
     }
     shaders.running.set(true);
-    surface.add_frame_callback(|surface, _| {
+    surface.add_draw_callback(|surface, _| {
         let more = frame(surface);
         if !more {
             surface.shaders.running.set(false);

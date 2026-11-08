@@ -538,7 +538,10 @@ pub struct Root {
     fonts: Vec<Arc<[u8]>>,
     appearance: Option<crate::platform::Appearance>,
     app_id: Option<String>,
+    url_schemes: Vec<String>,
     status_bar: Option<crate::StatusBarSetting>,
+    main_window: Option<crate::desktop::MainWindowOptions>,
+    translations: Option<crate::i18n::Translations>,
 }
 
 impl Root {
@@ -550,8 +553,36 @@ impl Root {
             fonts: Vec::new(),
             appearance: None,
             app_id: None,
+            url_schemes: Vec::new(),
             status_bar: None,
+            main_window: None,
+            translations: None,
         }
+    }
+
+    /// The app's translations (its `locales/` files, which nsh's generated
+    /// code compiles in): what [`t!`](crate::t) reads.
+    pub fn translations(mut self, translations: crate::i18n::Translations) -> Self {
+        self.translations = Some(translations);
+        self
+    }
+
+    /// [`Root::translations`] from the JSON the build writes of the app's
+    /// `locales/` files. A wrong one is logged and left out.
+    #[doc(hidden)]
+    pub fn translations_json(self, json: &str) -> Self {
+        match crate::i18n::Translations::from_json(json) {
+            Ok(translations) => self.translations(translations),
+            Err(e) => {
+                log::warn!("locales: {e}");
+                self
+            }
+        }
+    }
+
+    /// The app's translations ([`Root::translations`]).
+    pub fn translations_ref(&self) -> Option<&crate::i18n::Translations> {
+        self.translations.as_ref()
     }
 
     /// The app's id (`nsh.json` `"id"`, which nsh's generated code sets):
@@ -564,6 +595,19 @@ impl Root {
     /// The app's id ([`Root::app_id`]).
     pub fn app_id_ref(&self) -> Option<&str> {
         self.app_id.as_deref()
+    }
+
+    /// The URL schemes the app claims (`nsh.json` `schemes`,
+    /// which nsh's generated code sets): the links the core lets
+    /// through ([`crate::url_scheme`], [`crate::element::next_url_scheme_open`]).
+    pub fn url_schemes(mut self, schemes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.url_schemes = schemes.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The schemes the app claims ([`Root::url_schemes`]).
+    pub fn url_schemes_ref(&self) -> &[String] {
+        &self.url_schemes
     }
 
     /// Renders with design tokens `tokens` (`nsh-base`'s theme's; by
@@ -593,6 +637,39 @@ impl Root {
     pub fn status_bar(mut self, setting: crate::StatusBarSetting) -> Self {
         self.status_bar = Some(setting);
         self
+    }
+
+    /// The main window's launch options (`nsh.json` `"window"`, which nsh's
+    /// generated code sets): the runners open the window by them, and the
+    /// engine applies their attributes with the first frame and keeps the
+    /// placement with `restore_bounds`, as for a TSX app's bundle.
+    pub fn main_window(mut self, options: crate::desktop::MainWindowOptions) -> Self {
+        self.main_window = Some(options);
+        self
+    }
+
+    /// [`Root::main_window`] from `nsh.json`'s `"window"` object as JSON
+    /// text, which nsh's generated code compiles in (checked when it was
+    /// generated). A wrong one is logged and left out.
+    #[doc(hidden)]
+    pub fn main_window_json(self, json: &str) -> Self {
+        let options = serde_json::from_str::<serde_json::Value>(json)
+            .map_err(|e| e.to_string())
+            .and_then(|v| {
+                crate::desktop::MainWindowOptions::from_json(&v).map_err(|e| e.to_string())
+            });
+        match options {
+            Ok(options) => self.main_window(options),
+            Err(e) => {
+                log::warn!("nsh.json: window: {e}");
+                self
+            }
+        }
+    }
+
+    /// The main window's launch options ([`Root::main_window`]).
+    pub fn main_window_ref(&self) -> Option<&crate::desktop::MainWindowOptions> {
+        self.main_window.as_ref()
     }
 
     /// The status bar's default ([`Root::status_bar`]).
@@ -1173,10 +1250,13 @@ impl Registry {
         }
     }
 
-    /// The tokens of theme file `json` (`None`: the defaults), by the
-    /// source a set brings ([`Registry::tokens_from`]; `None`: no set
-    /// does).
-    pub fn tokens(&self, json: Option<&str>) -> Option<Result<super::Tokens, String>> {
+    /// The tokens of theme file `json` (`None`: the defaults) and what of it
+    /// was left out, by the source a set brings ([`Registry::tokens_from`];
+    /// `None`: no set does).
+    pub fn tokens(
+        &self,
+        json: Option<&str>,
+    ) -> Option<Result<(super::Tokens, Vec<String>), String>> {
         self.tokens.map(|source| source(json))
     }
 

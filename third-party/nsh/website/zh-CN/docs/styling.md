@@ -188,7 +188,7 @@ view()
 - **宽度和颜色**可按边设置：`borderTopWidth`、`borderRightWidth`……`borderTopColor`……，它们在两个方向上都保持各自的一侧；以及跟随[布局方向](./layout.md)的 `borderStartWidth`、`borderEndWidth`、`borderStartColor`、`borderEndColor`（Rust 中的 `.border_t(..)`、`.border_t_color(..)`、`.border_s(..)`、`.border_e_color(..)` 等）。
 - **颜色**：设置了宽度而没有设置颜色的边，用文字颜色绘制，与 CSS 的 `currentColor` 相同：`{ borderWidth: 1, color: "#0969da" }` 画出蓝色边框。
 - **圆角半径**可按角设置：`borderTopLeftRadius`、`borderTopRightRadius`、`borderBottomRightRadius`、`borderBottomLeftRadius`，以及跟随[布局方向](./layout.md)的 `borderTopStartRadius` / `borderTopEndRadius` / `borderBottomStartRadius` / `borderBottomEndRadius`（顶部起始、顶部结束、底部起始、底部结束；Rust 中的 `.rounded_tl(..)` 等、`.rounded_ss(..)`、`.rounded_se(..)`、`.rounded_es(..)`、`.rounded_ee(..)`，以及预设 `.rounded_lg()`、`.rounded_full()` 等）。
-- **`borderCurve: "continuous"`**（`.border_curve(BorderCurve::Continuous)`）绘制曲率平滑过渡到边的圆角，就像 iOS 应用图标，两个平台都支持。胶囊形状（`borderRadius` 为高度的一半）依然是胶囊。
+- **`borderCurve: "continuous"`**（`.border_curve(BorderCurve::Continuous)`，类名 `corner-squircle`）绘制超椭圆圆角，曲率平滑过渡到边，就像 iOS 应用图标：iOS、Android、macOS、Linux 支持，Web 上在浏览器支持 CSS `corner-shape` 时生效（Chromium）；其他情况下是相同半径的圆角。胶囊形状（`borderRadius` 为高度一半）仍是胶囊。
 - **`overflow: "hidden"`**（`.overflow_hidden()`）把子视图裁剪到圆角形状内。裁掉的部分在布局上同样被裁掉：它不会进入外层滚动视图的内容尺寸，所以一个盒子把子视图按更大的尺寸排版、再用 `transform` 缩小（transform 不影响布局）时，不会让滚动视图多出可滚动的范围。
 
 超过边长一半的半径会被截断，所以 `borderRadius: 9999`（`.rounded_full()`）会得到圆形或胶囊。
@@ -262,6 +262,7 @@ view()
 | `filter` | 作用于视图及其内容的 CSS 滤镜：`brightness()`、`contrast()`、`grayscale()`、`hue-rotate()`、`invert()`、`saturate()`、`sepia()`、`opacity()`、`blur()`、`drop-shadow()`（不写颜色时用文字颜色，与 CSS 相同）；多个之间用空格分隔 | `.brightness(n)`、`.contrast(n)`、`.grayscale(n)`、`.hue_rotate(angle)`、`.invert(n)`、`.saturate(n)`、`.sepia(n)`、`.blur(px(..))` |
 | `backdropFilter` | 作用于视图背后内容的滤镜：`"blur(10px)"`（毛玻璃） | `.backdrop_blur(px(10.0))`、`.backdrop_saturate(n)` 等 |
 | `glassEffect` | `"regular"` 或 `"clear"`，在 iOS 26、macOS 26 及更高版本绘制 Apple 的 Liquid Glass；`"none"`（默认值）使用 `backdropFilter` | `.glass_effect(GlassEffect::Regular)` |
+| `glassTintColor` | 在 iOS 26 和 macOS 26 上，玻璃材质染上的颜色；`null`（默认值）恢复系统默认 | `.glass_tint_color(color)` / `.glass_tint_color(None)` |
 | `mixBlendMode` | 视图与其背后内容的混合方式：`"multiply"`、`"screen"`、`"overlay"` 等 | `.mix_blend_mode(BlendMode::Multiply)` |
 
 ```rust tabs
@@ -314,6 +315,60 @@ view().backdrop_blur(px(30.0)).backdrop_material(BackdropMaterial::Regular)
 ```tsx
 <View style={{ height: 80, borderRadius: 16, backdropFilter: "blur(12px)", glassEffect: "regular" }} />
 ```
+
+`glassTintColor` 在 iOS 26 和 macOS 26 上给玻璃染色：`null`（或移除该键）恢复系统默认。
+显式透明色仍是 tint，不等于重置。没有 `glassEffect` 时不产生效果，更早系统的模糊回退不变。
+Rust 可以直接传颜色，也可以绑定 `Signal<Option<AdaptiveColor>>`：
+
+```rust
+let tint = signal(Some(AdaptiveColor::rgb(0xffd278, 0xffd278)));
+let panel = view().glass_effect(GlassEffect::Regular).glass_tint_color(tint);
+// 在相应的界面操作中：
+tint.set(None); // 恢复原生默认值
+tint.set(Some(AdaptiveColor::rgb(0x5080ff, 0x5080ff)));
+```
+
+```tsx
+<View style={{ height: 80, borderRadius: 16, backdropFilter: "blur(12px)", glassEffect: "regular", glassTintColor: "rgba(255, 210, 120, 0.35)" }} />
+```
+
+在 macOS 上，`macos={{ backdrop: { material, blending, state } }}` 选择独立的 `NSVisualEffectView` 材质，不需要模糊滤镜。`material` 可取 `"titlebar"`、`"selection"`、`"menu"`、`"popover"`（默认）、`"sidebar"`、`"headerView"`、`"sheet"`、`"windowBackground"`、`"hudWindow"`、`"fullScreenUI"`、`"toolTip"`、`"contentBackground"`、`"underWindowBackground"` 或 `"underPageBackground"`；`blending` 为 `"withinWindow"`（默认）或 `"behindWindow"`；`state` 为 `"followsWindowActiveState"`、`"active"`（默认）或 `"inactive"`。显式背景优先于 `glassEffect` 和 `backdropFilter`；不设置时，macOS 26 及更高版本使用玻璃，其他版本使用模糊。Rust 使用 `.macos_backdrop(backdrop)`，该结构体标注了 `#[non_exhaustive]`：从 `MacOsBackdrop::default()` 开始，再设置 `material`、`blending` 和 `state`；`None`（默认）保留回退行为。`"behindWindow"` 只有在透明窗口中才能显示窗口背后的内容。窗口属性可以请求透明；自定义 Rust 宿主也可以用 `AppOptions { transparent: true, .. }` 提供初始默认值，显式主窗口属性及后续窗口更新优先。标准宿主默认不透明，视图的混合方式本身不会改变窗口透明度。嵌入的 `AppView` 由宿主窗口决定。
+
+```tsx
+<View macos={{ backdrop: { material: "hudWindow", blending: "behindWindow" } }} style={{ height: 64 }} />
+```
+
+### 渐进式模糊
+
+沿某条边逐渐增强的模糊（如顶栏下方、图片说明文字背后）由多层 `backdropFilter` 组成：每层比上一层更强，并用 `maskImage` 往后渐显。五层、半径逐层翻倍即可看不出分层：
+
+```tsx
+const LAYERS = 5;
+
+function ProgressiveBlur(props: { radius: number; style: ViewStyle }) {
+  return (
+    <View style={{ pointerEvents: "none", ...props.style }}>
+      <Each of={Array.from({ length: LAYERS }, (_, i) => i)}>
+        {(i) => (
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backdropFilter: `blur(${props.radius / 2 ** (LAYERS - 1 - i())}px)`,
+              maskImage: `linear-gradient(to bottom, transparent ${(i() / LAYERS) * 100}%, black ${((i() + 1) / LAYERS) * 100}%)`,
+            }}
+          />
+        )}
+      </Each>
+    </View>
+  );
+}
+```
+
+带遮罩的 `backdropFilter` 只绘制模糊本身，不带系统材质的色调，半径也是精确的，iOS 和 macOS 同样如此。每一层在每帧都要模糊窗口内容，所以层数要少、面积要小。Linux 和 GPUI 不绘制 `backdropFilter`，如果上面的文字必须清晰可读，请给这块区域加上渐隐的 `backgroundImage`。
 
 ## 轮廓线、不透明度与可见性
 
@@ -436,6 +491,7 @@ view()
 | `tintColor` | `tint-*` | 重新给 `<Image>` 的不透明像素上色（模板图片、图标） |
 | `borderCurve` | | `"continuous"`：与边平滑衔接的圆角，与系统自身的圆角一致（Apple 的连续圆角） |
 | `glassEffect` | | 在 iOS 26 和 macOS 26 上于视图背后绘制 Apple 的 Liquid Glass，其他平台使用 `backdropFilter` |
+| `glassTintColor` | | 该玻璃在 iOS 26 和 macOS 26 上的染色；`null` 恢复原生默认值 |
 | `writingDirection` | | 文字的基础方向：`"auto"`（默认，按内容判断，与平台自带的文字控件一致）、`"ltr"` 或 `"rtl"`；布局方向由 `direction` 设置 |
 | `textAlignVertical` | | 文字比 `<Text>` 的框矮时的位置：`"top"`（默认）、`"center"` 或 `"bottom"` |
 | `textAlign: "auto"` | | 文字的自然一侧，由其方向决定（默认） |

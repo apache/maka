@@ -1,0 +1,7 @@
+{
+  "name": "Tasks",
+  "id": "com.example.tasks.rust",
+  "appearance": "system",
+  "rust": ".",
+  "root": "App"
+}

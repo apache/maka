@@ -669,7 +669,7 @@ impl RichEditorSession {
     }
 
     /// The caret's box `{ x, y, width, height }` at `pos` in page
-    /// coordinates (the root view's, as `onMouseMove`'s `pagePosition` and
+    /// coordinates (the root view's, as `onHoverMove`'s `pagePosition` and
     /// a responder's `pageX` / `pageY`; ProseMirror's `coordsAtPos` in the
     /// window's), or `null` before the pointer has been over the editor.
     /// Throws a `RangeError` for a position outside the document.

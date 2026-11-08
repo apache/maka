@@ -20,6 +20,7 @@ mod access;
 mod agent;
 mod animation;
 mod app;
+mod audio;
 mod canvas;
 mod chrome;
 mod decor;
@@ -28,18 +29,23 @@ pub mod dev;
 mod file_drop;
 mod file_requests;
 mod fps;
+mod global_shortcut;
 #[cfg(test)]
 mod gtk_test;
 mod image;
 mod input;
+mod key_focus;
 mod keymap;
+mod links;
 mod menu_style;
 mod mount;
 mod native;
 mod navigation;
+mod notifications;
 mod scroll;
 mod selectable_view;
 mod shader;
+mod sound;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -47,7 +53,11 @@ mod system;
 mod text;
 mod text_input;
 mod transition;
+mod tray;
 mod view;
+mod window;
+#[cfg(feature = "dev")]
+mod xtest;
 
 pub use gtk4;
 pub use nsh_core::platform::{Appearance, Locale};
@@ -60,5 +70,6 @@ pub use crate::app::set_root;
 pub use crate::{
     app::{AppOptions, AppSource, AppView, run_app, set_components, set_ui_sets},
     image::AssetBase,
+    links::set_exec_args,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
 };

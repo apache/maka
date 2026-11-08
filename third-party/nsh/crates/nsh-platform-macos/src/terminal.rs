@@ -127,7 +127,7 @@ impl TerminalSurface {
             *view.surface().terminal_wake.borrow_mut() = Some(wake.clone());
             let mut environment = view.surface().environment.get();
             environment.pixel_ratio = scale;
-            environment.terminal_keyboard = true;
+            environment.ctrl_for_command = true;
             environment.lifecycle = nsh_core::platform::Lifecycle::Active;
             view.surface().environment.set(environment);
             let error = Rc::new(RefCell::new(None));
@@ -351,7 +351,7 @@ impl NativeSurface for TerminalSurface {
         self.view.surface().terminal_scale.set(scale);
         let mut environment = self.view.surface().environment.get();
         environment.pixel_ratio = scale;
-        environment.terminal_keyboard = true;
+        environment.ctrl_for_command = true;
         self.view.surface().environment.set(environment);
         let width = size.width.0 as f32 / scale;
         let height = size.height.0 as f32 / scale;
@@ -580,7 +580,7 @@ impl NativeSurface for TerminalSurface {
             },
         );
         let mut environment = surface.environment.get();
-        environment.terminal_keyboard = true;
+        environment.ctrl_for_command = true;
         environment.pixel_ratio = self.frames.borrow().scale();
         environment.lifecycle = if self.active.get() {
             nsh_core::platform::Lifecycle::Active

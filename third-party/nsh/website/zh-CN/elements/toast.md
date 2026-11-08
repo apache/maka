@@ -143,7 +143,7 @@ Manager 没有界面：它不渲染任何东西，也不运行计时器。应用
 
 ## ToastStack
 
-栈的子元素就是它的 toast，从旧到新。从 `placement` 指定的边缘（默认 `"topRight"`；底部的锚点向上排列）开始，收起时 toast 以 `collapsedPeek` 的间距重叠，越靠后的每层窄 `collapsedScaleStep`，只显示 `collapsedVisible` 层；展开时它们是间距为 `expandedGap` 的列表。toast 的出现、离开和栈的展开都以临界阻尼弹簧移动它们。指针停在栈上或手指按在栈上时它是展开的（`onExpandedChange({ expanded })`；Rust 的 `ToastStackState` 用 `is_expanded()` 读取），这样应用可以在用户阅读或触摸 toast 时暂停计时。
+栈的子元素就是它的 toast，从旧到新。从 `placement` 指定的边缘（默认 `"topRight"`；底部的锚点向上排列）开始，收起时 toast 以 `collapsedPeek` 的间距重叠，越靠后的每层窄 `collapsedScaleStep`，只显示 `collapsedVisible` 层；展开时它们是间距为 `expandedGap` 的列表（终端里间距为三行，每个 toast 的边框与下一个之间空一行）。toast 的出现、离开和栈的展开都以临界阻尼弹簧移动它们。指针停在栈上或手指按在栈上时它是展开的（`onExpandedChange({ expanded })`；Rust 的 `ToastStackState` 用 `is_expanded()` 读取），这样应用可以在用户阅读或触摸 toast 时暂停计时。
 
 栈由应用放置：放在边缘的 [Overlay](./overlay.md) 中，并位于安全区域之内。它的 `class` 和 `style` 决定宽度。只要它包含 toast，它就会收到 Escape 和 Android 返回键（`onCancel`；`closeOnEscape={false}` 把它们留给应用的其他部分）：关闭最新的 toast。
 

@@ -213,7 +213,8 @@ pub(crate) fn placement(doc: &Node, cell_pos: usize) -> Option<(i16, i16, i16, i
     ))
 }
 
-/// A table's block: a grid, its top and left borders the theme's.
+/// A table's block: a grid, its top and left borders the theme's (every
+/// side in a terminal).
 pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View {
     let (cols_rv, rows_rv) = (rv.clone(), rv.clone());
     wrapper
@@ -241,6 +242,11 @@ pub(crate) fn grid(wrapper: View, rv: &Rv, item: ReadSignal<BlockItem>) -> View 
         .style_when(move || fixed_width(&item.get().node), |s| s.self_start())
         .border_t(px(1.0))
         .border_l(px(1.0))
+        // A terminal draws no cell's line (only a box's): the table's
+        // own box is closed on every side.
+        .when(crate::terminal::is_terminal(), |v| {
+            v.border_r(px(1.0)).border_b(px(1.0))
+        })
         .border_color(move || theme().border)
 }
 

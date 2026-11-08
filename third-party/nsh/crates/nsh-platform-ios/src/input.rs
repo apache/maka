@@ -2,7 +2,7 @@
 //! inside a container view that carries the decoration (background,
 //! border, corners, shadow) like any other view.
 
-use std::cell::Cell;
+use std::{cell::Cell, ffi::CStr};
 
 use nsh_core::{
     AutoCapitalize, AutoFill, Bounds, Color, InputConfig, KeyboardAppearance, KeyboardType, NodeId,
@@ -1136,12 +1136,32 @@ fn content_type(fill: AutoFill) -> Option<&'static NSString> {
             AutoFill::PostalCode => UITextContentTypePostalCode,
             AutoFill::Country => UITextContentTypeCountryName,
             AutoFill::CreditCardNumber => UITextContentTypeCreditCardNumber,
-            AutoFill::CreditCardExpiration => UITextContentTypeCreditCardExpiration,
-            AutoFill::CreditCardSecurityCode => UITextContentTypeCreditCardSecurityCode,
-            AutoFill::CreditCardName => UITextContentTypeCreditCardName,
+            AutoFill::CreditCardExpiration => {
+                ios17_content_type(c"UITextContentTypeCreditCardExpiration")?
+            }
+            AutoFill::CreditCardSecurityCode => {
+                ios17_content_type(c"UITextContentTypeCreditCardSecurityCode")?
+            }
+            AutoFill::CreditCardName => ios17_content_type(c"UITextContentTypeCreditCardName")?,
             AutoFill::Url => UITextContentTypeURL,
-            AutoFill::Birthdate => UITextContentTypeBirthdate,
+            AutoFill::Birthdate => ios17_content_type(c"UITextContentTypeBirthdate")?,
         })
+    }
+}
+
+/// The UIKit constant `name`, which exists from iOS 17 on; `None` before.
+///
+/// Looked up at run time: naming the `objc2_ui_kit` static is a strong import,
+/// and dyld then refuses to start the app on iOS 15 and 16, whether or not an
+/// input uses it. See `docs/dev/pitfalls.md`.
+fn ios17_content_type(name: &CStr) -> Option<&'static NSString> {
+    // SAFETY: the symbol, when present, is UIKit's immutable
+    // `NSString *const`, set for the life of the process.
+    unsafe {
+        let symbol = libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr());
+        (symbol as *const *const NSString)
+            .as_ref()
+            .and_then(|constant| constant.as_ref())
     }
 }
 
@@ -1169,4 +1189,45 @@ fn placeholder(config: &InputConfig, font: &objc2_ui_kit::UIFont) -> Retained<NS
 fn ui_color(color: Color) -> Retained<UIColor> {
     let (r, g, b, a) = color.to_f64();
     UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On iOS 17 and later, the kinds looked up at run time are UIKit's own
+    /// constants, as if named directly.
+    #[test]
+    fn ios_17_content_types_resolve_to_uikits_constants() {
+        use objc2_ui_kit::{
+            UITextContentTypeBirthdate, UITextContentTypeCreditCardExpiration,
+            UITextContentTypeCreditCardName, UITextContentTypeCreditCardSecurityCode,
+        };
+
+        // SAFETY: immutable UIKit constants.
+        let expected = unsafe {
+            [
+                (
+                    AutoFill::CreditCardExpiration,
+                    UITextContentTypeCreditCardExpiration,
+                ),
+                (
+                    AutoFill::CreditCardSecurityCode,
+                    UITextContentTypeCreditCardSecurityCode,
+                ),
+                (AutoFill::CreditCardName, UITextContentTypeCreditCardName),
+                (AutoFill::Birthdate, UITextContentTypeBirthdate),
+            ]
+        };
+        for (fill, constant) in expected {
+            let found = content_type(fill).unwrap_or_else(|| panic!("{fill:?} has no type"));
+            assert!(std::ptr::eq(found, constant), "{fill:?}");
+        }
+    }
+
+    /// A constant the running system does not have leaves the type unset.
+    #[test]
+    fn a_missing_content_type_is_none() {
+        assert!(ios17_content_type(c"UITextContentTypeThatDoesNotExist").is_none());
+    }
 }

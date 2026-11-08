@@ -25,7 +25,7 @@ use crate::{
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
-use nsh_platform_windows::{AppOptions, AppSource, quit_app, run_app, with_running_view};
+use nsh_platform_windows::{AppOptions, quit_app, run_app_with_config, with_running_view};
 use tokio::{
     runtime::{Handle, Runtime},
     sync::watch,
@@ -64,8 +64,8 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         .take_requests();
     carry_out(requests, &runtime);
     refuse_reloads(reloading, runtime.handle());
-    let result = run_app(
-        AppSource::Config(shell.attach(config)),
+    let result = run_app_with_config(
+        shell.attach(config),
         AppOptions {
             app_id: APP_ID.into(),
             title: TITLE.into(),
@@ -172,8 +172,8 @@ mod tests {
                 quit_app();
             }
         });
-        let code = run_app(
-            AppSource::Config(config),
+        let code = run_app_with_config(
+            config,
             AppOptions {
                 app_id: "org.apache.maka.direct2d-test".into(),
                 title: "Direct2D exit bridge test".into(),

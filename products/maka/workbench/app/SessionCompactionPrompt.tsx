@@ -170,7 +170,7 @@ export function SessionCompactionPrompt(props: {
         style={{
           width: '100%',
           maxWidth: 880,
-          height: '100%',
+          flex: 1,
           maxHeight: 800,
           minHeight: 0,
           padding: 16,

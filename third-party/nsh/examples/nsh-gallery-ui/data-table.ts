@@ -1,4 +1,5 @@
 import type { DataTableClasses } from "nsh/base";
+import { terminal } from "./theme";
 
 /** Extra room for this UI layer's cell padding and title/button gap. */
 export const dataTableFitPadding = 16;
@@ -15,7 +16,11 @@ export const dataTableClasses: DataTableClasses = {
   sortIndicator: "rounded text-muted-foreground hover:bg-foreground/10 active:bg-foreground/15",
   sortAscending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
   sortDescending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
-  resizeHandle: "bg-border group-hover:bg-primary group-active:bg-primary",
+  // A terminal's columns stand apart by their spaces: the handle shows,
+  // faint, only while the pointer is on it.
+  resizeHandle: terminal
+    ? "group-hover:bg-muted-foreground/40 group-active:bg-primary"
+    : "bg-border group-hover:bg-primary group-active:bg-primary",
   moveIndicator: "bg-primary",
   row: "border-b border-border/60",
   rowOdd: "bg-muted/35",

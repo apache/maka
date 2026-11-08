@@ -9,7 +9,10 @@ use super::{
     glyphs::{GlyphName, glyph},
     scripts::{FileRef, Source, Tool, ToolKind, ToolState},
 };
-use crate::ui::{Badge, Finish, Finished, IconName, MONO, Tone, colors, icon, press, radius};
+use crate::ui::{
+    Badge, Finish, Finished, IconName, MONO, TERMINAL_COLUMN, Tone, colors, icon, press, radius,
+    terminal,
+};
 
 /// A ring that spins natively, its arc in `tint` (a value, or bound).
 pub(crate) fn spinner(size: f32, tint: impl IntoReactive<AdaptiveColor>) -> View {
@@ -34,7 +37,7 @@ pub(crate) fn caret() -> View {
 }
 
 /// A small icon button under a reply (44 pt touch target), tinted while
-/// `active`.
+/// `active`; its label in the terminal.
 pub(crate) fn action_button(
     name: impl Into<Prop<GlyphName>>,
     label: &'static str,
@@ -44,6 +47,22 @@ pub(crate) fn action_button(
 ) -> AnyElement {
     let name: Prop<GlyphName> = name.into();
     let on_press: Listener<()> = on_press.into();
+    // The terminal draws no glyphs: the label, in the tone while active.
+    if terminal() {
+        return press()
+            .label(label)
+            .selected(active)
+            .on_press(on_press)
+            .px(px(TERMINAL_COLUMN))
+            .child(text(label).text_color(move || {
+                if active.get() {
+                    tone.color()
+                } else {
+                    colors::MUTED
+                }
+            }))
+            .into_element();
+    }
     press()
         .scale(0.86)
         .label(label)

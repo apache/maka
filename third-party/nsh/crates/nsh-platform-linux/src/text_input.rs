@@ -241,6 +241,8 @@ pub(crate) struct InputState {
     /// Escape was pressed during a composition: cancels it before the
     /// window blurs or navigates.
     cancelling_composition: Cell<bool>,
+    /// A multiline editor's lines of the configured height.
+    lines: RefCell<LineBoxes>,
     /// JS's value set during a composition, with its count: setting the
     /// text then would reset the input method, so it is applied when the
     /// composition ends.
@@ -501,6 +503,7 @@ impl Ctx {
         let Some(input) = self.input.upgrade() else {
             return;
         };
+        input.composed_line(text);
         if text.is_empty() {
             let cancelled = input.cancelling_composition.replace(false);
             self.composition_ended();
@@ -678,6 +681,32 @@ impl Drop for InputState {
 }
 
 impl InputState {
+    /// Gives the paragraphs an edit touched their line boxes.
+    fn edited_lines(&self) {
+        let Editor::Area { view, .. } = &*self.editor.borrow() else {
+            return;
+        };
+        let buffer = view.buffer();
+        let composition = self.composition.borrow();
+        let preedit = composition.as_deref().unwrap_or_default();
+        let mut lines = self.lines.borrow_mut();
+        if let Some((start, end)) = lines.edited.take() {
+            let first = buffer.iter_at_offset(start).line();
+            let last = buffer.iter_at_offset(end).line();
+            lines.apply(view, first, last, preedit);
+        }
+    }
+
+    /// Gives the caret's paragraph its line box with the input method's
+    /// composition in it, which is no part of the buffer's text.
+    fn composed_line(&self, preedit: &str) {
+        if let Editor::Area { view, .. } = &*self.editor.borrow() {
+            let buffer = view.buffer();
+            let line = buffer.iter_at_mark(&buffer.get_insert()).line();
+            self.lines.borrow_mut().apply(view, line, line, preedit);
+        }
+    }
+
     /// The placeholder shows while there is no text, nor an input
     /// method's composition (GTK draws its preedit text outside the text).
     fn update_placeholder(&self) {
@@ -761,6 +790,7 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
         caret: Cell::new(Bounds::default()),
         composition: RefCell::new(None),
         cancelling_composition: Cell::new(false),
+        lines: RefCell::default(),
         held: RefCell::new(None),
         cx: std::cell::OnceCell::new(),
         window: RefCell::new(None),
@@ -853,6 +883,11 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
             let buffer = view.buffer();
             let c = cx.clone();
             buffer.connect_insert_text(move |b, iter, text| {
+                if let Some(input) = c.input.upgrade() {
+                    let start = iter.offset();
+                    let end = start + text.chars().count() as i32;
+                    input.lines.borrow_mut().edit(start, end);
+                }
                 let Some(input) = c.user_edit() else { return };
                 let fit = c.allowed(
                     || b.text(&b.start_iter(), &b.end_iter(), false).into(),
@@ -873,6 +908,10 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
             });
             let c = cx.clone();
             buffer.connect_delete_range(move |_, start, end| {
+                if let Some(input) = c.input.upgrade() {
+                    let at = start.offset().min(end.offset());
+                    input.lines.borrow_mut().edit(at, at);
+                }
                 if start != end
                     && let Some(input) = c.user_edit()
                 {
@@ -886,7 +925,12 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
                 }
             });
             let c = cx.clone();
-            buffer.connect_changed(move |_| c.changed());
+            buffer.connect_changed(move |_| {
+                if let Some(input) = c.input.upgrade() {
+                    input.edited_lines();
+                }
+                c.changed();
+            });
             let c = cx.clone();
             view.connect_preedit_changed(move |_, text| c.preedit_changed(text));
             let c = cx.clone();
@@ -1078,7 +1122,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         }
     }
     if let Editor::Area { view, .. } = &editor {
-        set_line_box(view, &config.style);
+        input.lines.borrow_mut().configure(view, &config.style);
     }
     let label = &input.placeholder;
     label.set_label(&config.placeholder);
@@ -1180,26 +1224,6 @@ fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>, editor: &Editor) {
     *input.auto_focus.borrow_mut() = Some((widget, handler));
 }
 
-/// Flushes admitted edits and cancels delayed work when a subtree leaves.
-pub(crate) fn retire_cell(view: &NshView) {
-    let input = view.state().input.clone();
-    if let Some(input) = input {
-        if let Some((widget, handler)) = input.auto_focus.borrow_mut().take() {
-            widget.disconnect(handler);
-        }
-        if let Some(cx) = input.cx.get() {
-            cx.focus_changed();
-            cx.flush_change();
-            if input.composition_idle.borrow().is_some() {
-                cx.flush_composition();
-            }
-        }
-    }
-    for child in view.child_views() {
-        retire_cell(&child);
-    }
-}
-
 /// Places the editor and the placeholder at the content box.
 fn place(view: &NshView, input: &InputState) {
     let content = input.content.get().unwrap_or_else(|| {
@@ -1299,19 +1323,162 @@ fn place(view: &NshView, input: &InputState) {
     }
 }
 
-/// Gives a text view's lines the configured height: it ignores CSS's
-/// `line-height`. The extra space goes around the text rather than in the
-/// line, as the caret is as tall as the text between these pixels: half
-/// above and below a line, all of it between a line's wrapped parts.
-fn set_line_box(view: &gtk::TextView, style: &ResolvedTextStyle) {
-    let layout = view.create_pango_layout(Some("Ag"));
-    layout.set_font_description(Some(&crate::text::main_font_description(style)));
-    // Rounded as the text view rounds its lines (`pixel_size` rounds up).
-    let font = (layout.size().1 as f32 / gtk::pango::SCALE as f32).round() as i32;
-    let (above, below) = line_box(style.line_height.0, font);
-    view.set_pixels_above_lines(above);
-    view.set_pixels_below_lines(below);
-    view.set_pixels_inside_wrap(above + below);
+/// Gives a text view's lines the configured height, on one baseline.
+///
+/// A text view ignores CSS's `line-height`, so the extra space goes around
+/// the text rather than in the line (the caret is as tall as the text
+/// between these pixels): above and below a paragraph, all of it between
+/// its wrapped parts. A fallback font (CJK in a Latin font) makes a line
+/// taller and puts its baseline lower than the main font's, so with the same
+/// pixels the first such character typed would move the text down, and past
+/// a box of one line's height, which then scrolls to the caret. Such a
+/// paragraph has a tag of its own (a paragraph takes the pixels of its first
+/// character): a line height factor shrinks its runs around their centers
+/// until the baseline is the main font's, and pixels make up the height. A
+/// wrapped part of it without the fallback font shrinks too, and stands a
+/// little closer to its neighbours.
+#[derive(Default)]
+struct LineBoxes {
+    /// The text view and what the boxes were measured for.
+    measured: Option<(gtk::TextView, gtk::pango::FontDescription, i32)>,
+    /// The main font's ascent and height.
+    main: (f32, f32),
+    /// The tags of the paragraphs that do not have the main font's box.
+    tags: Vec<(ParagraphBox, gtk::TextTag)>,
+    /// The character range edited, until the buffer says it has changed.
+    edited: Option<(i32, i32)>,
+}
+
+impl LineBoxes {
+    /// Measures the boxes for `style`, unless they are measured already.
+    fn configure(&mut self, view: &gtk::TextView, style: &ResolvedTextStyle) {
+        let font = crate::text::main_font_description(style);
+        let height = style.line_height.0.round() as i32;
+        let measured = (view.clone(), font, height);
+        if self.measured.as_ref() == Some(&measured) {
+            return;
+        }
+        for (_, tag) in self.tags.drain(..) {
+            view.buffer().tag_table().remove(&tag);
+        }
+        self.main = font_line(view, &measured.1, "Ag");
+        let main = paragraph_box(height, self.main, self.main);
+        view.set_pixels_above_lines(main.above);
+        view.set_pixels_below_lines(main.below);
+        view.set_pixels_inside_wrap(main.above + main.below);
+        self.measured = Some(measured);
+        self.apply(view, 0, view.buffer().line_count() - 1, "");
+    }
+
+    /// Notes an edit of the characters from `start` to `end`.
+    fn edit(&mut self, start: i32, end: i32) {
+        let (start, end) = match self.edited {
+            Some((s, e)) => (s.min(start), e.max(end)),
+            None => (start, end),
+        };
+        self.edited = Some((start, end));
+    }
+
+    /// Gives the paragraphs `first` to `last` their boxes. `preedit` is the
+    /// input method's composition, shown in the caret's paragraph.
+    fn apply(&mut self, view: &gtk::TextView, first: i32, last: i32, preedit: &str) {
+        let Some((_, font, height)) = self.measured.clone() else {
+            return;
+        };
+        let buffer = view.buffer();
+        let caret = buffer.iter_at_mark(&buffer.get_insert()).line();
+        let main = paragraph_box(height, self.main, self.main);
+        for line in first..=last {
+            let Some(start) = buffer.iter_at_line(line) else {
+                break;
+            };
+            let mut end = start;
+            if !end.ends_line() {
+                end.forward_to_line_end();
+            }
+            let mut text = buffer.text(&start, &end, true).to_string();
+            if line == caret {
+                text.push_str(preedit);
+            }
+            let metrics = if text.is_ascii() {
+                self.main
+            } else {
+                font_line(view, &font, &text)
+            };
+            let paragraph = paragraph_box(height, self.main, metrics);
+            let mut next = start;
+            next.forward_line();
+            for (_, tag) in &self.tags {
+                buffer.remove_tag(tag, &start, &next);
+            }
+            if paragraph != main {
+                buffer.apply_tag(&self.tag(&buffer, paragraph), &start, &next);
+            }
+        }
+    }
+
+    /// The tag of `paragraph`.
+    fn tag(&mut self, buffer: &gtk::TextBuffer, paragraph: ParagraphBox) -> gtk::TextTag {
+        if let Some((_, tag)) = self.tags.iter().find(|(p, _)| *p == paragraph) {
+            return tag.clone();
+        }
+        let tag = gtk::TextTag::builder()
+            .pixels_above_lines(paragraph.above)
+            .pixels_below_lines(paragraph.below)
+            .pixels_inside_wrap(paragraph.above + paragraph.below)
+            .build();
+        if paragraph.shrink != 1.0 {
+            tag.set_property("line-height", paragraph.shrink);
+        }
+        buffer.tag_table().add(&tag);
+        self.tags.push((paragraph, tag.clone()));
+        tag
+    }
+}
+
+/// The ascent and height of a line of `text` in `font`, with its fallback
+/// fonts.
+fn font_line(view: &gtk::TextView, font: &gtk::pango::FontDescription, text: &str) -> (f32, f32) {
+    let layout = view.create_pango_layout(Some(text));
+    layout.set_font_description(Some(font));
+    let pixels = |units: i32| units as f32 / gtk::pango::SCALE as f32;
+    (pixels(layout.baseline()), pixels(layout.size().1))
+}
+
+/// What puts a paragraph's lines on the main font's baseline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ParagraphBox {
+    /// Pixels above and below its lines.
+    above: i32,
+    below: i32,
+    /// The factor of its runs' heights.
+    shrink: f32,
+}
+
+/// The box of a paragraph whose line has `metrics` (ascent, height) among
+/// lines `height` high of the `main` font: that font stands centered, with
+/// no pixels if it is taller. Pixels are whole,
+/// rounded as the text view rounds its lines (`pixel_size` rounds up); the
+/// shrinking is not, for the baselines to meet exactly.
+fn paragraph_box(height: i32, main: (f32, f32), metrics: (f32, f32)) -> ParagraphBox {
+    // Without a line height every line keeps the height of its fonts.
+    if height <= 0 {
+        return ParagraphBox {
+            above: 0,
+            below: 0,
+            shrink: 1.0,
+        };
+    }
+    let baseline = ((height - main.1.round() as i32).max(0) / 2) as f32 + main.0;
+    // A run shrinks around its center, half of it off its ascent.
+    let excess = (metrics.0 - baseline).max(0.0);
+    let shrunk = (metrics.1 - 2.0 * excess).max(1.0);
+    let above = (baseline - metrics.0).max(0.0).round() as i32;
+    ParagraphBox {
+        above,
+        below: (height - above - shrunk.round() as i32).max(0),
+        shrink: shrunk / metrics.1.max(1.0),
+    }
 }
 
 /// How far to move a multiline placeholder for its first line to stand on
@@ -1343,13 +1510,6 @@ fn placeholder_lift(
         layout.set_attributes(Some(&attrs));
     }
     (typed + text.pixels_above_lines() as f32 - baseline(layout)).round() as i32
-}
-
-/// The whole pixels above and below a line of a font `font` high to make it
-/// `line_height` high: none without a line height or if the font is taller.
-fn line_box(line_height: f32, font: i32) -> (i32, i32) {
-    let extra = (line_height.round() as i32 - font).max(0);
-    (extra / 2, extra - extra / 2)
 }
 
 /// The horizontal alignment of the text (0: left, 1: right).
@@ -1471,11 +1631,19 @@ fn css_families(name: &str) -> Option<String> {
 }
 
 /// The text input `view` holds now (`None`: it is no input).
-#[cfg(any(feature = "dev", test))]
+#[cfg(any(feature = "dev", all(test, feature = "js")))]
 pub(crate) fn current_text(view: &NshView) -> Option<String> {
     let input = view.state().input.clone()?;
     let text = input.editor.borrow().text();
     Some(text)
+}
+
+/// Whether the input `view` inserts what is pasted (`pasteBehavior`).
+#[cfg(feature = "dev")]
+pub(crate) fn pastes_text(view: &NshView) -> bool {
+    view.state().input.clone().is_some_and(|input| {
+        input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert
+    })
 }
 
 /// `InputValue`: JS's text, unless the user typed since JS saw `count`.
@@ -1540,19 +1708,6 @@ pub(crate) fn focus(view: &NshView) {
     }
 }
 
-/// `focus()` on a non-input view that is a focus stop.
-pub(crate) fn focus_view(view: &NshView) {
-    let can_focus = {
-        let s = view.state();
-        s.props.focus_stop(s.events.contains(EventKind::Press))
-    };
-    if !can_focus {
-        return;
-    }
-    ensure_transient_focusable(view);
-    view.grab_focus();
-}
-
 /// `blur()`.
 pub(crate) fn blur(view: &NshView) {
     let input = view.state().input.clone();
@@ -1561,20 +1716,20 @@ pub(crate) fn blur(view: &NshView) {
     }
 }
 
-/// `blur()` on a non-input view.
-pub(crate) fn blur_view(view: &NshView) {
-    unfocus(view.upcast_ref());
-}
-
-/// Unfocuses whatever input or focus stop of the surface has focus.
+/// Unfocuses whatever input or focus stop of the surface has focus, in any
+/// of its windows (the main one and the app's own).
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
-    let root = surface.root.upcast_ref::<gtk::Widget>();
-    if let Some(window) = root.root()
-        && let Some(focus) = window.focus()
-        && (focus.is::<gtk::Text>() || focus.is::<gtk::TextView>() || focus.is::<NshView>())
-        && (focus == *root || focus.is_ancestor(root))
-    {
-        window.set_focus(None::<&gtk::Widget>);
+    let mut roots = vec![surface.root.clone()];
+    roots.extend(crate::window::roots(surface).into_iter().map(|(_, r)| r));
+    for root in roots {
+        let root = root.upcast_ref::<gtk::Widget>();
+        if let Some(window) = root.root()
+            && let Some(focus) = window.focus()
+            && (focus.is::<gtk::Text>() || focus.is::<gtk::TextView>() || focus.is::<NshView>())
+            && (focus == *root || focus.is_ancestor(root))
+        {
+            window.set_focus(None::<&gtk::Widget>);
+        }
     }
     if !has_pending(surface) {
         disarm(surface);
@@ -1612,108 +1767,6 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
         utf16_to_char(&text, start) as i32,
         utf16_to_char(&text, end) as i32,
     );
-}
-
-/// One undoable application edit of the focused input `view`, dropped unless
-/// the input still matches what the app saw (`Command::ReplaceRange`).
-pub(crate) fn replace_range(view: &NshView, command: &nsh_core::Command) {
-    let nsh_core::Command::ReplaceRange {
-        range,
-        text,
-        expected_text,
-        expected_selection,
-        count,
-    } = command
-    else {
-        return;
-    };
-    let Some(input) = view.state().input.clone() else {
-        return;
-    };
-    let editor = input.editor.borrow().clone();
-    let current = editor.text();
-    let (sel_start, sel_end) = editor.selection();
-    let observed = char_to_utf16(&current, sel_start.max(0) as usize)
-        ..char_to_utf16(&current, sel_end.max(0) as usize);
-    if !input.focused.get()
-        || !input.config.borrow().editable
-        || view.state().props.accessibility.state.disabled
-        || input.count.get() != *count
-        || input.composition.borrow().is_some()
-        || current != *expected_text
-        || observed != *expected_selection
-        || range.start > range.end
-        || !splits_no_character(expected_text, range)
-    {
-        return;
-    }
-    let start_char = utf16_to_char(&current, range.start);
-    let end_char = utf16_to_char(&current, range.end);
-    let start_byte = current
-        .char_indices()
-        .nth(start_char)
-        .map_or(current.len(), |(i, _)| i);
-    let end_byte = current
-        .char_indices()
-        .nth(end_char)
-        .map_or(current.len(), |(i, _)| i);
-    let kept = utf16_len(&current[..start_byte]) + utf16_len(&current[end_byte..]);
-    let fit = match input.config.borrow().max_length {
-        Some(max) => clip_utf16(text, (max as usize).saturating_sub(kept)),
-        None => text.as_str(),
-    };
-    if !text.is_empty() && fit.is_empty() {
-        return;
-    }
-    if &current[start_byte..end_byte] == fit {
-        let caret = (start_char + fit.chars().count()) as i32;
-        editor.select(caret, caret);
-        if let Some(cx) = input.cx.get() {
-            cx.selection_changed();
-        }
-        return;
-    }
-    let start_char = start_char as i32;
-    let end_char = end_char as i32;
-    input.pasting.set(true);
-    match &editor {
-        Editor::Line(field) => {
-            field.delete_text(start_char, end_char);
-            let mut pos = start_char;
-            if !fit.is_empty() {
-                field.insert_text(fit, &mut pos);
-            }
-            field.set_position(pos);
-        }
-        Editor::Area { view, .. } => {
-            let buffer = view.buffer();
-            buffer.begin_user_action();
-            let mut start_iter = buffer.iter_at_offset(start_char);
-            let mut end_iter = buffer.iter_at_offset(end_char);
-            buffer.delete(&mut start_iter, &mut end_iter);
-            buffer.place_cursor(&start_iter);
-            if !fit.is_empty() {
-                buffer.insert_at_cursor(fit);
-            }
-            buffer.end_user_action();
-        }
-    }
-    input.pasting.set(false);
-    if let Some(cx) = input.cx.get() {
-        cx.flush_change();
-        cx.selection_changed();
-    }
-}
-
-fn splits_no_character(text: &str, range: &std::ops::Range<u32>) -> bool {
-    let mut offset = 0;
-    let mut ends = 0;
-    for c in text.chars() {
-        ends += usize::from(offset == range.start) + usize::from(offset == range.end);
-        offset += c.len_utf16() as u32;
-    }
-    ends += usize::from(offset == range.start) + usize::from(offset == range.end);
-    ends == 2
 }
 
 /// Return or Enter.
@@ -1805,48 +1858,16 @@ enum Held {
         event: Option<gtk::gdk::Event>,
     },
     PasteEvent(nsh_core::PasteEvent),
-    #[cfg(any(feature = "dev", test))]
+    #[cfg(all(test, feature = "js"))]
     Keystroke(nsh_core::keymap::Keystroke),
-    #[cfg(any(feature = "dev", test))]
+    #[cfg(all(test, feature = "js"))]
     Text(String),
-    #[cfg(any(feature = "dev", test))]
-    Enter,
-    #[cfg(any(feature = "dev", test))]
-    Backspace,
-    #[cfg(any(feature = "dev", test))]
+    #[cfg(all(test, feature = "js"))]
     SelectAll,
 }
 
 thread_local! {
     static FOCUS: RefCell<FxHashMap<u64, Focus>> = RefCell::default();
-    static TRANSIENT_FOCUS: RefCell<Vec<glib::WeakRef<NshView>>> = const { RefCell::new(Vec::new()) };
-}
-
-fn ensure_transient_focusable(view: &NshView) {
-    view.set_focusable(true);
-    let already = TRANSIENT_FOCUS.with(|list| {
-        let mut list = list.borrow_mut();
-        list.retain(|w| w.upgrade().is_some());
-        if list.iter().any(|w| w.upgrade().as_ref() == Some(view)) {
-            true
-        } else {
-            list.push(view.downgrade());
-            false
-        }
-    });
-    if !already {
-        let focus = gtk::EventControllerFocus::new();
-        focus.connect_leave(|c| {
-            if let Some(view) = c.widget().and_downcast::<NshView>()
-                && !view.has_focus()
-                && view.kind() == nsh_core::ViewKind::View
-                && crate::selectable_view::area_of(&view).as_ref() != Some(&view)
-            {
-                view.set_focusable(false);
-            }
-        });
-        view.add_controller(focus);
-    }
 }
 
 /// Intercepts window-level GDK key presses while an engine event that can move
@@ -2126,22 +2147,6 @@ pub(crate) fn composing_focused(surface: &Surface) -> bool {
         .is_some_and(|input| input.composition.borrow().is_some())
 }
 
-pub(crate) fn escape_composing(surface: &Surface) -> bool {
-    let Some(view) = focused_input_view(surface) else {
-        return false;
-    };
-    let Some(input) = view.state().input.clone() else {
-        return false;
-    };
-    if input.composition.borrow().is_none() {
-        return false;
-    }
-    if let Some(cx) = input.cx.get() {
-        cx.cancel_composition();
-    }
-    true
-}
-
 fn queue_if_unsettled(surface: &Surface, operation: impl FnOnce() -> Held) -> bool {
     if is_replaying(surface) || !is_armed(surface) {
         return false;
@@ -2186,9 +2191,9 @@ fn flush_pending(surface: &Rc<Surface>) {
         let needs_editable = match &next {
             Held::PasteEvent(_) => true,
             Held::GdkKey { .. } => false,
-            #[cfg(any(feature = "dev", test))]
-            Held::Text(_) | Held::Enter | Held::Backspace | Held::SelectAll => true,
-            #[cfg(any(feature = "dev", test))]
+            #[cfg(all(test, feature = "js"))]
+            Held::Text(_) | Held::SelectAll => true,
+            #[cfg(all(test, feature = "js"))]
             Held::Keystroke(_) => false,
         };
         if needs_editable && !wants_text(surface) {
@@ -2214,15 +2219,11 @@ fn flush_pending(surface: &Rc<Surface>) {
                     apply_paste_to_view(surface, &view, paste);
                 }
             }
-            #[cfg(any(feature = "dev", test))]
+            #[cfg(all(test, feature = "js"))]
             Held::Keystroke(stroke) => press_keystroke_now(surface, stroke),
-            #[cfg(any(feature = "dev", test))]
+            #[cfg(all(test, feature = "js"))]
             Held::Text(text) => type_text_now(surface, &text),
-            #[cfg(any(feature = "dev", test))]
-            Held::Enter => enter_now(surface),
-            #[cfg(any(feature = "dev", test))]
-            Held::Backspace => backspace_now(surface),
-            #[cfg(any(feature = "dev", test))]
+            #[cfg(all(test, feature = "js"))]
             Held::SelectAll => select_all_now(surface),
         }
     }
@@ -2293,12 +2294,17 @@ fn replay_gdk_key(
     if dispatch_editor_key(surface, key, modifiers) {
         return;
     }
-    if crate::scroll::key_pressed(surface, key, modifiers)
-        || crate::navigation::key_pressed(surface, key, modifiers)
+    let root = event
+        .as_ref()
+        .and_then(|e| e.surface())
+        .and_then(|s| crate::window::root_at(surface, &s))
+        .unwrap_or_else(|| crate::window::key_root(surface));
+    if crate::scroll::key_pressed(surface, &root, key, modifiers)
+        || crate::navigation::key_pressed_in(surface, root.id(), key, modifiers)
     {
         return;
     }
-    let _ = crate::keymap::unhandled(surface, event.as_ref());
+    let _ = crate::keymap::unhandled(surface, &root, event.as_ref());
 }
 
 fn dispatch_editor_key(
@@ -2458,7 +2464,7 @@ fn delete_forward_in(input: &InputState) {
     }
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 pub(crate) fn type_text_on(surface: &Rc<Surface>, text: &str) {
     let owned = text.to_owned();
     if queue_if_unsettled(surface, || Held::Text(owned)) {
@@ -2467,7 +2473,7 @@ pub(crate) fn type_text_on(surface: &Rc<Surface>, text: &str) {
     type_text_now(surface, text);
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn key_from_char(ch: char) -> gtk::gdk::Key {
     if ch == '\n' {
         return gtk::gdk::Key::Return;
@@ -2478,7 +2484,7 @@ fn key_from_char(ch: char) -> gtk::gdk::Key {
     unsafe { glib::translate::from_glib(keyval) }
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn type_text_now(surface: &Surface, text: &str) {
     let Some(view) = focused_input_view(surface) else {
         log::warn!("test: no focused text field to type into");
@@ -2499,15 +2505,7 @@ fn type_text_now(surface: &Surface, text: &str) {
     input.key.set(None);
 }
 
-#[cfg(any(feature = "dev", test))]
-pub(crate) fn enter_on(surface: &Rc<Surface>) {
-    if queue_if_unsettled(surface, || Held::Enter) {
-        return;
-    }
-    enter_now(surface);
-}
-
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn enter_now(surface: &Surface) {
     let Some(view) = focused_input_view(surface) else {
         log::warn!("test: no focused text field to press Return in");
@@ -2528,15 +2526,7 @@ fn enter_now(surface: &Surface) {
     }
 }
 
-#[cfg(any(feature = "dev", test))]
-pub(crate) fn backspace_on(surface: &Rc<Surface>) {
-    if queue_if_unsettled(surface, || Held::Backspace) {
-        return;
-    }
-    backspace_now(surface);
-}
-
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn backspace_now(surface: &Surface) {
     let Some(view) = focused_input_view(surface) else {
         log::warn!("test: no focused text field to press Backspace in");
@@ -2553,7 +2543,7 @@ fn backspace_now(surface: &Surface) {
     }
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 pub(crate) fn select_all_on(surface: &Rc<Surface>) {
     if queue_if_unsettled(surface, || Held::SelectAll) {
         return;
@@ -2561,7 +2551,7 @@ pub(crate) fn select_all_on(surface: &Rc<Surface>) {
     select_all_now(surface);
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn select_all_now(surface: &Surface) {
     let Some(view) = focused_input_view(surface) else {
         log::warn!("test: no focused text field to select in");
@@ -2572,7 +2562,7 @@ fn select_all_now(surface: &Surface) {
     }
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 pub(crate) fn paste_into_focused(
     surface: &Rc<Surface>,
     content: nsh_core::PasteEvent,
@@ -2585,7 +2575,7 @@ pub(crate) fn paste_into_focused(
     Ok(())
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 pub(crate) fn press_keystroke(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystroke) {
     let m = stroke.modifiers;
     if stroke.key == nsh_core::keymap::Key::Escape && !(m.ctrl || m.alt || m.shift || m.cmd) {
@@ -2601,7 +2591,7 @@ pub(crate) fn press_keystroke(surface: &Rc<Surface>, stroke: nsh_core::keymap::K
     press_keystroke_now(surface, stroke);
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn press_keystroke_now(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystroke) {
     use gtk::gdk;
     use nsh_core::keymap::Key as K;
@@ -2679,9 +2669,10 @@ fn press_keystroke_now(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystrok
                 K::Char(' ') => Some(gdk::Key::space),
                 _ => None,
             };
+            let root = crate::window::key_root(surface);
             if let Some(key) = gdk_key
-                && (crate::scroll::key_pressed(surface, key, modifiers)
-                    || crate::navigation::key_pressed(surface, key, modifiers))
+                && (crate::scroll::key_pressed(surface, &root, key, modifiers)
+                    || crate::navigation::key_pressed_in(surface, root.id(), key, modifiers))
             {
                 return;
             }
@@ -2690,7 +2681,7 @@ fn press_keystroke_now(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystrok
     let _ = crate::keymap::press_fallback(surface, stroke);
 }
 
-#[cfg(any(feature = "dev", test))]
+#[cfg(all(test, feature = "js"))]
 fn shifted_us(c: char) -> char {
     const PAIRS: [(char, char); 21] = [
         ('1', '!'),
@@ -2727,10 +2718,28 @@ mod tests {
 
     #[test]
     fn line_boxes() {
-        assert_eq!(line_box(24.0, 18), (3, 3));
-        assert_eq!(line_box(25.0, 18), (3, 4));
-        assert_eq!(line_box(0.0, 18), (0, 0));
-        assert_eq!(line_box(12.0, 18), (0, 0));
+        let plain = |above, below| ParagraphBox {
+            above,
+            below,
+            shrink: 1.0,
+        };
+        let main = (14.0, 18.0);
+        assert_eq!(paragraph_box(24, main, main), plain(3, 3));
+        assert_eq!(paragraph_box(25, main, main), plain(3, 4));
+        assert_eq!(paragraph_box(0, main, main), plain(0, 0));
+        assert_eq!(paragraph_box(12, main, main), plain(0, 0));
+        // No line height: nothing shrinks, whatever the font.
+        assert_eq!(paragraph_box(0, (16.0, 21.0), (20.0, 25.0)), plain(0, 0));
+        // A fallback font's taller line, shrunk onto the main font's baseline
+        // (17) and height: 25 high, its ascent 20, loses 3 on either side.
+        let tall = paragraph_box(24, (16.0, 21.0), (20.0, 25.0));
+        assert_eq!((tall.above, tall.below), (0, 5));
+        assert_eq!(tall.shrink, 19.0 / 25.0);
+        // One that leaves the baseline alone keeps its height.
+        assert_eq!(paragraph_box(30, (16.0, 21.0), (20.0, 25.0)), plain(0, 5));
+        // Fractions of a pixel count: the baselines meet exactly.
+        let tall = paragraph_box(24, (16.25, 21.0), (20.5, 25.0));
+        assert_eq!(tall.shrink, 18.5 / 25.0);
     }
 
     /// The caret is the font's height, centered in a line of the configured
@@ -2750,7 +2759,8 @@ mod tests {
             let provider = gtk::CssProvider::new();
             provider.load_from_string("textview { font-size: 15px; }");
             add_provider(&view, &provider);
-            set_line_box(&view, &style);
+            let mut lines = LineBoxes::default();
+            lines.configure(&view, &style);
             let window = gtk::Window::new();
             window.set_child(Some(&view));
             window.present();
@@ -2762,6 +2772,87 @@ mod tests {
             assert_eq!(second.y() - first.y(), 24);
             assert!(first.height() < 24, "caret {}", first.height());
             assert_eq!(first.y(), (24 - first.height()) / 2);
+        });
+    }
+
+    /// A fallback font in a line (CJK here) leaves the line's height and
+    /// baseline as they are, typed or composed.
+    #[test]
+    fn a_fallback_font_keeps_the_lines_baseline() {
+        crate::gtk_test::run(|| {
+            for font_size in [15.5, 16.0, 17.0] {
+                let view = gtk::TextView::new();
+                let style = ResolvedTextStyle {
+                    font_size: Points(font_size),
+                    line_height: Points(24.0),
+                    ..Default::default()
+                };
+                let provider = gtk::CssProvider::new();
+                provider.load_from_string(&format!("textview {{ font-size: {font_size}px; }}"));
+                add_provider(&view, &provider);
+                let window = gtk::Window::new();
+                window.set_child(Some(&view));
+                window.present();
+                crate::gtk_test::wait_until(|| view.height() > 0);
+                let mut lines = LineBoxes::default();
+                lines.configure(&view, &style);
+                let font = crate::text::main_font_description(&style);
+                let buffer = view.buffer();
+                let mut set = |text: &str| {
+                    buffer.set_text(text);
+                    lines.apply(&view, 0, buffer.line_count() - 1, "");
+                };
+                // Where a line of `text` has its baseline with `shrink`.
+                let baseline = |text: &str, shrink: f32| {
+                    let layout = view.create_pango_layout(Some(text));
+                    layout.set_font_description(Some(&font));
+                    let attrs = gtk::pango::AttrList::new();
+                    attrs.insert(gtk::pango::AttrFloat::new_line_height(f64::from(shrink)));
+                    layout.set_attributes(Some(&attrs));
+                    layout.baseline() as f32 / gtk::pango::SCALE as f32
+                };
+                let height = || view.line_yrange(&buffer.start_iter()).1;
+                set("NSH");
+                assert!(crate::gtk_test::wait_until(|| height() == 24));
+                let main = font_line(&view, &font, "Ag");
+                let centered = ((24 - main.1.round() as i32) / 2) as f32 + main.0;
+                // Without a CJK font on the machine no fallback font lowers the
+                // baseline, so there is nothing to keep still.
+                let fallback = font_line(&view, &font, "\u{7684}");
+                if paragraph_box(24, main, fallback).shrink == 1.0 {
+                    window.destroy();
+                    continue;
+                }
+                for text in ["NSH\u{7684}", "\u{7684}\u{7684}"] {
+                    set(text);
+                    assert!(
+                        crate::gtk_test::wait_until(|| height() == 24),
+                        "{text} at {font_size}: {}",
+                        height()
+                    );
+                    let metrics = font_line(&view, &font, text);
+                    let shrink = paragraph_box(24, main, metrics).shrink;
+                    assert!(
+                        (baseline(text, shrink) - centered).abs() < 0.1,
+                        "{text} at {font_size}"
+                    );
+                }
+                // Only a paragraph with the fallback font takes its box.
+                set("NSH\n\u{7684}");
+                assert!(buffer.start_iter().tags().is_empty());
+                let second = buffer.iter_at_line(1).expect("a second line");
+                assert!(!second.tags().is_empty());
+                assert_eq!(view.line_yrange(&second).0, 24);
+                // Taking the character out takes its box back.
+                set("NSH");
+                assert!(buffer.start_iter().tags().is_empty());
+                // A composition in the fallback font counts, and ends.
+                lines.apply(&view, 0, 0, "\u{7684}");
+                assert!(!buffer.start_iter().tags().is_empty());
+                lines.apply(&view, 0, 0, "");
+                assert!(buffer.start_iter().tags().is_empty());
+                window.destroy();
+            }
         });
     }
 
@@ -2967,13 +3058,6 @@ mod tests {
                 append(root, scopeB);
                 append(root, stopScope);
 
-                keymap.bind("f5", () => inputB.replaceRange({
-                  start: 1,
-                  end: 3,
-                  text: "WXYZ",
-                  expectedText: "b😀ta",
-                  expectedSelection: { start: 5, end: 5 },
-                }), { when: "always", within: scopeB });
                 keymap.bind("f6", () => host.post("log", "root"), { when: "always" });
                 keymap.bind("f6", () => host.post("log", "scope:a"), { when: "always", within: scopeA });
                 keymap.bind("f6", () => host.post("log", "scope:b"), { when: "always", within: scopeB });
@@ -3004,7 +3088,6 @@ mod tests {
             }));
             logs.clear();
 
-            let f5 = Keystroke::parse("f5", Os::Linux).unwrap();
             let f6 = Keystroke::parse("f6", Os::Linux).unwrap();
             let f7 = Keystroke::parse("f7", Os::Linux).unwrap();
             let f8 = Keystroke::parse("f8", Os::Linux).unwrap();
@@ -3044,17 +3127,6 @@ mod tests {
                 drain_logs(&mut logs);
                 logs.iter().any(|s| s == "scope:b")
                     && focused_input_view(&surface).is_some()
-                    && surface.events_handled() >= surface.events_sent()
-            }));
-            logs.clear();
-
-            // Scoped replaceRange replaces UTF-16 emoji range and clips to maxLength=6 ("bWXYta").
-            let focused_b = focused_input_view(&surface).expect("input-b focused");
-            set_selection(&focused_b, 5, 5);
-            press_keystroke(&surface, f5);
-            assert!(crate::gtk_test::wait_until(|| {
-                drain_logs(&mut logs);
-                logs.iter().any(|s| s == "b:bWXYta")
                     && surface.events_handled() >= surface.events_sent()
             }));
             logs.clear();

@@ -6,6 +6,15 @@ checked and wrapped in Rust (`nsh_core::shader`), rendered by wgpu on the native
 WebGL 2 on the web, from GLSL ES the core translates it into. The module docs of `crates/nsh-core/src/shader.rs` and
 `crates/nsh-engine/src/shader.rs` are the reference; this page is the overview.
 
+## Feature `shader`
+
+The platform crates' feature `shader` (`nsh-platform-*`, `nsh-*-app`; on by default, and always with `dev`) is what links
+naga and wgpu. Off, `Shader::compile` refuses every source (`nsh-core`), `nsh_engine::shader::Renderer::new` is `None`
+(`shader_off.rs`), shader views draw nothing and shader transitions end at once. The rest of the API stays. It is for
+Rust apps and embedders; the prebuilt runners an app without Rust crates ships have it on. The web links its compiler
+by what the app imports (`docs/dev/browser-js-size.md`), and GPUI always has it. A crate with `default-features = false`
+names the feature to keep shaders: `features = ["shader"]`. The other optional parts are in [features.md](features.md).
+
 ## The contract
 
 An app writes one function and whatever helpers and constants it needs:
@@ -194,12 +203,15 @@ encodes the layer for `nsh.js`'s `op_sh` as JSON: the program's key (its hash), 
 words, the slots as `[word, kind]`, `animated` and `paused`.
 
 `nsh.js` draws every shader view with one shared WebGL 2 context (`shaderGl`, on an `OffscreenCanvas` where there is
-one), since a page gets few contexts: programs are cached by key (`shaderProgram`), each view renders into the shared
-canvas at its size times the device pixel ratio and zoom (at most 4096 a side), and the picture moves to the view's
-own `<canvas class="nsh-shader">` (`transferToImageBitmap` into a `bitmaprenderer`, or `drawImage`), which is
-inserted first among the view's children and inherits its `border-radius`. `shaderFrame` runs on
-`requestAnimationFrame` for views that are connected, in sight (an `IntersectionObserver`) and dirty or running;
-animated values arrive as `op_a`'s `canvas:N` props and are written by `shaderSlot`.
+one), since a page gets few contexts: programs are cached by key (`shaderProgram`), each view renders into the top-left
+corner of the shared canvas at its size times the device pixel ratio and zoom (at most 4096 a side), and the picture
+is copied on the GPU into the view's own `<canvas class="nsh-shader">` (`drawImage` of that corner), which is inserted
+first among the view's children and inherits its `border-radius`. The shared canvas fits the largest view that draws
+(`sharedCanvas`): setting a canvas's size reallocates its drawing buffer, and a canvas resized to each view in turn
+(a screen effect drawn among small shaders: twice a frame) costs more than the frames. It shrinks to the views that
+drew once they have needed less for a second (`fitSharedCanvas`). `shaderFrame` runs on `requestAnimationFrame` for
+views that are connected, in sight (an `IntersectionObserver`) and dirty or running, one callback at a time
+(`shaderFrameQueued`); animated values arrive as `op_a`'s `canvas:N` props and are written by `shaderSlot`.
 
 ## Effects, transitions and pictures
 
@@ -365,7 +377,9 @@ dialog's `transitionShader`) take their pictures from the DOM. `shader.rs` also 
   cleared, the `from` and `to` pictures go with their textures (`freeTextures`), and the children show as they are.
   An animated `progress` (an effect's) is written by `shaderSlot`.
 - **Screens.** A `ScreenEffect` or `ScreenTransition` does the same with the root as its host; its canvas is
-  appended to the root. A screen effect pictures the surface again whenever another shader in it draws.
+  appended to the root. A screen effect pictures the surface again whenever another shader in it draws, at most once
+  per frame: the mark (`shaderDirty`) queues the next frame, and the frame's own request for its running views
+  leaves it at that.
 - **Pages and dialogs.** `["shn"]` keeps the page's or the dialog's `transitionShader`. `shaderNav` runs it on an
   overlay over the stack (push, pop) or the root (present, dismiss): `sample_from` is the host painted up to the
   page or dialog, `sample_to` the whole host, and progress goes from 0 to 1, or 1 to 0 when it leaves; the views
@@ -412,3 +426,9 @@ dialog's `transitionShader`) take their pictures from the DOM. `shader.rs` also 
   `ShaderView::frame()` is empty until then: a page's or a dialog's run ends on its clock, never on an empty frame.
 - **Readback latency.** Native frames arrive one or two display frames after `render`; a backend must keep ticking
   while `ShaderView::pending()` is true, or the last frame of a change never shows.
+- **One frame callback on the web.** `shaderFrame` clears `shaderFrameQueued` before it draws, so a view marked while
+  it draws (a screen effect another shader drew under) queues the next frame then; a second request at its end would
+  run the next frame twice, each of those twice again, and so on: the Shaders page stalled within a second of turning
+  its screen effect on. Every request goes through the flag.
+- **Resizing a WebGL canvas.** Setting `width` or `height` reallocates the drawing buffer, each of them; the shared
+  canvas is resized only to grow, and to shrink a second after the views needed less.

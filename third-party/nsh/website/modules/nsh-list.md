@@ -9,7 +9,7 @@ order: 2.1
 `nsh` exports `List`: a virtualized list on a native scroll view. Only the rows near the viewport exist, and their cells are reused as you scroll. Which rows exist, where they are, columns, sticky headers and viewability are all computed natively, so scrolling a list of ten thousand items runs no JS except the row bindings that change when a cell is reused.
 
 ```ts
-import { List, type ListProps, type ReadonlyListSource, type ViewToken, type ViewabilityConfig } from "nsh";
+import { List, type ListProps, type ViewToken, type ViewabilityConfig } from "nsh";
 ```
 
 See [Lists](../docs/lists.md) for the guide and [`<List>`](../elements/list.md) for the element's props.
@@ -56,7 +56,7 @@ element takes, which go to the list's scroll view.
 
 | Prop | Type | Default | Description |
 |---|---|---|---|
-| `each` | `readonly T[] \| ReadonlyListSource<T>` | (required) | The items. Pass a signal's value (`each={items()}`) to follow changes; inserting array items above the visible rows keeps those rows in place. |
+| `each` | `readonly T[]` | (required) | The items. Pass a signal's value (`each={items()}`) to follow changes; inserting items above the visible rows keeps those rows in place. |
 | `children` | `(item: () => T, index: () => number) => JSX.Element` | (required) | Renders one row (see above). |
 | `estimatedItemSize` | `number` | `50` | The size of rows not measured yet, in points, along the list's axis. Close estimates make the scroll indicator and `scrollToIndex` more accurate. |
 | `numColumns` | `number` | `1` | Items per row (vertical lists): a grid. |
@@ -76,20 +76,6 @@ element takes, which go to the list's scroll view.
 | `ref` | `ListRef \| ((node: ListRef) => void)` | | See [ref methods](#ref-methods). |
 
 `ListSlot` is a component (`Header`) or an element (`<Header />`).
-
-`ReadonlyListSource<T>` provides an indexed snapshot whose items are read as rows are rendered or reported viewable:
-
-```ts
-interface ReadonlyListSource<T> {
-  readonly length: number;
-  at(index: number): T;
-}
-```
-
-`length` is an integer from 0 through 4,294,967,295, the same range as an array's length. `at` receives an index in
-that range below `length`, with the source as its receiver. Keep a snapshot's length and contents fixed, and pass a
-new source object to replace it. A new source replaces the full item range; arrays keep their common-prefix and
-suffix identity comparisons. A source can produce each requested item directly from native data.
 
 ### Loading, refreshing and viewability
 

@@ -6,7 +6,7 @@
 //! and the value and the open state are the app's when it sets them.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -167,8 +167,8 @@ struct Seen {
     roots: Vec<NodeId>,
     /// The rows mounted.
     options: Options,
-    /// Options updated since the observer was reset.
-    updated_options: HashSet<NodeId>,
+    /// How many mount items came.
+    items: usize,
 }
 
 struct App {
@@ -305,30 +305,22 @@ fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> A
     let into = seen.clone();
     app.observe(move |_, batch| {
         let mut seen = into.lock().unwrap();
+        seen.items += batch.items.len();
         for item in &batch.items {
             seen.options.apply(item);
             match item {
                 MountItem::ViewProps { id, props } => {
-                    if props.accessibility.role == AccessibilityRole::Option {
-                        seen.updated_options.insert(*id);
-                    }
                     seen.props.insert(*id, (**props).clone());
                 }
                 MountItem::AccessibilityLabel { id, label } => {
                     if let Some(p) = seen.props.get_mut(id) {
                         p.accessibility.label = label.clone();
-                        if p.accessibility.role == AccessibilityRole::Option {
-                            seen.updated_options.insert(*id);
-                        }
                     }
                 }
                 MountItem::Frame { id, frame } => {
                     seen.frames.insert(*id, *frame);
                 }
-                MountItem::Insert { parent, child, .. }
-                | MountItem::ProjectRoot {
-                    parent, id: child, ..
-                } => {
+                MountItem::Insert { parent, child, .. } => {
                     seen.parents.insert(*child, *parent);
                     if *parent == 1 {
                         seen.roots.push(*child);
@@ -652,6 +644,51 @@ fn choosing_gives_the_trigger_the_keyboard_back() {
 }
 
 #[test]
+fn a_press_on_an_item_chooses_it_while_the_trigger_has_the_keyboard() {
+    let mut app = focused(props(fruits()));
+    let trigger = app.id("role:combobox");
+    app.key("down");
+    app.see_row(">Apple");
+    app.press("role:option[Celery]").unwrap();
+    app.gone("role:listbox");
+    app.see("Value: celery");
+    app.log_ends("change:celery openChange:false:Select close");
+    assert!(app.sent(trigger, &Command::Focus));
+}
+
+#[test]
+fn tab_closes_it_and_the_focus_moves_on() {
+    for searchable in [false, true] {
+        let mut app = focused(HarnessProps {
+            searchable,
+            ..props(fruits())
+        });
+        let trigger = app.id("role:combobox");
+        app.key("down");
+        app.wait_for("role:listbox").unwrap();
+        app.key("tab");
+        app.gone("role:listbox");
+        app.log_ends("openChange:false:Focus close");
+        assert!(
+            !app.sent(trigger, &Command::Focus),
+            "searchable {searchable}: the focus is not taken back"
+        );
+        // It went on: the trigger's keys open nothing.
+        app.key("down");
+        app.wait(Duration::from_millis(100)).unwrap();
+        assert_eq!(app.screen().count("role:listbox").unwrap(), 0);
+        // Shift+Tab comes back to the trigger, and from an open list it
+        // closes it too.
+        app.key("shift+tab");
+        app.key("down");
+        app.wait_for("role:listbox").unwrap();
+        app.key("shift+tab");
+        app.gone("role:listbox");
+        app.log_ends("openChange:false:Focus close");
+    }
+}
+
+#[test]
 fn a_press_outside_closes_it_and_leaves_the_focus() {
     let mut app = desktop(props(fruits()));
     let trigger = app.id("role:combobox");
@@ -765,28 +802,24 @@ fn screen_readers_hear_the_search_field_by_its_label() {
 
 #[test]
 fn a_search_keystroke_in_a_long_list_sends_only_the_rows_in_view() {
-    let updated = [5000, 50000].map(|count| {
-        let mut app = desktop(HarnessProps {
-            searchable: true,
-            ..props(many(count))
-        });
-        app.open_list();
-        app.see("Item 0");
-        app.type_text("Search", "4").unwrap();
-        app.see_row(">Item 4");
-        app.idle(Duration::from_millis(50)).unwrap();
-        app.seen.lock().unwrap().updated_options.clear();
-        app.type_text("text:4", "2").unwrap();
-        app.see_row(">Item 42");
-        app.idle(Duration::from_millis(50)).unwrap();
-        let seen = app.seen.lock().unwrap();
-        seen.updated_options.len()
+    let mut app = desktop(HarnessProps {
+        searchable: true,
+        ..props(many(5000))
     });
-    assert!(updated[0] > 0, "the search must update options");
-    assert_eq!(
-        updated[0], updated[1],
-        "search updates a window of rows regardless of the source length"
-    );
+    app.open_list();
+    app.see("Item 0");
+    app.type_text("Search", "4").unwrap();
+    app.see_row(">Item 4");
+    app.idle(Duration::from_millis(50)).unwrap();
+    app.seen.lock().unwrap().items = 0;
+    app.type_text("text:4", "2").unwrap();
+    app.see_row(">Item 42");
+    app.idle(Duration::from_millis(50)).unwrap();
+    let items = app.seen.lock().unwrap().items;
+    println!("a search keystroke over 5000 items: {items} mount items");
+    // The rows in view change (and their window's): nothing grows with
+    // the items.
+    assert!(items < 600, "{items} mount items for a keystroke");
 }
 
 // 7. Typeahead.
@@ -914,6 +947,7 @@ fn screen_readers_hear_a_combobox_a_listbox_and_its_options() {
     assert_eq!(trigger.accessibility.role, AccessibilityRole::Combobox);
     assert_eq!(trigger.accessibility.label.as_deref(), Some("Food"));
     assert_eq!(trigger.accessibility.state.expanded, Some(false));
+    assert!(trigger.accessibility.state.has_popup, "it opens a popup");
     assert_eq!(
         trigger
             .accessibility

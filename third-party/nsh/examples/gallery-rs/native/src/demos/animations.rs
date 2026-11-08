@@ -73,6 +73,7 @@ const fn spring(k: f32, c: f32) -> Spring {
         damping: c,
         mass: 1.0,
         velocity: None,
+        frame_rate: None,
     }
 }
 

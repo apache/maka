@@ -29,5 +29,6 @@ pub use self::{
     ops::{
         AnimatedPropValue, AnimationId, AnimationOp, AnimationProp, Composite, Curve, Driver,
         EaseMode, Easing, Extrapolate, MathOp, NodeId, Operand, Output, StepPosition,
+        highest_frame_rate,
     },
 };

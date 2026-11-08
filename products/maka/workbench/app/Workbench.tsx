@@ -29,8 +29,8 @@ const CENTER_MIN = 48 * CELL;
 const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
-const GAP = platform.isTerminal ? CELL : 0;
-const INSET = platform.isTerminal ? 0 : PANEL_INSET;
+const GAP = platform.idiom === 'terminal' ? CELL : 0;
+const INSET = platform.idiom === 'terminal' ? 0 : PANEL_INSET;
 const available = () => windowSize().width - 2 * INSET;
 
 export const canDockBrowser = (withPreview = false) =>
@@ -109,7 +109,7 @@ export function Workbench(props: {
         axis="horizontal"
         handleAccessibilityLabel={tr('Resize workspace panels')}
         // On the desktop the sidebar and the panel part by fill alone.
-        handleStyle={{ backgroundColor: platform.isTerminal ? C.line : 'transparent' }}
+        handleStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.line : 'transparent' }}
         style={{ flex: 1, minWidth: 0, minHeight: 0, gap: GAP }}
       >
         <ResizablePanel
@@ -122,7 +122,7 @@ export function Workbench(props: {
         >
           <If when={browser()}>{props.navigation()}</If>
         </ResizablePanel>
-        {platform.isTerminal ? (
+        {platform.idiom === 'terminal' ? (
           panes()
         ) : (
           <ResizablePanel minSize={panesMin()} style={{ minHeight: 0 }}>

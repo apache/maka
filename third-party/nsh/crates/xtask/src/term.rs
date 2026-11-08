@@ -6,7 +6,7 @@
 
 use std::{
     fmt::Display,
-    io::{BufRead as _, BufReader, IsTerminal as _, Write as _},
+    io::{IsTerminal as _, Read as _, Write as _},
     process::{Command, Stdio},
     sync::{
         OnceLock,
@@ -193,11 +193,15 @@ fn exec(cmd: &mut Command, message: String) -> anyhow::Result<()> {
     // The command's own copies of the write end would keep the pipe open.
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = child.with_context(|| format!("run {program}"))?;
-    let mut output = String::new();
-    for line in BufReader::new(reader).lines() {
-        output.push_str(&line?);
-        output.push('\n');
-    }
+    // The tools' output is not always UTF-8 (javac's notes follow the
+    // machine's locale): take it as it comes rather than fail the build
+    // over it.
+    let mut output_bytes = Vec::new();
+    let mut reader = reader;
+    reader
+        .read_to_end(&mut output_bytes)
+        .with_context(|| format!("read {program}"))?;
+    let output = String::from_utf8_lossy(&output_bytes).into_owned();
     if child.wait()?.success() {
         Ok(())
     } else {

@@ -23,7 +23,6 @@ test("shows its sections", () => {
     "snapToInterval · snapToAlignment",
     "Card 1",
     "at 0 pt",
-    "accent",
     "center",
     "One card per fling",
     "disableIntervalMomentum",

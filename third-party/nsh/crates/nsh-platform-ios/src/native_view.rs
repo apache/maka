@@ -387,6 +387,12 @@ impl NshView {
         self.ivars().props.borrow().selectable_view
     }
 
+    /// The view is a text that continues the one before it
+    /// (`ViewProps::continues_text`: a wrapped line's later part).
+    pub(crate) fn continues_text(&self) -> bool {
+        self.ivars().props.borrow().continues_text
+    }
+
     /// The area descendants cover outside the bounds, in the view's
     /// coordinates (`MountItem::Overflow`).
     pub(crate) fn set_overflow(&self, extent: Option<CGRect>) {

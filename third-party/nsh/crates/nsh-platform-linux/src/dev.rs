@@ -276,6 +276,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             capabilities,
             app_id,
             limits,
+            window,
         } => {
             hide_status(ui);
             let mut bundle = match format {
@@ -301,6 +302,7 @@ fn handle(ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
                 bundle = bundle.with_source_map(map);
             }
             bundle = match bundle
+                .with_main_window(window.as_deref())
                 .with_app_id(app_id.as_deref())
                 .with_capabilities_json(capabilities.as_deref())
             {

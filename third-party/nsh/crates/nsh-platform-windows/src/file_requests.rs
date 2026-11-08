@@ -15,6 +15,7 @@ use std::{
 use nsh_core::{
     EventKind, EventPayload, ROOT_ID,
     file_dialog::{FileFilter, FileRequest, OpenDialog, SaveDialog},
+    picker::{FilePickRequest, read_picked_files},
 };
 use windows::{
     Win32::{
@@ -67,6 +68,7 @@ pub(crate) fn choose_directory(
     done: impl FnOnce(Result<Option<PathBuf>, String>) + Send + 'static,
 ) {
     let owner = surface.hwnd().0 as isize;
+    let ui = crate::window::UiThread::current();
     // Transfer the callback only after spawning, so a spawn failure is answerable.
     type Done = Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>;
     let (send, recv) = std::sync::mpsc::sync_channel::<Done>(1);
@@ -78,7 +80,7 @@ pub(crate) fn choose_directory(
                 .and_then(|paths| paths)
                 .map(|paths| paths.into_iter().next())
                 .map_err(|error| error.to_string());
-            crate::window::invoke(move || done(result));
+            ui.invoke(move || done(result));
         });
     match spawned {
         Ok(_) => {
@@ -209,6 +211,34 @@ unsafe fn show(dialog: &IFileDialog, owner: HWND) -> windows::core::Result<bool>
         Ok(()) => Ok(true),
         Err(e) if e.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+/// `Picker.pickFiles`: the shell's open dialog for `request`, on a thread of
+/// its own as every request's; the files picked are read there and answer
+/// pick `id` as a root `Pick` event.
+pub(crate) fn pick_files(surface: &Rc<Surface>, id: u32, request: &FilePickRequest) {
+    let mut control = None;
+    surface.control(|c| control = Some(c.clone()));
+    let Some(control) = control else { return };
+    // A window handle is an address the other thread only hands to the
+    // dialog as its owner.
+    let owner = surface.hwnd().0 as isize;
+    let request = request.clone();
+    let spawned = std::thread::Builder::new()
+        .name("nsh-picker".into())
+        .spawn(move || {
+            let paths = with_com(|| pick_paths(HWND(owner as *mut _), &request.dialog()))
+                .and_then(|paths| paths)
+                .unwrap_or_else(|e| {
+                    log::warn!("the file dialog failed: {e}");
+                    Vec::new()
+                });
+            let files = read_picked_files(&paths, &request);
+            control.dispatch_event(ROOT_ID, EventKind::Pick, EventPayload::Picked { id, files });
+        });
+    if let Err(e) = spawned {
+        log::warn!("cannot show the file dialog: {e}");
     }
 }
 

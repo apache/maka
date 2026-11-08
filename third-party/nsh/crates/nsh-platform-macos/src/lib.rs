@@ -37,13 +37,14 @@ pub mod dev;
 mod file_drop;
 mod file_requests;
 mod fps;
+mod global_shortcut;
 mod gpu;
 mod image;
 mod input;
 mod keymap;
 mod mount;
 mod native;
-#[cfg(any(feature = "dev", feature = "terminal"))]
+#[cfg(any(feature = "terminal", test))]
 mod native_events;
 mod navigation;
 mod net;
@@ -53,7 +54,8 @@ mod scroll;
 mod selectable_view;
 mod shader;
 mod sight;
-mod speech;
+// Shared with iOS.
+use nsh_platform_apple::{audio, notifications, speech};
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -63,8 +65,11 @@ mod terminal;
 mod text;
 mod text_input;
 mod transition;
+mod tray;
 mod view;
 mod visual;
+mod window;
+mod window_state;
 
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{

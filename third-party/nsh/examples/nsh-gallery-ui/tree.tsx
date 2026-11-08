@@ -7,7 +7,7 @@ import { Text, View } from "nsh";
 import type { TreeEntry } from "nsh/base";
 import { desktop, size } from "./demo";
 import { Icon, type IconName } from "./icons";
-import { colors } from "./theme";
+import { colors, TERMINAL_COLUMN, TERMINAL_GAP, terminal } from "./theme";
 
 /**
  * A row: quiet until hovered, the selected one tinted in the brand color
@@ -29,6 +29,7 @@ export const treeIndent = 14;
  * that opens with it or a file), its label and a `detail` at the end.
  */
 export function TreeRow(props: { entry: TreeEntry; icon?: IconName; tint?: string; detail?: string }) {
+  if (terminal) return <TerminalTreeRow {...props} />;
   // Compact with a pointer; a 44-point target on a touch screen.
   const height = desktop ? size.rowSm - 4 : size.rowSm;
   return (
@@ -44,10 +45,10 @@ export function TreeRow(props: { entry: TreeEntry; icon?: IconName; tint?: strin
       ) : props.entry.folder ? (
         <View style={{ width: 16, height: 16 }}>
           <View class="group-aria-expanded:hidden">
-            <Icon name="folder" size={16} tint={colors.accent} />
+            <Icon name="folder" size={16} tint={colors.muted} />
           </View>
           <View class="hidden group-aria-expanded:flex">
-            <Icon name="folder-open" size={16} tint={colors.accent} />
+            <Icon name="folder-open" size={16} tint={colors.muted} />
           </View>
         </View>
       ) : (
@@ -60,6 +61,34 @@ export function TreeRow(props: { entry: TreeEntry; icon?: IconName; tint?: strin
         {props.entry.label}
       </Text>
       {props.detail ? <Text style={{ fontSize: size.detail, color: colors.faint }}>{props.detail}</Text> : null}
+    </View>
+  );
+}
+
+/**
+ * A row in a terminal: two columns a level, then the folder's own mark
+ * (`▸ ` closed, `▾ ` open, from the row's expanded state) or two blank
+ * columns on a leaf, so a level's labels line up and a child's mark sits
+ * under its parent's label; no icons. The row draws its marks itself, so
+ * the core adds none (a marked first text, or a leading empty box).
+ */
+function TerminalTreeRow(props: { entry: TreeEntry; detail?: string }) {
+  const indent = props.entry.depth * 2 * TERMINAL_COLUMN;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center" }}>
+      {indent > 0 ? <View style={{ width: indent, flexShrink: 0 }} /> : null}
+      {props.entry.folder ? (
+        <>
+          <Text class="text-muted-foreground group-aria-expanded:hidden">▸ </Text>
+          <Text class="hidden text-muted-foreground group-aria-expanded:flex">▾ </Text>
+        </>
+      ) : (
+        <View style={{ width: 2 * TERMINAL_COLUMN, flexShrink: 0 }} />
+      )}
+      <Text class="flex-1 text-muted-foreground group-selected:text-foreground" style={{ numberOfLines: 1 }}>
+        {props.entry.label}
+      </Text>
+      {props.detail ? <Text style={{ marginLeft: TERMINAL_GAP, color: colors.faint }}>{props.detail}</Text> : null}
     </View>
   );
 }

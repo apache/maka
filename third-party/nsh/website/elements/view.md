@@ -98,7 +98,7 @@ and `ios` / `android` / `desktop`.
 ## Selectable views
 
 With `selectable`, a selection runs across the [`Text`](./text.md) elements and [`TextView`](./text-view.md)s inside
-the view, in reading order; texts with `style={{ userSelect: "none" }}` stay out, and a selectable view inside another is part of
+the view, in reading order; texts with `selectable={false}` stay out, and a selectable view inside another is part of
 the outer one. See [Text selection](./text-selection.md) for the gestures on each platform.
 
 ```tsx
@@ -168,7 +168,7 @@ view()
 | `onPressDown` / `onPressUp` | `.on_press_down` / `.on_press_up` | `PressEvent` (none in Rust) | A finger went down / lifted or left. |
 | `onMouseEnter` / `onMouseLeave` | `.on_mouse_enter` / `.on_mouse_leave` | `MouseEvent` | The mouse came over the view (or a view inside it) / left it or the window ([hover](./index.md#hover)); `onMouseLeave`'s is where it was last. |
 | `onMouseMove` | `.on_mouse_move` | `MouseEvent` | The mouse moved over the view (or a view inside it), with or without a button down, or a modifier key was pressed or released while it rests there with none down: `position`, `pagePosition` (`Point`s), `modifiers` and `pressedButton` (`"left"`, `"right"`, `"middle"`, `"back"`, `"forward"` or `null`); at most once a frame. |
-| `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | The secondary button was pressed over the view ([context menus](./index.md#context-menus)). |
+| `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | A context menu was asked for over the view: the secondary button, the keyboard in the browser or a screen reader on macOS and Windows ([context menus](./index.md#context-menus)). |
 | `onFileDragEnter` / `onFileDragLeave` | `.on_file_drag_enter` / `.on_file_drag_leave` | none | A local-file drag entered / left the active desktop destination. |
 | `onFileDrop` | `.on_file_drop` | `{ uris: string[] }` (`FileDropEvent`) | Local files or directories were dropped on the desktop destination. |
 | `onLayout` | `.on_layout` | `{ bounds }` (`Bounds<Points>`) | The frame relative to the parent changed. |
@@ -225,6 +225,10 @@ The closest enabled ancestor listening to `onFileDrop` receives the drop. A moda
 removes file-drag/drop listeners; leaving, cancellation, completion and destination removal clear the active state.
 Acceptance uses the Copy operation and mounted native state. The app decides whether to read, open or transfer the
 received files.
+
+Text inputs belong to the destination around them: files dropped on an input's text reach that destination as
+anywhere else in it, with the same enter and leave events, and the input keeps its text as it was. Text dragged
+into an input, and files dropped on an input outside any destination, behave as the platform's text fields do.
 
 ## Ref methods
 

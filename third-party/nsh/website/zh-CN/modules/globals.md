@@ -683,11 +683,11 @@ new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: 
 new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(date); // "Oct 16, 2026, 3:04 PM"
 ```
 
-不传 `locales` 时使用设备的区域设置（iOS 的 `NSLocale.currentLocale`、Android 的 `Locale.getDefault()`）；`nsh test` 和 Web 上为 `en-US`。
+不传 `locales` 时使用应用显示的区域：设备的区域格式（iOS 的 `NSLocale.currentLocale`、Android 的 `Locale.getDefault()`；`nsh test` 和 Web 上为 `en-US`），或者 `setLocale`（`nsh/i18n`）设置的区域。
 
 - **数字**：`decimal`、`percent`、`currency`（`currencyDisplay` 为 `symbol`、`narrowSymbol`、`code`）和 `unit`（常用单位：长度、质量、时长、数据大小、温度、速度）样式；`minimumIntegerDigits`、`minimum` / `maximumFractionDigits`、`minimum` / `maximumSignificantDigits`、`roundingPriority`、`trailingZeroDisplay`、`useGrouping`、`signDisplay`；`standard`、`scientific`、`engineering` 和 `compact` 记数法（`compactDisplay` 为 `short` / `long`）。舍入方式是四舍五入（远离零），按数字的书写形式进行（`1.005` 舍入为 `1.01`，与浏览器一致）。`format` 也精确地接受 BigInt 和十进制字符串。`formatToParts` 和 `resolvedOptions` 与浏览器一致。
-- **日期**：`weekday`、`year`、`month`（`numeric`、`2-digit`、`short`、`long`、`narrow`）、`day`、`hour`、`minute`、`second`、`fractionalSecondDigits`、`hour12` / `hourCycle`、`timeZoneName` 以及 `dateStyle` / `timeStyle`，使用公历。`timeZone` 支持设备时区（浏览器中为浏览器的时区）、`UTC` 和偏移量（`"+08:00"`）；其他时区名会抛出 `RangeError`（没有时区数据库）。
-- **区域**：区域数据是一张常用语言的表（英语、德语、法语、西班牙语、意大利语、葡萄牙语、荷兰语、俄语、瑞典语、波兰语、土耳其语、印尼语、越南语、泰语、印地语、中文、日语、韩语）及其地区变体（`en-GB`、`en-IN`、`de-CH`、`es-MX`、`pt-PT`、`zh-TW` 等），而不是完整的 CLDR，所以细节可能与浏览器的输出不同。没有数据的区域会依次回退到下一个请求的区域、设备的区域、`en-US`；俄语、瑞典语、波兰语、土耳其语、印尼语、越南语、泰语和印地语的日期没有月份名（月份写成数字，星期用英语）。数字始终是拉丁数字。
+- **日期**：`weekday`、`year`、`month`（`numeric`、`2-digit`、`short`、`long`、`narrow`）、`day`、`hour`、`minute`、`second`、`fractionalSecondDigits`、`hour12` / `hourCycle`、`timeZoneName` 以及 `dateStyle` / `timeStyle`，使用公历。`timeZone` 支持本地时间的时区（默认的 `resolvedOptions().timeZone` 就是它：设备上即 `localeSettings().timeZone`，浏览器中为浏览器的时区）、`UTC` 和偏移量（`"+08:00"`）；其他时区名会抛出 `RangeError`（没有时区数据库）。
+- **区域**：运行时自带英语（`en-US` 及其地区变体：`en-GB`、`en-IN` 等）的数据；其他语言的数据随应用提供，即 `nsh.json` 中 `locales` 列出的语言，没有它时为应用翻译所包含的语言（[I18n](../docs/i18n.md#数字和日期)）。Native Shell 有德语、法语、西班牙语、意大利语、葡萄牙语、荷兰语、俄语、瑞典语、波兰语、土耳其语、印尼语、越南语、泰语、印地语、中文、日语和韩语的数据，以及它们的地区变体（`de-CH`、`es-MX`、`pt-PT`、`zh-TW` 等），这是一张常用数据的表，而不是完整的 CLDR，所以细节可能与浏览器的输出不同。没有数据的区域会依次回退到下一个请求的区域、设备的区域、`en-US`；俄语、瑞典语、波兰语、土耳其语、印尼语、越南语、泰语和印地语的日期没有月份名（月份写成数字，星期用英语）。数字始终是拉丁数字。
 - **不支持**：`Intl.Collator`（`String.prototype.localeCompare` 是 QuickJS 自带的，不区分区域）、`PluralRules`、`RelativeTimeFormat`、`ListFormat`、`DisplayNames`、`Segmenter` 和 `Intl.Locale`；`currencySign: "accounting"` 和 `currencyDisplay: "name"` 分别按 `standard` 和 `code` 格式化。
 
 ## 性能

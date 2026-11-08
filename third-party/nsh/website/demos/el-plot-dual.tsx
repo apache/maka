@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Bar, Grid, Line, Plot, PlotAxis } from "nsh/base/plot";
-import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, size, Split, tint, ui, sectionSurface, plotAxisText, plotCrossLine, plotGrid, seriesColor } from "./palette";
 
 // Two y scales in one plot: the volume bars on the plot's `yScale`, the
 // close on its second one (`y2Scale`), which the line names with
@@ -50,7 +50,7 @@ function App() {
   const rows = () => SYMBOLS[symbol()];
   const day = () => rows()[hovered() ?? rows().length - 1];
   const tone = (dir: string) => (dir === "down" ? ui().down : ui().up);
-  const axisLabel = () => ({ fontSize: 11, color: ui().muted, ...num });
+  const axisLabel = plotAxisText;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>plot dual axes</Text>
@@ -71,7 +71,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 14, gap: 12 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 12 }}>
           <View class="flex-row items-baseline gap-3">
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={{ fontSize: size.label, fontWeight: "600", color: ui().text }}>{symbol()}</Text>
@@ -80,21 +80,20 @@ function App() {
             <Text style={{ fontSize: 20, fontWeight: "600", color: tone(day().dir), ...num }}>{`$${day().close.toFixed(2)}`}</Text>
           </View>
           <View class="flex-row justify-between">
-            <Text style={{ fontSize: 10, letterSpacing: 0.8, color: ui().muted }}>SHARES</Text>
-            <Text style={{ fontSize: 10, letterSpacing: 0.8, color: ui().muted }}>USD</Text>
+            <Text style={{ ...plotAxisText(), fontSize: 10, letterSpacing: 0.8 }}>SHARES</Text>
+            <Text style={{ ...plotAxisText(), fontSize: 10, letterSpacing: 0.8 }}>USD</Text>
           </View>
           <Plot
             data={rows()}
             xScale={{ type: "band", paddingInner: 0.3, paddingOuter: 0.15 }}
             alignTicks={aligned()}
-            colorScale={{ type: "ordinal", domain: ["up", "down"], range: [tint(ui().up, 0.45), tint(ui().down, 0.45)] }}
+            colorScale={{ type: "ordinal", domain: ["up", "down"], range: [tint(ui().up, 0.5), tint(ui().down, 0.5)] }}
             accessibilityLabel={`${symbol()}, ${rows().length} days: volume and close`}
             accessibilityValue={{ text: hovered() == null ? undefined : `Day ${day().day + 1}: close ${day().close}, ${shares(day().volume)} shares` }}
             appearGeneration="dual"
             motion={{ appear: { duration: 800, easing: "easeOut" }, update: { duration: 600, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 180 } }}
-            crossLineClass="w-full h-full"
-            crossLineStyle={{ backgroundColor: tint(ui().text, 0.05) }}
-            dotStyle={{ width: 9, height: 9, borderRadius: 4.5, borderWidth: 2, borderColor: ui().info, backgroundColor: ui().page }}
+            {...plotCrossLine({ band: true })}
+            dotStyle={{ width: 9, height: 9, borderRadius: 4.5, borderWidth: 2, borderColor: seriesColor(0), backgroundColor: ui().card.backgroundColor }}
             onHoverChange={({ index }) => {
               hovered.set(index);
               const d = index == null ? undefined : rows()[index];
@@ -103,12 +102,12 @@ function App() {
             style={{ height, marginLeft: SIDE, marginRight: SIDE, marginBottom: AXIS_BELOW }}
           >
             {/* No values: lines at the ticks of the y scale, which the right axis' share. */}
-            <Grid style={{ stroke: tint(ui().text, 0.08) }} />
+            <Grid style={plotGrid()} />
             <Bar value="volume" color="dir" cornerRadii={{ topLeft: 1.5, topRight: 1.5 }} stagger={0.5} inactiveOpacity={0.4} />
-            <Line y="close" scale="y2" curve="linear" style={{ stroke: ui().info, strokeWidth: 2 }} />
+            <Line y="close" scale="y2" curve="linear" style={{ stroke: seriesColor(0), strokeWidth: 2 }} />
             <PlotAxis placement="left" format={shares} labelStyle={{ ...axisLabel(), width: SIDE, paddingRight: 8, textAlign: "right" }} />
             <PlotAxis placement="right" scale="y2" format={(v) => v.toFixed(0)} labelStyle={{ ...axisLabel(), width: SIDE, paddingLeft: 8 }} />
-            <PlotAxis tickValues={[0, 9, 19]} format={(i) => `Day ${i + 1}`} labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }} />
+            <PlotAxis tickValues={[0, 9, 19]} format={(i) => `Day ${i + 1}`} labelStyle={{ ...plotAxisText(), lineHeight: 14, paddingTop: 12 }} />
           </Plot>
         </View>
       </Split>

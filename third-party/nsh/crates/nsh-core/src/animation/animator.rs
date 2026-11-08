@@ -165,6 +165,18 @@ impl Animator {
         self.graph.is_animating()
     }
 
+    /// When the graph should be ticked next for an animation that ends by
+    /// itself to end on time without frames ([`Graph::deadline`]).
+    pub fn deadline(&self, now: f64) -> Option<f64> {
+        self.graph.deadline(now)
+    }
+
+    /// The highest frame rate the graph's running animations need
+    /// ([`Graph::frame_rate`]): `None`, the screen's highest.
+    pub fn frame_rate(&self) -> Option<f32> {
+        self.graph.frame_rate()
+    }
+
     /// True while an animation that ends by itself runs, not one looping
     /// forever ([`Graph::is_finishing`]): what a test's step waits for.
     pub fn finishing(&self) -> bool {

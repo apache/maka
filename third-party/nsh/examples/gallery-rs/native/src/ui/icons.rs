@@ -357,12 +357,32 @@ pub(crate) struct IconProps {
     pub(crate) size: Prop<f32>,
     /// Its color.
     pub(crate) tint: Prop<Tint>,
+    /// What a terminal, which shows no icons, shows in its place: an
+    /// icon-only control's short label (a word or two) in the tint. A
+    /// terminal shows nothing for an icon without one (it is decorative).
+    pub(crate) label: Prop<Option<SharedString>>,
 }
 
 /// A glyph, stroked with its tint (a canvas drawn in a binding: again when
-/// the glyph, its tint or the appearance changes).
+/// the glyph, its tint or the appearance changes). In a terminal its
+/// `label`, or nothing.
 #[component]
 pub(crate) fn Icon(props: IconProps) -> impl IntoElement {
+    if super::terminal() {
+        let tint = move || {
+            let tint = props.tint.get();
+            AdaptiveColor::new(tint.light, tint.dark)
+        };
+        return view()
+            .pointer_events(PointerEvents::None)
+            .children(
+                props
+                    .label
+                    .get_untracked()
+                    .map(|_| text(move || props.label.get().unwrap_or_default()).text_color(tint)),
+            )
+            .into_element();
+    }
     view()
         .size(move || px(props.size.get()))
         .pointer_events(PointerEvents::None)
@@ -382,4 +402,5 @@ pub(crate) fn Icon(props: IconProps) -> impl IntoElement {
             })
             .size_full(),
         )
+        .into_element()
 }

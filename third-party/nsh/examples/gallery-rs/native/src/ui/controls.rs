@@ -32,9 +32,18 @@ fn knob(on: bool) -> f32 {
 }
 
 /// An on / off switch: the knob springs across, the track changes color
-/// natively.
+/// natively. 50 × 30 pt; in the terminal, `nsh/base`'s switch.
 #[component]
 pub(crate) fn Toggle(props: ToggleProps, cx: Scope<ToggleEvent>) -> impl IntoElement {
+    // The terminal shows `nsh/base`'s switch in its own form, as the TSX
+    // gallery's does.
+    if super::terminal() {
+        return nsh_base::switch()
+            .checked(props.value)
+            .accessibility_label(props.label)
+            .on_change(move |&checked: &bool| cx.emit(ToggleEvent::Change(checked)))
+            .into_element();
+    }
     let on = animated_value(knob(props.value.get_untracked()));
     // A new value from the owner springs the knob there.
     let shown = stored(props.value.get_untracked());
@@ -113,6 +122,7 @@ pub(crate) fn Toggle(props: ToggleProps, cx: Scope<ToggleEvent>) -> impl IntoEle
                 )
                 .bind_translate_x(&on.interpolate(&[0.0, 1.0], &[0.0, 20.0])),
         )
+        .into_element()
 }
 
 /// A segment of [`Segmented`].

@@ -129,7 +129,7 @@ impl TerminalSurface {
         *view.surface().terminal_wake.borrow_mut() = Some(wake);
         view.surface().terminal_active.set(Some(true));
         let mut env = view.surface().environment.get();
-        env.terminal_keyboard = true;
+        env.ctrl_for_command = true;
         view.surface().environment.set(env);
         let result = Self {
             view,
@@ -371,7 +371,7 @@ impl NativeSurface for TerminalSurface {
             return false;
         }
         let scale = self.frames.borrow().scale();
-        let capture = crate::render::snapshot(surface, scale)
+        let capture = crate::render::snapshot(surface, scale, None)
             .map_err(|e| e.to_string())
             .and_then(|pixels| {
                 let mut rgba = pixels.data;
@@ -660,8 +660,7 @@ fn button(b: nsh_terminal::MouseButton) -> u8 {
 fn pressable_bounds_in(surface: &crate::surface::Surface, label: &str) -> Vec<Bounds<Points>> {
     fn visit(view: &crate::view::NshView, label: &str, out: &mut Vec<Bounds<Points>>) {
         let state = view.state();
-        if state.parked
-            || state.props.pointer_events == nsh_core::PointerEvents::None
+        if state.props.pointer_events == nsh_core::PointerEvents::None
             || state.live.as_ref().is_some_and(|l| l.dying())
             || crate::access::part(&state) == crate::access::Part::Hidden
         {

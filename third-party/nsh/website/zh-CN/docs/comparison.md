@@ -27,7 +27,7 @@ NSH 是一个在 iOS、Android、macOS、Windows、Linux 和 Web 上编写完整
 | 系统文本输入 | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> |
 | 按设备适配 | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> |
 | 无 JS runtime | <span class="status status--yes" role="img" aria-label="支持"></span> Rust 应用 | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> C++ | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> |
-| 签名下发界面 | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> 热更新 | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> QML | <span class="status status--partial" role="img" aria-label="部分支持"></span> Shell | <span class="status status--partial" role="img" aria-label="部分支持"></span> Shell | <span class="status status--no" role="img" aria-label="不支持"></span> |
+| 签名下发界面 | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> OTA | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> QML | <span class="status status--partial" role="img" aria-label="部分支持"></span> Shell | <span class="status status--partial" role="img" aria-label="部分支持"></span> Shell | <span class="status status--no" role="img" aria-label="不支持"></span> |
 | 许可证 | Apache-2.0 | MIT | BSD-3-Clause | LGPL、GPL、商业 | Apache-2.0 | Apache-2.0 | GPL、商业 |
 
 Immediate Mode 每一帧重新构建界面描述；Retained Mode 保留它，只更新变化的部分。GPUI Fast 在 GPUI 之上把两者结合起来，平台支持与 GPUI 相同。“Shell”指 [GPUI Shell](https://gpui-kit.com/shell)。
@@ -41,7 +41,7 @@ Immediate Mode 每一帧重新构建界面描述；Retained Mode 保留它，只
 - **系统文本输入。** NSH 的文本框就是平台的编辑器——`UITextView`、`EditText`、`NSTextView`、GTK 的 `TextView`、浏览器的输入框——带着系统的输入法、选区手柄和编辑菜单；Windows 上是 NSH 自己的编辑器，配合 DirectWrite 和系统输入法（IMM32）。React Native 也使用平台的文本输入框。自绘框架自己实现文本编辑，再接入系统输入法。
 - **按设备适配。** NSH 的基础组件随设备而变：同一个 `Menu` 在有指针的设备上贴着触发点弹出，在手机上从底部升起；`ContextMenu` 用右键或长按打开。在其他框架中，按设备适配交互主要是应用自己的工作。
 - **无 JS runtime。** Rust 应用的运行器在任何平台上都不链接 JavaScript 引擎；TSX 是第二条路径，运行在同一个引擎上。Qt Quick 的 QML 运行在 Qt 的 JavaScript 引擎上，用 C++ 编写的 Qt Widgets 则不需要。
-- **签名下发界面。** NSH 用自己信任的密钥和吊销列表校验签名的 `.nshpkg` 包，并让每个包运行在宿主设定限制和能力的虚拟机里（[签名包](./signed-packages.md)、[沙箱与能力](./sandbox-and-capabilities.md)）。React Native 的热更新下发的是可信的应用代码；Qt 可以加载 QML 文件；GPUI 应用通过 [GPUI Shell](https://gpui-kit.com/shell) 加载 JavaScript 模块。
+- **签名下发界面。** NSH 用自己信任的密钥和吊销列表校验签名的 `.nshpkg` 包，并让每个包运行在宿主设定限制和能力的虚拟机里（[签名包](./signed-packages.md)、[沙箱与能力](./sandbox-and-capabilities.md)）。打包的 NSH 应用也以同样的方式 OTA 更新自己的 TSX（包括 iOS 和 Android），启动失败的版本会自动回滚（[OTA 更新](./ota-updates.md)）。React Native 的 OTA 更新下发的是可信的应用代码；Qt 可以加载 QML 文件；GPUI 应用通过 [GPUI Shell](https://gpui-kit.com/shell) 加载 JavaScript 模块。
 
 ### NSH 的不同之处
 
@@ -82,7 +82,7 @@ Electron 内置 Chromium，Tauri 使用系统的 WebView：两者都用网页内
 
 应用想要显示安装包里没有的界面——由模型生成的回答、来自合作方或其他团队的功能、无需发版就能变化的页面——无论在手机还是桌面上，都已有几种成熟的做法。它们的区别在于：界面由什么绘制，下发的代码能做什么，以及宿主应用要为承载它们做多大的改动。
 
-| 能力 | NSH | WebView | 服务端驱动 UI | 小程序容器 | 热更新 |
+| 能力 | NSH | WebView | 服务端驱动 UI | 小程序容器 | OTA 更新 |
 |---|---|---|---|---|---|
 | 由什么绘制 | 平台界面 | 浏览器引擎 | 应用自己的视图 | 网页引擎加专有层 | 框架的渲染器 |
 | Native 的外观与行为 | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--no" role="img" aria-label="不支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> | <span class="status status--partial" role="img" aria-label="部分支持"></span> | <span class="status status--yes" role="img" aria-label="支持"></span> |
@@ -96,7 +96,7 @@ Electron 内置 Chromium，Tauri 使用系统的 WebView：两者都用网页内
 - **WebView（H5）。** 浏览器引擎里的网页：HTML 能表达的都能做，外观是网页的，访问原生能力靠手写的桥。
 - **服务端驱动 UI。** 用 JSON 重新组合应用已经内置的组件和动作：容易生成，但除了 schema 提供的，没有本地状态和逻辑。
 - **小程序容器。** 网页引擎之上的平台专有框架和 API，放在一个体积很大的容器 SDK 里。
-- **热更新**（例如 React Native 配合代码推送服务）。能用整个框架，但更新是可信的应用代码，应用也必须用该框架编写。
+- **OTA 更新**（例如 React Native 配合代码推送服务）。能用整个框架，但更新是可信的应用代码，应用也必须用该框架编写。
 - **NSH。** 一个 TSX 模块，带着自己的状态、逻辑、动画和布局，用平台自己的界面渲染，还能使用宿主注册的 Native 视图。它以签名包的形式到达，由应用校验，运行在有内存、调用时长和节点数限制的独立虚拟机里，只能访问宿主授予的网络主机、网页和系统设置（[沙箱与能力](./sandbox-and-capabilities.md)）。宿主只需在模块出现的位置放一个视图（[平台](./platforms.md#嵌入原生应用)），同一个 bundle 运行在每个平台上。这也是在 [GPUI Shell](./index.md#native-shell-与-gpui-shell) 之外还要做 NSH 的原因。
 
 ## 其他方案更合适的情况

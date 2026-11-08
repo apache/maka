@@ -76,7 +76,6 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         refuse_connections: None,
         filesystem: None,
         assets: None,
-        chunk_loader: None,
         environment: Environment::default(),
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -92,6 +91,9 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         host: Default::default(),
         picker: None,
         speech: None,
+        chunk_loader: None,
+        audio: None,
+        windows: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -159,7 +161,7 @@ fn a_rust_apps_typed_styles_and_spans_reach_the_platform() {
         .map(|(_, t)| t.clone())
         .expect("the sentence");
     assert_eq!(sentence.text, "Tapped 0 times: tap or not");
-    let link = &sentence.links[0];
+    let link = sentence.links[0];
     let tap = sentence
         .spans
         .iter()

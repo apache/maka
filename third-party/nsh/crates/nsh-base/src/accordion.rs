@@ -13,7 +13,10 @@ use std::rc::Rc;
 
 use nsh_core::{AccessibilityState, element::Style, prelude::*};
 
-use crate::collapsible::follow_open;
+use crate::{
+    collapsible::follow_open,
+    terminal::{DISCLOSURE_NONE, after_lead, disclosure, is_terminal},
+};
 
 /// What an [`AccordionItem`] finds of its [`Accordion`] through context.
 #[derive(Clone)]
@@ -192,7 +195,10 @@ pub struct AccordionTriggerProps {
 /// is disabled while its item or the accordion is. Its look is the app's:
 /// `class` and `style`, `aria-expanded:` classes (or `expandedStyle`) while
 /// open, `hover:`, `active:`, `focus:` and `disabled:`; its children are
-/// the title and the chevron.
+/// the title and the chevron. In a terminal it starts with the terminal's
+/// own disclosure, `▸ ` closed and `▾ ` open, in a row with its children
+/// (an app that draws a chevron of its own leaves it out there)
+/// ([`crate::terminal`]).
 #[component]
 pub fn AccordionTrigger(props: AccordionTriggerProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let item = use_context::<ItemContext>();
@@ -200,6 +206,7 @@ pub fn AccordionTrigger(props: AccordionTriggerProps, _cx: Scope<NoEvent>) -> im
         Some(item) => (item.open, item.disabled),
         None => (computed(|| false), computed(|| false)),
     };
+    let terminal = is_terminal();
     view()
         .disabled(disabled)
         .role(AccessibilityRole::Button)
@@ -214,7 +221,17 @@ pub fn AccordionTrigger(props: AccordionTriggerProps, _cx: Scope<NoEvent>) -> im
                 (item.toggle)();
             }
         })
-        .child(props.children)
+        // The terminal's own disclosure before the app's title, in a row:
+        // the trigger's one child, so its gap does not part them, the
+        // app's children a column apart after it.
+        .child(match terminal {
+            true => after_lead(
+                move || disclosure(open.get()).into(),
+                view().flex_row().gap(px(1.0)).child(props.children),
+            )
+            .into_element(),
+            false => props.children.into_element(),
+        })
 }
 
 /// The props of [`AccordionPanel`].
@@ -257,6 +274,8 @@ pub fn AccordionPanel(props: AccordionPanelProps, _cx: Scope<NoEvent>) -> impl I
     let (reveal, keep) = (props.reveal, props.keep_mounted);
     let region = element_ref();
     let mounted = follow_open(open.into_reactive(), reveal.into_reactive(), region);
+    let content = when(move || mounted.get() || keep.get(), move || props.children);
+    let terminal = is_terminal();
     view()
         .element_ref(&region)
         .role(AccessibilityRole::Region)
@@ -276,8 +295,9 @@ pub fn AccordionPanel(props: AccordionPanelProps, _cx: Scope<NoEvent>) -> impl I
                 (false, false) => s.h(px(0.0)).invisible(),
             }
         })
-        .child(when(
-            move || mounted.get() || keep.get(),
-            move || props.children,
-        ))
+        .child(match terminal {
+            // Under the title, past the trigger's disclosure.
+            true => after_lead(|| DISCLOSURE_NONE.into(), content).into_element(),
+            false => content.into_element(),
+        })
 }

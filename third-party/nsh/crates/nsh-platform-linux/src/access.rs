@@ -196,7 +196,8 @@ fn update(view: &NshView) -> bool {
         let mut s = view.state_mut();
         let s = &mut *s;
         let a = &s.props.accessibility;
-        let pressable = is_pressable(s.events);
+        // An app-drawn window button is a button, as the system's is.
+        let pressable = is_pressable(s.events) || s.props.window_control.is_some();
         let text = s.text.as_ref().map(|t| t.text.text.as_str());
         let spec = spec_for(a, s.kind, pressable, text, s.style.hidden);
         if s.access.spec.as_deref() == Some(&spec) {

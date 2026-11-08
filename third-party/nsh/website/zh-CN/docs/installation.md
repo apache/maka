@@ -67,7 +67,7 @@ mise use -g github:longbridge/nsh
 
 ## 用 Rust 编写的应用
 
-通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标：
+通过 [rustup](https://rustup.rs) 安装 Rust，开发时推荐使用 [huacnlee/cargo](#从源码构建)。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标：
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS 模拟器、真机、Mac Catalyst
@@ -106,6 +106,17 @@ nsh --version
 发行包由源码仓库中的 `cargo xtask dist` 生成（见下文）。其中的 `nsh` 可执行文件是为该机器构建的。在装有 Xcode 的 Mac 上，它包含 iOS 和 macOS 运行时（Apple Silicon）；在 Linux 上，它改为包含为该机器构建的 Linux 运行时；在 Windows 上则包含 Windows 运行时，CLI 为 `bin\nsh.exe`。每个发行包还包含为该机器构建的 [GPUI](./gpui.md) 开发宿主。它们都包含
 Android 运行时（在 Windows 上，只有找到 Android SDK 时才包含）。
 
+## 安装 nightly 版本
+
+`main` 有新提交的每一天，夜间都会构建并发布为 [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly)，包含和正式版相同的发行包。在 macOS 和 Linux 上用安装脚本安装：
+
+```sh
+curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
+nsh -V # nsh 0.1.1 (abcdef0)
+```
+
+它和正式版一样安装到 `~/.nsh`，再次运行即可更新到最新的 nightly；不带参数的命令则回到最新正式版。`-V` 显示构建所用的 `main` 提交。用 Rust 编写的应用会用 crates.io 上与 CLI 同版本号的 NSH crate 构建 runner，也就是上一个正式版的 crate；这类应用请使用正式版或源码版。
+
 ## 安装最新源码版
 
 在 macOS 和 Linux 上，准备好 Git、Rust 和下文的平台构建依赖后，可以安装最新 `main`：
@@ -120,6 +131,12 @@ nsh -V # nsh 0.1.1 (abcdef0)
 ## 从源码构建
 
 你需要通过 [rustup](https://rustup.rs) 安装 Rust。仓库中的 `rust-toolchain.toml` 会选择 stable 工具链，并在首次使用时安装 iOS 和 Android 目标。
+
+开发时推荐使用 [huacnlee/cargo](https://github.com/huacnlee/cargo)，一个可以直接替换官方 Cargo 的分支：所有 Git worktree 共用一个构建目录，它会自己控制在大小限制之内，不需要任何配置。它会替换 `~/.cargo/bin/cargo`，`rust-toolchain.toml` 和 `cargo +nightly` 照常可用，并且会自动更新；恢复 rustup 自带版本的方法见它的 README。
+
+```sh
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows：irm https://huacnlee.github.io/cargo/install.ps1 | iex
+```
 
 ```sh
 git clone https://github.com/longbridge/nsh.git
@@ -188,7 +205,7 @@ sdkmanager "platforms;android-35" "build-tools;35.0.1" "platform-tools"
 
 - **GTK 4.14** 及以上；构建运行时还需要它们的开发包和 clang：`libgtk-4-dev clang`（Debian、Ubuntu 24.04 及以上）、`gtk4 clang`（Arch）、`gtk4-devel clang`（Fedora）。
 - Web 视图需要 **WebKitGTK 6.0**（2.40 及以上）：构建运行时需要 `libwebkitgtk-6.0-dev`（Debian、Ubuntu）、`webkitgtk-6.0`（Arch）、`webkitgtk6.0-devel`（Fedora），应用运行的机器上也需要它。没有它时，`cargo xtask dist` 构建的运行时中 Web 视图为占位视图。
-- 应用要播放的视频格式对应的 **GStreamer** 插件。
+- **GStreamer** 1.14 及以上，用于视频和声音：构建运行时需要 `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev`（Debian、Ubuntu）、`gstreamer gst-plugins-base`（Arch）、`gstreamer1-devel gstreamer1-plugins-base-devel`（Fedora），以及应用要播放的视频和音频格式对应的插件。
 
 见 [Linux](./linux.md)。
 

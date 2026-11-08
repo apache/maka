@@ -512,8 +512,14 @@ impl Ctl {
 /// the bar's (hidden, it takes no presses). `thumbClass` / `thumbStyle`
 /// style the thumb, inside the track's padding and sized along the axis by
 /// the bar. Turn the target's own indicator off with `scrollbar={false}`.
+/// In a terminal it shows nothing: the terminal draws its own scroll bars
+/// ([`crate::terminal`]).
 #[component]
 pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
+    if crate::terminal::is_terminal() {
+        // The terminal draws its own scroll bars on scroll views and lists.
+        return view().hidden().into_element();
+    }
     let ctl = Ctl {
         scroll: props.scroll,
         axis: props.axis.get_untracked(),
@@ -659,6 +665,7 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
             }
         })
         .child(rail)
+        .into_element()
 }
 
 /// The look of the built-in bars of one axis ([`ScrollbarTheme`]): what

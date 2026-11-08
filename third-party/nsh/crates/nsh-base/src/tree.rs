@@ -55,6 +55,7 @@ use crate::{
     keys::directed,
     listbox::{self, Typeahead},
     select::SelectValue,
+    terminal::{DISCLOSURE_NONE, TREE_INDENT, disclosure, is_terminal},
 };
 
 /// How many signals a node the rows follow (the selection, the cursor) is
@@ -686,7 +687,10 @@ struct TreeModel {
 /// rows (`itemClass` with `selected:`, `aria-expanded:`, `focus:` and
 /// `disabled:`) and draws them (`renderItem`, given each item's depth).
 /// Screen readers hear a tree of items, each with its level, whether it is
-/// expanded and whether it is selected.
+/// expanded and whether it is selected. In a terminal a row the tree draws
+/// itself (no `renderItem`) is its label indented two Cells a level after
+/// the terminal's own disclosure, `▸ ` collapsed, `▾ ` expanded, two
+/// spaces on a leaf ([`crate::terminal`]).
 #[component(methods = TreeApi)]
 pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
     let expanded = Expanded {
@@ -834,20 +838,25 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
         }
     };
     let is_open = move |node: usize| open.with_untracked(|o| o.contains(node));
-    // The node Right, Left, Return and Space act on: the cursor, while
-    // something is selected (with nothing, Right and Left select the
-    // first row, as Down does).
-    let acted_on = move || current.get_untracked().and(cursor.get_untracked());
-    // Right: a collapsed folder expands, an expanded one moves to its
-    // first enabled child.
-    let right = move || {
+    // The node Right, Left, Return and Space act on: the cursor, the row
+    // the focus shows on (with nothing selected, the first enabled row,
+    // where Down starts).
+    let acted_on = move || cursor.get_untracked();
+    // With nothing selected, a key that would leave the cursor where it
+    // is selects its row instead, as Down does: it does something.
+    let select_unselected = move |node: usize| {
         if current.get_untracked().is_none() {
-            return step(Step::First);
+            select_node(node, true);
         }
+    };
+    // Right: a collapsed folder expands, an expanded one moves to its
+    // first enabled child (WAI-ARIA's tree view, with nothing selected
+    // too: the focus is on the cursor's row).
+    let right = move || {
         let Some(node) = acted_on() else { return };
         let (folder, enabled) = flat.with_untracked(|f| (f.0.folder(node), f.0.enabled(node)));
         if !folder || !enabled {
-            return;
+            return select_unselected(node);
         }
         if !is_open(node) {
             set_open(node, true);
@@ -860,9 +869,6 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
     // Left: an expanded folder collapses, anything else moves to its
     // parent (when it is enabled).
     let left = move || {
-        if current.get_untracked().is_none() {
-            return step(Step::First);
-        }
         let Some(node) = acted_on() else { return };
         let (folder, enabled, parent) =
             flat.with_untracked(|f| (f.0.folder(node), f.0.enabled(node), f.0.parent(node)));
@@ -870,6 +876,8 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
             set_open(node, false);
         } else if let Some(parent) = parent.filter(|&p| flat.with_untracked(|f| f.0.enabled(p))) {
             select_node(parent, true);
+        } else {
+            select_unselected(node);
         }
     };
     let toggle_current = move || {
@@ -912,6 +920,7 @@ pub fn Tree(props: TreeProps, cx: Scope<TreeEvent>) -> impl IntoElement {
                 KeyOptions {
                     when: When::NotEditing,
                     repeat,
+                    ..Default::default()
                 },
                 move |_| f(),
             );
@@ -1103,6 +1112,7 @@ fn row(m: TreeModel, at: Position) -> AnyElement {
     let render_item = m.render_item;
     let custom = computed(move || render_item.with(Option::is_some));
     let label = move || entry.with(|e| e.as_ref().map(|e| e.label.clone()).unwrap_or_default());
+    let terminal = is_terminal();
     view()
         .role(AccessibilityRole::TreeItem)
         .focusable(false)
@@ -1131,6 +1141,19 @@ fn row(m: TreeModel, at: Position) -> AnyElement {
                     let entry = entry.get()?;
                     Some(render.render(entry.id.clone(), entry))
                 });
+            }
+            if terminal {
+                return text(move || {
+                    let depth = entry.with(|e| e.as_ref().map_or(0, |e| e.depth)) as usize;
+                    let mark = expanded.get().map_or(DISCLOSURE_NONE, disclosure);
+                    SharedString::from(format!(
+                        "{:indent$}{mark}{}",
+                        "",
+                        label(),
+                        indent = depth * TREE_INDENT
+                    ))
+                })
+                .into_element();
             }
             text(label).into_element()
         }))

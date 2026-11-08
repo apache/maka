@@ -1,14 +1,14 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
-import { Button, type OpenChangeReason, Select, type SelectEntry, type SelectGroup, Switch } from "nsh/base";
-import { button, buttonText, CheckMark, desktop, focusRing, hoverFill, Icon, Log, Panel, size, Split, ui } from "./palette";
+import { Button, type OpenChangeReason, Select, Switch } from "nsh/base";
+import { button, buttonText, desktop, Log, Panel, size, Split, switchLook, ui, RowLabel, sectionSurface, listRow, clearButtonLook, ListboxEmpty, ListboxHeader, listboxProps, listboxSearch, OptionRow, Picker } from "./palette";
 
 // Two selects in a settings card: a plain one (typeahead jumps by letter)
 // and a searchable one with sections, a disabled item and an empty state.
-// The trigger is the shared button look (hover, pressed, focus ring,
-// disabled) with the chosen title and a chevron that turns while the list
-// is open; the list is a popup at the trigger with a pointer, a sheet on a
-// touch screen. The highlighted row (the keys or the pointer) is lit with
-// the accent tint, the chosen one is bolder with a check in its own lane.
+// The look is the shared listbox look: the trigger (`Picker`) on the raised
+// finish with the chosen title and a chevron that turns while the list is
+// open, its edge lit then; the list (`listboxProps`) a popup at the trigger
+// with a pointer, a sheet on a touch screen; the highlighted row (the keys
+// or the pointer) in the brand tint, the chosen one bolder with a check.
 
 const LANGUAGES = [
   { value: "en", title: "English" },
@@ -43,92 +43,8 @@ const REGIONS = [
 
 const titleOf = (items: { value: string; title: string }[], value: string | null) => items.find((i) => i.value === value)?.title;
 
-/** The text of a control: 13 with a pointer, the touch label size otherwise. */
-const controlText = desktop ? 13 : size.label;
-
-/** A popup at the trigger with a pointer, a sheet at the bottom on a touch screen. */
-const surface = () =>
-  desktop
-    ? { ...ui().card, borderRadius: 12, padding: 4 }
-    : { ...ui().card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 30, maxHeight: "70%" as const };
-
-const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
-
-/** The trigger: the shared button's look, the chosen title at the start and a chevron in a lane as wide as it. */
-function Trigger(props: { title?: string; placeholder: string; open: boolean; disabled?: boolean; clearable?: boolean }) {
-  const look = button("secondary", {
-    style: () => ({
-      flexDirection: "row",
-      justifyContent: "space-between",
-      gap: 8,
-      ...(desktop ? { width: 260 } : {}),
-      // Open: the border stays lit while the list is up; disabled, dimmed.
-      ...(props.open ? { borderColor: ui().faint } : {}),
-      ...(props.disabled ? { opacity: 0.4 } : {}),
-    }),
-  });
-  return (
-    // No hover while disabled.
-    <View {...look} hoverStyle={props.disabled ? undefined : look.hoverStyle}>
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().muted }}>
-        {props.title ?? props.placeholder}
-      </Text>
-      {/* With a clear button over the end (`cleanable`), an empty lane as wide as the button in place of the chevron. */}
-      <View
-        class="transition-transform duration-150 motion-reduce:transition-none"
-        style={{
-          width: props.clearable ? 20 : 10,
-          height: 20,
-          alignItems: "center",
-          justifyContent: "center",
-          opacity: props.clearable ? 0 : 1,
-          transform: [{ rotate: props.open ? "270deg" : "90deg" }],
-        }}
-      >
-        <Text style={{ fontSize: 18, color: ui().muted }}>›</Text>
-      </View>
-    </View>
-  );
-}
-
-/**
- * A row's look, on the row itself (`itemClass`): the accent tint while
- * highlighted (the keys or the pointer, as the menus' rows), dimmed while
- * disabled. The states are the row's classes (`group`), so the list draws a
- * row's content once per item and the highlight moves without drawing.
- */
-const rowClass =
-  "group rounded-lg border border-transparent transition-colors duration-100 motion-reduce:transition-none " +
-  "focus:border-brand/30 focus:bg-brand-tint active:opacity-70 disabled:opacity-40";
-
-/**
- * A row's content: the title (bolder while chosen), a quieter detail at the
- * end, the check in its own lane (`group-selected:`).
- */
-function Row(props: { item: SelectEntry; detail?: string }) {
-  return (
-    // The row's 1-point border on each side.
-    <View style={{ height: size.rowSm - 2, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 7 }}>
-      <Text class="font-normal group-selected:font-semibold" style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: ui().text }}>
-        {props.item.title}
-      </Text>
-      <If when={props.detail}>
-        <Text style={{ fontSize: 12, color: ui().faint }}>{props.detail}</Text>
-      </If>
-      <View class="opacity-0 group-selected:opacity-100" style={{ width: 16 }}>
-        <CheckMark size={16} tint={ui().accent} />
-      </View>
-    </View>
-  );
-}
-
-function Header(props: { group: SelectGroup }) {
-  return (
-    <Text style={{ fontSize: 12, fontWeight: "500", color: ui().muted, paddingHorizontal: 9, paddingTop: 8, paddingBottom: 4 }}>
-      {props.group.title}
-    </Text>
-  );
-}
+/** A trigger's width: set with a pointer, the field's on a touch screen. */
+const trigger = desktop ? { width: 260 } : undefined;
 
 /** A label over its control, a quieter line under the label. */
 function Field(props: { label: string; detail: string; children: JSX.Element }) {
@@ -172,29 +88,24 @@ function App() {
               <Button
                 disabled={region() === null}
                 onPress={() => region.set(null)}
-                {...button("secondary", { size: "sm", style: { marginTop: 6 } })}
+                {...button("secondary", { size: "sm", disabled: () => region() === null, style: { marginTop: 6 } })}
               >
                 <Text style={buttonText("secondary", { size: "sm" })}>Clear region</Text>
               </Button>
               <Switch
                 checked={locked()}
                 onChange={({ checked }) => locked.set(checked)}
-                class={`-mx-2 mt-1 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`}
-                hoverStyle={hoverFill()}
-                focusStyle={focusRing()}
-                trackClass={`${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`}
-                trackStyle={locked() ? ui().accentFill : ui().inset}
-                thumbClass={desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5"}
-                thumbStyle={locked() ? { backgroundColor: ui().onAccent } : ui().raised}
+                {...listRow({ first: true, style: { flexDirection: "row-reverse", marginTop: 4 } })}
+                {...switchLook(() => locked())}
               >
-                <Text style={{ flex: 1, fontSize: size.label, color: ui().text }}>Region disabled</Text>
+                <RowLabel label="Region disabled" />
               </Switch>
             </Panel>
             <Log title="onChange · onOpenChange" lines={events()} minHeight={120} />
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: 16, gap: 20 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 20 }}>
           <Field label="Language" detail={desktop ? "Typing a letter on the trigger chooses by title" : "Thirteen languages in a sheet"}>
             <Select
               items={LANGUAGES}
@@ -205,13 +116,9 @@ function App() {
               }}
               onOpenChange={opened("Language", (next) => languageOpen.set(next))}
               accessibilityLabel="Language"
-              offset={4}
-              margin={8}
-              popupStyle={surface()}
-              backdropStyle={backdrop}
-              itemClass={rowClass}
-              trigger={<Trigger title={titleOf(LANGUAGES, language())} placeholder="Choose a language" open={languageOpen()} />}
-              renderItem={(item) => <Row item={item} />}
+              {...listboxProps()}
+              trigger={<Picker title={titleOf(LANGUAGES, language()) ?? "Choose a language"} placeholder={language() === null} open={languageOpen()} style={trigger} />}
+              renderItem={(item) => <OptionRow item={item} />}
             />
           </Field>
           <Field label="Region" detail="Search by name; one region is at capacity">
@@ -228,25 +135,20 @@ function App() {
               searchable
               searchPlaceholder="Search regions"
               searchAccessibilityLabel="Search regions"
-              searchClass={`${desktop ? "text-sm" : "text-base"} placeholder:text-[${ui().faint}] text-[${ui().text}]`}
-              searchStyle={{ ...ui().inset, borderRadius: 8, height: size.control, paddingHorizontal: 8, marginBottom: 4 }}
-              empty={<Text style={{ paddingVertical: 20, textAlign: "center", fontSize: 13, color: ui().muted }}>No region matches</Text>}
-              offset={4}
-              margin={8}
+              {...listboxSearch()}
+              empty={<ListboxEmpty label="No region matches" />}
               // Wider than the trigger on the desktops: the titles and their codes side by side.
-              popupStyle={desktop ? { ...surface(), width: 340 } : surface()}
-              backdropStyle={backdrop}
-              itemClass={rowClass}
+              {...listboxProps({ minWidth: 340 })}
               // As wide as the trigger, so the clear button lands over its end.
-              style={desktop ? { width: 260 } : undefined}
+              style={trigger}
               cleanable
               clearButtonAccessibilityLabel="Clear the region"
-              clearButtonClass="absolute items-center justify-center rounded-full enabled:hover:opacity-70"
-              clearButtonStyle={{ top: (size.control - 20) / 2, right: 10, width: 20, height: 20 }}
-              clearButton={<Icon name="close" size={14} tint={ui().muted} />}
-              trigger={<Trigger title={titleOf(REGIONS, region())} placeholder="Choose a region" open={regionOpen()} disabled={locked()} clearable={region() !== null} />}
-              renderItem={(item) => <Row item={item} detail={item.disabled ? "At capacity" : item.value} />}
-              renderGroup={(group) => <Header group={group} />}
+              {...clearButtonLook({ over: true })}
+              trigger={
+                <Picker title={titleOf(REGIONS, region()) ?? "Choose a region"} placeholder={region() === null} open={regionOpen()} disabled={locked()} clearable={region() !== null} style={trigger} />
+              }
+              renderItem={(item) => <OptionRow item={item} note={item.disabled ? "At capacity" : item.value} />}
+              renderGroup={(group) => <ListboxHeader group={group} />}
             />
           </Field>
         </View>

@@ -297,6 +297,7 @@ fn handle(view: &Rc<Inner>, ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             source_map,
             capabilities,
             app_id,
+            window,
             limits,
         } => {
             let mut bundle = match format {
@@ -321,7 +322,9 @@ fn handle(view: &Rc<Inner>, ui: &Rc<RefCell<DevUi>>, event: DevEvent) {
             if let Some(map) = source_map {
                 bundle = bundle.with_source_map(map);
             }
-            bundle = bundle.with_app_id(app_id.as_deref());
+            bundle = bundle
+                .with_app_id(app_id.as_deref())
+                .with_main_window(window.as_deref());
             bundle = match bundle.with_capabilities_json(capabilities.as_deref()) {
                 Ok(bundle) => bundle,
                 Err(err) => return show_error(ui, container, "Invalid capabilities", &err, true),

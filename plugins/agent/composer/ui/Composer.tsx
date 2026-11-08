@@ -148,9 +148,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   });
   const hero = () => props.session() === null || props.session()!.empty();
   // On the desktop the card's 8-point inset makes its corners concentric with the 32-point round buttons.
-  const cardRadius = () => (platform.isTerminal && compact() ? 16 : 24);
+  const cardRadius = () => (platform.idiom === 'terminal' && compact() ? 16 : 24);
   // Desktop only: the terminal keeps its start pane as it is.
-  const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
+  const noConnections = () => platform.idiom !== 'terminal' && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
   let pendingDrop: ((event: { uris: string[] }) => void) | null = null;
   props.dropFiles?.((event) => {
@@ -241,7 +241,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   // A file drag over the editor leaves the conversation's own drop target.
   const draggingOverEditor = signal(false);
   const fileDragging = () =>
-    !platform.isTerminal &&
+    platform.idiom !== 'terminal' &&
     (props.session() !== null || pending() !== null) &&
     (draggingOverEditor() || (props.fileDragging?.() ?? false));
   effect(() => {
@@ -296,18 +296,18 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           tooltip={textTooltip(() => props.session()?.workspace() || tr('Choose workspace'))}
           onPress={props.chooseWorkspace}
           style={{
-            ...(platform.isTerminal ? controlStyle : toolbarControlStyle),
+            ...(platform.idiom === 'terminal' ? controlStyle : toolbarControlStyle),
             flexDirection: 'row',
             alignItems: 'center',
             maxWidth: '100%',
             minWidth: 0,
             flexShrink: 1,
-            gap: platform.isTerminal ? 8 : 4,
+            gap: platform.idiom === 'terminal' ? 8 : 4,
           }}
-          hoverStyle={{ backgroundColor: platform.isTerminal ? C.card : C.line }}
-          focusStyle={{ backgroundColor: platform.isTerminal ? C.raised : C.line }}
+          hoverStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.card : C.line }}
+          focusStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.raised : C.line }}
         >
-          <Icon name="folder" color={platform.isTerminal ? C.secondary : C.muted} />
+          <Icon name="folder" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
           <Text
             style={[
               { ...captionTextStyle, color: C.secondary, flexShrink: 1 },
@@ -316,7 +316,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           >
             {workspaceLabel()}
           </Text>
-          <Icon name="down" color={platform.isTerminal ? C.secondary : C.muted} />
+          <Icon name="down" color={platform.idiom === 'terminal' ? C.secondary : C.muted} />
         </Button>
       }
     >
@@ -408,8 +408,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         maxWidth: props.quickTools ? undefined : 800,
         alignSelf: 'center',
         paddingHorizontal: props.quickTools ? 0 : 16,
-        paddingTop: props.quickTools || hero() || platform.isTerminal ? 0 : 12,
-        paddingBottom: props.quickTools ? 0 : hero() || !platform.isTerminal ? 16 : 8,
+        paddingTop: props.quickTools || hero() || platform.idiom === 'terminal' ? 0 : 12,
+        paddingBottom: props.quickTools ? 0 : hero() || platform.idiom !== 'terminal' ? 16 : 8,
       }}
     >
       <If when={hero()}>
@@ -439,7 +439,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             </Text>
           </View>
           {/* The desktop keeps the workspace in the toolbar and asks only for a missing connection. */}
-          <If when={platform.isTerminal}>
+          <If when={platform.idiom === 'terminal'}>
             <View
               style={{
                 flexDirection: 'row',
@@ -513,7 +513,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               fontSize: 12,
               // A single line occupies 32 points: 16 of text, 8 above and 8 below.
               // This keeps the next card's outward cell paint clear of the notice.
-              ...(platform.isTerminal ? { lineHeight: 16, paddingVertical: 8 } : { paddingTop: 4 }),
+              ...(platform.idiom === 'terminal'
+                ? { lineHeight: 16, paddingVertical: 8 }
+                : { paddingTop: 4 }),
             }}
           >
             {props.session()?.notice()}
@@ -547,19 +549,19 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             flexShrink: 0,
             backgroundColor: props.quickTools
               ? 'transparent'
-              : platform.isTerminal
+              : platform.idiom === 'terminal'
                 ? C.raised
                 : C.card,
             borderRadius: props.quickTools ? 0 : cardRadius(),
             borderWidth: props.quickTools ? 0 : 1,
             borderColor: fileDragging()
               ? C.accent
-              : platform.isTerminal
+              : platform.idiom === 'terminal'
                 ? C.line
                 : props.quickTools
                   ? 'transparent'
                   : C.card,
-            ...(platform.isTerminal
+            ...(platform.idiom === 'terminal'
               ? {
                   paddingHorizontal: 16,
                   paddingTop: 12,
@@ -640,7 +642,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   />
                   <View
                     style={[
-                      platform.isTerminal
+                      platform.idiom === 'terminal'
                         ? { gap: 8 }
                         : {
                             gap: props.quickTools ? 0 : 8,
@@ -916,7 +918,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 display: props.quickTools ? 'none' : 'flex',
                 flexDirection: 'row',
                 alignItems: 'center',
-                gap: platform.isTerminal ? 8 : 4,
+                gap: platform.idiom === 'terminal' ? 8 : 4,
               },
               { pointerEvents: 'box-none' },
             ]}
@@ -950,11 +952,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               pending={pending()?.permissions ?? null}
             />
             {/* After the sandbox, so leaving the start pane moves neither. */}
-            <If when={!platform.isTerminal && hero()}>{workspaceControl()}</If>
+            <If when={platform.idiom !== 'terminal' && hero()}>{workspaceControl()}</If>
             <If when={props.session() !== null || pending() !== null}>
               <View
                 style={[
-                  platform.isTerminal
+                  platform.idiom === 'terminal'
                     ? { flex: 1, minWidth: 0 }
                     : {
                         flex: 1,
@@ -969,7 +971,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               >
                 {/* The desktop shows context use beside the model; the terminal
                     keeps it in the line under the composer. */}
-                <If when={!platform.isTerminal && props.session()?.contextUsage?.()}>
+                <If when={platform.idiom !== 'terminal' && props.session()?.contextUsage?.()}>
                   <ContextGauge usage={() => props.session()!.contextUsage!()!} />
                 </If>
                 {props.models}
@@ -1051,14 +1053,14 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         {/* The terminal reserves the warning row so the composer never jumps; the
             desktop shows it only when there is a warning, so no empty band sits
             under the box. */}
-        <If when={platform.isTerminal || (props.session()?.connected() && warning())}>
+        <If when={platform.idiom === 'terminal' || (props.session()?.connected() && warning())}>
           <View style={{ minHeight: 24, paddingTop: 8 }}>
             <If when={props.session()?.connected() && warning()}>
               <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{warning()}</Text>
             </If>
           </View>
         </If>
-        <If when={platform.isTerminal && props.session()?.metrics()}>
+        <If when={platform.idiom === 'terminal' && props.session()?.metrics()}>
           <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}
           </Text>

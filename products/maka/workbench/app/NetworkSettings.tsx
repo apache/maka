@@ -56,25 +56,24 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
       }
     >
       <SettingsBody
+        footerShown={owner.dirty()}
         footer={
-          owner.dirty() ? (
-            <>
-              <SettingsButton
-                label={tr('Discard')}
-                accessibilityLabel={tr('Reload network settings')}
-                tone="quiet"
-                disabled={disabled()}
-                onPress={inputAction(owner.reload, owner.action())}
-              />
-              <SettingsButton
-                label={tr('Save')}
-                accessibilityLabel={tr('Save network settings')}
-                tone="primary"
-                disabled={disabled()}
-                onPress={inputAction(owner.save, owner.action())}
-              />
-            </>
-          ) : undefined
+          <>
+            <SettingsButton
+              label={tr('Discard')}
+              accessibilityLabel={tr('Reload network settings')}
+              tone="quiet"
+              disabled={disabled()}
+              onPress={inputAction(owner.reload, owner.action())}
+            />
+            <SettingsButton
+              label={tr('Save')}
+              accessibilityLabel={tr('Save network settings')}
+              tone="primary"
+              disabled={disabled()}
+              onPress={inputAction(owner.save, owner.action())}
+            />
+          </>
         }
       >
         <SettingsLede>

@@ -321,11 +321,21 @@ pub(crate) fn build(entry: &Path, out: &Path, release: bool, split: bool) -> any
         let path = out.join(name);
         fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
     }
-    // The app's id, which names where it keeps its data (`Bundle::read`).
+    // The app's id, which names where it keeps its data, and the schemes
+    // it claims (`Bundle::read`).
     let app = out.join("app.json");
     let id = crate::package::app_id(entry)?;
-    fs::write(&app, serde_json::json!({ "id": id }).to_string())
-        .with_context(|| format!("write {}", app.display()))?;
+    let config = crate::package::read_config(&dunce::canonicalize(entry)?)?;
+    let schemes = config.url_schemes();
+    fs::write(
+        &app,
+        crate::package::app_json(
+            serde_json::json!({ "id": id }),
+            &schemes,
+            config.window.as_ref(),
+        ),
+    )
+    .with_context(|| format!("write {}", app.display()))?;
     let declared = out.join("capabilities.json");
     match built.capabilities_json() {
         Some(json) => {
@@ -368,6 +378,37 @@ pub(crate) fn build(entry: &Path, out: &Path, release: bool, split: bool) -> any
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    /// Separates development bundling, hot-script assembly and QuickJS compilation.
+    /// Run with `cargo test -p nsh-cli bench_dev_startup -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "startup measurement on the counter and gallery"]
+    fn bench_dev_startup() {
+        use std::time::Instant;
+
+        let sets = crate::ui_sets();
+        for app in ["counter", "gallery"] {
+            let entry = PathBuf::from(format!("../../examples/{app}/App.tsx"));
+            for run in 0..3 {
+                let start = Instant::now();
+                let hot = nsh_bundler::bundle_hot(&entry, &sets).unwrap();
+                let bundled = start.elapsed();
+                let start = Instant::now();
+                let (code, _) = hot.script();
+                let assembled = start.elapsed();
+                let start = Instant::now();
+                let bytecode = nsh_js::compile_bytecode_with(&code, false, &sets).unwrap();
+                let compiled = start.elapsed();
+                assert!(!bytecode.is_empty());
+                eprintln!(
+                    "{app} run {run}: bundle {bundled:?}, script {assembled:?}, bytecode {compiled:?}; {} source bytes, {} bytecode bytes",
+                    code.len(),
+                    bytecode.len()
+                );
+            }
+        }
+    }
 
     #[test]
     fn hosts_must_serve_the_ui_sets_an_app_imports() {

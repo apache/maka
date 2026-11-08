@@ -1,7 +1,8 @@
-import { keymap, signal, Text, View } from "nsh";
+import { keymap, platform, signal, Text, View } from "nsh";
 import { Button, Command, type CommandItem, type CommandRef, Dialog } from "nsh/base";
 import type { IconName } from "../icons";
 import {
+  backdrop,
   Caption,
   Card,
   colors,
@@ -14,6 +15,8 @@ import {
   Icon,
   mono,
   Spinner,
+  TERMINAL_GAP,
+  terminal,
   Toggle as Switch,
 } from "../ui";
 
@@ -128,7 +131,7 @@ export function CommandDemo() {
           open={open()}
           animation="fade"
           onOpenChange={({ open: next }) => show(next)}
-          backdropStyle={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+          backdropStyle={backdrop()}
           style={
             desktop()
               ? { marginHorizontal: "auto", marginTop: "12%", width: 560, maxWidth: "92%" }
@@ -160,7 +163,7 @@ export function CommandDemo() {
             renderItem={(entry) => <CommandRow entry={entry} icon={actionOf(entry.id)?.icon} note={entry.disabled ? "Admin" : undefined} />}
             footer={
               desktop() ? (
-                <View class="flex-row gap-4 border-t border-border px-3" style={{ height: 32, alignItems: "center" }}>
+                <View class="flex-row gap-4 border-t border-border px-3" style={{ height: 32, alignItems: "center", ...(terminal ? { gap: TERMINAL_GAP } : {}) }}>
                   <Text style={{ fontSize: 11, color: colors.faint }}>↑↓ to move</Text>
                   <Text style={{ fontSize: 11, color: colors.faint }}>↩ to run</Text>
                   <Text style={{ fontSize: 11, color: colors.faint }}>esc to close</Text>
@@ -183,7 +186,17 @@ export function CommandDemo() {
       <Card
         title="Move to"
         subtitle="An inline menu: the folder in effect is checked, Spam is the server's"
-        right={<Switch value={searchable()} onChange={(v) => searchable.set(v)} label="Search" />}
+        right={
+          // The terminal's switch is a glyph: its label beside it says what it turns on.
+          platform.idiom === "terminal" ? (
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Text style={{ fontSize: 12, color: colors.muted }}>Search</Text>
+              <Switch value={searchable()} onChange={(v) => searchable.set(v)} label="Search" />
+            </View>
+          ) : (
+            <Switch value={searchable()} onChange={(v) => searchable.set(v)} label="Search" />
+          )
+        }
       >
         <Command
           items={FOLDERS.map((f) => ({ id: f.id, label: f.label, checked: f.id === folder(), disabled: f.id === "spam" }))}

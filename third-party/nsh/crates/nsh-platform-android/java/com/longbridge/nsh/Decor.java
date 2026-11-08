@@ -177,6 +177,9 @@ final class Decor extends Drawable {
     int[] boxShadowColors = new int[0];
     // Gradients, top layer first.
     Gradient[] gradients = new Gradient[0];
+    /** `maskImage`, top layer first. */
+    Gradient[] masks = new Gradient[0];
+    private Paint maskPaint;
     // `outline*` (px): width (0: none), color, style (0 solid, 1 dashed, 2
     // dotted), offset.
     float outlineWidth, outlineOffset;
@@ -461,72 +464,107 @@ final class Decor extends Drawable {
 
     private void drawGradients(Canvas canvas, Rect b) {
         if (gradients.length == 0) return;
-        float w = Math.max(1, b.width()), h = Math.max(1, b.height());
         paint.setStyle(Paint.Style.FILL);
         Path box = shape(b, 0, path);
         for (int i = gradients.length - 1; i >= 0; i--) {
-            Gradient g = gradients[i];
-            android.graphics.Shader shader;
-            switch (g.kind) {
-                case 2: {
-                    float cx = b.left + g.x * w, cy = b.top + g.y * h;
-                    float ax = g.x * w, ay = g.y * h;
-                    float dx, dy;
-                    switch (g.size) {
-                        case 0: dx = Math.min(ax, w - ax); dy = Math.min(ay, h - ay); break;
-                        case 2: dx = Math.max(ax, w - ax); dy = Math.max(ay, h - ay); break;
-                        case 1: dx = Math.min(ax, w - ax) * 1.4142135f; dy = Math.min(ay, h - ay) * 1.4142135f; break;
-                        default: dx = Math.max(ax, w - ax) * 1.4142135f; dy = Math.max(ay, h - ay) * 1.4142135f;
-                    }
-                    if (g.circle) {
-                        float r = g.size == 0 ? Math.min(dx, dy) : g.size == 2 ? Math.max(dx, dy)
-                                : (float) Math.hypot(dx / 1.4142135f, dy / 1.4142135f);
-                        dx = dy = r;
-                    }
-                    // The farthest corner, in radii of the ending shape: a repeating gradient's
-                    // rings go on to it.
-                    float reach = g.repeating && dx > 0 && dy > 0
-                            ? Math.max(1, (float) Math.hypot(Math.max(ax, w - ax) / dx, Math.max(ay, h - ay) / dy))
-                            : 1;
-                    // Lengths are along the ray to the right.
-                    g.place(dx, reach);
-                    shader = new android.graphics.RadialGradient(cx, cy, Math.max(0.5f, dx) * reach, g.drawnColors,
-                            g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
-                    // An ellipse: the circle scaled vertically.
-                    gradientMatrix.setScale(1, dy / Math.max(0.5f, dx), cx, cy);
-                    shader.setLocalMatrix(gradientMatrix);
-                    break;
-                }
-                case 3: {
-                    float cx = b.left + g.x * w, cy = b.top + g.y * h;
-                    g.place(0, 1);
-                    shader = new android.graphics.SweepGradient(cx, cy, g.drawnColors, g.drawnPositions);
-                    // Sweeps start right; CSS starts up.
-                    gradientMatrix.setRotate(g.angle - 90, cx, cy);
-                    shader.setLocalMatrix(gradientMatrix);
-                    break;
-                }
-                default: {
-                    float angle = g.angle;
-                    if (g.kind == 1) {
-                        float a = (float) Math.toDegrees(Math.atan2(h, w));
-                        angle = g.right ? (g.bottom ? 90 + a : 90 - a) : (g.bottom ? 270 - a : 270 + a);
-                    }
-                    double rad = Math.toRadians(angle);
-                    float sin = (float) Math.sin(rad), cos = (float) Math.cos(rad);
-                    float len = Math.abs(w * sin) + Math.abs(h * cos);
-                    float cx = b.left + w / 2, cy = b.top + h / 2;
-                    float dx = sin * len / 2, dy = -cos * len / 2;
-                    g.place(len, 1);
-                    shader = new android.graphics.LinearGradient(cx - dx, cy - dy, cx + dx, cy + dy, g.drawnColors,
-                            g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
-                }
-            }
-            paint.setShader(shader);
+            paint.setShader(shader(gradients[i], b));
             paint.setColor(0xff000000);
             canvas.drawPath(box, paint);
             paint.setShader(null);
         }
+    }
+
+    /** What `g` paints over the box `b`. */
+    private android.graphics.Shader shader(Gradient g, Rect b) {
+        float w = Math.max(1, b.width()), h = Math.max(1, b.height());
+        android.graphics.Shader shader;
+        switch (g.kind) {
+            case 2: {
+                float cx = b.left + g.x * w, cy = b.top + g.y * h;
+                float ax = g.x * w, ay = g.y * h;
+                float dx, dy;
+                switch (g.size) {
+                    case 0: dx = Math.min(ax, w - ax); dy = Math.min(ay, h - ay); break;
+                    case 2: dx = Math.max(ax, w - ax); dy = Math.max(ay, h - ay); break;
+                    case 1: dx = Math.min(ax, w - ax) * 1.4142135f; dy = Math.min(ay, h - ay) * 1.4142135f; break;
+                    default: dx = Math.max(ax, w - ax) * 1.4142135f; dy = Math.max(ay, h - ay) * 1.4142135f;
+                }
+                if (g.circle) {
+                    float r = g.size == 0 ? Math.min(dx, dy) : g.size == 2 ? Math.max(dx, dy)
+                            : (float) Math.hypot(dx / 1.4142135f, dy / 1.4142135f);
+                    dx = dy = r;
+                }
+                // The farthest corner, in radii of the ending shape: a repeating gradient's
+                // rings go on to it.
+                float reach = g.repeating && dx > 0 && dy > 0
+                        ? Math.max(1, (float) Math.hypot(Math.max(ax, w - ax) / dx, Math.max(ay, h - ay) / dy))
+                        : 1;
+                // Lengths are along the ray to the right.
+                g.place(dx, reach);
+                shader = new android.graphics.RadialGradient(cx, cy, Math.max(0.5f, dx) * reach, g.drawnColors,
+                        g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
+                // An ellipse: the circle scaled vertically.
+                gradientMatrix.setScale(1, dy / Math.max(0.5f, dx), cx, cy);
+                shader.setLocalMatrix(gradientMatrix);
+                break;
+            }
+            case 3: {
+                float cx = b.left + g.x * w, cy = b.top + g.y * h;
+                g.place(0, 1);
+                shader = new android.graphics.SweepGradient(cx, cy, g.drawnColors, g.drawnPositions);
+                // Sweeps start right; CSS starts up.
+                gradientMatrix.setRotate(g.angle - 90, cx, cy);
+                shader.setLocalMatrix(gradientMatrix);
+                break;
+            }
+            default: {
+                float angle = g.angle;
+                if (g.kind == 1) {
+                    float a = (float) Math.toDegrees(Math.atan2(h, w));
+                    angle = g.right ? (g.bottom ? 90 + a : 90 - a) : (g.bottom ? 270 - a : 270 + a);
+                }
+                double rad = Math.toRadians(angle);
+                float sin = (float) Math.sin(rad), cos = (float) Math.cos(rad);
+                float len = Math.abs(w * sin) + Math.abs(h * cos);
+                float cx = b.left + w / 2, cy = b.top + h / 2;
+                float dx = sin * len / 2, dy = -cos * len / 2;
+                g.place(len, 1);
+                shader = new android.graphics.LinearGradient(cx - dx, cy - dy, cx + dx, cy + dy, g.drawnColors,
+                        g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
+            }
+        }
+        return shader;
+    }
+
+    /**
+     * Keeps what `canvas` holds of the layer {@link #drawMasked} opened where
+     * `maskImage`'s topmost gradient is opaque (as iOS and macOS, which
+     * draw that one).
+     */
+    private void drawMask(Canvas canvas, Rect b) {
+        if (maskPaint == null) {
+            maskPaint = new Paint();
+            maskPaint.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN));
+        }
+        maskPaint.setShader(shader(masks[0], b));
+        canvas.drawRect(b, maskPaint);
+        maskPaint.setShader(null);
+    }
+
+    /**
+     * Draws the view through `draw` under `maskImage`, in a layer of its own
+     * so the mask covers all of it, its backdrop included.
+     */
+    void drawMasked(Canvas canvas, android.view.View view, Runnable draw) {
+        if (masks.length == 0) {
+            draw.run();
+            return;
+        }
+        Rect b = new Rect(0, 0, view.getWidth(), view.getHeight());
+        int save = canvas.saveLayer(0, 0, b.right, b.bottom, null);
+        draw.run();
+        drawMask(canvas, b);
+        canvas.restoreToCount(save);
     }
 
     private void drawOutline(Canvas canvas, Rect b) {
@@ -607,7 +645,7 @@ final class Decor extends Drawable {
         return false;
     }
 
-    private boolean uniformBorder() {
+    boolean uniformBorder() {
         for (int i = 1; i < 4; i++) {
             if (borderWidths[i] != borderWidths[0] || borderColors[i] != borderColors[0]) return false;
         }
@@ -677,6 +715,14 @@ final class Decor extends Drawable {
                     outline.setRoundRect(r, fit(r)[0]);
                 } else if (Build.VERSION.SDK_INT >= 30) {
                     outline.setPath(shape(r, 0, new Path()));
+                } else if (continuous) {
+                    // Smoothed corners are not always convex, and Android 9
+                    // takes only convex outlines. Clipping is by path here
+                    // (`needsPathClip`), so the outline only casts the shadow:
+                    // a round rect of the smallest corner stands in for it.
+                    float smallest = Float.MAX_VALUE;
+                    for (float corner : fit(r)) smallest = Math.min(smallest, corner);
+                    outline.setRoundRect(r, smallest);
                 } else {
                     // Rounded rectangles are convex.
                     outline.setConvexPath(shape(r, 0, new Path()));

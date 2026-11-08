@@ -26,7 +26,7 @@ test("shows its cards", async () => {
     "Radial gradient",
     "Sketch",
     "Clear",
-    "0 · 0 points",
+    "5 · 25 points",
   ]) {
     expect(app.texts()).toContain(text);
   }

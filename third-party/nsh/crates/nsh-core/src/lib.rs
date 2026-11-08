@@ -12,6 +12,7 @@ mod byte_size;
 pub use byte_size::ByteSize;
 pub mod access;
 pub mod animation;
+pub mod audio;
 pub mod canvas;
 pub mod clipboard;
 pub mod color;
@@ -27,14 +28,15 @@ pub mod filesystem;
 pub mod geometry;
 mod grid;
 pub mod host_channel;
+pub mod i18n;
 pub mod image;
 pub mod input;
-pub mod input_tokens;
 pub mod js;
 pub mod keymap;
 pub mod mobile;
 mod mount;
 pub mod navigation;
+pub mod notifications;
 pub mod open_url;
 mod ops;
 pub mod overlay;
@@ -44,6 +46,8 @@ pub mod prelude;
 mod props;
 pub mod reactive;
 pub mod resource;
+#[doc(hidden)]
+pub mod restart;
 pub mod runtime;
 pub mod runtime_data;
 pub mod scroll;
@@ -62,6 +66,8 @@ mod text_source;
 pub mod time;
 mod transform;
 pub mod transition;
+pub mod url_scheme;
+pub mod web_resource;
 pub mod websocket;
 
 // The derive macros name `::nsh_core`, also in this crate's own tests.
@@ -76,7 +82,8 @@ pub use crate::{
     core::{ApplyError, Core, ListBind, Measurement},
     effects::{
         BackdropMaterial, BlendMode, BoxShadow, ColorStop, Cursor, Effects, Filter, GlassEffect,
-        Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes, Outline, Transition,
+        Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes, MacOsBackdrop,
+        MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, Outline, Transition,
         TransitionProps, blur_radius, compose_color_matrices,
     },
     geometry::{Bounds, Corners, Edges, Point, Points, Size},
@@ -90,12 +97,13 @@ pub use crate::{
         AutoCapitalize, AutoFill, CellSlot, Command, ContextMenuEvent, Dialog, DialogButton,
         DialogButtonStyle, EventKind, EventMask, EventPayload, HeaderSlot, HeaderSystemItem,
         IMAGE_SCALES, ImageProp, ImageScales, ImageSource, KeyboardAppearance, KeyboardDismissMode,
-        KeyboardTaps, KeyboardType, ListContentStyle, ListViewport, ModalAnimation,
+        KeyboardTaps, KeyboardType, ListAlignment, ListContentStyle, ListViewport, ModalAnimation,
         ModalPresentation, ModalProp, MouseButton, MouseEvent, NativeProp, NodeId, Op, OverlayProp,
-        PasteBehavior, PasteEvent, PastedFile, PayloadValue, PressEvent, Prop, ROOT_ID, ResizeMode,
-        ReturnKeyType, ScreenAnimation, ScreenProp, ScrollProp, ScrollbarSetting, SnapAlignment,
-        StatusBarConfig, StatusBarSetting, StatusBarStyle, SubmitBehavior, Tag, TouchEvent,
-        TouchPhase, TouchPoint, TransitionFallback, Viewability, WebInput, WebKey, WebSource,
+        PasteBehavior, PasteEvent, PastedFile, PayloadValue, PointerType, PressEvent, Prop,
+        ROOT_ID, ResizeMode, ReturnKeyType, ScreenAnimation, ScreenProp, ScrollProp,
+        ScrollbarSetting, SnapAlignment, StatusBarConfig, StatusBarSetting, StatusBarStyle,
+        SubmitBehavior, Tag, TouchEvent, TouchPhase, TouchPoint, TransitionFallback, Viewability,
+        WebInput, WebKey, WebLoad, WebSource,
     },
     props::{
         Accessibility, AccessibilityActionDef, AccessibilityCurrent, AccessibilityProp,
@@ -114,7 +122,7 @@ pub use crate::{
         ATTACHMENT_CHAR, Affinity, ApproxTextEngine, AttachmentAlignments, AttributedText,
         BackgroundBox, FontExtent, LinePiece, ResolvedTextStyle, SpanTestId, TextAttachment,
         TextBackground, TextEngine, TextLayout, TextLine, TextLink, TextPosition, TextSpan,
-        font_data,
+        font_data, font_family, keep_font,
     },
     text_source::{ListSourceRows, TextSource, TextSourceKind, TextSourceSegment},
     transform::{

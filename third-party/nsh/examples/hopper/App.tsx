@@ -1,4 +1,4 @@
-import { type JSX, mount, Scroll, signal, Text, View } from "nsh";
+import { type JSX, mount, platform, Scroll, signal, Text, View } from "nsh";
 import { createNavStack, NavPage, NavStack } from "nsh/base";
 import { safeAreaInsets } from "nsh";
 import { FlightPlan } from "./cards/FlightPlan";
@@ -34,7 +34,9 @@ function Header(props: { title: string; back?: boolean }) {
         height: 52,
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        // A terminal rounds a small gap to one Cell: Back and the title
+        // keep two between them there.
+        gap: platform.idiom === "terminal" ? 24 : 6,
         paddingHorizontal: 12,
         backgroundColor: color.page,
         borderBottomWidth: 1,

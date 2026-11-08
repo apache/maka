@@ -16,6 +16,7 @@ alloc-stdlib@0.2.4					X
 alloc-stdlib@0.3.0					X													
 allocator-api2@0.2.21		X										X						
 ambient-authority@0.0.2		X	X									X						
+annotate-snippets@0.12.17		X										X						
 anstyle@1.0.14		X										X						
 anyhow@1.0.104		X										X						
 append-only-vec@0.1.10		X										X						
@@ -29,7 +30,6 @@ arcstr@1.2.0		X										X						X
 arraydeque@0.5.1		X										X						
 arrayref@0.3.9				X														
 arrayvec@0.7.8		X										X						
-ash@0.38.0+1.3.281		X										X						
 ashpd@0.13.13												X						
 async-broadcast@0.7.2		X										X						
 async-channel@2.5.0		X										X						
@@ -45,6 +45,7 @@ async-signal@0.2.14		X										X
 async-task@4.7.1		X										X						
 async-trait@0.1.92		X										X						
 atoi@2.0.0												X						
+atomic_refcell@0.1.14		X										X						
 atomic-waker@1.1.2		X										X						
 atspi-common@0.14.0		X										X						
 atspi-connection@0.14.0		X										X						
@@ -59,16 +60,15 @@ axum-core@0.5.6												X
 axum@0.8.9												X						
 base-encode@0.3.1												X						
 base16ct@1.0.0		X										X						
+base62@2.2.6												X						
 base64-simd@0.8.0												X						
 base64@0.22.1		X										X						
 base64@0.23.1		X										X						
 base64ct@1.8.3		X										X						
 bincode@1.3.3												X						
 bindgen@0.72.1					X													
-bit-set@0.10.0		X										X						
 bit-set@0.8.0		X										X						
 bit-vec@0.8.0		X										X						
-bit-vec@0.9.1		X										X						
 bitflags@1.3.2		X										X						
 bitflags@2.13.2		X										X						
 bitvec@1.1.1												X						
@@ -87,6 +87,7 @@ brotli-decompressor@6.0.1					X							X
 brotli@6.0.0					X							X						
 brotli@9.0.0					X							X						
 bstr@1.13.1		X										X						
+bumpalo@3.20.3		X										X						
 by_address@1.2.1		X										X						
 bytecount@0.6.9		X										X						
 bytemuck_derive@1.12.1		X										X						X
@@ -131,7 +132,6 @@ clru@0.6.3												X
 cmake@0.1.58		X										X						
 cmov@0.5.4		X										X						
 cobs@0.3.0		X										X						
-codespan-reporting@0.13.1		X																
 collection_literals@1.0.3												X						
 color_quant@1.1.0												X						
 compact_str@0.10.0												X						
@@ -159,6 +159,7 @@ crc-catalog@2.5.0		X										X
 crc@3.4.0		X										X						
 crc32c@0.6.8		X										X						
 crc32fast@1.5.3		X										X						
+critical-section@1.2.0		X										X						
 crossbeam-channel@0.5.17		X										X						
 crossbeam-deque@0.8.8		X										X						
 crossbeam-epoch@0.9.21		X										X						
@@ -217,7 +218,6 @@ dirs-sys@0.4.1		X										X
 dirs@5.0.1		X										X						
 dispatch2@0.3.1		X										X						X
 displaydoc@0.2.7		X										X						
-dlib@0.5.3												X						
 document-features@0.2.12		X										X						
 dom_query@0.28.0												X						
 dom_smoothie@0.18.2												X						
@@ -378,16 +378,14 @@ gix-worktree@0.59.0		X										X
 gix-zlib@0.4.0		X										X						
 gix@0.90.0		X										X						
 gjson@0.8.1												X						
-gl_generator@0.14.0		X																
 glib-macros@0.22.9												X						
 glib-sys@0.22.9												X						
 glib@0.22.10												X						
 glob@0.3.4		X										X						
 globset@0.4.20												X					X	
-glow@0.17.0		X										X						X
-glutin_wgl_sys@0.6.1		X																
+globwalk@0.8.1												X						
 gobject-sys@0.22.9												X						
-gpu-allocator@0.28.0		X										X						
+granit-parser@1.3.0		X										X						
 graphene-rs@0.22.8												X						
 graphene-sys@0.22.9												X						
 grep-matcher@0.1.9												X					X	
@@ -396,6 +394,14 @@ grep-searcher@0.1.17												X					X
 group@0.14.0		X										X						
 gsk4-sys@0.11.5												X						
 gsk4@0.11.5												X						
+gstreamer-app-sys@0.25.4												X						
+gstreamer-app@0.25.2		X										X						
+gstreamer-audio-sys@0.25.4												X						
+gstreamer-audio@0.25.4		X										X						
+gstreamer-base-sys@0.25.4												X						
+gstreamer-base@0.25.4		X										X						
+gstreamer-sys@0.25.4												X						
+gstreamer@0.25.4		X										X						
 gtk4-macros@0.11.5												X						
 gtk4-sys@0.11.5												X						
 gtk4@0.11.5												X						
@@ -475,6 +481,7 @@ ipnet@2.12.2		X										X
 is-docker@0.2.0												X						
 is-macro@0.3.8		X																
 is-wsl@0.4.0												X						
+itertools@0.11.0		X										X						
 itertools@0.13.0		X										X						
 itertools@0.14.0		X										X						
 itertools@0.15.0		X										X						
@@ -497,8 +504,7 @@ kasuari@0.4.13		X										X
 keccak@0.2.2		X										X						
 keyring-core@1.0.1		X										X						
 keyring@4.2.0		X										X						
-khronos_api@3.1.0		X																
-khronos-egl@6.0.0		X										X						
+kstring@2.0.5		X										X						
 kurbo@0.13.1		X										X						
 lazy_static@1.5.1		X										X						
 lazy-regex-proc_macros@3.6.2												X						
@@ -612,9 +618,8 @@ monty-types@1.3.0												X
 monty@1.3.0												X						
 moxcms@0.8.1		X			X													
 msvc_spectre_libs@0.1.3		X										X						
+muldiv@1.0.1												X						
 mxc-sdk@1.0.1												X						
-naga-types@30.0.1		X										X						
-naga@30.0.1		X										X						
 native-tls@0.2.18		X										X						
 new_debug_unreachable@1.0.6												X						
 nibble_vec@0.1.0												X						
@@ -622,25 +627,30 @@ nix@0.23.2												X
 nix@0.29.0												X						
 nix@0.31.3												X						
 nodejs-built-in-modules@1.0.0												X						
+nohash-hasher@0.2.0		X										X						
 nom@1.2.4												X						
 nom@7.1.3												X						
 nom@8.0.0												X						
 nonempty@0.12.0												X						
 nonmax@0.5.5		X										X						
+normpath@1.5.2		X										X						
 notify-types@2.1.0		X										X						
 notify@8.2.1								X										
 nsh-base@0.4.0		X																
 nsh-bundler@0.4.0		X																
 nsh-core@0.4.0		X																
 nsh-engine@0.4.0		X																
+nsh-i18n@0.4.0		X																
 nsh-js@0.4.0		X																
 nsh-macros@0.4.0		X																
 nsh-package@0.4.0		X																
+nsh-platform-apple@0.4.0		X																
 nsh-platform-linux@0.4.0		X																
 nsh-platform-macos@0.4.0		X																
 nsh-platform-tui@0.4.0		X																
 nsh-platform-windows@0.4.0		X																
 nsh-terminal@0.4.0		X																
+nsh-updater@0.4.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
 num-bigint@0.4.8		X										X						
@@ -669,7 +679,6 @@ objc2-foundation@0.2.2												X
 objc2-foundation@0.3.2												X						
 objc2-image-io@0.3.2		X										X						X
 objc2-io-kit@0.3.2		X										X						X
-objc2-metal@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
 objc2@0.5.3												X						
@@ -682,6 +691,7 @@ openssl-probe@0.2.1		X										X
 openssl-sys@0.9.117												X						
 openssl@0.10.81		X																
 option-ext@0.2.0														X				
+option-operations@0.6.1		X										X						
 ordered-float@5.5.0												X						
 ordered-stream@0.2.0		X										X						
 ordermap@1.2.2		X										X						
@@ -766,7 +776,6 @@ png@0.17.16		X										X
 png@0.18.1		X										X						
 pnp@0.12.12				X														
 polling@3.11.0		X										X						
-pollster@0.4.0		X										X						
 poly1305@0.9.1		X										X						
 polycool@0.4.0		X										X						
 polyval@0.7.3		X										X						
@@ -775,7 +784,6 @@ potential_utf@0.1.6															X
 powerfmt@0.2.1		X										X						
 ppv-lite86@0.2.21		X										X						
 precomputed-hash@0.1.1												X						
-presser@0.3.1		X										X						
 prettyplease@0.2.37		X										X						
 primefield@0.14.0		X										X						
 primeorder@0.14.0		X										X						
@@ -783,17 +791,16 @@ proc-macro-crate@3.5.0		X										X
 proc-macro-utils@0.10.0		X										X						
 proc-macro2@1.0.107		X										X						
 prodash@31.0.1												X						
-profiling@1.0.18		X										X						
 psm@0.1.32		X										X						
 pxfm@0.1.30		X			X													
 quantette@0.6.0		X										X						
 quick-error@2.0.1		X										X						
 quick-xml@0.41.0												X						
-quickjs-jit-core@0.14.1												X						
-quickjs-jit-macro@0.14.1												X						
-quickjs-jit-stdlib@0.14.1		X																
-quickjs-jit-sys@0.14.1												X						
-quickjs-jit@0.14.1												X						
+quickjs-jit-core@0.14.2												X						
+quickjs-jit-macro@0.14.2												X						
+quickjs-jit-stdlib@0.14.2		X																
+quickjs-jit-sys@0.14.2												X						
+quickjs-jit@0.14.2												X						
 quote-use-macros@0.9.0												X						
 quote-use@0.9.0												X						
 quote@1.0.47		X										X						
@@ -808,10 +815,8 @@ rand_xoshiro@0.8.1		X										X
 rand@0.10.3		X										X						
 rand@0.8.8		X										X						
 rand@0.9.5		X										X						
-range-alloc@0.1.5		X										X						
 ratatui-core@0.1.2												X						
 ratatui-crossterm@0.1.2												X						
-ratatui-image@11.1.0												X						
 ratatui-widgets@0.3.2												X						
 ratatui@0.30.2												X						
 ratex-font@0.1.15												X						
@@ -820,7 +825,6 @@ ratex-lexer@0.1.15												X
 ratex-parser@0.1.15												X						
 ratex-types@0.1.15												X						
 raw-window-handle@0.6.2		X										X						X
-raw-window-metal@1.1.0		X										X						
 rayon-core@1.13.0		X										X						
 rayon@1.12.0		X										X						
 ref-cast-impl@1.0.27		X										X						
@@ -834,7 +838,6 @@ regex@1.13.1		X										X
 regorus@0.10.1		X			X							X						
 regress@0.12.0		X										X						
 relative-path@2.0.3		X										X						
-renderdoc-sys@1.1.0		X										X						
 reqwest@0.13.5		X										X						
 resb@0.1.2															X			
 resvg@0.46.0		X										X						
@@ -882,8 +885,10 @@ ruff_python_trivia@0.0.14												X
 ruff_source_file@0.0.14												X						
 ruff_text_size@0.0.14												X						
 rusqlite@0.41.0												X						
+rust-i18n-macro@4.2.4												X						
+rust-i18n-support@4.2.4												X						
+rust-i18n@4.2.4												X						
 rustc_version@0.4.1		X										X						
-rustc-hash@1.1.0		X										X						
 rustc-hash@2.1.3		X										X						
 rustix-linux-procfs@0.1.1		X	X									X						
 rustix-openpty@0.2.0		X	X									X						
@@ -929,6 +934,7 @@ serde_with_macros@3.24.0		X										X
 serde_with@3.24.0		X										X						
 serde_yaml_ng@0.10.0												X						
 serde_yaml@0.9.34+deprecated		X										X						
+serde-saphyr@1.3.0		X										X						
 serde@1.0.229		X										X						
 servo_arc@0.4.3		X										X						
 sha1_smol@1.0.1					X													
@@ -963,7 +969,6 @@ sourcemap@9.3.2					X
 speedate@0.17.0												X						
 spin@0.10.1												X						
 spin@0.9.9												X						
-spirv@0.4.0+sdk-1.4.341.0		X																
 spki@0.8.1		X										X						
 sponge-cursor@0.1.0		X										X						
 sqlx-core@0.9.0		X										X						
@@ -1028,9 +1033,7 @@ time-macros@0.2.32		X										X
 time@0.3.55		X										X						
 timezone_provider@0.2.6		X										X						
 tiny-skia-path@0.11.4					X													
-tiny-skia-path@0.12.0					X													
 tiny-skia@0.11.4					X													
-tiny-skia@0.12.0					X													
 tinystr@0.8.5															X			
 tinyvec@1.13.3		X										X						X
 tokio-macros@2.7.2												X						
@@ -1065,6 +1068,7 @@ tracing-serde@0.2.0												X
 tracing-subscriber@0.3.23												X						
 tracing@0.1.44												X						
 tree_magic_mini@3.2.2												X						
+triomphe@0.1.17		X										X						
 try-lock@0.2.5												X						
 ts-rs-macros@12.0.1												X						
 ts-rs@12.0.1												X						
@@ -1141,13 +1145,6 @@ webview2-com-macros@0.8.1												X
 webview2-com-sys@0.39.1												X						
 webview2-com@0.39.1												X						
 weezl@0.1.12		X										X						
-wgpu-core-deps-apple@30.0.1		X										X						
-wgpu-core-deps-windows-linux-android@30.0.1		X										X						
-wgpu-core@30.0.1		X										X						
-wgpu-hal@30.0.1		X										X						
-wgpu-naga-bridge@30.0.1		X										X						
-wgpu-types@30.0.1		X										X						
-wgpu@30.0.1		X										X						
 which@6.0.3												X						
 which@8.0.6												X						
 wide@1.7.1		X										X						X
@@ -1212,7 +1209,6 @@ x11@2.21.0												X
 x11rb-protocol@0.13.2		X										X						
 x11rb@0.13.2		X										X						
 x25519-dalek@3.0.0					X													
-xml-rs@0.8.29												X						
 xml5ever@0.18.1		X										X						
 xmlwriter@0.1.0												X						
 xxhash-rust@0.8.19						X												
@@ -1241,6 +1237,7 @@ zip@9.1.0												X
 zlib-rs@0.6.8																		X
 zmij@1.0.23												X						
 zoneinfo64@0.3.0															X			
+zopfli@0.8.4		X																
 zstd-safe@7.3.0					X													
 zstd-safe@8.2.0					X													
 zstd-sys@2.1.2+zstd.1.5.7					X													

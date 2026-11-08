@@ -46,6 +46,10 @@ nsh run                        # this machine's backend; --target ios, android, 
 nsh package --target web       # or ios, ios-simulator, android, macos, linux, windows
 ```
 
+Build with [huacnlee/cargo](https://github.com/huacnlee/cargo), the Cargo NSH is developed with: a drop-in fork that builds each dependency once for all your
+projects and Git worktrees and keeps its build directory under a size limit on its own, with nothing to configure
+([Installation](./installation.md#building-from-a-checkout)).
+
 `src/lib.rs` holds the app: components, state, handlers, tasks.
 
 ```rust
@@ -140,8 +144,9 @@ native targets' threads.
 
 ## Desktop title bars
 
-Rust apps draw their own title bars with `nsh_core::element::desktop`. Call
-`set_title_bar(TitleBarStyle::Hidden, Some(height))`, mark the bar's background
+Rust apps draw their own title bars with `nsh_core::element::desktop`. Set the
+window's `title_bar` attribute to `TitleBarStyle::Hidden` with
+`current_window().set(..)`, mark the bar's background
 with `.window_drag(true)`, and reserve the native window controls' space with
 `title_bar()`. Its `top` is the bar's height, and `left` and `right` are the widths
 occupied by the system controls. Reading it subscribes to changes, including full
@@ -150,12 +155,18 @@ behavior; `.window_drag(false)` keeps a child out of its parent's drag region.
 
 ```rust
 use nsh_core::{
-    desktop::TitleBarStyle,
-    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
+    desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes, WindowControl},
+    element::desktop::{current_window, title_bar},
+    prelude::*,
 };
 
 fn window_bar() -> impl IntoElement {
-    set_title_bar(TitleBarStyle::Hidden, Some(px(42.0)));
+    let mut bar = TitleBarOptions::default();
+    bar.style = TitleBarStyle::Hidden;
+    bar.height = Some(px(42.0));
+    let mut attributes = WindowAttributes::default();
+    attributes.title_bar = Some(bar);
+    current_window().set(attributes);
     view()
         .h(px(42.0))
         .flex_row()
@@ -164,14 +175,16 @@ fn window_bar() -> impl IntoElement {
         .pl(move || title_bar().left + px(12.0))
         .pr(move || title_bar().right + px(12.0))
         .child(text("My app").flex_1())
-        .child(text("Close").window_drag(false).on_press(close_window))
+        .child(text("Close").window_control(WindowControl::Close))
 }
 ```
 
-`set_title_bar(TitleBarStyle::Default, None)` restores the system title bar.
-`close_window()` follows the embedding host's normal window-close behavior.
-The module has the window's other functions (`set_title`, `minimize`,
-`toggle_full_screen`, ...) and the menus (`set_application_menu`,
+A title bar with `TitleBarStyle::Default` restores the system's. A view with
+`.window_control(..)` is the window's minimize, maximize or close button: the
+platform carries out its press, and a close goes through the window's
+`close_on_press`. The `WindowRef` has the window's other requests
+(`set_mode`, `minimize`, `set_bounds`, `close`, ...), `window()` opens windows of
+the app's own, and the module has the menus (`set_application_menu`,
 `popup_menu`) too: [nsh/desktop](../modules/nsh-desktop.md).
 
 ## Files and folders

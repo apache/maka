@@ -1,7 +1,7 @@
 import { cleanup, createAnimatedValue, Easing, mount, Shader, signal, Text, View } from "nsh";
 import { Animated, type CompositeAnimation } from "nsh";
 import { Button, Switch } from "nsh/base";
-import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, Segmented, size, Split, ui } from "./palette";
+import { button, buttonText, desktop, Log, Panel, Segmented, Split, switchLook, ui, RowLabel, listRow } from "./palette";
 
 // A shader's colors come from uniforms; a tap starts a ripple, an animated
 // uniform that runs natively; `paused` stops the shader's clock.
@@ -75,15 +75,10 @@ function App() {
                   paused.set(checked);
                   log(checked ? "Paused: the clock stands still" : "Running");
                 }}
-                class={`-mx-2 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`}
-                hoverStyle={hoverFill()}
-                focusStyle={focusRing()}
-                trackClass={`${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`}
-                trackStyle={paused() ? ui().accentFill : ui().inset}
-                thumbClass={desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5"}
-                thumbStyle={paused() ? { backgroundColor: ui().onAccent } : ui().raised}
+                {...listRow({ first: true, style: { flexDirection: "row-reverse" } })}
+                {...switchLook(() => paused())}
               >
-                <Text style={{ flex: 1, fontSize: size.label, color: ui().text }}>Paused</Text>
+                <RowLabel label="Paused" />
               </Switch>
               <Button onPress={() => tap(0.5, 0.5)} {...button("secondary", { style: desktop ? { alignSelf: "flex-start" } : {} })}>
                 <Text style={buttonText()}>Ripple</Text>

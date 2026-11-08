@@ -1,16 +1,16 @@
 import { mount, signal, Text, View } from "nsh";
 import { Pagination } from "nsh/base";
-import { desktop, Log, Panel, Segmented, Split, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, Split, ui, wide, sectionSurface, paginationArrows, paginationItemClass } from "./palette";
 
 // Search results paged with a count, and a compact pager beside them. The
-// look is all `itemClass` over the component's own numbers and labels:
-// quiet items until hovered, the current page lit in the brand color
-// (`selected:`) with `transition-colors` (still with reduced motion), the
-// ends dimmed (`disabled:`).
-const itemClass =
-  "min-w-8 h-8 px-2 items-center justify-center rounded-md text-sm text-foreground " +
-  "transition-colors duration-200 motion-reduce:transition-none hover:bg-hover active:opacity-70 " +
-  "selected:bg-brand selected:text-on-brand disabled:opacity-35 focus:outline-2 focus:outline-ring";
+// look is the shared one: `paginationItemClass` styles the items (quiet
+// until hovered, the current page lit as a primary button, citrus under
+// dark text, with `transition-colors`, still with reduced motion; the ends
+// dimmed; 44 points tall on a touch screen, outlined in the compact pager),
+// and `paginationArrows` draws Previous and Next as chevrons, so each pager
+// fits one line of a phone. Five pages show in a narrow frame, seven in a
+// wide one.
+const itemClass = paginationItemClass();
 
 const total = 238;
 const page = signal(1);
@@ -44,15 +44,11 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: desktop ? 16 : 18, gap: 14 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 14 }}>
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <Text style={{ fontSize: 13, color: ui().muted }}>{`Showing ${first()}–${last()} of ${total} results`}</Text>
             <Segmented
-              size="small"
-              options={[
-                { value: "10", label: "10" },
-                { value: "25", label: "25" },
-              ]}
+              options={["10", "25"] as const}
               value={perPage()}
               onChange={(next) => {
                 const row = first();
@@ -64,12 +60,13 @@ function App() {
           <Pagination
             page={page()}
             totalPages={pages()}
-            visiblePages={desktop ? 7 : 5}
+            visiblePages={wide() ? 7 : 5}
             accessibilityLabel="Search results pages"
             previousAccessibilityLabel="Previous"
             nextAccessibilityLabel="Next"
             class="gap-1 flex-wrap"
             itemClass={itemClass}
+            renderItem={paginationArrows}
             onChange={({ page: next }) => changed(next)}
           />
           <View style={{ height: 1, backgroundColor: ui().line }} />
@@ -81,7 +78,8 @@ function App() {
             previousAccessibilityLabel="Previous chapter"
             nextAccessibilityLabel="Next chapter"
             class="items-center justify-between"
-            itemClass={`${itemClass} px-3 border border-border`}
+            itemClass={paginationItemClass({ outlined: true })}
+            renderItem={paginationArrows}
             onChange={({ page: next }) => chapter.set(next)}
           >
             <Text style={{ fontSize: 13, color: ui().muted }}>{`Chapter ${chapter()} of 12`}</Text>

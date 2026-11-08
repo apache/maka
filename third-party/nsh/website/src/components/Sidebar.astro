@@ -1,4 +1,5 @@
 ---
+import { label } from '../lib/locales';
 import { GROUPS, type Page } from '../lib/sections';
 import type { Lang } from '../lib/site';
 
@@ -7,16 +8,18 @@ export interface Props {
   pages: Page[];
   current: string;
   lang?: Lang;
+  /** The pages' locale, when other than `lang`. */
+  locale?: string;
 }
 
-const { title, pages, current, lang = 'en' } = Astro.props;
+const { title, pages, current, lang = 'en', locale = lang } = Astro.props;
 const isZh = lang === 'zh-CN';
 const currentPage = pages.find((page) => page.route === current);
 // A group's label goes before the first page of each run of pages in it.
 const groupLabel = (index: number) => {
   const group = pages[index].group;
   if (!group || group === pages[index - 1]?.group) return undefined;
-  return GROUPS[group]?.[lang];
+  return GROUPS[group] && label(GROUPS[group], locale);
 };
 ---
 

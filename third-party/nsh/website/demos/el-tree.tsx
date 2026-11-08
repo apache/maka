@@ -92,17 +92,17 @@ function App() {
         <View style={{ width: wide() ? 300 : undefined, alignSelf: wide() ? "center" : "stretch", gap: 10 }}>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Button {...button("secondary", { size: "sm" })} onPress={() => tree?.revealItem("src/ui/icons/file.svg")}>
-              <Text style={buttonText()}>Reveal file.svg</Text>
+              <Text style={buttonText("secondary", { size: "sm" })}>Reveal file.svg</Text>
             </Button>
             <Button
-              {...button("ghost", { size: "sm" })}
+              {...button("ghost", { size: "sm", disabled: () => expanded().length === 0 })}
               disabled={expanded().length === 0}
               onPress={() => {
                 expanded.set([]);
                 log("collapse all");
               }}
             >
-              <Text style={buttonText("ghost")}>Collapse all</Text>
+              <Text style={buttonText("ghost", { size: "sm" })}>Collapse all</Text>
             </Button>
           </View>
           <Tree

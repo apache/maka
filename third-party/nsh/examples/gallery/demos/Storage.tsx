@@ -10,7 +10,7 @@ const NOTE = "note";
 type Entry = { key: string; length: number };
 
 /**
- * nsh: a count of this demo's openings, a note saved as it is
+ * nsh/storage: a count of this demo's openings, a note saved as it is
  * typed, and every key the app keeps (the gallery's own last demo among
  * them), all still there after a restart.
  */

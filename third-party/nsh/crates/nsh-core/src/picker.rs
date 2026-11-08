@@ -1,6 +1,6 @@
-//! The system's media picker (`nsh/picker`'s `Picker.pickImages`): the
-//! user picks photos, which reach the app as `File`s whose bytes stay
-//! native.
+//! The system's pickers (`nsh/picker`'s `Picker.pickImages` and
+//! `Picker.pickFiles`): the user picks photos or files of any type, which
+//! reach the app as `File`s whose bytes stay native.
 //!
 //! A pick is a [`Command::PickImages`](crate::Command::PickImages) on the
 //! root with a [`PickRequest`]; the platform shows its picker (iOS
@@ -13,6 +13,14 @@
 //! [`EventPayload::Picked`](crate::EventPayload::Picked) carries the files'
 //! bytes ([`PickedFile`]). A cancelled picker answers with no files.
 //!
+//! A pick of files is a [`Command::PickFiles`](crate::Command::PickFiles) with
+//! a [`FilePickRequest`]; the platform shows its picker for documents (iOS
+//! `UIDocumentPickerViewController`, Android's `ACTION_OPEN_DOCUMENT`, the
+//! open dialog on the desktops, `<input type=file>` on the web) and answers
+//! with the same event, each file's bytes as they are and its name kept. A
+//! file larger than [`MAX_PICKED_FILE_BYTES`] is left out rather than read
+//! into memory.
+//!
 //! An embedding app can show a picker of its own instead: a
 //! [`PickerBackend`] given to the core
 //! ([`Core::set_picker`](crate::Core::set_picker), `EngineConfig::picker`)
@@ -23,12 +31,17 @@ use std::{future::Future, pin::Pin, time::SystemTime};
 
 use crate::{
     ImageData,
+    file_dialog::{FileFilter, OpenDialog},
     geometry::{DevicePixels, Percentage, Size},
 };
 
 /// At most this many files answer one pick, whatever the request or the
 /// platform says.
 pub const MAX_PICKED: u32 = 100;
+
+/// A file picked with [`FilePickRequest`] larger than this many bytes is left
+/// out (and logged): its bytes would all have to fit in memory.
+pub const MAX_PICKED_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The JPEG quality NSH encodes with when the app gives none.
 pub const DEFAULT_QUALITY: Percentage = Percentage(0.9);
@@ -151,6 +164,78 @@ impl PickRequest {
         }
         let fit = |side: i32| ((side as f64 * max as f64 / longer as f64).round() as i32).max(1);
         Size::new(DevicePixels(fit(w)), DevicePixels(fit(h)))
+    }
+}
+
+/// What the app asked a pick of files for, checked: what the platform's
+/// picker shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FilePickRequest {
+    /// At most this many files (1 for a single pick), never more than
+    /// [`MAX_PICKED`].
+    pub limit: u32,
+    /// The file types offered, the first chosen; none: any file. iOS,
+    /// Android and the web take one list of all their extensions. A filter
+    /// is what the picker offers, not a promise: a system's picker may let
+    /// other files through.
+    pub filters: Vec<FileFilter>,
+}
+
+impl Default for FilePickRequest {
+    fn default() -> Self {
+        Self::new(false, 0)
+    }
+}
+
+impl FilePickRequest {
+    /// A request for one file (`multiple: false`) or up to `limit` of them
+    /// (0: as many as [`MAX_PICKED`]), of any type.
+    pub fn new(multiple: bool, limit: u32) -> Self {
+        Self {
+            limit: PickRequest::new(multiple, limit).limit,
+            filters: Vec::new(),
+        }
+    }
+
+    /// Offers the file types of `filter`, after those given before.
+    pub fn filter(mut self, filter: FileFilter) -> Self {
+        self.filters.push(filter);
+        self
+    }
+
+    /// Whether the user may pick several.
+    pub fn multiple(&self) -> bool {
+        self.limit > 1
+    }
+
+    /// The open dialog that shows this request on a desktop.
+    pub fn dialog(&self) -> OpenDialog {
+        self.filters
+            .iter()
+            .cloned()
+            .fold(OpenDialog::files().multiple(self.multiple()), |d, f| {
+                d.filter(f)
+            })
+    }
+}
+
+/// A pick the app asked for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    /// Images ([`Command::PickImages`](crate::Command::PickImages)).
+    Images(PickRequest),
+    /// Files of any type ([`Command::PickFiles`](crate::Command::PickFiles)).
+    Files(FilePickRequest),
+}
+
+impl Pick {
+    /// `files` in the form the app gets ([`finish`], [`finish_files`]).
+    pub fn finish(&self, files: Vec<PickedFile>) -> Vec<PickedFile> {
+        match self {
+            Pick::Images(request) => finish(request, files),
+            Pick::Files(request) => finish_files(request, files),
+        }
     }
 }
 
@@ -307,6 +392,14 @@ pub trait PickerBackend: Send + Sync {
     /// the request's limit and fills in sizes and types the files lack
     /// ([`PickedFile::fill_in`]).
     fn pick_images(&self, request: PickRequest) -> PickFuture;
+
+    /// The files the user picked for `request` (none when cancelled); the
+    /// core truncates what goes past the request's limit. A backend that
+    /// picks no files cancels: the platform's picker is still not shown.
+    fn pick_files(&self, request: FilePickRequest) -> PickFuture {
+        let _ = request;
+        Box::pin(std::future::ready(Vec::new()))
+    }
 }
 
 /// Puts `files` in the form the app gets: at most `request.limit`, each
@@ -317,6 +410,69 @@ pub fn finish(request: &PickRequest, mut files: Vec<PickedFile>) -> Vec<PickedFi
         file.fill_in();
     }
     files
+}
+
+/// Puts `files` of a pick of files in the form the app gets: at most
+/// `request.limit`, their names without folders and as the user knows them,
+/// each with a type ([`mime_for_file`]).
+pub fn finish_files(request: &FilePickRequest, mut files: Vec<PickedFile>) -> Vec<PickedFile> {
+    files.truncate(request.limit.max(1) as usize);
+    for file in &mut files {
+        if let Some(name) = file.name.rsplit(['/', '\\']).next() {
+            file.name = name.to_owned();
+        }
+        if file.name.is_empty() {
+            file.name = "file".into();
+        }
+        if file.mime.is_empty() {
+            file.mime = mime_for_file(&file.name, &file.data).into();
+        }
+    }
+    files
+}
+
+/// The media type of a file of any type: what its bytes say when they are
+/// an image, else what its name says, else `application/octet-stream`.
+pub fn mime_for_file(name: &str, bytes: &[u8]) -> &'static str {
+    sniff(bytes)
+        .or_else(|| mime_for_name(name))
+        .or_else(|| {
+            let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+            Some(match ext.as_str() {
+                "pdf" => "application/pdf",
+                "txt" | "log" => "text/plain",
+                "md" | "markdown" => "text/markdown",
+                "csv" => "text/csv",
+                "html" | "htm" => "text/html",
+                "css" => "text/css",
+                "js" | "mjs" => "text/javascript",
+                "json" => "application/json",
+                "xml" => "application/xml",
+                "svg" => "image/svg+xml",
+                "zip" => "application/zip",
+                "gz" => "application/gzip",
+                "tar" => "application/x-tar",
+                "7z" => "application/x-7z-compressed",
+                "doc" => "application/msword",
+                "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "xls" => "application/vnd.ms-excel",
+                "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "ppt" => "application/vnd.ms-powerpoint",
+                "pptx" => {
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                }
+                "mp3" => "audio/mpeg",
+                "m4a" => "audio/mp4",
+                "wav" => "audio/wav",
+                "ogg" => "audio/ogg",
+                "flac" => "audio/flac",
+                "mp4" | "m4v" => "video/mp4",
+                "mov" => "video/quicktime",
+                "webm" => "video/webm",
+                _ => return None,
+            })
+        })
+        .unwrap_or("application/octet-stream")
 }
 
 /// The extensions a desktop open dialog offers for `request` whose
@@ -351,6 +507,51 @@ pub fn read_files(paths: &[std::path::PathBuf], request: &PickRequest) -> Vec<Pi
             Some(file)
         })
         .collect()
+}
+
+/// The files at `paths` for a pick of files, read as they are, at most the
+/// request's limit; those that cannot be read and those larger than
+/// [`MAX_PICKED_FILE_BYTES`] are left out and logged.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_picked_files(
+    paths: &[std::path::PathBuf],
+    request: &FilePickRequest,
+) -> Vec<PickedFile> {
+    read_paths(paths, request, MAX_PICKED_FILE_BYTES)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_paths(
+    paths: &[std::path::PathBuf],
+    request: &FilePickRequest,
+    max_bytes: u64,
+) -> Vec<PickedFile> {
+    let files = paths
+        .iter()
+        .take(request.limit.max(1) as usize)
+        .filter_map(|path| {
+            let metadata = std::fs::metadata(path)
+                .inspect_err(|e| log::warn!("cannot read the picked {}: {e}", path.display()))
+                .ok()?;
+            if metadata.len() > max_bytes {
+                log::warn!(
+                    "the picked {} is left out: larger than {max_bytes} bytes",
+                    path.display()
+                );
+                return None;
+            }
+            let bytes = std::fs::read(path)
+                .inspect_err(|e| log::warn!("cannot read the picked {}: {e}", path.display()))
+                .ok()?;
+            Some(PickedFile {
+                name: path.file_name()?.to_string_lossy().into_owned(),
+                data: ImageData::new(bytes),
+                last_modified: metadata.modified().ok(),
+                ..PickedFile::default()
+            })
+        })
+        .collect();
+    finish_files(request, files)
 }
 
 #[cfg(test)]
@@ -416,5 +617,97 @@ mod tests {
         assert_eq!(file.mime, "image/png");
         assert_eq!(file.name, "pic.png");
         assert_eq!(file.size, px(3, 2));
+    }
+
+    #[test]
+    fn a_backend_without_file_picks_cancels_them() {
+        struct Images;
+        impl PickerBackend for Images {
+            fn pick_images(&self, _: PickRequest) -> PickFuture {
+                unreachable!()
+            }
+        }
+        let picked = Images.pick_files(FilePickRequest::default());
+        let mut picked = std::pin::pin!(picked);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert_eq!(
+            picked.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(Vec::new())
+        );
+    }
+
+    #[test]
+    fn file_requests() {
+        assert_eq!(FilePickRequest::default().limit, 1);
+        assert_eq!(FilePickRequest::new(true, 0).limit, MAX_PICKED);
+        let request = FilePickRequest::new(true, 2).filter(FileFilter::new("Docs", ["pdf", ".MD"]));
+        assert!(request.multiple());
+        let dialog = request.dialog();
+        assert!(dialog.multiple && dialog.picks_files() && !dialog.picks_folders());
+        assert_eq!(dialog.filters[0].extensions, ["pdf", "md"]);
+        assert!(FilePickRequest::new(false, 0).dialog().filters.is_empty());
+    }
+
+    #[test]
+    fn types_of_files() {
+        assert_eq!(mime_for_file("a.PDF", b"%PDF"), "application/pdf");
+        assert_eq!(
+            mime_for_file("a", b"\xff\xd8\xff\xe0\0\0\0\0\0\0\0\0"),
+            "image/jpeg"
+        );
+        assert_eq!(mime_for_file("a.bin", b"x"), "application/octet-stream");
+    }
+
+    #[test]
+    fn picked_files_keep_their_names_and_bytes() {
+        let dir = std::env::temp_dir().join(format!("nsh-picked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A PNG's bytes under another name, a type no image has and a file
+        // past the limit.
+        let png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        let paths: Vec<_> = [
+            ("shot.dat", &png[..]),
+            ("report.pdf", b"%PDF-1.7"),
+            ("big.bin", &[0; 32]),
+        ]
+        .into_iter()
+        .map(|(name, bytes)| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        })
+        .collect();
+        let missing = dir.join("missing.txt");
+        let request = FilePickRequest::new(true, 0);
+        let files = read_paths(&[&paths[..], &[missing]].concat(), &request, 16);
+        let one = read_paths(&paths, &FilePickRequest::default(), 16);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let got: Vec<_> = files
+            .iter()
+            .map(|f| (f.name.as_str(), f.mime.as_str(), f.data.len()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("shot.dat", "image/png", 12),
+                ("report.pdf", "application/pdf", 8),
+            ]
+        );
+        assert!(files[0].last_modified.is_some());
+        assert_eq!(one.len(), 1);
+    }
+
+    #[test]
+    fn finished_files_drop_folders_from_names() {
+        let request = FilePickRequest::new(false, 0);
+        let file = PickedFile {
+            name: "/tmp/x/notes".into(),
+            data: ImageData::new(b"hello".to_vec()),
+            ..PickedFile::default()
+        };
+        let files = finish_files(&request, vec![file.clone(), file]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "notes");
+        assert_eq!(files[0].mime, "application/octet-stream");
     }
 }

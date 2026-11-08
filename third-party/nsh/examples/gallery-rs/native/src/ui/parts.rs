@@ -187,9 +187,16 @@ impl IntoElement for PageHeader {
                 .active(|s| s.opacity(0.6))
                 .on_press(crate::nav::pop)
                 .child(
+                    // A terminal shows the word, unturned.
                     view()
-                        .rotate(deg(180.0))
-                        .child(icon().name(IconName::Chevron).size(18.0).tint(tint)),
+                        .when(!super::terminal(), |v| v.rotate(deg(180.0)))
+                        .child(
+                            icon()
+                                .name(IconName::Chevron)
+                                .size(18.0)
+                                .tint(tint)
+                                .label(Some(SharedString::from("Back"))),
+                        ),
                 )
         });
         let title = match (self.title_element, self.title) {
@@ -207,7 +214,8 @@ impl IntoElement for PageHeader {
             .h(px(52.0))
             .flex_row()
             .items_center()
-            .gap_2()
+            // Two Cells between the back button's word and the title.
+            .gap(px(if super::terminal() { 24.0 } else { 8.0 }))
             .px_3()
             .when(!self.transparent, |v| {
                 v.bg(self.background)
@@ -256,6 +264,10 @@ impl IconTile {
 
 impl IntoElement for IconTile {
     fn into_element(self) -> AnyElement {
+        // Decorative: a terminal shows no icon tiles.
+        if super::terminal() {
+            return view().into_element();
+        }
         let size = self.size;
         self.root
             .size(px(size))
@@ -341,8 +353,28 @@ impl Default for Card {
     }
 }
 
-/// A card's or a section's surface.
+/// A vertical space (a gap, a padding) in the terminal's whole rows: none
+/// below half a row, else the nearest whole number of rows. Unchanged
+/// elsewhere.
+pub(crate) fn whole_rows(points: f32) -> f32 {
+    if super::terminal() {
+        (points / super::TERMINAL_ROW).round() * super::TERMINAL_ROW
+    } else {
+        points
+    }
+}
+
+/// A card's or a section's surface. In the terminal a border whose row and
+/// column on each side the padding fills out, so the content starts one
+/// Cell inside it.
 fn card_surface(root: View) -> View {
+    if super::terminal() {
+        return root
+            .border_1()
+            .border_color(colors::BORDER)
+            .py(px(super::TERMINAL_ROW - 1.0))
+            .px(px(2.0 * super::TERMINAL_COLUMN - 1.0));
+    }
     root.bg(colors::SURFACE)
         .rounded(px(radius::CARD))
         .border_curve(BorderCurve::Continuous)
@@ -352,8 +384,48 @@ fn card_surface(root: View) -> View {
         .finish(Finish::Card)
 }
 
+/// A card's or a section's head in the terminal, right above its box and
+/// set in by a column, so it lines up with the content under it: the
+/// title and what goes right of it on one row, the subtitle under them.
+fn terminal_head(
+    title: Label,
+    right: Option<AnyElement>,
+    subtitle: Option<Label>,
+) -> impl IntoElement {
+    view()
+        .px(px(super::TERMINAL_COLUMN))
+        .child(
+            view()
+                .flex_row()
+                .gap(px(2.0 * super::TERMINAL_COLUMN))
+                .child(
+                    text(title)
+                        .flex_1()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors::TEXT),
+                )
+                .children(right),
+        )
+        .children(subtitle.map(|subtitle| text(subtitle).text_color(colors::MUTED)))
+}
+
 impl IntoElement for Card {
     fn into_element(self) -> AnyElement {
+        if super::terminal() {
+            let content = if self.flush {
+                view().children(self.content).into_element()
+            } else {
+                Inset::new().children(self.content).into_element()
+            };
+            return self
+                .root
+                .children(
+                    self.title
+                        .map(|title| terminal_head(title, self.right, self.subtitle)),
+                )
+                .child(card_surface(view()).child(content))
+                .into_element();
+        }
         let header = self.title.map(|title| {
             view()
                 .flex_row()
@@ -420,6 +492,19 @@ impl Section {
 
 impl IntoElement for Section {
     fn into_element(self) -> AnyElement {
+        if super::terminal() {
+            let note = self.note.map(|note| {
+                text(note)
+                    .text_color(colors::FAINT)
+                    .tabular_nums()
+                    .into_element()
+            });
+            return self
+                .root
+                .child(terminal_head(self.title, note, None))
+                .child(card_surface(view()).child(Inset::new().children(self.content)))
+                .into_element();
+        }
         card_surface(self.root)
             .child(
                 view()
@@ -447,7 +532,7 @@ impl IntoElement for Section {
     }
 }
 
-/// The darker surface inside a card.
+/// The darker surface inside a card (in the terminal, only its gap).
 pub(crate) struct Inset {
     gap: f32,
     padding: f32,
@@ -487,6 +572,15 @@ impl Default for Inset {
 
 impl IntoElement for Inset {
     fn into_element(self) -> AnyElement {
+        // The terminal's card is the one box: its content only keeps its
+        // gap, in whole rows.
+        if super::terminal() {
+            return self
+                .root
+                .gap(px(whole_rows(self.gap)))
+                .children(self.content)
+                .into_element();
+        }
         self.root
             .bg(colors::INSET)
             .rounded(px(radius::INSET))
@@ -587,7 +681,7 @@ impl IntoElement for Figure {
     }
 }
 
-/// A small label in a tinted capsule.
+/// A small label in a tinted capsule (a word on its row in the terminal).
 pub(crate) struct Badge {
     label: Label,
     tone: Reactive<Tone>,
@@ -628,9 +722,11 @@ impl IntoElement for Badge {
             }
         });
         let outline = self.outline;
+        // A word on its row in the terminal.
+        let terminal = super::terminal();
         view()
-            .px(px(10.0))
-            .h(px(26.0))
+            .px(px(if terminal { 0.0 } else { 10.0 }))
+            .h(px(if terminal { super::TERMINAL_ROW } else { 26.0 }))
             .rounded(px(13.0))
             .justify_center()
             .border_1()
@@ -796,9 +892,9 @@ pub(crate) enum ButtonVariant {
     Ghost,
 }
 
-/// A button, 44 pt tall: `Primary` is light (the main action),
-/// `Secondary` dark, `Accent` citrus. [`Button::color`] fills it with
-/// that color instead.
+/// A button, 44 pt tall (one row and no glyph in the terminal):
+/// `Primary` is light (the main action), `Secondary` dark, `Accent`
+/// citrus. [`Button::color`] fills it with that color instead.
 pub(crate) struct Button {
     label: Label,
     variant: Reactive<ButtonVariant>,
@@ -928,8 +1024,17 @@ impl IntoElement for Button {
             .child(
                 button_surface(
                     view()
-                        .h(px(44.0))
-                        .px(px(18.0))
+                        // One row in the terminal, which brackets it.
+                        .h(px(if super::terminal() {
+                            super::TERMINAL_ROW
+                        } else {
+                            44.0
+                        }))
+                        .px(px(if super::terminal() {
+                            super::TERMINAL_COLUMN
+                        } else {
+                            18.0
+                        }))
                         .rounded(px(radius::CONTROL))
                         .border_curve(BorderCurve::Continuous)
                         .flex_row()
@@ -938,7 +1043,8 @@ impl IntoElement for Button {
                         .gap_2(),
                     &look,
                 )
-                .children(self.icon.map(|name| {
+                // The terminal draws no glyphs: the label alone.
+                .children(self.icon.filter(|_| !super::terminal()).map(|name| {
                     icon()
                         .name(name)
                         .size(16.0)
@@ -997,6 +1103,7 @@ impl IntoElement for RoundButton {
     fn into_element(self) -> AnyElement {
         let size = self.size;
         let primary = !self.secondary;
+        let name = Prop::from(self.label.clone().map(Some));
         press()
             .scale(0.92)
             .disabled(self.disabled)
@@ -1019,6 +1126,7 @@ impl IntoElement for RoundButton {
                     .child(
                         icon()
                             .name(Prop::from(self.icon))
+                            .label(name)
                             .size(size * 0.42)
                             .tint(if primary {
                                 colors::ON_LIGHT

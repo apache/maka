@@ -1,0 +1,45 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Nav from '../../components/Nav.astro';
+import Home from '../../components/Home.astro';
+import SiteFooter from '../../components/SiteFooter.astro';
+import { homeAlternates, homeCopy, homeLanguages } from '../../lib/home';
+import { direction, machineLocales, ui } from '../../lib/locales';
+import { url } from '../../lib/site';
+
+// Machine translations; a build without them has no such pages.
+export function getStaticPaths() {
+  return machineLocales.map(({ code }) => ({ params: { locale: code } }));
+}
+
+const { locale } = Astro.params as { locale: string };
+const { copy, translated } = homeCopy(locale);
+---
+
+<BaseLayout
+  lang={translated ? locale : 'en'}
+  dir={translated ? direction(locale) : 'ltr'}
+  title={copy.title}
+  description={copy.description}
+  alternates={homeAlternates()}
+  robots={translated ? undefined : 'noindex'}
+>
+  <Nav lang="en" locale={locale} currentPath={Astro.url.pathname} languages={homeLanguages()} />
+  <p class="home-machine-notice" data-pagefind-ignore>
+    {ui(locale, translated ? 'notice' : 'fallback')} <a href={url('')} hreflang="en">{ui(locale, 'original')}</a>
+  </p>
+  <Home lang="en" locale={locale} />
+  <SiteFooter lang="en" />
+</BaseLayout>
+
+<style>
+  .home-machine-notice {
+    margin: 0;
+    padding: 0.55rem 1rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-size: 0.8125rem;
+    text-align: center;
+  }
+  .home-machine-notice a { color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
+</style>

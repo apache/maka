@@ -21,7 +21,7 @@ group: delivery
 
 > [!NOTE]
 > NSH 只负责验证和运行包，不负责分发。包从哪里来（你的更新服务器、CDN、小程序商店）以及应用何时下载，都由宿主应用
-> 自行决定。
+> 自行决定。打包的 NSH 应用更新自己的 TSX 是例外：[OTA 更新](./ota-updates.md)替它获取、验证、运行和回滚包。
 
 ## 为什么要签名
 
@@ -101,7 +101,7 @@ nsh publish App.tsx --key keys/release.secret --cert keys/release.cert
 | `--strip-debug` | 字节码中不保留行号和列号表：包更小，但报错调用栈里没有位置。 |
 | `--min-runtime <version>` | 能运行该包的最低运行时版本，例如 `0.2.0`（`nsh.json` 中的 `minRuntime`）。默认：本 CLI 的版本。见[哪些运行时能运行包](#哪些运行时能运行包)。 |
 
-凡是设备会拒绝的包，`nsh publish` 也拒绝签名：证书必须覆盖该 app id 和当前时间。
+凡是设备会拒绝的包，`nsh publish` 也拒绝签名：app id 必须是单独一级路径，且证书必须覆盖该 app id 和当前时间。
 
 ```text
 error the release key's certificate does not cover this package: it does not cover app `com.example.counter` (only com.other.app)
@@ -198,7 +198,7 @@ valid: com.example.counter 1.0.0 (build 2), release key 3428d7136788c9ee, sha256
 1. 证书由受信任的根签名；
 2. 发布密钥未被吊销；
 3. 包由发布密钥签名；
-4. 证书覆盖该 app id 和签名时间；
+4. app id 是单独一级路径（不含 `/`、`\`、`:` 或 NUL，也不是 `.` 或 `..`：设备用它给包的目录命名），且证书覆盖该 app id 和签名时间；
 5. 包所需的最低运行时版本；
 6. 文件表与数据完全吻合，且每个文件都与其哈希一致；
 7. 包本身未被吊销；
@@ -361,4 +361,5 @@ adb shell am start -S -n com.longbridge.nsh.host/com.longbridge.nsh.DevActivity 
 
 - [沙箱与能力](./sandbox-and-capabilities.md)
 - [嵌入 iOS 应用](./ios.md)、[嵌入 Android 应用](./android.md)
+- [OTA 更新](./ota-updates.md)：以签名包下发打包应用自己的 TSX
 - [CLI](./cli.md)

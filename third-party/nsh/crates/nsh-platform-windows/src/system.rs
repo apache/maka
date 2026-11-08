@@ -22,6 +22,14 @@
 //!   Windows. POSIX variables (`LANG`, `LC_*`) are not looked at: Windows
 //!   programs do not, and shells like Git Bash set `LANG` regardless of
 //!   the user's settings;
+//! - the locale settings (`localeSettings()`): the preferred languages, the
+//!   user's display languages, most preferred first
+//!   (`GetUserPreferredUILanguages`: Settings > Time & language > Language
+//!   & region), the locale alone when it lists none; the regional
+//!   preferences, the regional format's time format, first day of the
+//!   week and measurement system (`GetLocaleInfoEx`, with the user's
+//!   changes to the format), over the region's; Windows has no temperature
+//!   unit setting: the region's; the time zone, below;
 //! - the font scale: Settings > Accessibility > Text size
 //!   (`TextScaleFactor`, 100 to 225 percent);
 //! - reduce motion: Settings > Accessibility > Visual effects > Animation
@@ -40,7 +48,13 @@
 //!   the window (an embedded surface's root window) is minimized or hidden,
 //!   active while the app is the active one (its windows get
 //!   `WM_ACTIVATEAPP`; before the first, the foreground window is the
-//!   process's), inactive otherwise.
+//!   process's), inactive otherwise;
+//! - the time zone (`localeSettings()`'s): the zone of the system's setting
+//!   (`GetDynamicTimeZoneInformation`, its Windows key name) by its IANA
+//!   name, which the ICU Windows ships knows
+//!   (`ucal_getTimeZoneIDForWindowsID`, loaded when first needed: `UTC`
+//!   without it); re-read on `WM_TIMECHANGE` too, which a change of the
+//!   zone sends.
 //!
 //! Safe area and keyboard height are zero: desktop windows have neither.
 //!
@@ -63,13 +77,17 @@ use nsh_core::{
     geometry::px,
     platform::{Appearance, clipboard},
 };
-use nsh_engine::{ColorScheme, Edges, Environment, Lifecycle, Locale};
+use nsh_engine::{
+    ColorScheme, Edges, Environment, HourCycle, Languages, Lifecycle, Locale, LocaleSettings,
+    MeasurementSystem, TimeZone, Weekday,
+};
 use windows::{
     Win32::{
         Foundation::{LPARAM, WPARAM},
         Globalization::{
-            GetLocaleInfoEx, GetUserDefaultLocaleName, GetUserDefaultUILanguage, LCIDToLocaleName,
-            LOCALE_IREADINGLAYOUT,
+            GetLocaleInfoEx, GetUserDefaultLocaleName, GetUserDefaultUILanguage,
+            GetUserPreferredUILanguages, LCIDToLocaleName, LOCALE_IFIRSTDAYOFWEEK, LOCALE_IMEASURE,
+            LOCALE_IREADINGLAYOUT, LOCALE_STIMEFORMAT, MUI_LANGUAGE_NAME,
         },
         Graphics::{
             Direct2D::{D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ROUNDED_RECT},
@@ -81,12 +99,17 @@ use windows::{
             },
         },
         System::{
-            LibraryLoader::{GetModuleHandleW, GetProcAddress},
+            LibraryLoader::{
+                GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+            },
             Registry::{
                 HKEY, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
             },
             SystemInformation::OSVERSIONINFOW,
             Threading::GetCurrentProcessId,
+            Time::{
+                DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, TIME_ZONE_ID_INVALID,
+            },
         },
         UI::{
             Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
@@ -98,7 +121,7 @@ use windows::{
             },
         },
     },
-    core::{BOOL, HSTRING, PCWSTR, s, w},
+    core::{BOOL, HSTRING, PCWSTR, PWSTR, s, w},
 };
 
 use crate::{
@@ -149,6 +172,8 @@ struct Settings {
     rtl: bool,
     screen_reader: bool,
     locale: Locale,
+    /// All but the time zone, which [`update`] reads ([`time_zone`]).
+    locale_settings: LocaleSettings,
 }
 
 /// Makes the system look dark (or light) from now on (`nsh test
@@ -171,6 +196,16 @@ pub(crate) fn system_dark() -> bool {
     ) == Some(0)
 }
 
+/// True when the taskbar is dark (Settings > Personalization > Colors,
+/// "Windows mode"), which the tray's template icons are painted for.
+pub(crate) fn taskbar_dark() -> bool {
+    reg_dword(
+        HKEY_CURRENT_USER,
+        w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        w!("SystemUsesLightTheme"),
+    ) != Some(1)
+}
+
 /// True when the surface draws in its dark appearance. The environment is
 /// kept current by this module, so drawing never reads the registry.
 pub(crate) fn dark(surface: &Surface) -> bool {
@@ -179,7 +214,9 @@ pub(crate) fn dark(surface: &Surface) -> bool {
 
 /// The color behind the app's views (the default theme's background).
 pub(crate) fn window_background(surface: &Surface) -> Color {
-    if dark(surface) {
+    if surface.transparent() {
+        Color::TRANSPARENT
+    } else if dark(surface) {
         Color(0x0a0a_0aff)
     } else {
         Color(0xffff_ffff)
@@ -199,6 +236,8 @@ pub(crate) fn watch_environment(surface: &Rc<Surface>) {
 pub(crate) fn settings_changed(surface: &Rc<Surface>) {
     refresh_accent();
     update(surface, settings());
+    // The taskbar's colors may have changed: a template tray icon follows.
+    crate::tray::refresh(surface.hwnd());
     // The accent may have changed without the environment.
     surface.invalidate();
 }
@@ -208,8 +247,9 @@ pub(crate) fn settings_changed(surface: &Rc<Surface>) {
 pub(crate) fn environment_applied(surface: &Surface) {
     let hwnd = surface.hwnd();
     if !hwnd.is_invalid() {
-        crate::window::set_dark_title_bar(hwnd, dark(surface));
+        crate::shell::set_color_scheme(surface, hwnd, Appearance::System);
     }
+    crate::app_window::appearance_changed(surface);
     // Menus follow the scheme; the caption buttons are drawn again.
     crate::chrome::appearance_changed(surface);
 }
@@ -230,6 +270,8 @@ pub(crate) fn set_app_id(id: &str) {
 
 /// The system's settings now.
 fn settings() -> Settings {
+    let name = user_locale_name();
+    let locale = user_locale(name.as_deref());
     Settings {
         dark: system_dark(),
         font_scale: text_scale(reg_dword(
@@ -241,8 +283,76 @@ fn settings() -> Settings {
         reduce_motion: spi_bool(SPI_GETCLIENTAREAANIMATION) == Some(false),
         rtl: ui_language_rtl(),
         screen_reader: spi_bool(SPI_GETSCREENREADER) == Some(true),
-        locale: user_locale(user_locale_name().as_deref()),
+        locale,
+        locale_settings: locale_settings(locale, name.as_deref()),
     }
+}
+
+/// The user's locale settings (`localeSettings()`) but the time zone: the
+/// display languages (`locale` alone when Windows lists none), and the
+/// regional format's (`name`'s, with the user's changes to it) time format,
+/// first day of the week and measurement system, over the region's.
+fn locale_settings(locale: Locale, name: Option<&str>) -> LocaleSettings {
+    let mut preferences = LocaleSettings::parse(name.unwrap_or_default());
+    preferences.languages = preferred_languages(locale);
+    if let Some(cycle) = locale_info(LOCALE_STIMEFORMAT).and_then(|f| HourCycle::of_pattern(&f)) {
+        preferences.hour_cycle = cycle;
+    }
+    // 0 for Monday to 6 for Sunday.
+    let first = locale_info(LOCALE_IFIRSTDAYOFWEEK).and_then(|d| d.trim().parse::<u8>().ok());
+    if let Some(day) = first.and_then(|d| Weekday::from_number(d + 1)) {
+        preferences.first_day_of_week = day;
+    }
+    // 0 metric (as the UK's units are, which Windows does not tell
+    // apart), 1 US.
+    match locale_info(LOCALE_IMEASURE).as_deref().map(str::trim) {
+        Some("0") if preferences.measurement_system == MeasurementSystem::Us => {
+            preferences.measurement_system = MeasurementSystem::Metric;
+        }
+        Some("1") => preferences.measurement_system = MeasurementSystem::Us,
+        _ => {}
+    }
+    preferences
+}
+
+/// A value of the user's regional format, with the user's changes to it.
+fn locale_info(kind: u32) -> Option<String> {
+    let mut buf = [0u16; 80];
+    // SAFETY: the buffer's length is passed with it; no name is the user's
+    // default locale.
+    let len = unsafe { GetLocaleInfoEx(PCWSTR::null(), kind, Some(&mut buf)) };
+    // The length counts the terminating null.
+    (len > 1).then(|| String::from_utf16_lossy(&buf[..len as usize - 1]))
+}
+
+/// The user's display languages, most preferred first; `locale` alone when
+/// Windows lists none.
+fn preferred_languages(locale: Locale) -> Languages {
+    let (mut count, mut len) = (0u32, 0u32);
+    // SAFETY: a size query: no buffer, the length written to `len`.
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut len) }
+        .is_err()
+        || len == 0
+    {
+        return Languages::one(locale);
+    }
+    let mut names = vec![0u16; len as usize];
+    // SAFETY: a buffer of the `len` characters the query asked for.
+    if unsafe {
+        GetUserPreferredUILanguages(
+            MUI_LANGUAGE_NAME,
+            &mut count,
+            Some(PWSTR(names.as_mut_ptr())),
+            &mut len,
+        )
+    }
+    .is_err()
+    {
+        return Languages::one(locale);
+    }
+    // A list of null-terminated names, ended by an empty one.
+    let names = String::from_utf16_lossy(&names);
+    Languages::parse(names.split('\0')).unwrap_or(Languages::one(locale))
 }
 
 /// `WM_ACTIVATEAPP`: this thread's windows became the active app's
@@ -316,6 +426,8 @@ fn update(surface: &Surface, settings: Settings) {
     };
     env.color_scheme = surface.appearance.get().resolve(system);
     env.locale = settings.locale;
+    env.locale_settings = settings.locale_settings;
+    env.locale_settings.time_zone = time_zone();
     env.font_scale = settings.font_scale;
     env.reduce_motion = settings.reduce_motion;
     env.rtl = settings.rtl;
@@ -328,6 +440,62 @@ fn update(surface: &Surface, settings: Settings) {
     env.keyboard_height = px(0.0);
     env.lifecycle = lifecycle(surface, env.lifecycle);
     surface.set_environment(env);
+}
+
+/// The system's time zone: the setting's Windows zone by its
+/// IANA name.
+fn time_zone() -> TimeZone {
+    let mut info = DYNAMIC_TIME_ZONE_INFORMATION::default();
+    // SAFETY: an out structure of the size the call writes.
+    if unsafe { GetDynamicTimeZoneInformation(&mut info) } == TIME_ZONE_ID_INVALID {
+        return TimeZone::UTC;
+    }
+    let key = &info.TimeZoneKeyName;
+    let len = key.iter().position(|&c| c == 0).unwrap_or(key.len());
+    iana_name(&key[..len])
+        .and_then(|name| TimeZone::parse(&name))
+        .unwrap_or_default()
+}
+
+/// The IANA name of the Windows zone `key` (`W. Europe Standard Time`:
+/// `Europe/Berlin`), from the ICU Windows ships (`icu.dll` since Windows 10
+/// 1903, `icuin.dll` before), loaded at run time so that apps start where
+/// it is missing.
+fn iana_name(key: &[u16]) -> Option<String> {
+    type ToIana = unsafe extern "C" fn(*const u16, i32, *const u8, *mut u16, i32, *mut i32) -> i32;
+    // Looked up once for the process, not once per thread that asks (each
+    // surface's own, when they run on several).
+    static TO_IANA: std::sync::OnceLock<Option<ToIana>> = std::sync::OnceLock::new();
+    let to_iana = (*TO_IANA.get_or_init(|| {
+        // SAFETY: system libraries by name, from System32 only; the
+        // function, if there, has the signature above (ICU's C API).
+        unsafe {
+            [w!("icu.dll"), w!("icuin.dll")]
+                .into_iter()
+                .find_map(|name| LoadLibraryExW(name, None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok())
+                .and_then(|icu| GetProcAddress(icu, s!("ucal_getTimeZoneIDForWindowsID")))
+                .map(|proc| std::mem::transmute::<_, ToIana>(proc))
+        }
+    }))?;
+    let mut name = [0u16; 64];
+    let mut status = 0i32;
+    // SAFETY: `key` and `name` hold the lengths given; no region (ICU's
+    // default mapping, `001`).
+    let len = unsafe {
+        to_iana(
+            key.as_ptr(),
+            key.len() as i32,
+            std::ptr::null(),
+            name.as_mut_ptr(),
+            name.len() as i32,
+            &mut status,
+        )
+    };
+    // ICU's errors are positive codes, its warnings negative.
+    if status > 0 || len <= 0 {
+        return None;
+    }
+    String::from_utf16(name.get(..len as usize)?).ok()
 }
 
 /// A `REG_DWORD` value, if it is set.
@@ -564,6 +732,9 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             clipboard::files_answer(*id, &clipboard_files()),
         ),
         Command::PickImages { id, request } => crate::picker::pick_images(surface, *id, *request),
+        Command::PickFiles { id, request } => {
+            crate::file_requests::pick_files(surface, *id, request);
+        }
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }
@@ -595,6 +766,15 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             }
         }
         Command::Announce(text) => crate::access::announce(surface, text),
+        Command::PerfMonitor(true) => surface.enable_fps(),
+        Command::PerfMonitor(false) => surface.disable_fps(),
+        Command::Notification(command) => crate::notifications::command(surface, command),
+        Command::Audio(command) => {
+            let base = surface.asset_base.borrow().clone();
+            surface.control(|c| {
+                crate::audio::command(&surface.audio, surface.key(), c, command, base.as_ref())
+            })
+        }
         Command::Desktop(command) => crate::chrome::command(surface, command),
         // The status bar is a phone's; layout animations arrive as mount
         // items.
@@ -798,7 +978,7 @@ fn fade(surface: &Rc<Surface>, serial: u64, to: f32, secs: f64, remove: bool) {
     };
     let from = kind.opacity().get();
     let mut start = None;
-    surface.on_frame(move |surface, now| {
+    surface.on_draw_frame(move |surface, now| {
         let Some((_, kind)) = find(serial) else {
             return false;
         };
@@ -1337,6 +1517,8 @@ struct DialogLayout {
 /// (it takes every pointer event: the dialog is modal).
 struct DialogItem {
     key: u64,
+    /// The UI thread of the surface: the answer is posted back to it.
+    ui: crate::window::UiThread,
     serial: u64,
     id: u32,
     sheet: bool,
@@ -1448,7 +1630,7 @@ impl DialogItem {
             return;
         }
         let (key, serial, id) = (self.key, self.serial, self.id);
-        crate::window::invoke(move || {
+        self.ui.invoke(move || {
             let Some(surface) = Surface::by_key(key) else {
                 return;
             };
@@ -1760,6 +1942,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
     let serial = next_serial();
     let item = Rc::new(DialogItem {
         key: surface.key(),
+        ui: surface.ui_thread(),
         serial,
         id: dialog.id,
         sheet,

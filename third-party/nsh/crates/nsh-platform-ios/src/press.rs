@@ -51,7 +51,7 @@ pub(crate) struct PressIvars {
     handles_press: Cell<bool>,
     /// The pressable text span the current touch is on: its presses go
     /// there.
-    link: std::cell::RefCell<Option<TextLink>>,
+    link: Cell<Option<TextLink>>,
     /// Where the touch is, and what it began with.
     at: Cell<PressAt>,
 }
@@ -89,7 +89,7 @@ define_class!(
             let link = view
                 .downcast_ref::<TextView>()
                 .and_then(|t| t.link_at(touch.locationInView(Some(&view))));
-            *ivars.link.borrow_mut() = link.clone();
+            ivars.link.set(link);
             if link.is_none() && !ivars.own.get() {
                 return self.set_state(UIGestureRecognizerState::Failed);
             }
@@ -153,7 +153,7 @@ define_class!(
             }
             // A style observer reports the pressed state without competing
             // with an ancestor that handles the click.
-            self.set_state(if self.ivars().handles_press.get() || self.ivars().link.borrow().is_some() {
+            self.set_state(if self.ivars().handles_press.get() || self.ivars().link.get().is_some() {
                 UIGestureRecognizerState::Ended
             } else {
                 UIGestureRecognizerState::Failed
@@ -174,7 +174,7 @@ define_class!(
             if ivars.pressed.replace(false) {
                 self.report(Report::PressOut);
             }
-            ivars.link.borrow_mut().take();
+            ivars.link.set(None);
         }
 
         #[unsafe(method(canBePreventedByGestureRecognizer:))]
@@ -214,7 +214,7 @@ impl PressRecognizer {
             long_press_delay: Cell::new(LONG_PRESS),
             own: Cell::new(false),
             handles_press: Cell::new(false),
-            link: std::cell::RefCell::new(None),
+            link: Cell::new(None),
             at: Cell::new(PressAt::default()),
         });
         // SAFETY: the designated initializer; `handlePress:` is implemented by
@@ -247,17 +247,7 @@ impl PressRecognizer {
 
     /// The pressable text span the current press is on.
     pub(crate) fn link(&self) -> Option<TextLink> {
-        self.ivars().link.borrow().clone()
-    }
-
-    /// Invalidates delayed press callbacks before a virtual cell detaches.
-    /// The mounter reports any final press-out directly, before its ACK.
-    pub(crate) fn retire(&self) -> Option<Option<TextLink>> {
-        let ivars = self.ivars();
-        ivars.generation.set(ivars.generation.get() + 1);
-        let pressed = ivars.pressed.replace(false);
-        let link = ivars.link.borrow_mut().take();
-        pressed.then_some(link)
+        self.ivars().link.get()
     }
 
     /// Where the current press's touch is.
@@ -298,7 +288,7 @@ impl PressRecognizer {
         let Some(view) = self.view() else { return };
         let id = view.tag() as NodeId;
         let at = self.ivars().at.get();
-        if let Some(link) = self.link() {
+        if let Some(link) = self.ivars().link.get() {
             let kind = match report {
                 Report::PressIn => EventKind::PressDown,
                 Report::PressOut => EventKind::PressUp,

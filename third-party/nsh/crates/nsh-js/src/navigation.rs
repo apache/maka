@@ -1275,7 +1275,10 @@ unsafe extern "C" fn backdrop_part(
         });
         let r = dom::set_prop_value(cx, view, "onPress", press);
         free(cx, press);
-        r
+        r?;
+        // Its presses are the pointer's: no stop of Tab, which would hold
+        // the dialog's focus where Return closes it.
+        dom::set_prop_value(cx, view, "focusable", qjs::JS_FALSE)
     })();
     match result {
         Ok(()) => view,

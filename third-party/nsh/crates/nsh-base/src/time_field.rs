@@ -628,6 +628,7 @@ fn bind_key(key: &str, repeat: bool, f: impl Fn() + 'static) {
         KeyOptions {
             when: When::Always,
             repeat,
+            ..Default::default()
         },
         move |_| f(),
     );
