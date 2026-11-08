@@ -161,18 +161,6 @@ async fn acquire(f: &Fixture, caller: &Caller, target: &Value) -> (Subscription,
 fn command(controller: &Value, sequence: u64, source: &str) -> Value {
     json!({"controller":controller,"sequence":sequence,"actions":[{"type":"text","text":source},{"type":"key","key":"enter"}]})
 }
-async fn wait_file(f: &Fixture, name: &str, text: &str) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if std::fs::read_to_string(f.workspace.join(name)).is_ok_and(|s| s == text) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
 #[tokio::test]
 async fn terminal_watch_uses_canonical_snapshots_and_user_base_sandbox() {
     tokio::time::timeout(Duration::from_secs(90), async {

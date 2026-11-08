@@ -336,9 +336,9 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, layer: Option<Arc<Shade
 }
 
 /// Hides the children the frames show instead of, in `window`, for an
-/// in-process picture of it ([`crate::synth::shot`]: `cacheDisplayInRect:`
+/// in-process picture of it ([`crate::capture::bitmap`]: `cacheDisplayInRect:`
 /// draws masked layers whole); the views to show again after.
-#[cfg(feature = "dev")]
+#[cfg(any(feature = "dev", feature = "terminal"))]
 pub(crate) fn hide_masked(
     window: &objc2_app_kit::NSWindow,
 ) -> Vec<Retained<objc2_app_kit::NSView>> {
@@ -397,6 +397,8 @@ pub(crate) fn input_changed(surface: &Rc<Surface>, view: &NshView) {
 /// that loaded): the effects around it, and every backdrop, take their
 /// pictures again.
 pub(crate) fn ui_changed(view: &NshView) {
+    #[cfg(feature = "terminal")]
+    view.invalidate_capture();
     let keys = PICTURING.with(|p| p.borrow().clone());
     for key in keys {
         if let Some(surface) = Surface::with_key(key) {

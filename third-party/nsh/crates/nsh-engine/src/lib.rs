@@ -1015,6 +1015,7 @@ const PACED_BIND_TIME: std::time::Duration = std::time::Duration::from_millis(2)
 #[derive(Clone)]
 pub struct EngineControl {
     tx: Sender<Message>,
+    events_sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl EngineControl {
@@ -1030,7 +1031,17 @@ impl EngineControl {
 
     /// Delivers an input event (and its data) to a node.
     pub fn dispatch_event(&self, id: NodeId, event: EventKind, payload: EventPayload) {
-        let _ = self.tx.send(Message::Event(id, event, payload));
+        self.events_sent
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if self.tx.send(Message::Event(id, event, payload)).is_err() {
+            self.events_sent
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// Events queued through [`Self::dispatch_event`], matching [`MountSink::handled`].
+    pub fn events_sent(&self) -> u64 {
+        self.events_sent.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Reports native tooltip presentation without granting input callback
@@ -1250,8 +1261,12 @@ impl Engine {
     {
         let image_cache = config.cache.open_images(config.app.app_id());
         let (tx, rx) = crossbeam_channel::unbounded();
-        setup(&EngineControl { tx: tx.clone() });
-        let engine_tx = tx.clone();
+        let control = EngineControl {
+            tx: tx.clone(),
+            events_sent: Arc::default(),
+        };
+        setup(&control);
+        let engine_tx = tx;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let engine_stop = stop.clone();
         let host = config.host.clone();
@@ -1260,7 +1275,7 @@ impl Engine {
             .stack_size(ENGINE_STACK_SIZE)
             .spawn(move || run(config, make_text_engine(), sink, engine_tx, rx, engine_stop))?;
         Ok(Engine {
-            control: EngineControl { tx },
+            control,
             thread: Some(thread),
             host,
             stop,
@@ -1376,7 +1391,10 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
     pub fn start<S: MountSink>(config: EngineConfig, text_engine: M, sink: S) -> Option<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let control = EngineControl { tx: tx.clone() };
+        let control = EngineControl {
+            tx: tx.clone(),
+            events_sent: Arc::default(),
+        };
         let _clock = config.clock.enter();
         let _context = config.context.enter();
         let driver = Driver::start(config, text_engine, Rc::new(sink), tx, &rx, stop)?;

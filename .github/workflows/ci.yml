@@ -44,7 +44,6 @@ jobs:
     outputs:
       tooling: ${{ steps.plan.outputs.tooling }}
       root: ${{ steps.plan.outputs.root }}
-      desktop: ${{ steps.plan.outputs.desktop }}
       workers: ${{ steps.plan.outputs.workers }}
       artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
@@ -206,77 +205,6 @@ jobs:
           MAKA_CI_FILTER: ${{ needs.root-build.outputs.filter }}
         run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -E "$MAKA_CI_FILTER"
 
-  desktop-build:
-    needs: plan
-    if: needs.plan.outputs.desktop == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    outputs:
-      partitions: ${{ steps.archive.outputs.partitions }}
-      nextest: ${{ steps.archive.outputs.nextest }}
-      filter: ${{ steps.archive.outputs.filter }}
-      artifact: ${{ steps.upload.outputs.artifact-id }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/ci-setup
-        id: setup
-        with:
-          role: desktop
-          dependencies: headless
-          javascript: "true"
-      - uses: actions/download-artifact@v8
-        with:
-          artifact-ids: ${{ needs.plan.outputs.artifact }}
-          path: ${{ runner.temp }}
-          merge-multiple: true
-      - name: Build and archive selected tests
-        id: archive
-        run: node scripts/ci.mjs archive desktop
-      - uses: actions/upload-artifact@v7
-        id: upload
-        with:
-          name: desktop-tests-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-cli.tar.zst
-          compression-level: 0
-          if-no-files-found: error
-      - uses: ./.github/actions/ci-cache
-        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
-        with:
-          key: ${{ steps.setup.outputs.compiled_key }}
-          hit: ${{ steps.setup.outputs.compiled_hit }}
-
-  desktop-tests:
-    needs: desktop-build
-    if: needs.desktop-build.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.desktop-build.outputs.partitions) }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/ci-setup
-        with:
-          role: replay
-          dependencies: headless
-          javascript: "true"
-          compile: "false"
-          nextest: ${{ needs.desktop-build.outputs.nextest }}
-      - uses: actions/download-artifact@v8
-        with:
-          artifact-ids: ${{ needs.desktop-build.outputs.artifact }}
-          path: ${{ runner.temp }}
-          merge-multiple: true
-      - name: Execute the produced test partition
-        env:
-          MAKA_CI_FILTER: ${{ needs.desktop-build.outputs.filter }}
-        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -j 1 -E "$MAKA_CI_FILTER"
-
   suites:
     needs: plan
     if: needs.plan.outputs.workers != '[]'
@@ -334,7 +262,7 @@ jobs:
           if [ -d target ]; then du -sh target; fi
 
   test:
-    needs: [plan, tooling, root-build, root-tests, desktop-build, desktop-tests, suites]
+    needs: [plan, tooling, root-build, root-tests, suites]
     if: always()
     runs-on: ubuntu-latest
     steps:

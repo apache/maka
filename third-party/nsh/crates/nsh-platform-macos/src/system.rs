@@ -277,7 +277,9 @@ fn update(surface: &Surface) {
     env.idiom = Idiom::Desktop;
     env.safe_area = Edges::default();
     env.keyboard_height = px(0.0);
-    env.lifecycle = lifecycle(surface.mtm);
+    if !surface.terminal.get() {
+        env.lifecycle = lifecycle(surface.mtm);
+    }
     surface.set_environment(env);
 }
 
@@ -343,6 +345,9 @@ fn follow_background(surface: &Surface) {
 
 /// Device pixels per point of the surface's window (or the main screen's).
 fn pixel_ratio(surface: &Surface) -> f32 {
+    if surface.terminal.get() {
+        return surface.terminal_scale.get();
+    }
     let root = surface.root.ns();
     let scale = match root.window() {
         Some(window) => window.backingScaleFactor(),
@@ -388,6 +393,9 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             NSAccessibilityPriorityLevel::Medium,
         ),
         Command::SetClipboard(text) => {
+            if surface.terminal.get() {
+                *surface.terminal_clipboard.borrow_mut() = Some(text.clone());
+            }
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             // SAFETY: an immutable AppKit constant.
@@ -418,6 +426,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             );
         }
         Command::Back => crate::navigation::default_back(surface),
+        Command::ExitApp if surface.terminal.get() => surface.terminal_quit.set(true),
         Command::ExitApp => {
             // Closing calls the window delegate synchronously, which stops
             // the surface and clears its mounter. Wait until this batch has

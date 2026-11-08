@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 use super::probe::Capabilities;
 use std::num::NonZeroU64;
 use termina::escape::osc::{NshTextInput, NshTextInputCaretRect, Osc};
@@ -29,16 +30,17 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     pub fn from_native(
-        caret: Option<gpui::Bounds<gpui::Pixels>>,
-        candidate: Option<gpui::Bounds<gpui::Pixels>>,
+        caret: Option<nsh_terminal::Bounds<nsh_terminal::Pixels>>,
+        candidate: Option<nsh_terminal::Bounds<nsh_terminal::Pixels>>,
         caps: Capabilities,
     ) -> Self {
         let Some(pixels) = caps.pixel_size() else {
             return Self::default();
         };
         let scale = f64::from(caps.scale_factor());
-        let cell = |position: gpui::Pixels, extent: i32, count: u16| {
+        let cell = |position: nsh_terminal::Pixels, extent: i32, count: u16| {
             f64::from(f32::from(position)) * scale * f64::from(count) / f64::from(extent)
         };
         let (column, row) =
@@ -132,10 +134,10 @@ mod tests {
         }
     }
 
-    fn caret(x: f32, y: f32) -> Option<gpui::Bounds<gpui::Pixels>> {
-        Some(gpui::Bounds::new(
-            gpui::point(gpui::px(x), gpui::px(y)),
-            gpui::size(gpui::px(2.0), gpui::px(20.0)),
+    fn caret(x: f32, y: f32) -> Option<nsh_terminal::Bounds<nsh_terminal::Pixels>> {
+        Some(nsh_terminal::Bounds::new(
+            nsh_terminal::point(nsh_terminal::px(x), nsh_terminal::px(y)),
+            nsh_terminal::size(nsh_terminal::px(2.0), nsh_terminal::px(20.0)),
         ))
     }
 

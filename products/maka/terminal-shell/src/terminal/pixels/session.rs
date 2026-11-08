@@ -17,56 +17,69 @@
  * under the License.
  */
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod submission;
 
+use super::super::Presentation;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use super::{
-    super::{
-        Presentation,
-        frame_trace::{InputPumpSample, InputSample},
-    },
+    super::frame_trace::{InputPumpSample, InputSample},
     mapping::Mapping,
 };
-use gpui::{
-    AppContext, Application, Bounds, Focusable, PlatformInput, WindowBounds, WindowOptions, point,
-    px, size,
-};
 use nsh_engine::EngineConfig;
-use nsh_gpui_terminal::{FrameToken, TerminalPlatform};
-use nsh_platform_gpui::{AppOptions, AppView};
+#[cfg(target_os = "macos")]
+use nsh_platform_macos::TerminalSurface;
+#[cfg(target_os = "windows")]
+use nsh_platform_windows::terminal::TerminalSurface;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use nsh_terminal::{FrameToken, NativeSurface, PlatformInput};
+use std::sync::mpsc;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     rc::Rc,
-    sync::{Arc, atomic::Ordering, mpsc},
+    sync::{Arc, atomic::Ordering},
     thread,
     time::{Duration, Instant},
 };
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use termina::{Event, event::KeyEventKind};
 
 pub(super) fn spawn(
     config: EngineConfig,
     presentation: Presentation,
-) -> Result<
-    (
-        mpsc::Receiver<Result<(), EngineConfig>>,
-        super::super::GpuWorker,
-    ),
-    String,
-> {
+) -> Result<mpsc::Receiver<Result<(), EngineConfig>>, String> {
     let (ready, startup) = mpsc::sync_channel(1);
-    let worker = thread::Builder::new()
-        .name("maka-nsh-gpui".into())
-        .spawn(move || {
-            let result = run(config, &presentation, ready);
-            if let Err(error) = &result {
-                presentation.state.lock().unwrap().error = Some(error.clone());
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // GTK currently needs a display server. Select the character backend
+        // before starting an engine rather than rasterizing its cell buffer.
+        let _ = ready.send(Err(config));
+        presentation.wake_driver();
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let jobs = presentation
+            .native_jobs
+            .as_ref()
+            .ok_or("native renderer requires the main-thread owner")?
+            .clone();
+        jobs.send(Box::new(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(config, &presentation, ready)
+            }))
+            .unwrap_or_else(|_| Err("terminal native renderer panicked".into()));
+            if let Err(error) = result {
+                presentation.state.lock().unwrap().error = Some(error);
             }
             presentation.wake_driver();
-            result
-        })
-        .map_err(|error| error.to_string())?;
-    Ok((startup, worker))
+        }))
+        .map_err(|_| "native renderer owner stopped".to_owned())?;
+    }
+    Ok(startup)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run(
     mut config: EngineConfig,
     presentation: &Presentation,
@@ -75,36 +88,15 @@ fn run(
     if presentation.stop.load(Ordering::Acquire) || presentation.state.lock().unwrap().quit {
         return Ok(());
     }
-    let renderer = match gpui_wgpu::WgpuHeadlessRenderer::new() {
-        Ok(renderer) => renderer,
-        Err(_) => {
-            let _ = ready.send(Err(config));
-            return Ok(());
-        }
-    };
-    let tracing = {
-        let mut state = presentation.state.lock().unwrap();
-        if presentation.stop.load(Ordering::Acquire) || state.quit {
-            return Ok(());
-        }
-        if let Some(trace) = &mut state.trace {
-            trace.gpu = renderer.gpu_specs().map(|gpu| {
-                serde_json::json!({
-                    "is_software_emulated": gpu.is_software_emulated,
-                    "device_name": gpu.device_name,
-                    "driver_name": gpu.driver_name,
-                    "driver_info": gpu.driver_info,
-                })
-            });
-        }
-        state.trace.is_some()
-    };
+    let tracing = presentation.state.lock().unwrap().trace.is_some();
     let control = super::super::UiScaleControl(presentation.clone());
     let current = super::super::UiScaleControl(presentation.clone());
     config.context = config.context.with(maka_workbench::UiScale {
         preview: Box::new(move |scale| control.preview(scale)),
         current: Box::new(move || current.current()),
     });
+    // Admit the native owner, not a successfully initialized surface. Native
+    // construction errors remain fatal and are reported through Presentation.
     if ready.send(Ok(())).is_err() {
         return Ok(());
     }
@@ -116,8 +108,40 @@ fn run(
     let waker = owner.clone();
     let pump_started = tracing.then(|| Rc::new(Cell::new(None::<Instant>)));
     let drawing_started = pump_started.clone();
-    let platform = TerminalPlatform::new(
-        Box::new(renderer),
+    // Renderer initialization can overlap a terminal resize. Wait for the
+    // same reader/writer measurement to complete, then keep its size and
+    // geometry together; never pair startup dimensions with a newer ticket.
+    let (viewport, scale_factor) = loop {
+        let measured = {
+            let mut state = presentation.state.lock().unwrap();
+            if presentation.stop.load(Ordering::Acquire) || state.quit {
+                return Ok(());
+            }
+            if let Some(error) = &state.error {
+                return Err(error.clone());
+            }
+            let inbox = state.pixels.as_mut().expect("selected pixel presentation");
+            inbox.wake = Some(owner.clone());
+            inbox
+                .capabilities
+                .viewport()
+                .map(|viewport| (viewport, inbox.capabilities.scale_factor(), inbox.geometry))
+        };
+        if let Some((viewport, scale_factor, generation)) = measured {
+            geometry.set(generation);
+            break (viewport, scale_factor);
+        }
+        thread::park_timeout(Duration::from_millis(10));
+    };
+    let mut reloading = config
+        .context
+        .get::<maka_workbench::reload::UiReload>()
+        .map(|reload| reload.take_requests());
+    let reload_config = config.clone();
+    let platform = TerminalSurface::new(
+        config,
+        viewport,
+        scale_factor,
         Box::new(move |frame| {
             let timing = drawing_started
                 .as_ref()
@@ -183,90 +207,8 @@ fn run(
             }
         }),
         Arc::new(move || waker.unpark()),
-    )
-    .map_err(|error| error.to_string())?;
-    // Renderer initialization can overlap a terminal resize. Wait for the
-    // same reader/writer measurement to complete, then keep its size and
-    // geometry together; never pair startup dimensions with a newer ticket.
-    let (viewport, scale_factor) = loop {
-        let measured = {
-            let mut state = presentation.state.lock().unwrap();
-            if presentation.stop.load(Ordering::Acquire) || state.quit {
-                return Ok(());
-            }
-            if let Some(error) = &state.error {
-                return Err(error.clone());
-            }
-            let inbox = state.pixels.as_mut().expect("selected pixel presentation");
-            inbox.wake = Some(owner.clone());
-            inbox
-                .capabilities
-                .viewport()
-                .map(|viewport| (viewport, inbox.capabilities.scale_factor(), inbox.geometry))
-        };
-        if let Some((viewport, scale_factor, generation)) = measured {
-            geometry.set(generation);
-            break (viewport, scale_factor);
-        }
-        thread::park_timeout(Duration::from_millis(10));
-    };
-    platform
-        .set_viewport(viewport, scale_factor)
-        .map_err(|error| error.to_string())?;
-    let mut reloading = config
-        .context
-        .get::<maka_workbench::reload::UiReload>()
-        .map(|reload| reload.take_requests());
-    let reload_config = config.clone();
-    let error = presentation.clone();
-    let window = Rc::new(RefCell::new(None));
-    let created = window.clone();
-    let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                point(px(0.0), px(0.0)),
-                size(
-                    px(viewport.width.0 as f32 / scale_factor),
-                    px(viewport.height.0 as f32 / scale_factor),
-                ),
-            ))),
-            inactive_frame_interval: None,
-            ..Default::default()
-        };
-        match cx.open_window(options, move |window, cx| {
-            cx.new(|cx| {
-                let view = AppView::new(
-                    AppOptions {
-                        title: "Maka".into(),
-                        terminal_keyboard: true,
-                        app_id: "org.apache.maka.terminal".into(),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                );
-                let cancelled =
-                    error.stop.load(Ordering::Acquire) || error.state.lock().unwrap().quit;
-                view.on_error(move |message| {
-                    error.state.lock().unwrap().error = Some(message.into());
-                });
-                if !cancelled {
-                    view.load_with_config(config);
-                }
-                // This surface owns the terminal keyboard from its first frame.
-                // A regular embedded AppView waits for the host to focus it.
-                window.focus(&view.focus_handle(cx), cx);
-                view
-            })
-        }) {
-            Ok(handle) => *created.borrow_mut() = Some(handle),
-            Err(_) => cx.quit(),
-        }
-    });
-    if window.borrow().is_none() {
-        return Err("cannot open the terminal GPUI surface".into());
-    }
-    let background = application.update(|cx| cx.background_executor().clone());
+    )?;
+    let background = tokio::runtime::Handle::current();
     let mut mapping = Mapping::default();
     let mut text_input = super::text_input::Owner::new();
     let mut inputs_before_draw = 0;
@@ -307,19 +249,11 @@ fn run(
                     .map_err(|error| error.to_string())?;
             }
             if cancel || resize.is_some() {
-                application.update(|cx| {
-                    if let Some(window) = window.borrow().as_ref() {
-                        let _ = window.update(cx, |view, window, cx| {
-                            view.cancel_pointer();
-                            window.refresh();
-                            cx.notify();
-                        });
-                    }
-                });
+                platform.cancel_pointer();
             }
             if let Some(offer) = ready {
-                // Resize invalidates the receipt immediately, even while GPU
-                // readback or an old output transaction is still finishing.
+                // Resize invalidates the receipt immediately, even while native
+                // capture transfer or an old output transaction is still finishing.
                 let mut state = presentation.state.lock().unwrap();
                 let inbox = state.pixels.as_ref().unwrap();
                 let disposition = if matches!(
@@ -340,6 +274,8 @@ fn run(
                     || inbox.geometry != offer.geometry
                 {
                     Some("resize")
+                } else if !platform.frame_is_current(&offer.token) {
+                    Some("revoked")
                 } else {
                     None
                 };
@@ -393,28 +329,32 @@ fn run(
                 if matches!(request, maka_workbench::reload::Request::Reload) {
                     text_input.blur(&platform, presentation)?;
                 }
-                application.update(|cx| {
-                    if let Some(window) = window.borrow().as_ref() {
-                        let _ = window.update(cx, |view, window, cx| {
-                            match request {
-                                maka_workbench::reload::Request::Pause(ready) => {
-                                    view.pause_input(window, cx, move |result| {
-                                        let _ = ready.send(result);
-                                    });
-                                }
-                                maka_workbench::reload::Request::Resume => {
-                                    view.resume_input(window, cx)
-                                }
-                                maka_workbench::reload::Request::Reload => {
-                                    view.load_with_config(reload_config.clone());
-                                    window.focus(&view.focus_handle(cx), cx);
+                match request {
+                    maka_workbench::reload::Request::Pause(ready) => {
+                        platform.pause_input(Box::new(move |result| {
+                            let _ = ready.send(result);
+                        }));
+                    }
+                    maka_workbench::reload::Request::Resume => platform.resume_input(),
+                    maka_workbench::reload::Request::Reload => {
+                        {
+                            let mut state = presentation.state.lock().unwrap();
+                            let inbox = state.pixels.as_mut().unwrap();
+                            let retired =
+                                tracing.then(|| inbox.completed_frames().collect::<Vec<_>>());
+                            inbox.reload()?;
+                            if let (Some(retired), Some(trace)) = (retired, &mut state.trace) {
+                                for offer in retired {
+                                    trace.discard(&offer.token, offer.geometry, "reload");
                                 }
                             }
-                            window.refresh();
-                            cx.notify();
-                        });
+                        }
+                        // Both owners observe the transport generation change
+                        // before native reload can revoke its frame tokens.
+                        platform.load_with_config(reload_config.clone());
+                        presentation.wake_driver();
                     }
-                });
+                }
                 worked = true;
             }
             text_input.sync(&platform, presentation)?;
@@ -453,15 +393,7 @@ fn run(
                 (input, late_cancel, queue_len, input_caps)
             };
             if late_cancel {
-                application.update(|cx| {
-                    if let Some(window) = window.borrow().as_ref() {
-                        let _ = window.update(cx, |view, window, cx| {
-                            view.cancel_pointer();
-                            window.refresh();
-                            cx.notify();
-                        });
-                    }
-                });
+                platform.cancel_pointer();
             }
             if let Some(input) = input {
                 super::super::interrupt::terminal_activity(&presentation.host, &input.event);
@@ -511,15 +443,7 @@ fn run(
                         "composition"
                     }
                     Event::Paste(text) => {
-                        application.update(|cx| {
-                            if let Some(window) = window.borrow().as_ref() {
-                                let _ = window.update(cx, |view, window, cx| {
-                                    view.paste(nsh_core::PasteEvent::new(text));
-                                    window.refresh();
-                                    cx.notify();
-                                });
-                            }
-                        });
+                        platform.paste(nsh_core::PasteEvent::new(text));
                         "paste_dispatched"
                     }
                     event => {
@@ -537,8 +461,10 @@ fn run(
                                 // Legacy terminals deliver complete strokes without
                                 // key releases; preserve explicit Repeat/Release.
                                 platform
-                                    .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent {
-                                        keystroke: key.keystroke,
+                                    .dispatch_input(PlatformInput::KeyUp({
+                                        let mut value = nsh_terminal::KeyUpEvent::default();
+                                        value.keystroke = key.keystroke;
+                                        value
                                     }))
                                     .map_err(|error| error.to_string())?;
                             }
@@ -553,15 +479,7 @@ fn run(
                 };
                 text_input.sync(&platform, presentation)?;
                 if cancel {
-                    application.update(|cx| {
-                        if let Some(window) = window.borrow().as_ref() {
-                            let _ = window.update(cx, |view, window, cx| {
-                                view.cancel_pointer();
-                                window.refresh();
-                                cx.notify();
-                            });
-                        }
-                    });
+                    platform.cancel_pointer();
                 }
                 if let Some(index) = measurement {
                     let end = Instant::now();
@@ -617,7 +535,7 @@ fn run(
                 presentation.state.lock().unwrap().quit = true;
                 return Ok(());
             }
-            if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+            if let Some(text) = platform.take_clipboard_write() {
                 let bytes = nsh_platform_tui::ServiceOutput::Clipboard(text)
                     .terminal_sequence(presentation.tmux)
                     .into_bytes();
@@ -652,14 +570,9 @@ fn run(
         }
         Ok(())
     })();
-    application.update(|cx| {
-        if let Some(window) = window.borrow().as_ref() {
-            let _ = window.update(cx, |view, _, _| view.stop());
-        }
-    });
+    platform.stop();
     let cancelled = text_input.blur(&platform, presentation);
     let result = result.and(cancelled);
-    drop(application);
     platform.shutdown();
     result
 }
@@ -667,7 +580,8 @@ fn run(
 /// Encode a completed readback on the existing executor.
 /// Its Inbox slot spans executor wait, codec and completed snapshot wait.
 /// Native input keeps pumping; jobs and executor shutdown cannot hold cleanup.
-fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExecutor) -> bool {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn encode_pending(presentation: &Presentation, background: &tokio::runtime::Handle) -> bool {
     if presentation.stop.load(Ordering::Acquire) {
         return false;
     }
@@ -696,121 +610,271 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
         (candidate, same_viewport_flushed, capabilities, tracing)
     };
     let presentation = presentation.clone();
-    background
-        .spawn(async move {
-            let (candidate, same_viewport_flushed, caps, tracing) = work;
-            let token = candidate.frame.token();
-            let geometry = candidate.geometry;
-            let size = caps.size;
-            use super::{input::WireFrame, probe::Protocol};
-            use nsh_gpui_terminal::inline::{InlineFrame, InlineProtocol};
-            let current = {
-                let state = presentation.state.lock().unwrap();
-                !state.quit
-                    && state.error.is_none()
-                    && !presentation.stop.load(Ordering::Acquire)
-                    && state.pixels.as_ref().unwrap().geometry == geometry
-            };
-            let mut started = None;
-            let mut ended = None;
-            let result = if current {
-                let frame = candidate.frame;
-                started = tracing.then(Instant::now);
-                let result = match caps.protocol.expect("negotiated pixel transport") {
-                    Protocol::Kitty => {
-                        nsh_gpui_terminal::kitty::KittyFrame::encode(&frame, size.cols, size.rows)
-                            .map(WireFrame::Kitty)
-                    }
-                    protocol @ (Protocol::Sixel | Protocol::Iterm2) => InlineFrame::encode(
-                        &frame,
-                        match protocol {
-                            Protocol::Sixel => InlineProtocol::Sixel,
-                            _ => InlineProtocol::Iterm2,
-                        },
-                        size.cols,
-                        size.rows,
-                        caps.synchronized,
-                        same_viewport_flushed,
-                    )
-                    .map(WireFrame::Inline),
+    background.spawn_blocking(move || {
+        let (candidate, same_viewport_flushed, caps, tracing) = work;
+        let token = candidate.frame.token();
+        let geometry = candidate.geometry;
+        let size = caps.size;
+        use super::{input::WireFrame, probe::Protocol};
+        use nsh_terminal::inline::{InlineFrame, InlineProtocol};
+        let current = {
+            let state = presentation.state.lock().unwrap();
+            !state.quit
+                && state.error.is_none()
+                && !presentation.stop.load(Ordering::Acquire)
+                && state.pixels.as_ref().unwrap().geometry == geometry
+        };
+        let mut started = None;
+        let mut ended = None;
+        let result = if current {
+            let frame = candidate.frame;
+            started = tracing.then(Instant::now);
+            let result = match caps.protocol.expect("negotiated pixel transport") {
+                Protocol::Kitty => {
+                    nsh_terminal::kitty::KittyFrame::encode(&frame, size.cols, size.rows)
+                        .map(WireFrame::Kitty)
                 }
-                .map(|frame| super::input::Encoded { frame, geometry })
-                .map_err(|error| format!("{error:#}"));
-                ended = started.map(|_| Instant::now());
-                Some(result)
-            } else {
-                None
-            };
-            let bytes = if tracing {
-                result.as_ref().and_then(|result| result.as_ref().ok()).map(
-                    |encoded| match &encoded.frame {
-                        WireFrame::Kitty(frame) => frame.payload_len(),
-                        WireFrame::Inline(frame) => frame.bytes().len(),
+                protocol @ (Protocol::Sixel | Protocol::Iterm2) => InlineFrame::encode(
+                    &frame,
+                    match protocol {
+                        Protocol::Sixel => InlineProtocol::Sixel,
+                        _ => InlineProtocol::Iterm2,
                     },
+                    size.cols,
+                    size.rows,
+                    caps.synchronized,
+                    same_viewport_flushed,
                 )
-            } else {
+                .map(WireFrame::Inline),
+            }
+            .map(|frame| super::input::Encoded { frame, geometry })
+            .map_err(|error| format!("{error:#}"));
+            ended = started.map(|_| Instant::now());
+            Some(result)
+        } else {
+            None
+        };
+        let bytes = if tracing {
+            result
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map(|encoded| match &encoded.frame {
+                    WireFrame::Kitty(frame) => frame.payload_len(),
+                    WireFrame::Inline(frame) => frame.bytes().len(),
+                })
+        } else {
+            None
+        };
+        let failed = result.as_ref().is_some_and(Result::is_err);
+        let mut state = presentation.state.lock().unwrap();
+        let cancelled =
+            state.quit || state.error.is_some() || presentation.stop.load(Ordering::Acquire);
+        let inbox = state.pixels.as_mut().unwrap();
+        let discarded = !current || cancelled || inbox.geometry != geometry;
+        let encoded = match result {
+            Some(Ok(encoded)) if !discarded => Some(encoded),
+            Some(Err(error)) if !state.quit && !presentation.stop.load(Ordering::Acquire) => {
+                state.error.get_or_insert(error);
                 None
-            };
-            let failed = result.as_ref().is_some_and(Result::is_err);
-            let mut state = presentation.state.lock().unwrap();
-            let cancelled =
-                state.quit || state.error.is_some() || presentation.stop.load(Ordering::Acquire);
-            let inbox = state.pixels.as_mut().unwrap();
-            let discarded = !current || cancelled || inbox.geometry != geometry;
-            let encoded = match result {
-                Some(Ok(encoded)) if !discarded => Some(encoded),
-                Some(Err(error)) if !state.quit && !presentation.stop.load(Ordering::Acquire) => {
-                    state.error.get_or_insert(error);
-                    None
-                }
-                _ => None,
-            };
-            let disposition = if failed || state.error.is_some() {
-                Some("error")
-            } else if cancelled {
-                Some("cancel")
+            }
+            _ => None,
+        };
+        let disposition = if failed || state.error.is_some() {
+            Some("error")
+        } else if cancelled {
+            Some("cancel")
+        } else if discarded {
+            Some("resize")
+        } else {
+            None
+        };
+        let inbox = state.pixels.as_mut().unwrap();
+        let superseded = inbox.finished(&token, encoded);
+        let wake = inbox.wake.clone();
+        if let (Some(start), Some(end), Some(trace)) = (started, ended, &mut state.trace) {
+            let sample = trace.record(&token, geometry, "codec", start, end);
+            sample.bytes = bytes;
+            sample.outcome = if failed {
+                "error"
             } else if discarded {
-                Some("resize")
+                "discarded"
             } else {
-                None
+                "ok"
             };
-            let inbox = state.pixels.as_mut().unwrap();
-            let superseded = inbox.finished(&token, encoded);
-            let wake = inbox.wake.clone();
-            if let (Some(start), Some(end), Some(trace)) = (started, ended, &mut state.trace) {
-                let sample = trace.record(&token, geometry, "codec", start, end);
-                sample.bytes = bytes;
-                sample.outcome = if failed {
-                    "error"
-                } else if discarded {
-                    "discarded"
-                } else {
-                    "ok"
-                };
+        }
+        if let Some(trace) = &mut state.trace {
+            if let super::input::Completion::Superseded {
+                token: retired,
+                replacement,
+            } = superseded
+            {
+                let at = Instant::now();
+                let sample = trace.record(&retired, geometry, "superseded", at, at);
+                sample.outcome = "superseded";
+                sample.pending_frame = Some(replacement.sequence());
             }
-            if let Some(trace) = &mut state.trace {
-                if let super::input::Completion::Superseded {
-                    token: retired,
-                    replacement,
-                } = superseded
-                {
-                    let at = Instant::now();
-                    let sample = trace.record(&retired, geometry, "superseded", at, at);
-                    sample.outcome = "superseded";
-                    sample.pending_frame = Some(replacement.sequence());
-                }
-                if let Some(outcome) = disposition
-                    && matches!(caps.protocol, Some(Protocol::Sixel | Protocol::Kitty))
-                {
-                    trace.discard(&token, geometry, outcome);
-                }
+            if let Some(outcome) = disposition
+                && matches!(caps.protocol, Some(Protocol::Sixel | Protocol::Kitty))
+            {
+                trace.discard(&token, geometry, outcome);
             }
-            drop(state);
-            if let Some(wake) = wake {
-                wake.unpark();
-            }
-            presentation.wake_driver();
-        })
-        .detach();
+        }
+        drop(state);
+        if let Some(wake) = wake {
+            wake.unpark();
+        }
+        presentation.wake_driver();
+    });
     true
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod fallback_tests {
+    use super::*;
+    use nsh_core::element::{Root, input};
+    use nsh_core::prelude::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    struct Admission {
+        roots: Arc<AtomicUsize>,
+        changes: mpsc::Sender<String>,
+    }
+
+    #[component]
+    fn FallbackRoot() -> impl IntoElement {
+        let admission = engine_context::<Admission>().unwrap();
+        admission.roots.fetch_add(1, Ordering::SeqCst);
+        let changes = admission.changes.clone();
+        view().child(
+            input()
+                .auto_focus(true)
+                .h(px(32.0))
+                .on_change(move |value: &str| {
+                    changes.send(value.to_owned()).unwrap();
+                }),
+        )
+    }
+
+    #[test]
+    fn unsupported_native_fallback_keeps_admission_and_startup_input_without_starting_app() {
+        let roots = Arc::new(AtomicUsize::new(0));
+        let (changes, changed) = mpsc::channel();
+        let mut config = EngineConfig::new(Root::of::<FallbackRoot>());
+        config.context = config.context.with(Admission {
+            roots: roots.clone(),
+            changes,
+        });
+        config.viewport = nsh_platform_tui::CellMetrics::default().viewport(80, 24);
+        let (native_jobs, mut jobs) = tokio::sync::mpsc::unbounded_channel();
+        let presentation = Presentation {
+            native_jobs: Some(native_jobs),
+            ..Default::default()
+        };
+        let size = termina::WindowSize {
+            cols: 80,
+            rows: 24,
+            pixel_width: Some(800),
+            pixel_height: Some(480),
+        };
+        let mut pixels = super::super::input::Inbox::new(
+            super::super::Capabilities {
+                size,
+                mouse: super::super::MouseCoordinates::Cells,
+                protocol: Some(super::super::Protocol::Kitty),
+                synchronized: false,
+                sixel_geometry: Default::default(),
+                ui_scale: 1.0,
+            },
+            false,
+        );
+        pixels
+            .push(termina::Event::Paste("queued draft".into()))
+            .unwrap();
+        pixels
+            .push(termina::Event::WindowResized(termina::WindowSize {
+                cols: 72,
+                rows: 20,
+                ..size
+            }))
+            .unwrap();
+        presentation.state.lock().unwrap().pixels = Some(pixels);
+        let returned = match super::spawn(config, presentation.clone())
+            .unwrap()
+            .recv()
+            .unwrap()
+        {
+            Err(config) => config,
+            Ok(()) => panic!("unsupported native backend claimed the app"),
+        };
+        assert_eq!(
+            roots.load(Ordering::SeqCst),
+            0,
+            "fallback must precede app creation"
+        );
+        assert!(Arc::ptr_eq(
+            &returned.context.get::<Admission>().unwrap().roots,
+            &roots
+        ));
+        assert!(matches!(
+            jobs.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        let (inputs, resize, cancel_pointer) = {
+            let mut state = presentation.state.lock().unwrap();
+            assert!(
+                state.pixels.is_some(),
+                "fallback must not consume the reader's queue"
+            );
+            super::super::restore_character_input(&mut state);
+            assert!(state.pixels.is_none());
+            (state.pop_batch(), state.resize.take(), state.cancel_pointer)
+        };
+        assert_eq!(
+            inputs,
+            vec![crossterm::event::Event::Paste("queued draft".into())]
+        );
+        assert_eq!(resize, Some((72, 20)));
+        let (commands, frames) = crate::terminal::ui::spawn(
+            returned,
+            Arc::new(AtomicBool::new(false)),
+            std::thread::current(),
+            false,
+        )
+        .unwrap();
+        frames
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            roots.load(Ordering::SeqCst),
+            1,
+            "only the character engine starts the app"
+        );
+        commands
+            .send(crate::terminal::ui::Advance {
+                image_protocol: None,
+                inputs,
+                resize,
+                cancel_pointer,
+                draw: true,
+            })
+            .unwrap();
+        let frame = frames
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(
+            frame.bytes.is_some(),
+            "resized character output must render"
+        );
+        assert_eq!(
+            changed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "queued draft"
+        );
+        assert_eq!(roots.load(Ordering::SeqCst), 1);
+    }
 }

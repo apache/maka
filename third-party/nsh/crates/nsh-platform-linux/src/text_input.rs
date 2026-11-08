@@ -38,6 +38,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::{Rc, Weak},
 };
 
@@ -48,6 +49,7 @@ use nsh_core::{
     geometry::{Point, Size, point, px, size},
     tailwind::state,
 };
+use rustc_hash::FxHashMap;
 
 use crate::{surface::Surface, view::NshView};
 
@@ -236,6 +238,9 @@ pub(crate) struct InputState {
     /// The input method's composition (its preedit text) while one is in
     /// progress: GTK shows it in the editor, outside the text.
     composition: RefCell<Option<String>>,
+    /// Escape was pressed during a composition: cancels it before the
+    /// window blurs or navigates.
+    cancelling_composition: Cell<bool>,
     /// JS's value set during a composition, with its count: setting the
     /// text then would reset the input method, so it is applied when the
     /// composition ends.
@@ -374,29 +379,40 @@ impl Ctx {
         self.selection_changed();
     }
 
-    /// A paste (Ctrl+V, Shift+Insert, the context menu) into the editor
-    /// `widget`: reports what the clipboard holds (`onPaste`) if the app
-    /// listens, read now, on the user's paste (GTK reads it asynchronously:
-    /// the report may come after the text it inserts); whether the editor
-    /// pastes its text (`pasteBehavior`).
+    /// Owns the asynchronous paste so reload waits for its event and edit,
+    /// including a clipboard owned by another process.
     fn pasting(&self, widget: &gtk::Widget) -> bool {
         let Some((surface, view, input)) = self.get() else {
-            return true;
+            return false;
         };
-        if view.state().events.contains(EventKind::Paste) {
-            let id = view.id();
-            let surface = Rc::downgrade(&surface);
-            crate::system::read_pasted(widget.clipboard(), move |paste| {
-                if let Some(surface) = surface.upgrade() {
-                    surface.event(id, EventKind::Paste, EventPayload::Paste(Box::new(paste)));
-                }
-            });
+        if surface.input_paused.get() || !input.config.borrow().editable {
+            return false;
         }
+        let reports = view.state().events.contains(EventKind::Paste);
         let inserts = input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert;
-        // Its insertion (and the deletion of the selection it replaces)
-        // types no key.
-        input.pasting.set(inserts);
-        inserts
+        if !reports && !inserts {
+            return false;
+        }
+        let generation = surface.admit_paste();
+        let weak = Rc::downgrade(&surface);
+        let fallback_view = view.downgrade();
+        crate::system::read_pasted(widget.clipboard(), move |paste| {
+            let Some(surface) = weak.upgrade() else {
+                return;
+            };
+            if !surface.paste_is_current(generation) {
+                return;
+            }
+            if !queue_if_unsettled(&surface, || Held::PasteEvent(paste.clone())) {
+                let target = focused_input_view(&surface).or_else(|| fallback_view.upgrade());
+                if let Some(target) = target {
+                    apply_paste_to_view(&surface, &target, paste);
+                }
+            }
+            surface.finish_paste(generation);
+        });
+        // The callback above inserts it once; GTK must not read it again.
+        false
     }
 
     /// The caret or selection may have moved.
@@ -484,15 +500,36 @@ impl Ctx {
             return;
         };
         if text.is_empty() {
+            let cancelled = input.cancelling_composition.replace(false);
             self.composition_ended();
+            if cancelled {
+                self.flush_composition();
+            }
             return;
         }
+        input.cancelling_composition.set(false);
         if input.composition.borrow().as_deref() == Some(text) {
             return;
         }
         *input.composition.borrow_mut() = Some(text.to_owned());
         input.set_composing(true);
         self.send_composition(true, text);
+    }
+
+    fn cancel_composition(&self) {
+        let Some(input) = self.input.upgrade() else {
+            return;
+        };
+        input.cancelling_composition.set(false);
+        if input.composition.borrow().is_none() {
+            return;
+        }
+        let editor = input.editor.borrow().clone();
+        if let Editor::Area { view, .. } = &editor {
+            view.reset_im_context();
+        }
+        self.composition_ended();
+        self.flush_composition();
     }
 
     /// The composition ended. The text it committed is inserted around the
@@ -563,18 +600,33 @@ impl Ctx {
         if input.focused.replace(focused) == focused {
             return;
         }
+        enter_changing(&surface);
         self.flush_change();
         if !focused {
+            input.cancelling_composition.set(false);
             // GTK resets the input method when the focus leaves.
             self.composition_ended();
         }
         crate::input::set_state(&surface, &view, state::FOCUSED, focused);
+        let events_before = surface.events_sent();
         let kind = if focused {
             EventKind::Focus
         } else {
             EventKind::Blur
         };
         self.send(kind, || EventPayload::None);
+        if focused {
+            if wants_text(&surface) && surface.events_sent() > events_before {
+                arm(&surface);
+            } else if !has_pending(&surface) {
+                disarm(&surface);
+            }
+            self.selection_changed();
+        }
+        leave_changing(&surface);
+        if focused && !is_changing(&surface) {
+            flush_pending(&surface);
+        }
     }
 
     /// Return submitted the input (`submitBehavior` `submit` or
@@ -591,6 +643,9 @@ impl Ctx {
             text,
             count,
         });
+        if let Some(surface) = self.surface.upgrade() {
+            arm(&surface);
+        }
         if input.config.borrow().submit() == SubmitBehavior::BlurAndSubmit {
             unfocus(&input.editor.borrow().widget());
         }
@@ -703,6 +758,7 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
         selection: Cell::new((0, 0)),
         caret: Cell::new(Bounds::default()),
         composition: RefCell::new(None),
+        cancelling_composition: Cell::new(false),
         held: RefCell::new(None),
         cx: std::cell::OnceCell::new(),
         window: RefCell::new(None),
@@ -888,8 +944,16 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
             c.key_press("Backspace");
         }
         // Reported as on macOS; the window's keys then leave the field
-        // (`navigation::key_pressed`).
+        // (`navigation::key_pressed`), unless Escape is cancelling an active
+        // input-method composition.
         if key == gtk::gdk::Key::Escape {
+            if input.composition.borrow().is_some() {
+                input.cancelling_composition.set(true);
+                return glib::Propagation::Proceed;
+            }
+            if let Some(surface) = c.surface.upgrade() {
+                disarm(&surface);
+            }
             c.key_press("Escape");
         }
         if editable
@@ -908,6 +972,20 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
         glib::Propagation::Proceed
     });
     widget.add_controller(keys);
+
+    let bubble_keys = gtk::EventControllerKey::new();
+    let c = cx.clone();
+    bubble_keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape
+            && let Some(input) = c.input.upgrade()
+            && input.cancelling_composition.replace(false)
+        {
+            c.cancel_composition();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    widget.add_controller(bubble_keys);
 }
 
 fn new_editor(multiline: bool) -> Editor {
@@ -926,12 +1004,19 @@ fn new_editor(multiline: bool) -> Editor {
 }
 
 /// `Input`.
-pub(crate) fn config(_surface: &Rc<Surface>, view: &NshView, config: &InputConfig) {
+pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig) {
     let Some(input) = view.state().input.clone() else {
         return;
     };
+    let became_readonly = input.config.borrow().editable && !config.editable;
     let multiline = matches!(&*input.editor.borrow(), Editor::Area { .. });
     if config.multiline != multiline {
+        let had_auto_focus = input
+            .auto_focus
+            .borrow_mut()
+            .take()
+            .map(|(widget, handler)| widget.disconnect(handler))
+            .is_some();
         let old = input.editor.borrow().clone();
         let text = old.text();
         let focused = input.focused.get();
@@ -945,6 +1030,8 @@ pub(crate) fn config(_surface: &Rc<Surface>, view: &NshView, config: &InputConfi
         place(view, &input);
         if focused {
             editor.focus();
+        } else if had_auto_focus {
+            auto_focus(surface, &input, &editor);
         }
     }
 
@@ -1012,13 +1099,22 @@ pub(crate) fn config(_surface: &Rc<Surface>, view: &NshView, config: &InputConfi
         *input.css.borrow_mut() = css;
     }
     *input.config.borrow_mut() = config.clone();
-    report_scroll(_surface, view, &input);
+    if became_readonly && input.focused.get() && input.composition.borrow().is_some() {
+        if let Editor::Area { view, .. } = &editor {
+            view.reset_im_context();
+        }
+        if let Some(cx) = input.cx.get() {
+            cx.composition_ended();
+            cx.flush_composition();
+        }
+    }
+    report_scroll(surface, view, &input);
     input.update_placeholder();
+    place(view, &input);
     let first = !input.configured.replace(true);
     if first && config.auto_focus {
-        auto_focus(&input, &editor);
+        auto_focus(surface, &input, &editor);
     }
-    place(view, &input);
 }
 
 /// Reports how far a multiline input's text scrolled while a built-in bar
@@ -1057,19 +1153,27 @@ pub(crate) fn scroll_to(view: &NshView, y: Points) {
 }
 
 /// Focuses the editor once it is on screen.
-fn auto_focus(input: &Rc<InputState>, editor: &Editor) {
+fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>, editor: &Editor) {
     let widget = editor.widget();
     if widget.is_mapped() {
         editor.focus();
         return;
     }
+    register_auto_focus(surface, input);
     let weak = Rc::downgrade(input);
+    let weak_surface = Rc::downgrade(surface);
     let handler = widget.connect_map(move |_| {
         let Some(input) = weak.upgrade() else { return };
         if let Some((widget, handler)) = input.auto_focus.borrow_mut().take() {
             widget.disconnect(handler);
         }
         input.editor.borrow().focus();
+        if let Some(surface) = weak_surface.upgrade()
+            && !is_changing(&surface)
+        {
+            flush_pending(&surface);
+            maybe_disarm(&surface);
+        }
     });
     *input.auto_focus.borrow_mut() = Some((widget, handler));
 }
@@ -1365,19 +1469,11 @@ fn css_families(name: &str) -> Option<String> {
 }
 
 /// The text input `view` holds now (`None`: it is no input).
-#[cfg(feature = "dev")]
+#[cfg(any(feature = "dev", test))]
 pub(crate) fn current_text(view: &NshView) -> Option<String> {
     let input = view.state().input.clone()?;
     let text = input.editor.borrow().text();
     Some(text)
-}
-
-/// Whether the input `view` inserts what is pasted (`pasteBehavior`).
-#[cfg(feature = "dev")]
-pub(crate) fn pastes_text(view: &NshView) -> bool {
-    view.state().input.clone().is_some_and(|input| {
-        input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert
-    })
 }
 
 /// `InputValue`: JS's text, unless the user typed since JS saw `count`.
@@ -1442,6 +1538,19 @@ pub(crate) fn focus(view: &NshView) {
     }
 }
 
+/// `focus()` on a non-input view that is a focus stop.
+pub(crate) fn focus_view(view: &NshView) {
+    let can_focus = {
+        let s = view.state();
+        s.props.focus_stop(s.events.contains(EventKind::Press))
+    };
+    if !can_focus {
+        return;
+    }
+    ensure_transient_focusable(view);
+    view.grab_focus();
+}
+
 /// `blur()`.
 pub(crate) fn blur(view: &NshView) {
     let input = view.state().input.clone();
@@ -1450,15 +1559,43 @@ pub(crate) fn blur(view: &NshView) {
     }
 }
 
-/// Unfocuses whatever input of the surface has focus.
+/// `blur()` on a non-input view.
+pub(crate) fn blur_view(view: &NshView) {
+    unfocus(view.upcast_ref());
+}
+
+/// Unfocuses whatever input or focus stop of the surface has focus.
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
     let root = surface.root.upcast_ref::<gtk::Widget>();
     if let Some(window) = root.root()
         && let Some(focus) = window.focus()
-        && (focus.is::<gtk::Text>() || focus.is::<gtk::TextView>())
-        && focus.is_ancestor(root)
+        && (focus.is::<gtk::Text>() || focus.is::<gtk::TextView>() || focus.is::<NshView>())
+        && (focus == *root || focus.is_ancestor(root))
     {
         window.set_focus(None::<&gtk::Widget>);
+    }
+    if !has_pending(surface) {
+        disarm(surface);
+    }
+}
+
+/// Reports edits GTK queued for idle before a reload's engine barrier.
+pub(crate) fn flush_changes(surface: &Rc<Surface>) {
+    let views: Vec<_> = surface.mounter.borrow().views.values().cloned().collect();
+    for view in views {
+        let input = view.state().input.clone();
+        if let Some(input) = input {
+            let context = Ctx {
+                surface: Rc::downgrade(surface),
+                view: view.downgrade(),
+                input: Rc::downgrade(&input),
+            };
+            context.flush_change();
+            let ending_composition = input.composition_idle.borrow().is_some();
+            if ending_composition {
+                context.flush_composition();
+            }
+        }
     }
 }
 
@@ -1473,6 +1610,108 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
         utf16_to_char(&text, start) as i32,
         utf16_to_char(&text, end) as i32,
     );
+}
+
+/// One undoable application edit of the focused input `view`, dropped unless
+/// the input still matches what the app saw (`Command::ReplaceRange`).
+pub(crate) fn replace_range(view: &NshView, command: &nsh_core::Command) {
+    let nsh_core::Command::ReplaceRange {
+        range,
+        text,
+        expected_text,
+        expected_selection,
+        count,
+    } = command
+    else {
+        return;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let editor = input.editor.borrow().clone();
+    let current = editor.text();
+    let (sel_start, sel_end) = editor.selection();
+    let observed = char_to_utf16(&current, sel_start.max(0) as usize)
+        ..char_to_utf16(&current, sel_end.max(0) as usize);
+    if !input.focused.get()
+        || !input.config.borrow().editable
+        || view.state().props.accessibility.state.disabled
+        || input.count.get() != *count
+        || input.composition.borrow().is_some()
+        || current != *expected_text
+        || observed != *expected_selection
+        || range.start > range.end
+        || !splits_no_character(expected_text, range)
+    {
+        return;
+    }
+    let start_char = utf16_to_char(&current, range.start);
+    let end_char = utf16_to_char(&current, range.end);
+    let start_byte = current
+        .char_indices()
+        .nth(start_char)
+        .map_or(current.len(), |(i, _)| i);
+    let end_byte = current
+        .char_indices()
+        .nth(end_char)
+        .map_or(current.len(), |(i, _)| i);
+    let kept = utf16_len(&current[..start_byte]) + utf16_len(&current[end_byte..]);
+    let fit = match input.config.borrow().max_length {
+        Some(max) => clip_utf16(text, (max as usize).saturating_sub(kept)),
+        None => text.as_str(),
+    };
+    if !text.is_empty() && fit.is_empty() {
+        return;
+    }
+    if &current[start_byte..end_byte] == fit {
+        let caret = (start_char + fit.chars().count()) as i32;
+        editor.select(caret, caret);
+        if let Some(cx) = input.cx.get() {
+            cx.selection_changed();
+        }
+        return;
+    }
+    let start_char = start_char as i32;
+    let end_char = end_char as i32;
+    input.pasting.set(true);
+    match &editor {
+        Editor::Line(field) => {
+            field.delete_text(start_char, end_char);
+            let mut pos = start_char;
+            if !fit.is_empty() {
+                field.insert_text(fit, &mut pos);
+            }
+            field.set_position(pos);
+        }
+        Editor::Area { view, .. } => {
+            let buffer = view.buffer();
+            buffer.begin_user_action();
+            let mut start_iter = buffer.iter_at_offset(start_char);
+            let mut end_iter = buffer.iter_at_offset(end_char);
+            buffer.delete(&mut start_iter, &mut end_iter);
+            buffer.place_cursor(&start_iter);
+            if !fit.is_empty() {
+                buffer.insert_at_cursor(fit);
+            }
+            buffer.end_user_action();
+        }
+    }
+    input.pasting.set(false);
+    if let Some(cx) = input.cx.get() {
+        cx.flush_change();
+        cx.selection_changed();
+    }
+}
+
+fn splits_no_character(text: &str, range: &std::ops::Range<u32>) -> bool {
+    let mut offset = 0;
+    let mut ends = 0;
+    for c in text.chars() {
+        ends += usize::from(offset == range.start) + usize::from(offset == range.end);
+        offset += c.len_utf16() as u32;
+    }
+    ends += usize::from(offset == range.start) + usize::from(offset == range.end);
+    ends == 2
 }
 
 /// Return or Enter.
@@ -1543,6 +1782,941 @@ fn clip_utf16(s: &str, max: usize) -> &str {
         }
     }
     s
+}
+
+// --- Focus fence & held input -----------------------------------------------
+
+#[derive(Default)]
+struct Focus {
+    changing: usize,
+    replaying: bool,
+    armed: bool,
+    after: u64,
+    pending: VecDeque<Held>,
+    auto_focus: Vec<Weak<InputState>>,
+}
+
+enum Held {
+    GdkKey {
+        key: gtk::gdk::Key,
+        modifiers: gtk::gdk::ModifierType,
+        event: Option<gtk::gdk::Event>,
+    },
+    PasteEvent(nsh_core::PasteEvent),
+    #[cfg(any(feature = "dev", test))]
+    Keystroke(nsh_core::keymap::Keystroke),
+    #[cfg(any(feature = "dev", test))]
+    Text(String),
+    #[cfg(any(feature = "dev", test))]
+    Enter,
+    #[cfg(any(feature = "dev", test))]
+    Backspace,
+    #[cfg(any(feature = "dev", test))]
+    SelectAll,
+}
+
+thread_local! {
+    static FOCUS: RefCell<FxHashMap<u64, Focus>> = RefCell::default();
+    static TRANSIENT_FOCUS: RefCell<Vec<glib::WeakRef<NshView>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn ensure_transient_focusable(view: &NshView) {
+    view.set_focusable(true);
+    let already = TRANSIENT_FOCUS.with(|list| {
+        let mut list = list.borrow_mut();
+        list.retain(|w| w.upgrade().is_some());
+        if list.iter().any(|w| w.upgrade().as_ref() == Some(view)) {
+            true
+        } else {
+            list.push(view.downgrade());
+            false
+        }
+    });
+    if !already {
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(|c| {
+            if let Some(view) = c.widget().and_downcast::<NshView>()
+                && !view.has_focus()
+                && view.kind() == nsh_core::ViewKind::View
+                && crate::selectable_view::area_of(&view).as_ref() != Some(&view)
+            {
+                view.set_focusable(false);
+            }
+        });
+        view.add_controller(focus);
+    }
+}
+
+/// Intercepts window-level GDK key presses while an engine event that can move
+/// focus is still in flight.
+pub(crate) fn install_keyboard(surface: &Rc<Surface>) {
+    let weak = Rc::downgrade(surface);
+    let installed = RefCell::new(glib::WeakRef::<gtk::Window>::new());
+    surface.root.connect_realize(move |root| {
+        let Some(window) = root.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        if installed.borrow().upgrade().as_ref() == Some(&window) {
+            return;
+        }
+        installed.borrow().set(Some(&window));
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let pressed = weak.clone();
+        keys.connect_key_pressed(move |keys, key, _, modifiers| match pressed.upgrade() {
+            Some(surface) if surface.input_paused.get() => glib::Propagation::Stop,
+            Some(surface) if hold_gdk_key(&surface, key, modifiers, keys.current_event()) => {
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
+        window.add_controller(keys);
+    });
+}
+
+pub(crate) fn hold_shortcut_event(surface: &Rc<Surface>, event: &gtk::gdk::Event) -> bool {
+    let Some(key_event) = event.downcast_ref::<gtk::gdk::KeyEvent>() else {
+        return false;
+    };
+    hold_gdk_key(
+        surface,
+        key_event.keyval(),
+        event.modifier_state(),
+        Some(event.clone()),
+    )
+}
+
+fn hold_gdk_key(
+    surface: &Rc<Surface>,
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+    event: Option<gtk::gdk::Event>,
+) -> bool {
+    if is_modifier_key(key) {
+        return false;
+    }
+    let mods = modifiers
+        & (gtk::gdk::ModifierType::CONTROL_MASK
+            | gtk::gdk::ModifierType::ALT_MASK
+            | gtk::gdk::ModifierType::SHIFT_MASK
+            | gtk::gdk::ModifierType::SUPER_MASK);
+    if key == gtk::gdk::Key::Escape && mods.is_empty() {
+        if !composing_focused(surface) {
+            disarm(surface);
+        }
+        return false;
+    }
+    queue_if_unsettled(surface, || Held::GdkKey {
+        key,
+        modifiers,
+        event,
+    })
+}
+
+fn is_modifier_key(key: gtk::gdk::Key) -> bool {
+    use gtk::gdk::Key as K;
+    matches!(
+        key,
+        K::Shift_L
+            | K::Shift_R
+            | K::Control_L
+            | K::Control_R
+            | K::Alt_L
+            | K::Alt_R
+            | K::Meta_L
+            | K::Meta_R
+            | K::Super_L
+            | K::Super_R
+            | K::Hyper_L
+            | K::Hyper_R
+            | K::ISO_Level3_Shift
+            | K::ISO_Level5_Shift
+            | K::Caps_Lock
+            | K::Shift_Lock
+            | K::Num_Lock
+            | K::Scroll_Lock
+    )
+}
+
+fn enter_changing(surface: &Surface) {
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().changing += 1;
+    });
+}
+
+fn leave_changing(surface: &Surface) {
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.changing = focus.changing.saturating_sub(1);
+        }
+    });
+}
+
+fn is_changing(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.changing > 0)
+    })
+}
+
+pub(crate) fn is_replaying(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.replaying)
+    })
+}
+
+pub(crate) fn begin_batch(surface: &Surface) {
+    enter_changing(surface);
+}
+
+pub(crate) fn end_batch(surface: &Rc<Surface>) {
+    leave_changing(surface);
+    if is_armed(surface) && !is_changing(surface) && !behind(surface) {
+        flush_pending(surface);
+        maybe_disarm(surface);
+    }
+}
+
+pub(crate) fn arm(surface: &Surface) {
+    let after = surface.events_sent();
+    FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let focus = map.entry(surface.key()).or_default();
+        focus.armed = true;
+        focus.after = after;
+    });
+}
+
+pub(crate) fn disarm(surface: &Surface) {
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.pending.clear();
+            focus.armed = false;
+        }
+    });
+}
+
+fn maybe_disarm(surface: &Surface) {
+    if !behind(surface)
+        && !has_pending(surface)
+        && !has_pending_auto_focus(surface)
+        && !is_changing(surface)
+    {
+        disarm(surface);
+    }
+}
+
+fn is_armed(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| focus.changing > 0 || focus.armed)
+    })
+}
+
+pub(crate) fn has_pending(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow()
+            .get(&surface.key())
+            .is_some_and(|focus| !focus.pending.is_empty())
+    })
+}
+
+fn register_auto_focus(surface: &Surface, input: &Rc<InputState>) {
+    FOCUS.with(|f| {
+        let mut map = f.borrow_mut();
+        let focus = map.entry(surface.key()).or_default();
+        focus.auto_focus.retain(|w| w.upgrade().is_some());
+        focus.auto_focus.push(Rc::downgrade(input));
+    });
+}
+
+pub(crate) fn has_pending_auto_focus(surface: &Surface) -> bool {
+    FOCUS.with(|f| {
+        f.borrow().get(&surface.key()).is_some_and(|focus| {
+            focus.auto_focus.iter().any(|weak| {
+                weak.upgrade()
+                    .is_some_and(|input| input.auto_focus.borrow().is_some())
+            })
+        })
+    })
+}
+
+fn behind(surface: &Surface) -> bool {
+    let after = FOCUS.with(|f| f.borrow().get(&surface.key()).map_or(0, |f| f.after));
+    surface.events_handled() < after
+}
+
+pub(crate) fn engine_caught_up(surface: &Rc<Surface>) {
+    if is_armed(surface) && !is_changing(surface) && !behind(surface) {
+        flush_pending(surface);
+        maybe_disarm(surface);
+    }
+}
+
+pub(crate) fn stopped(surface: &Surface) {
+    FOCUS.with(|f| {
+        f.borrow_mut().remove(&surface.key());
+    });
+}
+
+pub(crate) fn disposed(key: u64) {
+    let _ = FOCUS.try_with(|f| {
+        f.borrow_mut().remove(&key);
+    });
+}
+
+fn cancel_auto_focus(view: &NshView) {
+    let input = view.state().input.clone();
+    if let Some(input) = input
+        && let Some((widget, handler)) = input.auto_focus.borrow_mut().take()
+    {
+        widget.disconnect(handler);
+    }
+    for child in view.child_views() {
+        cancel_auto_focus(&child);
+    }
+}
+
+pub(crate) fn removing(surface: &Surface, view: &NshView) {
+    cancel_auto_focus(view);
+    if let Some(focused) = focused_input_view(surface)
+        && (focused == *view || focused.is_ancestor(view))
+    {
+        enter_changing(surface);
+        blur(&focused);
+        arm(surface);
+        leave_changing(surface);
+    }
+}
+
+fn focused_input_view(surface: &Surface) -> Option<NshView> {
+    let root = surface.root.upcast_ref::<gtk::Widget>();
+    let mut focus = root.root()?.focus()?;
+    if !(focus == *root || focus.is_ancestor(root)) {
+        return None;
+    }
+    loop {
+        if let Some(view) = focus.downcast_ref::<NshView>()
+            && view.state().input.is_some()
+        {
+            return Some(view.clone());
+        }
+        if focus == *root {
+            return None;
+        }
+        focus = focus.parent()?;
+    }
+}
+
+fn wants_text(surface: &Surface) -> bool {
+    focused_input_view(surface)
+        .and_then(|view| view.state().input.clone())
+        .is_some_and(|input| input.config.borrow().editable)
+}
+
+pub(crate) fn composing_focused(surface: &Surface) -> bool {
+    focused_input_view(surface)
+        .and_then(|view| view.state().input.clone())
+        .is_some_and(|input| input.composition.borrow().is_some())
+}
+
+pub(crate) fn escape_composing(surface: &Surface) -> bool {
+    let Some(view) = focused_input_view(surface) else {
+        return false;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return false;
+    };
+    if input.composition.borrow().is_none() {
+        return false;
+    }
+    if let Some(cx) = input.cx.get() {
+        cx.cancel_composition();
+    }
+    true
+}
+
+fn queue_if_unsettled(surface: &Surface, operation: impl FnOnce() -> Held) -> bool {
+    if is_replaying(surface) || !is_armed(surface) {
+        return false;
+    }
+    if !is_changing(surface)
+        && !has_pending(surface)
+        && !has_pending_auto_focus(surface)
+        && !behind(surface)
+    {
+        disarm(surface);
+        return false;
+    }
+    FOCUS.with(|f| {
+        f.borrow_mut()
+            .entry(surface.key())
+            .or_default()
+            .pending
+            .push_back(operation());
+    });
+    true
+}
+
+fn flush_pending(surface: &Rc<Surface>) {
+    if is_replaying(surface) {
+        return;
+    }
+    FOCUS.with(|f| {
+        f.borrow_mut().entry(surface.key()).or_default().replaying = true;
+    });
+    loop {
+        if behind(surface) || has_pending_auto_focus(surface) || is_changing(surface) {
+            break;
+        }
+        let next = FOCUS.with(|f| {
+            f.borrow_mut()
+                .get_mut(&surface.key())
+                .and_then(|focus| focus.pending.pop_front())
+        });
+        let Some(next) = next else {
+            break;
+        };
+        let needs_editable = match &next {
+            Held::PasteEvent(_) => true,
+            Held::GdkKey { .. } => false,
+            #[cfg(any(feature = "dev", test))]
+            Held::Text(_) | Held::Enter | Held::Backspace | Held::SelectAll => true,
+            #[cfg(any(feature = "dev", test))]
+            Held::Keystroke(_) => false,
+        };
+        if needs_editable && !wants_text(surface) {
+            if is_armed(surface) {
+                FOCUS.with(|f| {
+                    f.borrow_mut()
+                        .entry(surface.key())
+                        .or_default()
+                        .pending
+                        .push_front(next);
+                });
+            }
+            break;
+        }
+        match next {
+            Held::GdkKey {
+                key,
+                modifiers,
+                event,
+            } => replay_gdk_key(surface, key, modifiers, event),
+            Held::PasteEvent(paste) => {
+                if let Some(view) = focused_input_view(surface) {
+                    apply_paste_to_view(surface, &view, paste);
+                }
+            }
+            #[cfg(any(feature = "dev", test))]
+            Held::Keystroke(stroke) => press_keystroke_now(surface, stroke),
+            #[cfg(any(feature = "dev", test))]
+            Held::Text(text) => type_text_now(surface, &text),
+            #[cfg(any(feature = "dev", test))]
+            Held::Enter => enter_now(surface),
+            #[cfg(any(feature = "dev", test))]
+            Held::Backspace => backspace_now(surface),
+            #[cfg(any(feature = "dev", test))]
+            Held::SelectAll => select_all_now(surface),
+        }
+    }
+    FOCUS.with(|f| {
+        if let Some(focus) = f.borrow_mut().get_mut(&surface.key()) {
+            focus.replaying = false;
+        }
+    });
+}
+
+fn apply_paste_to_view(surface: &Rc<Surface>, view: &NshView, paste: nsh_core::PasteEvent) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    if !input.config.borrow().editable {
+        return;
+    }
+    let reports = view.state().events.contains(EventKind::Paste);
+    let inserts = input.config.borrow().paste_behavior == nsh_core::PasteBehavior::Insert;
+    let text = inserts.then(|| paste.text.clone());
+    if reports {
+        surface.event(
+            view.id(),
+            EventKind::Paste,
+            EventPayload::Paste(Box::new(paste)),
+        );
+    }
+    if let Some(text) = text.filter(|text| !text.is_empty()) {
+        input.pasting.set(true);
+        let editor = input.editor.borrow().clone();
+        match editor {
+            Editor::Line(field) => {
+                let (start, end) = field.selection_bounds().unwrap_or_else(|| {
+                    let position = field.position();
+                    (position, position)
+                });
+                field.delete_text(start, end);
+                let mut position = start;
+                field.insert_text(&text, &mut position);
+                field.set_position(position);
+            }
+            Editor::Area { view, .. } => {
+                let buffer = view.buffer();
+                buffer.begin_user_action();
+                buffer.delete_selection(true, true);
+                buffer.insert_at_cursor(&text);
+                buffer.end_user_action();
+            }
+        }
+        input.pasting.set(false);
+        if let Some(cx) = input.cx.get() {
+            cx.flush_change();
+        }
+    }
+}
+
+fn replay_gdk_key(
+    surface: &Rc<Surface>,
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+    event: Option<gtk::gdk::Event>,
+) {
+    if let Some(ref event) = event
+        && crate::keymap::press_gdk(surface, event)
+    {
+        return;
+    }
+    if dispatch_editor_key(surface, key, modifiers) {
+        return;
+    }
+    if crate::scroll::key_pressed(surface, key, modifiers)
+        || crate::navigation::key_pressed(surface, key, modifiers)
+    {
+        return;
+    }
+    let _ = crate::keymap::unhandled(surface, event.as_ref());
+}
+
+fn dispatch_editor_key(
+    surface: &Rc<Surface>,
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+) -> bool {
+    let Some(view) = focused_input_view(surface) else {
+        return false;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return false;
+    };
+    let Some(cx) = input.cx.get().cloned() else {
+        return false;
+    };
+    let (editable, submit) = {
+        let config = input.config.borrow();
+        (config.editable, config.submit())
+    };
+    let m = modifiers
+        & (gtk::gdk::ModifierType::CONTROL_MASK
+            | gtk::gdk::ModifierType::ALT_MASK
+            | gtk::gdk::ModifierType::SUPER_MASK);
+    if key == gtk::gdk::Key::Escape {
+        if input.composition.borrow().is_some() {
+            cx.cancel_composition();
+            return true;
+        }
+        disarm(surface);
+        cx.key_press("Escape");
+        return false;
+    }
+    if m == gtk::gdk::ModifierType::CONTROL_MASK && key.to_lower() == gtk::gdk::Key::a {
+        select_all_in(&input);
+        return true;
+    }
+    if (m == gtk::gdk::ModifierType::CONTROL_MASK && key.to_lower() == gtk::gdk::Key::v)
+        || (modifiers
+            & (gtk::gdk::ModifierType::CONTROL_MASK
+                | gtk::gdk::ModifierType::ALT_MASK
+                | gtk::gdk::ModifierType::SHIFT_MASK
+                | gtk::gdk::ModifierType::SUPER_MASK)
+            == gtk::gdk::ModifierType::SHIFT_MASK
+            && key == gtk::gdk::Key::Insert)
+    {
+        let widget = input.editor.borrow().widget();
+        let _ = cx.pasting(&widget);
+        return true;
+    }
+    if !editable {
+        return false;
+    }
+    if is_return(key) && m.is_empty() {
+        enter_in(&input, &cx, submit, modifiers);
+        return true;
+    }
+    if key == gtk::gdk::Key::BackSpace && m.is_empty() {
+        backspace_in(&input, &cx);
+        return true;
+    }
+    if matches!(key, gtk::gdk::Key::Delete | gtk::gdk::Key::KP_Delete) && m.is_empty() {
+        delete_forward_in(&input);
+        return true;
+    }
+    if types(key, modifiers)
+        && let Some(ch) = key.to_unicode().filter(|c| !c.is_control())
+    {
+        input.key.set(Some((key, modifiers)));
+        insert_typed_in(&input, &ch.to_string());
+        input.key.set(None);
+        return true;
+    }
+    false
+}
+
+fn insert_typed_in(input: &InputState, text: &str) {
+    let editor = input.editor.borrow().clone();
+    match editor {
+        Editor::Line(t) => {
+            let (start, end) = t.selection_bounds().unwrap_or_else(|| {
+                let p = t.position();
+                (p, p)
+            });
+            if start != end {
+                t.delete_text(start, end);
+            }
+            let mut pos = start;
+            t.insert_text(text, &mut pos);
+            t.set_position(pos);
+        }
+        Editor::Area { view, .. } => {
+            let b = view.buffer();
+            b.delete_selection(true, true);
+            b.insert_interactive_at_cursor(text, true);
+        }
+    }
+}
+
+fn select_all_in(input: &InputState) {
+    let editor = input.editor.borrow().clone();
+    match editor {
+        Editor::Line(t) => t.select_region(0, -1),
+        Editor::Area { view, .. } => {
+            let b = view.buffer();
+            b.select_range(&b.start_iter(), &b.end_iter());
+        }
+    }
+}
+
+fn enter_in(
+    input: &InputState,
+    cx: &Ctx,
+    submit: SubmitBehavior,
+    modifiers: gtk::gdk::ModifierType,
+) {
+    let editor = input.editor.borrow().clone();
+    match editor {
+        Editor::Line(t) => {
+            t.emit_by_name::<()>("activate", &[]);
+        }
+        Editor::Area { view, .. } => {
+            if submits(submit, modifiers) {
+                cx.submitted();
+            } else {
+                let b = view.buffer();
+                input.key.set(Some((gtk::gdk::Key::Return, modifiers)));
+                b.delete_selection(true, true);
+                b.insert_interactive_at_cursor("\n", true);
+                input.key.set(None);
+            }
+        }
+    }
+}
+
+fn backspace_in(input: &InputState, cx: &Ctx) {
+    let editor = input.editor.borrow().clone();
+    if editor.is_empty() {
+        cx.key_press("Backspace");
+        return;
+    }
+    match editor {
+        Editor::Line(t) => t.emit_by_name::<()>("backspace", &[]),
+        Editor::Area { view, .. } => view.emit_by_name::<()>("backspace", &[]),
+    }
+}
+
+fn delete_forward_in(input: &InputState) {
+    let editor = input.editor.borrow().clone();
+    match editor {
+        Editor::Line(t) => {
+            t.emit_by_name::<()>("delete-from-cursor", &[&gtk::DeleteType::Chars, &1i32]);
+        }
+        Editor::Area { view, .. } => {
+            view.emit_by_name::<()>("delete-from-cursor", &[&gtk::DeleteType::Chars, &1i32]);
+        }
+    }
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn type_text_on(surface: &Rc<Surface>, text: &str) {
+    let owned = text.to_owned();
+    if queue_if_unsettled(surface, || Held::Text(owned)) {
+        return;
+    }
+    type_text_now(surface, text);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn key_from_char(ch: char) -> gtk::gdk::Key {
+    if ch == '\n' {
+        return gtk::gdk::Key::Return;
+    }
+    let keyval = gtk::gdk::unicode_to_keyval(u32::from(ch));
+    // SAFETY: `gdk::Key` is a transparent `u32` keyval wrapper (`Key(u32)`),
+    // and `gdk_unicode_to_keyval` returns the GDK keyval for `ch`.
+    unsafe { glib::translate::from_glib(keyval) }
+}
+
+#[cfg(any(feature = "dev", test))]
+fn type_text_now(surface: &Surface, text: &str) {
+    let Some(view) = focused_input_view(surface) else {
+        log::warn!("test: no focused text field to type into");
+        return;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    if !input.config.borrow().editable {
+        return;
+    }
+    if let Some(ch) = text.chars().next() {
+        input
+            .key
+            .set(Some((key_from_char(ch), gtk::gdk::ModifierType::empty())));
+    }
+    insert_typed_in(&input, text);
+    input.key.set(None);
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn enter_on(surface: &Rc<Surface>) {
+    if queue_if_unsettled(surface, || Held::Enter) {
+        return;
+    }
+    enter_now(surface);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn enter_now(surface: &Surface) {
+    let Some(view) = focused_input_view(surface) else {
+        log::warn!("test: no focused text field to press Return in");
+        return;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let (editable, submit) = {
+        let config = input.config.borrow();
+        (config.editable, config.submit())
+    };
+    if !editable {
+        return;
+    }
+    if let Some(cx) = input.cx.get() {
+        enter_in(&input, cx, submit, gtk::gdk::ModifierType::empty());
+    }
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn backspace_on(surface: &Rc<Surface>) {
+    if queue_if_unsettled(surface, || Held::Backspace) {
+        return;
+    }
+    backspace_now(surface);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn backspace_now(surface: &Surface) {
+    let Some(view) = focused_input_view(surface) else {
+        log::warn!("test: no focused text field to press Backspace in");
+        return;
+    };
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    if !input.config.borrow().editable {
+        return;
+    }
+    if let Some(cx) = input.cx.get() {
+        backspace_in(&input, cx);
+    }
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn select_all_on(surface: &Rc<Surface>) {
+    if queue_if_unsettled(surface, || Held::SelectAll) {
+        return;
+    }
+    select_all_now(surface);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn select_all_now(surface: &Surface) {
+    let Some(view) = focused_input_view(surface) else {
+        log::warn!("test: no focused text field to select in");
+        return;
+    };
+    if let Some(input) = view.state().input.clone() {
+        select_all_in(&input);
+    }
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn paste_into_focused(
+    surface: &Rc<Surface>,
+    content: nsh_core::PasteEvent,
+) -> Result<(), String> {
+    if queue_if_unsettled(surface, || Held::PasteEvent(content.clone())) {
+        return Ok(());
+    }
+    let view = focused_input_view(surface).ok_or("no focused input to paste into")?;
+    apply_paste_to_view(surface, &view, content);
+    Ok(())
+}
+
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn press_keystroke(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystroke) {
+    let m = stroke.modifiers;
+    if stroke.key == nsh_core::keymap::Key::Escape && !(m.ctrl || m.alt || m.shift || m.cmd) {
+        if !composing_focused(surface) {
+            disarm(surface);
+        }
+        press_keystroke_now(surface, stroke);
+        return;
+    }
+    if queue_if_unsettled(surface, || Held::Keystroke(stroke)) {
+        return;
+    }
+    press_keystroke_now(surface, stroke);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn press_keystroke_now(surface: &Rc<Surface>, stroke: nsh_core::keymap::Keystroke) {
+    use gtk::gdk;
+    use nsh_core::keymap::Key as K;
+    if crate::keymap::press(surface, stroke) {
+        return;
+    }
+    let m = stroke.modifiers;
+    let plain = !(m.ctrl || m.alt || m.cmd);
+    let mut modifiers = gdk::ModifierType::empty();
+    for (on, mask) in [
+        (m.ctrl, gdk::ModifierType::CONTROL_MASK),
+        (m.alt, gdk::ModifierType::ALT_MASK),
+        (m.shift, gdk::ModifierType::SHIFT_MASK),
+        (m.cmd, gdk::ModifierType::SUPER_MASK),
+    ] {
+        if on {
+            modifiers |= mask;
+        }
+    }
+    match stroke.key {
+        K::Enter if plain && wants_text(surface) => {
+            enter_now(surface);
+            return;
+        }
+        K::Backspace if plain && wants_text(surface) => {
+            backspace_now(surface);
+            return;
+        }
+        K::Delete if plain && wants_text(surface) => {
+            if let Some(view) = focused_input_view(surface)
+                && let Some(input) = view.state().input.clone()
+            {
+                delete_forward_in(&input);
+            }
+            return;
+        }
+        K::Char('a') if m.ctrl && !m.alt && !m.cmd && focused_input_view(surface).is_some() => {
+            select_all_now(surface);
+            return;
+        }
+        K::Char(c) if plain && wants_text(surface) => {
+            let c = if m.shift { shifted_us(c) } else { c };
+            type_text_now(surface, &c.to_string());
+            return;
+        }
+        K::Escape => {
+            if let Some(view) = focused_input_view(surface)
+                && let Some(input) = view.state().input.clone()
+            {
+                if input.composition.borrow().is_some() {
+                    if let Some(cx) = input.cx.get() {
+                        cx.cancel_composition();
+                    }
+                    return;
+                }
+                disarm(surface);
+                if let Some(cx) = input.cx.get() {
+                    cx.key_press("Escape");
+                }
+            }
+            if crate::navigation::key_pressed(surface, gdk::Key::Escape, modifiers) {
+                return;
+            }
+        }
+        _ => {
+            let gdk_key = match stroke.key {
+                K::Up => Some(gdk::Key::Up),
+                K::Down => Some(gdk::Key::Down),
+                K::Left => Some(gdk::Key::Left),
+                K::Right => Some(gdk::Key::Right),
+                K::PageUp => Some(gdk::Key::Page_Up),
+                K::PageDown => Some(gdk::Key::Page_Down),
+                K::Home => Some(gdk::Key::Home),
+                K::End => Some(gdk::Key::End),
+                K::Char(' ') => Some(gdk::Key::space),
+                _ => None,
+            };
+            if let Some(key) = gdk_key
+                && (crate::scroll::key_pressed(surface, key, modifiers)
+                    || crate::navigation::key_pressed(surface, key, modifiers))
+            {
+                return;
+            }
+        }
+    }
+    let _ = crate::keymap::press_fallback(surface, stroke);
+}
+
+#[cfg(any(feature = "dev", test))]
+fn shifted_us(c: char) -> char {
+    const PAIRS: [(char, char); 21] = [
+        ('1', '!'),
+        ('2', '@'),
+        ('3', '#'),
+        ('4', '$'),
+        ('5', '%'),
+        ('6', '^'),
+        ('7', '&'),
+        ('8', '*'),
+        ('9', '('),
+        ('0', ')'),
+        ('-', '_'),
+        ('=', '+'),
+        ('[', '{'),
+        (']', '}'),
+        ('\\', '|'),
+        (';', ':'),
+        ('\'', '"'),
+        (',', '<'),
+        ('.', '>'),
+        ('/', '?'),
+        ('`', '~'),
+    ];
+    PAIRS
+        .iter()
+        .find(|(plain, _)| *plain == c)
+        .map_or(c.to_ascii_uppercase(), |(_, up)| *up)
 }
 
 #[cfg(test)]
@@ -1722,5 +2896,418 @@ mod tests {
         assert_eq!(xalign(TextAlign::Auto, false), 0.0);
         assert_eq!(xalign(TextAlign::Auto, true), 1.0);
         assert_eq!(xalign(TextAlign::Center, true), 0.5);
+    }
+
+    #[cfg(feature = "js")]
+    fn start_js_app(
+        source: &str,
+    ) -> (
+        gtk::Window,
+        Rc<crate::AppView>,
+        crossbeam_channel::Receiver<serde_json::Value>,
+    ) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let view = crate::AppView::new(crate::AppOptions::default());
+        view.host().handle("log", move |mut call| {
+            let _ = tx.send(call.take_data());
+        });
+        let mut bundle = nsh_engine::Bundle::source(source.into());
+        bundle.policy.declared = Some(
+            nsh_core::access::Capabilities::from_json(&serde_json::json!({ "host": true }))
+                .expect("capabilities"),
+        );
+        let window = gtk::Window::new();
+        window.set_default_size(320, 240);
+        window.set_child(Some(&view.widget()));
+        window.present();
+        view.load(nsh_engine::App::Js(bundle));
+        (window, view, rx)
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn focus_scoped_and_fallback_keybindings() {
+        crate::gtk_test::run(|| {
+            use nsh_core::{keymap::Keystroke, platform::Os};
+            let (window, view, rx) = start_js_app(
+                r#"import { host, keymap, mount } from "nsh";
+                import { append, element, prop } from "nsh:rt";
+                const root = element("view");
+                prop(root, "style", { width: 300, height: 220 });
+                const scopeA = element("view");
+                prop(scopeA, "style", { width: 280, height: 40 });
+                const inputA = element("input");
+                prop(inputA, "testID", "input-a");
+                prop(inputA, "style", { width: 200, height: 32 });
+                prop(inputA, "value", "alpha");
+                prop(inputA, "autoFocus", true);
+                append(scopeA, inputA);
+
+                const scopeB = element("view");
+                prop(scopeB, "style", { width: 280, height: 40 });
+                const inputB = element("input");
+                prop(inputB, "testID", "input-b");
+                prop(inputB, "style", { width: 200, height: 32 });
+                prop(inputB, "value", "b😀ta");
+                prop(inputB, "maxLength", 6);
+                prop(inputB, "onChange", (e) => host.post("log", `b:${e.value}`));
+                append(scopeB, inputB);
+
+                const stopScope = element("view");
+                prop(stopScope, "style", { width: 280, height: 40 });
+                const stop = element("view");
+                prop(stop, "testID", "stop");
+                prop(stop, "focusable", true);
+                prop(stop, "style", { width: 120, height: 28 });
+                append(stopScope, stop);
+
+                append(root, scopeA);
+                append(root, scopeB);
+                append(root, stopScope);
+
+                keymap.bind("f5", () => inputB.replaceRange({
+                  start: 1,
+                  end: 3,
+                  text: "WXYZ",
+                  expectedText: "b😀ta",
+                  expectedSelection: { start: 5, end: 5 },
+                }), { when: "always", within: scopeB });
+                keymap.bind("f6", () => host.post("log", "root"), { when: "always" });
+                keymap.bind("f6", () => host.post("log", "scope:a"), { when: "always", within: scopeA });
+                keymap.bind("f6", () => host.post("log", "scope:b"), { when: "always", within: scopeB });
+                keymap.bind("f7", () => inputB.focus(), { when: "always" });
+                keymap.bind("f8", () => stop.focus(), { when: "always" });
+                keymap.bind("d", () => host.post("log", "stop:d"), { when: "notEditing", within: stopScope });
+                keymap.bind("down", () => host.post("log", "fallback:down"), { when: "always", fallback: true });
+                keymap.bind("backspace", () => host.post("log", "fallback:backspace"), { when: "always", fallback: true });
+
+                mount(() => root);
+                host.post("log", "mounted");"#,
+            );
+            let surface = view.surface().clone();
+            let mut logs = Vec::new();
+            let drain_logs = |logs: &mut Vec<String>| {
+                while let Ok(v) = rx.try_recv() {
+                    if let Some(s) = v.as_str() {
+                        logs.push(s.to_owned());
+                    }
+                }
+            };
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "mounted")
+                    && surface.mounter.borrow().views.len() > 1
+                    && focused_input_view(&surface).is_some()
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            let f5 = Keystroke::parse("f5", Os::Linux).unwrap();
+            let f6 = Keystroke::parse("f6", Os::Linux).unwrap();
+            let f7 = Keystroke::parse("f7", Os::Linux).unwrap();
+            let f8 = Keystroke::parse("f8", Os::Linux).unwrap();
+            let down = Keystroke::parse("down", Os::Linux).unwrap();
+            let backspace = Keystroke::parse("backspace", Os::Linux).unwrap();
+            let d = Keystroke::parse("d", Os::Linux).unwrap();
+
+            press_keystroke(&surface, f6);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "scope:a")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            // Unhandled Down in a single-line input reaches fallback; Backspace edits text instead.
+            press_keystroke(&surface, down);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "fallback:down")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+            let focused_a = focused_input_view(&surface).expect("input-a focused");
+            press_keystroke(&surface, backspace);
+            assert!(crate::gtk_test::wait_until(|| {
+                current_text(&focused_a).as_deref() == Some("alph")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            drain_logs(&mut logs);
+            assert!(logs.is_empty());
+
+            // Move focus to inputB and immediately press f6: scope:b wins over scope:a and root.
+            press_keystroke(&surface, f7);
+            press_keystroke(&surface, f6);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "scope:b")
+                    && focused_input_view(&surface).is_some()
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            // Scoped replaceRange replaces UTF-16 emoji range and clips to maxLength=6 ("bWXYta").
+            let focused_b = focused_input_view(&surface).expect("input-b focused");
+            set_selection(&focused_b, 5, 5);
+            press_keystroke(&surface, f5);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "b:bWXYta")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            // Focus non-input focusable view via Command::Focus: notEditing within-scoped 'd' fires.
+            press_keystroke(&surface, f8);
+            press_keystroke(&surface, d);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "stop:d")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            // Blurred: unscoped root f6 fires while within-scoped bindings do not.
+            blur_all(&surface);
+            press_keystroke(&surface, f6);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "root")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+
+            view.stop();
+            window.destroy();
+        });
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn composing_escape_cancels_preedit_before_leaving_field_or_closing_modal() {
+        crate::gtk_test::run(|| {
+            use nsh_core::{keymap::Keystroke, platform::Os};
+            let (window, view, rx) = start_js_app(
+                r#"import { host, keymap, mount, signal } from "nsh";
+                import { Dialog } from "nsh/base";
+                import { append, component, cond, element, insert, prop } from "nsh:rt";
+                const open = signal(true);
+                const root = element("view");
+                prop(root, "style", { width: 300, height: 220 });
+                let unbind = () => {};
+                keymap.bind("f2", () => { unbind(); unbind = () => {}; host.post("log", "unbound"); }, { when: "always" });
+                insert(root, cond(() => open(), () => {
+                  const box = element("view");
+                  prop(box, "style", { width: 240, height: 120 });
+                  const input = element("input");
+                  prop(input, "autoFocus", true);
+                  prop(input, "style", { width: 200, height: 32 });
+                  prop(input, "onKeyPress", (e) => host.post("log", `key:${e.key}`));
+                  prop(input, "onCompositionChange", (e) => host.post("log", `comp:${e.composing}:${e.text}`));
+                  append(box, input);
+                  unbind = keymap.bind("escape", () => host.post("log", "shortcut:escape"), { when: "always", within: box });
+                  return component(Dialog, {
+                    open: true,
+                    animation: "none",
+                    closeOnEscape: true,
+                    onOpenChange: (e) => {
+                      if (!e.open) {
+                        open.set(false);
+                        host.post("log", "modal:close");
+                      }
+                    },
+                    children: box,
+                  });
+                }));
+                mount(() => root);
+                host.post("log", "ready");"#,
+            );
+            let surface = view.surface().clone();
+            let mut logs = Vec::new();
+            let drain_logs = |logs: &mut Vec<String>| {
+                while let Ok(v) = rx.try_recv() {
+                    if let Some(s) = v.as_str() {
+                        logs.push(s.to_owned());
+                    }
+                }
+            };
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "ready")
+                    && surface.mounter.borrow().views.len() > 1
+                    && focused_input_view(&surface).is_some()
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            let escape = Keystroke::parse("escape", Os::Linux).unwrap();
+            let f2 = Keystroke::parse("f2", Os::Linux).unwrap();
+
+            // 1. With an Escape shortcut bound inside the modal, composing Escape cancels preedit only.
+            let input_view = focused_input_view(&surface).expect("focused modal input");
+            let input_state = input_view.state().input.clone().expect("input state");
+            input_state.cx.get().unwrap().preedit_changed("ni");
+            assert!(composing_focused(&surface));
+            press_keystroke(&surface, escape);
+            assert!(!composing_focused(&surface));
+            assert!(focused_input_view(&surface).is_some());
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "comp:false:")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            assert!(
+                !logs
+                    .iter()
+                    .any(|s| s == "shortcut:escape" || s == "key:Escape" || s == "modal:close")
+            );
+            logs.clear();
+
+            // 2. Unbind the Escape shortcut to verify ordinary 3-step desktop Escape navigation:
+            //    1st Escape cancels preedit, 2nd leaves the input, 3rd closes the modal.
+            press_keystroke(&surface, f2);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "unbound")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            input_state.cx.get().unwrap().preedit_changed("hao");
+            assert!(composing_focused(&surface));
+            press_keystroke(&surface, escape);
+            assert!(!composing_focused(&surface));
+            assert!(focused_input_view(&surface).is_some());
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "comp:false:")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            assert!(!logs.iter().any(|s| s == "key:Escape" || s == "modal:close"));
+            logs.clear();
+
+            press_keystroke(&surface, escape);
+            assert!(focused_input_view(&surface).is_none());
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "key:Escape")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            assert!(!logs.iter().any(|s| s == "modal:close"));
+            logs.clear();
+
+            press_keystroke(&surface, escape);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "modal:close")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+
+            view.stop();
+            window.destroy();
+        });
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn pending_focus_event_holds_keys_paste_and_pause_input_without_queued_text() {
+        crate::gtk_test::run(|| {
+            use nsh_core::{PasteEvent, keymap::Keystroke, platform::Os};
+            let (window, view, rx) = start_js_app(
+                r#"import { host, keymap, mount, signal } from "nsh";
+                import { append, bindProp, each, element, insert, prop } from "nsh:rt";
+                const version = signal(0);
+                const text = signal("");
+                const root = element("view");
+                prop(root, "style", { width: 300, height: 220 });
+                keymap.bind("f8", () => {
+                  const next = version() + 1;
+                  text.set(`seed${next}`);
+                  version.set(next);
+                }, { when: "always" });
+                keymap.bind("f9", () => host.post("log", "noop"), { when: "always" });
+                insert(root, each(() => (version() > 0 ? [version()] : []), (row) => {
+                  const id = row();
+                  const box = element("view");
+                  prop(box, "style", { width: 260, height: 60 });
+                  const input = element("input");
+                  prop(input, "autoFocus", true);
+                  prop(input, "style", { width: 220, height: 32 });
+                  bindProp(input, "value", () => text());
+                  prop(input, "onChange", (e) => { text.set(e.value); host.post("log", `text:${e.value}`); });
+                  append(box, input);
+                  keymap.bind("f6", () => host.post("log", `scoped:${id}`), { when: "always", within: box });
+                  return box;
+                }, (id) => id));
+                mount(() => root);
+                host.post("log", "ready");"#,
+            );
+            let surface = view.surface().clone();
+            let mut logs = Vec::new();
+            let drain_logs = |logs: &mut Vec<String>| {
+                while let Ok(v) = rx.try_recv() {
+                    if let Some(s) = v.as_str() {
+                        logs.push(s.to_owned());
+                    }
+                }
+            };
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "ready")
+                    && surface.mounter.borrow().views.len() > 1
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            let f6 = Keystroke::parse("f6", Os::Linux).unwrap();
+            let f8 = Keystroke::parse("f8", Os::Linux).unwrap();
+            let f9 = Keystroke::parse("f9", Os::Linux).unwrap();
+            let backspace = Keystroke::parse("backspace", Os::Linux).unwrap();
+
+            // 1. Editing key (Backspace) with NO queued text waits for f8's autoFocus input.
+            press_keystroke(&surface, f8);
+            press_keystroke(&surface, backspace);
+            assert!(crate::gtk_test::wait_until(|| {
+                drain_logs(&mut logs);
+                logs.iter().any(|s| s == "text:seed")
+                    && surface.events_handled() >= surface.events_sent()
+            }));
+            logs.clear();
+
+            // 2. Scoped shortcut + SelectAll + Paste + pause_input all wait for in-flight focus transition.
+            blur_all(&surface);
+            press_keystroke(&surface, f8);
+            press_keystroke(&surface, f6);
+            select_all_on(&surface);
+            paste_into_focused(&surface, PasteEvent::new("ok")).expect("queued paste");
+            let (pause_tx, pause_rx) = crossbeam_channel::bounded(1);
+            view.pause_input(move |res| {
+                let _ = pause_tx.send(res);
+            });
+            assert!(crate::gtk_test::wait_until(|| pause_rx.len() == 1));
+            assert_eq!(pause_rx.recv().unwrap(), Ok(()));
+            drain_logs(&mut logs);
+            assert!(logs.iter().any(|s| s == "scoped:2"), "logs: {logs:?}");
+            assert!(logs.iter().any(|s| s == "text:ok"), "logs: {logs:?}");
+            logs.clear();
+
+            // 3. Stranded pending text with no editable target fails pause_input cleanly.
+            view.resume_input();
+            // Unmount or blur so no editable target has focus when f9 finishes.
+            blur_all(&surface);
+            press_keystroke(&surface, f9);
+            type_text_on(&surface, "z");
+            let (err_tx, err_rx) = crossbeam_channel::bounded(1);
+            view.pause_input(move |res| {
+                let _ = err_tx.send(res);
+            });
+            assert!(crate::gtk_test::wait_until(|| err_rx.len() == 1));
+            assert_eq!(
+                err_rx.recv().unwrap(),
+                Err("pending input has no editable focus target".into())
+            );
+
+            view.stop();
+            window.destroy();
+        });
     }
 }

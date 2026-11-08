@@ -1,8 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/gallery-rs/native", "examples/rust-exports/native", "examples/embed-gpui/run"]
-# The GPUI backend is a workspace of its own (`crates/gpui/Cargo.toml`).
-exclude = ["crates/gpui", "third-party/gpui-wgpu", "third-party/icy_sixel"]
+members = ["crates/*", "examples/gallery-rs/native", "examples/rust-exports/native"]
+exclude = ["third-party/icy_sixel"]
 # `cargo run` runs the gallery (`crates/xtask/src/run.rs`).
 default-members = ["crates/xtask"]
 
@@ -27,6 +26,7 @@ private_interfaces = "deny"
 [workspace.dependencies]
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
+nsh-terminal = { version = "0.4.0", path = "crates/nsh-terminal" }
 nsh-core = { version = "0.4.0", path = "crates/nsh-core" }
 nsh-package = { version = "0.4.0", path = "crates/nsh-package" }
 # Without `highlight`: the platforms turn it on, the CLI and the bundler leave it off.
@@ -45,6 +45,7 @@ nsh-platform-tui = { version = "0.4.0", path = "crates/nsh-platform-tui", defaul
 nsh-dev = { version = "0.4.0", path = "crates/nsh-dev" }
 nsh-testing = { version = "0.4.0", path = "crates/nsh-testing", default-features = false }
 
+icy_sixel = "=0.5.1"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4.6", features = ["derive"] }

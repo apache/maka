@@ -63,13 +63,31 @@ impl Drop for KeymapState {
 pub(crate) fn set(surface: &Surface, keymap: Arc<Keymap>) {
     let state = &surface.keymap;
     if keymap.is_empty() {
-        clear(surface);
+        surface.keymap.table.borrow_mut().take();
+        if !crate::text_input::is_armed(surface) {
+            surface.keymap.remove_monitor();
+        }
         return;
     }
     *state.table.borrow_mut() = Some(keymap);
+    ensure_monitor(surface);
+}
+
+/// Ensures the surface's key-down monitor is installed so armed focus fences
+/// see desktop keystrokes even before a keymap table is mounted.
+pub(crate) fn ensure_monitor(surface: &Surface) {
+    let state = &surface.keymap;
     if state.monitor.borrow().is_none() {
         let monitor = install(surface.key());
         *state.monitor.borrow_mut() = monitor;
+    }
+}
+
+/// Removes the local key monitor once neither a keymap table nor an armed
+/// focus fence needs it.
+pub(crate) fn sync_monitor(surface: &Surface) {
+    if surface.keymap.table.borrow().is_none() && !crate::text_input::is_armed(surface) {
+        surface.keymap.remove_monitor();
     }
 }
 
@@ -97,17 +115,33 @@ fn install(key: u64) -> Option<Retained<AnyObject>> {
 /// window that is not the key window (`nsh test`'s, whose events the
 /// monitor never sees): whether it fired a binding (then it is reported to
 /// JS, and the window must not get it).
-#[cfg(feature = "dev")]
+#[cfg(any(feature = "dev", feature = "terminal"))]
 pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
-    pressed(surface, event)
+    fires_now(surface, event)
 }
 
 /// Whether key-down `event` fired one of the surface's ordinary bindings
-/// (then it is reported to JS and consumed).
-fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+/// without re-checking the focus-settle fence.
+pub(crate) fn fires_now(surface: &Rc<Surface>, event: &NSEvent) -> bool {
     *surface.keymap.key.borrow_mut() = Some(event.into());
     crate::input::control_activation_target(surface, event).is_none()
         && matched(surface, event, false)
+}
+
+/// Whether key-down `event` was held by an unsettled focus fence or fired
+/// one of the surface's ordinary bindings.
+fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+    if crate::text_input::is_replaying(surface) {
+        return false;
+    }
+    let Some(window) = surface.root.ns().window() else {
+        return false;
+    };
+    if event.window(surface.mtm).as_deref() != Some(&*window) || editing(surface, &window).is_none()
+    {
+        return false;
+    }
+    crate::text_input::hold_nsevent(surface, event) || fires_now(surface, event)
 }
 
 /// Whether key-down `event`, which the focused view, field, selection and
@@ -143,6 +177,9 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
     if cfg!(feature = "dev") && keystroke.reloads(Os::MacOs) {
         return false;
     }
+    if keystroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
+        return false;
+    }
     let path = crate::input::focus_path(surface);
     let within = |id| path.contains(&id);
     let repeat = event.isARepeat();
@@ -157,6 +194,9 @@ fn matched(surface: &Rc<Surface>, event: &NSEvent, fallback: bool) -> bool {
             EventKind::KeyCommand,
             EventPayload::Value(PayloadValue::Number(id as f64)),
         );
+        if keystroke.key != Key::Escape {
+            crate::text_input::arm(surface);
+        }
     }
     found.consumed()
 }
@@ -180,7 +220,7 @@ fn editing(surface: &Surface, window: &NSWindow) -> Option<bool> {
 }
 
 /// The keystroke of `event`, by its key on the US layout.
-fn keystroke(event: &NSEvent) -> Option<Keystroke> {
+pub(crate) fn keystroke(event: &NSEvent) -> Option<Keystroke> {
     let flags = event.modifierFlags();
     let modifiers = Modifiers {
         ctrl: flags.contains(NSEventModifierFlags::Control),
@@ -231,7 +271,7 @@ fn character(event: &NSEvent, shift: bool) -> Option<char> {
 }
 
 /// F1 to F20, by virtual key code.
-fn function_key(code: u16) -> Option<u8> {
+pub(crate) fn function_key(code: u16) -> Option<u8> {
     const KEYS: [u16; 20] = [
         122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
     ];

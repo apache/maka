@@ -371,6 +371,10 @@ thread_local! {
     static POOL: RefCell<Pool> = RefCell::new(Pool::default());
 }
 
+pub(crate) fn clear_thread_cache() {
+    let _ = POOL.try_with(|p| *p.borrow_mut() = Pool::default());
+}
+
 /// Replays `ops` into a new command list; the ones before `from` only set
 /// the state (they are painted by another list).
 fn record(

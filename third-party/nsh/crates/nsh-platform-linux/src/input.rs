@@ -410,7 +410,8 @@ pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
         .filter(|view| !inside(view))
         .cloned()
         .collect();
-    set_hovered(surface, hovered);
+    let (x, y) = input.last.get().unwrap_or_default();
+    set_hovered(surface, hovered, x, y);
 }
 
 /// `TrackStates`.

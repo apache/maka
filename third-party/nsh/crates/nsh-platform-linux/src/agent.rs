@@ -205,15 +205,16 @@ impl Native for LinuxNative {
     fn type_text(&self, text: &str) {
         // Key by key, as a keyboard's characters come.
         for ch in text.chars() {
-            self.with_window(move |_, w| synth::type_text(w, &ch.to_string()));
+            let s = ch.to_string();
+            self.on_main(move |surface| crate::text_input::type_text_on(surface, &s));
         }
     }
 
     fn key(&self, key: Key) {
-        self.with_window(move |_, w| match key {
-            Key::Return => synth::enter(w),
-            Key::Backspace => synth::backspace(w),
-            Key::SelectAll => synth::select_all(w),
+        self.on_main(move |surface| match key {
+            Key::Return => crate::text_input::enter_on(surface),
+            Key::Backspace => crate::text_input::backspace_on(surface),
+            Key::SelectAll => crate::text_input::select_all_on(surface),
         });
     }
 
@@ -265,58 +266,10 @@ impl Native for LinuxNative {
     }
 
     fn press_keys(&self, keys: &str) -> Result<(), String> {
-        use nsh_core::keymap::{Key as K, Keystroke};
+        use nsh_core::keymap::Keystroke;
         let stroke =
             Keystroke::parse(keys, nsh_core::platform::Os::Linux).map_err(|e| e.to_string())?;
-        // The app's shortcuts first, as GTK's shortcut controller (capture
-        // phase) runs before the focus.
-        if self
-            .on_main(move |surface| crate::keymap::press(surface, stroke))
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
-        let m = stroke.modifiers;
-        let plain = !(m.ctrl || m.alt || m.cmd);
-        let mut modifiers = gdk::ModifierType::empty();
-        for (on, mask) in [
-            (m.ctrl, gdk::ModifierType::CONTROL_MASK),
-            (m.alt, gdk::ModifierType::ALT_MASK),
-            (m.shift, gdk::ModifierType::SHIFT_MASK),
-            (m.cmd, gdk::ModifierType::SUPER_MASK),
-        ] {
-            if on {
-                modifiers |= mask;
-            }
-        }
-        match stroke.key {
-            // The focused field's own keys, through its signals.
-            K::Enter if plain => {
-                self.with_window(|_, w| synth::enter(w));
-            }
-            K::Backspace if plain => {
-                self.with_window(|_, w| synth::backspace(w));
-            }
-            K::Char('a') if m.ctrl && !m.alt && !m.cmd => {
-                self.with_window(|_, w| synth::select_all(w));
-            }
-            K::Char(c) if plain => {
-                let c = if m.shift { shifted(c) } else { c };
-                self.with_window(move |_, w| synth::type_text(w, &c.to_string()));
-            }
-            // The root's keys: going back.
-            K::Escape | K::Left => {
-                let key = if stroke.key == K::Escape {
-                    gdk::Key::Escape
-                } else {
-                    gdk::Key::Left
-                };
-                self.on_main(move |surface| {
-                    crate::navigation::key_pressed(surface, key, modifiers);
-                });
-            }
-            _ => {}
-        }
+        self.on_main(move |surface| crate::text_input::press_keystroke(surface, stroke));
         Ok(())
     }
 
@@ -332,29 +285,9 @@ impl Native for LinuxNative {
     }
 
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
-        // As the user's paste of `content` does (`text_input`'s `pasting`),
-        // without the system's clipboard: reported, then its text inserted
-        // where the input inserts pastes.
         let content = content.clone();
-        self.with_window(move |surface, w| {
-            let field = synth::focused_text(w).ok_or("no focused input to paste into")?;
-            let view = field
-                .ancestor(crate::view::NshView::static_type())
-                .and_then(|v| v.downcast::<crate::view::NshView>().ok())
-                .ok_or("the focused field is no input's")?;
-            if view.state().events.contains(nsh_core::EventKind::Paste) {
-                surface.event(
-                    view.id(),
-                    nsh_core::EventKind::Paste,
-                    nsh_core::EventPayload::Paste(Box::new(content.clone())),
-                );
-            }
-            if crate::text_input::pastes_text(&view) && !content.text.is_empty() {
-                synth::type_text(w, &content.text);
-            }
-            Ok(())
-        })
-        .unwrap_or_else(|| Err("the window is gone".into()))
+        self.on_main(move |surface| crate::text_input::paste_into_focused(surface, content))
+            .unwrap_or_else(|| Err("the window is gone".into()))
     }
 
     fn input_text(&self, id: NodeId) -> Option<String> {
@@ -417,36 +350,4 @@ impl Native for LinuxNative {
     fn quit(&self) {
         self.with_window(|_, w| w.close());
     }
-}
-
-/// The character Shift and `c` type on a US layout, as a keyboard's keys
-/// name them: a letter's capital, a digit's or a symbol's upper sign.
-fn shifted(c: char) -> char {
-    const PAIRS: [(char, char); 21] = [
-        ('1', '!'),
-        ('2', '@'),
-        ('3', '#'),
-        ('4', '$'),
-        ('5', '%'),
-        ('6', '^'),
-        ('7', '&'),
-        ('8', '*'),
-        ('9', '('),
-        ('0', ')'),
-        ('-', '_'),
-        ('=', '+'),
-        ('[', '{'),
-        (']', '}'),
-        ('\\', '|'),
-        (';', ':'),
-        ('\'', '"'),
-        (',', '<'),
-        ('.', '>'),
-        ('/', '?'),
-        ('`', '~'),
-    ];
-    PAIRS
-        .iter()
-        .find(|(plain, _)| *plain == c)
-        .map_or(c.to_ascii_uppercase(), |(_, up)| *up)
 }

@@ -2988,13 +2988,14 @@ mod tests {
         let error = of(&[("a", "nsh-base = \"=0.0.1\"\n".into())]).unwrap_err();
         assert!(error.contains("a asks for nsh-base =0.0.1"), "{error}");
         assert!(error.contains(&format!("nsh-base = \"{this}\"")), "{error}");
-        // By path: the checkout the crates are in, GPUI's a level deeper.
+        // By path: the checkout the crates are in.
         let source = Ok(Nsh::Source(checkout.clone()));
         assert_eq!(of(&[("a", by_path("nsh-core"))]), source);
-        let gpui = by_path("gpui/nsh-platform-gpui")
-            .replace("gpui/nsh-platform-gpui =", "nsh-platform-gpui =");
         assert_eq!(
-            of(&[("a", format!("{}{gpui}", by_path("nsh-base")))]),
+            of(&[(
+                "a",
+                format!("{}{}", by_path("nsh-base"), by_path("nsh-engine"))
+            )]),
             source
         );
         // One place only.

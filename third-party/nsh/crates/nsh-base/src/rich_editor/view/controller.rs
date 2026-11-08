@@ -160,7 +160,7 @@ pub(crate) struct Rv {
     /// A block's frame or a text's lines changed.
     pub(crate) layout_rev: Signal<u64>,
     /// The session has a state the view has not taken yet.
-    notified: Signal<u64>,
+    pub(crate) notified: Signal<u64>,
     pub(crate) focused: Signal<bool>,
     pub(crate) blink: Signal<bool>,
     pub(crate) composition: Signal<Option<String>>,

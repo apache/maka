@@ -21,11 +21,11 @@ use super::super::{
     mapping::Mapping,
     probe::{Capabilities, MouseCoordinates},
 };
-use gpui::{AppContext, Application, Bounds, Focusable, WindowBounds, WindowOptions, point, px};
+use super::TerminalSurface;
 use nsh_core::prelude::*;
 use nsh_engine::{App, Bundle, EngineConfig};
-use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
-use nsh_platform_gpui::{AppOptions, AppView};
+use nsh_terminal::CandidateFrame;
+use nsh_terminal::NativeSurface;
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -57,34 +57,7 @@ impl RailHost {
     }
 }
 
-#[test]
-fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
-    // The GPUI engine queue belongs to the first Application in the process.
-    // Isolate this Application from the native editor's Application in libtest.
-    const CHILD: &str = "MAKA_TURN_RAIL_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                concat!(
-                    module_path!(),
-                    "::every_visible_turn_mark_can_be_clicked_with_cell_coordinates"
-                )
-                .strip_prefix("maka_terminal_shell::")
-                .unwrap(),
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "rail subprocess failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
+pub(super) fn every_visible_turn_mark_can_be_clicked_with_cell_coordinates() {
     let mut host = maka_workbench::bindings::ui_registry();
     host.native_values(&["host"]);
     let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
@@ -113,11 +86,27 @@ fn check_marks(source: &str) {
         synchronized: false,
         sixel_geometry: Default::default(),
     };
-    let viewport = caps.logical_viewport().unwrap();
     let frames = Rc::new(RefCell::new(Vec::<CandidateFrame>::new()));
     let received = frames.clone();
-    let platform = TerminalPlatform::new(
-        Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
+    let active_scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let host_scale = active_scale.clone();
+    let mut host = maka_workbench::bindings::ui_registry();
+    host.value("host", move || {
+        Instance::new(RailHost {
+            active_scale: host_scale.clone(),
+        })
+    });
+    let platform = TerminalSurface::new(
+        EngineConfig {
+            environment: nsh_core::platform::Environment {
+                color_scheme: nsh_core::platform::ColorScheme::Dark,
+                ..Default::default()
+            },
+            ui_sets: vec![nsh_base::registry(), host],
+            ..EngineConfig::new(App::Js(Bundle::source(source.to_owned())))
+        },
+        caps.pixel_size().unwrap(),
+        caps.scale_factor(),
         Box::new(move |frame| {
             received
                 .borrow_mut()
@@ -126,81 +115,45 @@ fn check_marks(source: &str) {
         Arc::new(|| {}),
     )
     .unwrap();
-    let errors = Rc::new(RefCell::new(None));
-    let failed = errors.clone();
-    let source = source.to_owned();
-    let active_scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
-    let host_scale = active_scale.clone();
-    let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(0.0), px(0.0)),
-                    viewport,
-                ))),
-                inactive_frame_interval: None,
-                ..Default::default()
-            },
-            move |window, cx| {
-                cx.new(|cx| {
-                    let view = AppView::new(
-                        AppOptions {
-                            terminal_keyboard: true,
-                            ..Default::default()
-                        },
-                        window,
-                        cx,
-                    );
-                    view.on_error(move |message| *failed.borrow_mut() = Some(message.to_owned()));
-                    let mut host = maka_workbench::bindings::ui_registry();
-                    host.value("host", move || {
-                        Instance::new(RailHost {
-                            active_scale: host_scale.clone(),
-                        })
-                    });
-                    view.load_with_config(EngineConfig {
-                        ui_sets: vec![nsh_base::registry(), host],
-                        ..EngineConfig::new(App::Js(Bundle::source(source)))
-                    });
-                    window.focus(&view.focus_handle(cx), cx);
-                    view
-                })
-            },
-        )
-        .unwrap();
-    });
     for (stage, font_scale) in [1.0f32, 0.8, 0.5, 2.0].into_iter().enumerate() {
         active_scale.store(font_scale.to_bits(), Ordering::Relaxed);
         caps.ui_scale = font_scale;
         platform
             .set_viewport(caps.pixel_size().unwrap(), caps.scale_factor())
             .unwrap();
-        let keystroke = gpui::Keystroke {
-            key: (stage + 1).to_string(),
-            modifiers: gpui::Modifiers {
-                control: true,
-                ..Default::default()
-            },
-            ..Default::default()
+        let keystroke = {
+            let mut value = nsh_terminal::Keystroke::default();
+            value.key = (stage + 1).to_string();
+            value.modifiers = {
+                let mut value = nsh_terminal::Modifiers::default();
+                value.control = true;
+                value
+            };
+            value
         };
         platform
-            .dispatch_input(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: keystroke.clone(),
-                is_held: false,
-                prefer_character_input: false,
+            .dispatch_input(nsh_terminal::PlatformInput::KeyDown({
+                let mut value = nsh_terminal::KeyDownEvent::default();
+                value.keystroke = keystroke.clone();
+                value.is_held = false;
+                value.prefer_character_input = false;
+                value
             }))
             .unwrap();
         platform
-            .dispatch_input(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+            .dispatch_input(nsh_terminal::PlatformInput::KeyUp({
+                let mut value = nsh_terminal::KeyUpEvent::default();
+                value.keystroke = keystroke;
+                value
+            }))
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let marks = loop {
-            platform.pump();
-            assert!(
-                errors.borrow().is_none(),
-                "rail failed to load: {:?}",
-                errors.borrow()
-            );
+            platform.pump_with_draw(true);
+            {
+                let error = platform.take_error();
+                assert!(error.is_none(), "rail failed to load: {:?}", error);
+            }
             let mut found = None;
             for frame in frames.borrow_mut().drain(..) {
                 let width = frame.size().width.0 as usize;
@@ -259,14 +212,13 @@ fn check_marks(source: &str) {
             }
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                platform.pump();
+                platform.pump_with_draw(true);
                 frames.borrow_mut().clear();
-                assert!(
-                    errors.borrow().is_none(),
-                    "rail input failed: {:?}",
-                    errors.borrow()
-                );
-                if let Some(text) = platform.take_clipboard_write().and_then(|item| item.text()) {
+                {
+                    let error = platform.take_error();
+                    assert!(error.is_none(), "rail input failed: {:?}", error);
+                }
+                if let Some(text) = platform.take_clipboard_write() {
                     assert_eq!(
                         text,
                         format!("turn-{index}"),
@@ -294,7 +246,7 @@ fn check_marks(source: &str) {
         let wait_for_preview = |visible| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                platform.pump();
+                platform.pump_with_draw(true);
                 for frame in frames.borrow_mut().drain(..) {
                     let width = frame.size().width.0 as usize;
                     let preview = frame.pixels().as_chunks::<4>().0.iter().enumerate().any(
@@ -316,5 +268,5 @@ fn check_marks(source: &str) {
         move_to(1, 1);
         wait_for_preview(false);
     }
-    drop(application);
+    platform.shutdown();
 }

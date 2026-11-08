@@ -1297,7 +1297,8 @@ fn sink(rv: Rv) -> impl IntoElement {
         })
     };
     let props = rv.props;
-    let (change, composition, key, paste, focus, blur) = (
+    let (editable, change, composition, key, paste, focus, blur) = (
+        rv.clone(),
         rv.clone(),
         rv.clone(),
         rv.clone(),
@@ -1320,6 +1321,11 @@ fn sink(rv: Rv) -> impl IntoElement {
         .text_color(AdaptiveColor::TRANSPARENT)
         .caret(false)
         .multiline(true)
+        .readonly(move || {
+            editable.notified.get();
+            editable.props.editable.get();
+            !editable.editable()
+        })
         // The terminal applies native autofocus after the sink is attached.
         .auto_focus(move || is_terminal() && props.auto_focus.get())
         // The app's scroll bars (`Scrollbar.setTheme`) are for what people

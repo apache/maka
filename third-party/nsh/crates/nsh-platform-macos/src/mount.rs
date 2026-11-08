@@ -134,6 +134,7 @@ impl Mounter {
         crate::system::end_batch(surface);
         crate::input::content_moved(surface, false);
         crate::selectable_view::end_batch(surface);
+        crate::text_input::end_batch(surface);
         surface.control(|control| control.set_focus_path(crate::input::focus_path(surface)));
     }
 
@@ -200,6 +201,7 @@ impl Mounter {
             MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
+                    crate::text_input::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
                         self.detach(surface, view);
@@ -209,6 +211,7 @@ impl Mounter {
             MountItem::Delete { id } => {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
+                    crate::text_input::removing(surface, &view);
                     crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);

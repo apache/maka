@@ -36,6 +36,7 @@ pub(super) fn activity(host: &HostChannel, event: &Event) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn terminal_activity(host: &HostChannel, event: &termina::Event) {
     match event {
         termina::Event::Paste(_) => reset(host),

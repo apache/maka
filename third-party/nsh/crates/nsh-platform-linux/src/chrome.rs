@@ -809,6 +809,9 @@ fn popup(surface: &Rc<Surface>, items: &[MenuItem], at: Option<(f32, f32)>) {
 /// An item was chosen: the platform carries out its role, the app hears
 /// about the rest.
 fn choose(surface: &Rc<Surface>, id: u32, role: Option<MenuRole>) {
+    if surface.input_paused.get() {
+        return;
+    }
     match role {
         Some(MenuRole::Quit | MenuRole::Close) => close(surface),
         Some(MenuRole::Minimize) => {

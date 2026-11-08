@@ -54,7 +54,7 @@ const TICK: Duration = Duration::from_millis(16);
 // One existing best-effort restoration window, shared by IME release and IO.
 const RESTORATION_WAIT: Duration = Duration::from_millis(100);
 
-pub(crate) type GpuWorker = thread::JoinHandle<Result<(), String>>;
+pub(crate) type NativeJob = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, Default)]
 struct Presentation {
@@ -62,7 +62,11 @@ struct Presentation {
     activation: activation::Activation,
     stop: Arc<AtomicBool>,
     driver: Option<thread::Thread>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     host: nsh_engine::HostChannel,
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    native_jobs: Option<tokio::sync::mpsc::UnboundedSender<NativeJob>>,
     tmux: bool,
 }
 
@@ -80,8 +84,10 @@ impl Presentation {
 }
 
 /// Per-engine display control. Business configuration remains with the Host.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) struct UiScaleControl(Presentation);
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl UiScaleControl {
     pub(crate) fn current(&self) -> Result<f32, String> {
         self.0
@@ -128,7 +134,7 @@ impl UiScaleControl {
 pub(crate) fn run(
     mut config: EngineConfig,
     stop: Arc<AtomicBool>,
-    _gpu_worker: &mut Option<GpuWorker>,
+    _native_jobs: tokio::sync::mpsc::UnboundedSender<NativeJob>,
 ) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the terminal shell requires a terminal on stdin and stdout".into());
@@ -151,7 +157,10 @@ pub(crate) fn run(
     let presentation = Presentation {
         stop: stop.clone(),
         driver: Some(thread::current()),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         host: config.host.clone(),
+        #[cfg(any(test, target_os = "macos", target_os = "windows"))]
+        native_jobs: Some(_native_jobs),
         tmux,
         ..Default::default()
     };
@@ -198,13 +207,7 @@ pub(crate) fn run(
                 return Ok(());
             }
             if let Some(capabilities) = capabilities {
-                return pixels::run(
-                    &mut output,
-                    &presentation,
-                    config,
-                    capabilities,
-                    _gpu_worker,
-                );
+                return pixels::run(&mut output, &presentation, config, capabilities);
             }
         }
         let pending = Arc::new(AtomicBool::new(false));

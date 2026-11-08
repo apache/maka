@@ -28,6 +28,8 @@ mod animation;
 mod app;
 mod blur;
 mod canvas;
+#[cfg(any(feature = "dev", feature = "terminal"))]
+mod capture;
 mod chrome;
 mod decor;
 #[cfg(feature = "dev")]
@@ -41,6 +43,8 @@ mod input;
 mod keymap;
 mod mount;
 mod native;
+#[cfg(any(feature = "dev", feature = "terminal"))]
+mod native_events;
 mod navigation;
 mod net;
 mod picker;
@@ -54,6 +58,8 @@ mod surface;
 #[cfg(feature = "dev")]
 mod synth;
 mod system;
+#[cfg(feature = "terminal")]
+mod terminal;
 mod text;
 mod text_input;
 mod transition;
@@ -67,6 +73,8 @@ pub use nsh_engine::{
 pub use objc2;
 pub use objc2_app_kit;
 pub use objc2_foundation;
+#[cfg(feature = "terminal")]
+pub use terminal::TerminalSurface;
 
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;

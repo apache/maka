@@ -21,8 +21,6 @@ mod attachments;
 mod catalog_association;
 mod components;
 mod configuration_management;
-#[cfg(feature = "desktop-tests")]
-mod desktop_new_session;
 mod external_agents;
 mod keyboard;
 mod resumable;

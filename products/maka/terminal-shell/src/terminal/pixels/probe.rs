@@ -117,23 +117,27 @@ pub(crate) struct Capabilities {
     pub mouse: MouseCoordinates,
     // None during startup, before any image protocol has replied positively.
     pub protocol: Option<Protocol>,
+    #[cfg_attr(
+        not(any(test, target_os = "macos", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub synchronized: bool,
     pub sixel_geometry: SixelGeometry,
 }
 
 impl Capabilities {
-    pub fn pixel_size(self) -> Option<gpui::Size<gpui::DevicePixels>> {
+    pub fn pixel_size(self) -> Option<nsh_terminal::Size<nsh_terminal::DevicePixels>> {
         let width = self.size.pixel_width?;
         let height = self.size.pixel_height?;
         (width != 0 && height != 0).then(|| {
-            gpui::size(
-                gpui::DevicePixels(i32::from(width)),
-                gpui::DevicePixels(i32::from(height)),
+            nsh_terminal::size(
+                nsh_terminal::DevicePixels(i32::from(width)),
+                nsh_terminal::DevicePixels(i32::from(height)),
             )
         })
     }
 
-    pub fn viewport(self) -> Option<gpui::Size<gpui::DevicePixels>> {
+    pub fn viewport(self) -> Option<nsh_terminal::Size<nsh_terminal::DevicePixels>> {
         if self.size.cols == 0 || self.size.rows == 0 {
             return None;
         }
@@ -164,19 +168,19 @@ impl Capabilities {
                 })
     }
 
-    pub fn logical_viewport(self) -> Option<gpui::Size<gpui::Pixels>> {
+    pub fn logical_viewport(self) -> Option<nsh_terminal::Size<nsh_terminal::Pixels>> {
         let viewport = self.viewport()?;
         let scale = self.scale_factor();
-        Some(gpui::size(
-            gpui::px(viewport.width.0 as f32 / scale),
-            gpui::px(viewport.height.0 as f32 / scale),
+        Some(nsh_terminal::size(
+            nsh_terminal::px(viewport.width.0 as f32 / scale),
+            nsh_terminal::px(viewport.height.0 as f32 / scale),
         ))
     }
 
-    pub fn contains(self, position: gpui::Point<gpui::Pixels>) -> bool {
+    pub fn contains(self, position: nsh_terminal::Point<nsh_terminal::Pixels>) -> bool {
         self.logical_viewport().is_some_and(|viewport| {
-            position.x >= gpui::px(0.0)
-                && position.y >= gpui::px(0.0)
+            position.x >= nsh_terminal::px(0.0)
+                && position.y >= nsh_terminal::px(0.0)
                 && f32::from(position.x) < f32::from(viewport.width)
                 && f32::from(position.y) < f32::from(viewport.height)
         })
@@ -220,7 +224,7 @@ impl Probe {
         if !self.measurement.begin(1)? {
             return Err("terminal geometry query is already in flight".into());
         }
-        let mut bytes = nsh_gpui_terminal::kitty::capability_query(self.slots.query)
+        let mut bytes = nsh_terminal::kitty::capability_query(self.slots.query)
             .map_err(|error| error.to_string())?;
         // DA1 is already requested by the character image probe. Mouse
         // precision, identity, static Sixel mode and synchronization remain
@@ -513,7 +517,10 @@ mod tests {
             );
             assert_eq!(
                 result.viewport(),
-                Some(gpui::size(gpui::DevicePixels(960), gpui::DevicePixels(640)))
+                Some(nsh_terminal::size(
+                    nsh_terminal::DevicePixels(960),
+                    nsh_terminal::DevicePixels(640)
+                ))
             );
         }
     }
@@ -555,9 +562,9 @@ mod tests {
         assert_eq!(caps.sixel_geometry, SixelGeometry::Unknown);
         assert_eq!(
             caps.viewport(),
-            Some(gpui::size(
-                gpui::DevicePixels(1200),
-                gpui::DevicePixels(800)
+            Some(nsh_terminal::size(
+                nsh_terminal::DevicePixels(1200),
+                nsh_terminal::DevicePixels(800)
             ))
         );
         assert!(probe.needs_static_sixel());

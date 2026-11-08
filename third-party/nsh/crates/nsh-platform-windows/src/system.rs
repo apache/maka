@@ -263,6 +263,13 @@ pub(crate) fn lifecycle_changed(surface: &Surface) {
 /// The app's state as `surface` sees it; `current` before its window
 /// exists.
 fn lifecycle(surface: &Surface, current: Lifecycle) -> Lifecycle {
+    if let Some(active) = surface.terminal_active.get() {
+        return if active {
+            Lifecycle::Active
+        } else {
+            Lifecycle::Inactive
+        };
+    }
     let hwnd = surface.hwnd();
     if hwnd.is_invalid() {
         return current;
@@ -1840,6 +1847,10 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
 
 /// Puts `text` on the clipboard (Unicode text).
 pub(crate) fn set_clipboard_text(text: &str) -> bool {
+    #[cfg(feature = "terminal")]
+    if crate::terminal::clipboard_write(text) {
+        return true;
+    }
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE, HGLOBAL},
         System::{
@@ -1877,6 +1888,10 @@ pub(crate) fn set_clipboard_text(text: &str) -> bool {
 
 /// The clipboard's text, if it has some.
 pub(crate) fn clipboard_text() -> Option<String> {
+    #[cfg(feature = "terminal")]
+    if let Some(text) = crate::terminal::clipboard_read() {
+        return Some(text);
+    }
     use windows::Win32::{
         Foundation::HGLOBAL,
         System::{

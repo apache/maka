@@ -670,6 +670,9 @@ fn handle_quit_events(delegate: Option<&Delegate>) {
 fn window_active(active: bool) {
     RUNNING.with(|running| {
         if let Some(running) = &*running.borrow() {
+            if !active {
+                crate::text_input::disarm(&running.view.surface);
+            }
             (running.on_active)(active);
         }
     });

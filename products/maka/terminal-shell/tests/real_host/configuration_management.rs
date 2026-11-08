@@ -75,7 +75,16 @@ async fn general_settings_save_and_read_back_the_default_sandbox() {
         "Full access · Sandbox off",
     )
     .await;
-    wait_enabled_node(&mut view, "Default sandbox policy").await;
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot().into_iter().any(|node| {
+            node.role == nsh_core::AccessibilityRole::Combobox
+                && node.label == "Default sandbox policy"
+                && !node.state.disabled
+                && node.value.and_then(|value| value.text).as_deref()
+                    == Some("Full access · Sandbox off")
+        })
+    })
+    .await;
     assert_eq!(
         client
             .query("settings", "assistantPreferences", json!({}))

@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["third-party/nsh", "third-party/gpui-fast", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
+exclude = ["third-party/nsh", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
     "platform/session-state",
@@ -96,12 +96,13 @@ maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
 maka-app-client = { path = "products/maka/client" }
+nsh-terminal = { path = "third-party/nsh/crates/nsh-terminal" }
+nsh-platform-linux = { path = "third-party/nsh/crates/nsh-platform-linux" }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
 nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
-nsh-platform-gpui = { path = "third-party/nsh/crates/gpui/nsh-platform-gpui", default-features = false, features = ["js"] }
-nsh-gpui-terminal = { path = "third-party/nsh/crates/gpui/nsh-gpui-terminal" }
+nsh-platform-windows = { path = "third-party/nsh/crates/nsh-platform-windows" }
 nsh-platform-macos = { path = "third-party/nsh/crates/nsh-platform-macos" }
 nsh-bundler = { path = "third-party/nsh/crates/nsh-bundler", default-features = false }
 nsh-base = { path = "third-party/nsh/crates/nsh-base" }
@@ -230,23 +231,14 @@ opt-level = 1
 [profile.dev.package.nsh-platform-tui]
 opt-level = 1
 
-[profile.dev.package.nsh-platform-gpui]
-opt-level = 1
+# Keep terminal image encoding optimized.
+[profile.dev.package.nsh-terminal]
+opt-level = 3
 
-[profile.dev.package.gpui-fast]
-opt-level = 1
-
-[profile.dev.package.gpui-fast-wgpu]
-opt-level = 1
-
-# Keep Sixel colour quantization and its concrete generic writer optimized.
 [profile.dev.package.quantette]
 opt-level = 3
 
 [profile.dev.package.icy_sixel]
-opt-level = 3
-
-[profile.dev.package.nsh-gpui-terminal]
 opt-level = 3
 
 [patch.crates-io]
@@ -259,11 +251,5 @@ image-webp = { path = "third-party/image-webp" }
 sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
 
-gpui-fast = { path = "third-party/gpui-fast/crates/gpui" }
-gpui-fast-macos = { path = "third-party/gpui-fast/crates/gpui_macos" }
-gpui-fast-windows = { path = "third-party/gpui-fast/crates/gpui_windows" }
-gpui-fast-linux = { path = "third-party/gpui-fast/crates/gpui_linux" }
-# The terminal backend owns the offscreen renderer and image codec.
-gpui-fast-wgpu = { path = "third-party/nsh/third-party/gpui-wgpu" }
+# Shared terminal image codec.
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }
-gpui-pre-scheduler = { path = "third-party/gpui-fast/crates/scheduler" }

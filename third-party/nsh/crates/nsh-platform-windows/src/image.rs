@@ -1576,6 +1576,11 @@ thread_local! {
     static EFFECTS: RefCell<Option<Effects>> = const { RefCell::new(None) };
 }
 
+pub(crate) fn clear_thread_cache() {
+    let _ = EFFECTS.try_with(|e| e.borrow_mut().take());
+    let _ = BITMAPS.try_with(|b| b.borrow_mut().clear());
+}
+
 /// Runs `f` with the tint and blur effects of `dc`'s device.
 fn with_effects<R>(dc: &ID2D1DeviceContext, f: impl FnOnce(&Effects) -> R) -> Option<R> {
     EFFECTS.with(|cell| {

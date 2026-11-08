@@ -537,8 +537,14 @@ pub(crate) fn install_keyboard(surface: &Rc<Surface>) {
         installed.borrow().set(Some(&window));
         let keys = gtk::EventControllerKey::new();
         let pressed = weak.clone();
-        keys.connect_key_pressed(move |_, key, _, modifiers| match pressed.upgrade() {
-            Some(surface) if key_pressed(&surface, key, modifiers) => glib::Propagation::Stop,
+        keys.connect_key_pressed(move |keys, key, _, modifiers| match pressed.upgrade() {
+            Some(surface)
+                if key_pressed(&surface, key, modifiers)
+                    || crate::navigation::key_pressed(&surface, key, modifiers)
+                    || crate::keymap::unhandled(&surface, keys.current_event().as_ref()) =>
+            {
+                glib::Propagation::Stop
+            }
             _ => glib::Propagation::Proceed,
         });
         window.add_controller(keys);
@@ -598,7 +604,11 @@ fn reveal(surface: &Rc<Surface>, focus: &gtk::Widget) {
 }
 
 /// A key reached the window: whether it scrolled a view.
-fn key_pressed(surface: &Rc<Surface>, key: gdk::Key, modifiers: gdk::ModifierType) -> bool {
+pub(crate) fn key_pressed(
+    surface: &Rc<Surface>,
+    key: gdk::Key,
+    modifiers: gdk::ModifierType,
+) -> bool {
     let Some((horizontal, m)) = key_move(key, modifiers) else {
         return false;
     };
