@@ -264,6 +264,19 @@ enum Pin {
     },
 }
 
+/// How an enclosing list anchors a placed cell relative to a descendant
+/// parent-viewport list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CellPlacement {
+    /// Unbound item cell or inactive empty placeholder.
+    Unplaced,
+    /// The enclosing list anchors extent changes of this cell as a whole.
+    AnchoredByList,
+    /// Straddling or at/after the viewport: the child list anchors its own
+    /// above-viewport rows.
+    AnchoredByChild,
+}
+
 /// How a pinned list follows its target (`ListState::follow_pin`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum Follow {
@@ -394,6 +407,9 @@ pub(super) struct ListState {
     lead: f32,
     /// Scroll that keeps the visible content in place after a splice.
     splice_anchor: f32,
+    /// Anchor deltas already forwarded this commit by parent-viewport lists
+    /// inside straddling `(cell, delta)` entries before their spacers relayout.
+    forwarded_anchors: Vec<(u32, f32)>,
     /// The target of the last scroll command, until it is reached with
     /// measured cells or the user scrolls away.
     pin: Option<Pin>,
@@ -474,6 +490,7 @@ impl ListState {
             paced: false,
             lead: 0.0,
             splice_anchor: 0.0,
+            forwarded_anchors: Vec::new(),
             pin: None,
             source_geometry: SourceGeometry::default(),
             source_rows: None,
@@ -504,6 +521,7 @@ impl ListState {
         self.pin = None;
         self.dirty = true;
         self.anchored_end = f32::NAN;
+        self.forwarded_anchors.clear();
         if parent {
             let set_aside = SetAside {
                 inverted: std::mem::take(&mut self.inverted),
@@ -716,6 +734,19 @@ impl ListState {
         self.pending.push((self.issued, PendingScroll::By(delta)));
     }
 
+    /// Retracts the last `ScrollBy` issued in the current commit so rounds
+    /// that settle within one batch emit a single net `ScrollBy` (or none).
+    pub(super) fn unissue_last_scroll_by(&mut self) -> Option<f32> {
+        match self.pending.last().copied() {
+            Some((n, PendingScroll::By(delta))) if n == self.issued => {
+                self.pending.pop();
+                self.issued -= 1;
+                Some(delta)
+            }
+            _ => None,
+        }
+    }
+
     /// Records a `ScrollTo` sent to the platform.
     pub(super) fn issue_scroll_to(&mut self, offset: f32) {
         self.issued += 1;
@@ -726,6 +757,7 @@ impl ListState {
     /// issued scrolls: scrolls it has not applied yet still count, so a
     /// report that predates them does not move the window backwards.
     pub(super) fn reported(&mut self, offset: f32, applied: u32) {
+        self.forwarded_anchors.clear();
         self.pending.retain(|&(n, _)| n > applied);
         let at = replay(offset, &self.pending);
         self.moved_to(at, self.pending.is_empty());
@@ -806,6 +838,21 @@ impl ListState {
             *at += by;
         }
         self.dirty = true;
+    }
+
+    pub(super) fn note_cell_forwarded_anchor(&mut self, cell: u32, by: f32) {
+        if by == 0.0 {
+            return;
+        }
+        if let Some((_, d)) = self.forwarded_anchors.iter_mut().find(|(c, _)| *c == cell) {
+            *d += by;
+        } else {
+            self.forwarded_anchors.push((cell, by));
+        }
+    }
+
+    pub(super) fn clear_forwarded_anchors(&mut self) {
+        self.forwarded_anchors.clear();
     }
 
     /// Keeps following `target` after a scroll command sent the list to
@@ -1420,6 +1467,28 @@ impl ListState {
         }
     }
 
+    fn cell_forwarded_anchor(&self, cell: u32) -> f32 {
+        self.forwarded_anchors
+            .iter()
+            .find_map(|&(c, d)| (c == cell).then_some(d))
+            .unwrap_or(0.0)
+    }
+
+    fn take_cell_forwarded_anchor(&mut self, cell: u32) -> f32 {
+        let Some(pos) = self.forwarded_anchors.iter().position(|&(c, _)| c == cell) else {
+            return 0.0;
+        };
+        self.forwarded_anchors.swap_remove(pos).1
+    }
+
+    fn natural_offset_before_forward(&self, forwarded: f32) -> f32 {
+        if self.inverted {
+            self.natural_offset() + forwarded
+        } else {
+            self.offset - forwarded
+        }
+    }
+
     /// Records a measured size. Returns the change if the item lies
     /// entirely before the viewport (the caller scrolls by it so the
     /// visible content stays put).
@@ -1428,10 +1497,17 @@ impl ListState {
         if idx >= self.sizes.len() || self.sizes[idx] == size {
             return 0.0;
         }
+        let forwarded = if self.forwarded_anchors.is_empty() {
+            0.0
+        } else if let Some(&slot) = self.by_index.get(&i) {
+            self.take_cell_forwarded_anchor(self.slots[slot as usize].cell)
+        } else {
+            0.0
+        };
         let row = self.row_of(i);
         let before = self.row_size(row);
         let row_start = self.item_at(i);
-        let natural = self.natural_offset();
+        let natural = self.natural_offset_before_forward(forwarded);
         let above_viewport = row_start < natural && row_start + before <= natural;
         let keep = above_viewport && self.keeps_visible_rows();
         self.sizes[idx] = size;
@@ -1459,13 +1535,15 @@ impl ListState {
     /// Records the size of an extra cell; returns the anchoring change as
     /// [`ListState::measured`] does.
     pub(super) fn measured_extra(&mut self, kind: ExtraKind, size: f32) -> f32 {
-        let blocks = self.blocks();
-        let natural = self.natural_offset();
-        let keeps = self.keeps_visible_rows();
-        let extra = &mut self.extras[kind as usize];
-        if extra.size == size {
+        if self.extras[kind as usize].size == size {
             return 0.0;
         }
+        let blocks = self.blocks();
+        let cell = self.extras[kind as usize].cell;
+        let forwarded = self.take_cell_forwarded_anchor(cell);
+        let natural = self.natural_offset_before_forward(forwarded);
+        let keeps = self.keeps_visible_rows();
+        let extra = &mut self.extras[kind as usize];
         let delta = size - extra.size;
         extra.size = size;
         self.rows_changed();
@@ -1536,6 +1614,7 @@ impl ListState {
     /// The platform is about to scroll to `offset` (a command): the window
     /// follows it right away, and inverted lists anchor to it.
     pub(super) fn jump(&mut self, offset: f32) {
+        self.forwarded_anchors.clear();
         self.offset = offset;
         if self.inverted {
             self.anchored_end = (self.content_len() - self.viewport).max(0.0);
@@ -1574,6 +1653,45 @@ impl ListState {
     }
 
     // --- Cells -------------------------------------------------------------
+
+    pub(super) fn cell_placement(&self, slot: Option<CellSlot>, cell: u32) -> CellPlacement {
+        let (start, size) = match slot {
+            Some(CellSlot::Item(s)) => {
+                let Some(state) = self.slots.get(s as usize).filter(|s| s.cell == cell) else {
+                    return CellPlacement::Unplaced;
+                };
+                let Some(index) = state.ready() else {
+                    return CellPlacement::Unplaced;
+                };
+                (self.item_at(index), self.effective(index as usize))
+            }
+            Some(CellSlot::Header) if self.extras[ExtraKind::Header as usize].cell == cell => (
+                self.blocks().header,
+                self.extras[ExtraKind::Header as usize].size,
+            ),
+            Some(CellSlot::Footer) if self.extras[ExtraKind::Footer as usize].cell == cell => (
+                self.blocks().footer,
+                self.extras[ExtraKind::Footer as usize].size,
+            ),
+            Some(CellSlot::Empty)
+                if self.count == 0 && self.extras[ExtraKind::Empty as usize].cell == cell =>
+            {
+                (
+                    self.blocks().body,
+                    self.extras[ExtraKind::Empty as usize].size,
+                )
+            }
+            _ => return CellPlacement::Unplaced,
+        };
+        let natural = self.natural_offset_before_forward(self.cell_forwarded_anchor(cell));
+        if self.inverted
+            || (self.keeps_visible_rows() && start < natural && start + size <= natural)
+        {
+            CellPlacement::AnchoredByList
+        } else {
+            CellPlacement::AnchoredByChild
+        }
+    }
 
     pub(super) fn add_slot_cell(&mut self, slot: CellSlot, cell: u32) {
         self.source_dirty |= !self.source_geometry.is_empty();

@@ -31,7 +31,7 @@
 
 use super::{
     Core, Key, Kind, NO_KEY, ScrollState, dirty,
-    list::{Outer, PendingScroll, StickyRange, ignored, replay},
+    list::{CellPlacement, Outer, PendingScroll, StickyRange, ignored, replay},
 };
 use crate::{
     ListViewport,
@@ -66,6 +66,9 @@ pub(super) struct OuterInput {
     pub(super) max: f32,
     /// None of the scrolls issued to it is pending.
     pub(super) settled: bool,
+    /// An enclosing list already anchors extent changes of the cell holding
+    /// this list.
+    pub(super) outer_anchors: bool,
     /// Where the cells start in the list: its border and padding, along
     /// the main and the cross axis.
     pub(super) inset: (f32, f32),
@@ -413,11 +416,22 @@ impl<M: TextEngine> Core<M> {
         };
         let main = |x: Points, y: Points| if horizontal { x.0 } else { y.0 };
         let mut start = inset.0;
+        let mut outer_anchors = false;
         let mut k = key;
         while k != outer.view {
             let n = &self.nodes[k as usize];
+            if n.parent == NO_KEY {
+                return None;
+            }
+            if let Some(parent_list) = self.nodes[n.parent as usize].list.as_ref() {
+                match parent_list.cell_placement(n.slot, k) {
+                    CellPlacement::Unplaced => return None,
+                    CellPlacement::AnchoredByList => outer_anchors = true,
+                    CellPlacement::AnchoredByChild => {}
+                }
+            }
             let at = main(n.frame.origin.x, n.frame.origin.y);
-            if at.is_nan() || n.parent == NO_KEY {
+            if at.is_nan() {
                 return None;
             }
             start += at;
@@ -463,9 +477,31 @@ impl<M: TextEngine> Core<M> {
             viewport,
             max,
             settled,
+            outer_anchors,
             inset,
             cross: cross.max(0.0),
         })
+    }
+
+    /// Forwards an above-viewport anchor from parent-viewport list `key` to
+    /// `view`, recording it on each enclosing list cell so the ensuing spacer
+    /// relayout evaluates straddling cells against their pre-forward offset.
+    pub(super) fn forward_outer_anchor(&mut self, key: Key, view: Key, by: f32) {
+        if self.nodes[view as usize].scroll.is_none() {
+            return;
+        }
+        let mut k = key;
+        while k != view {
+            let parent = self.nodes[k as usize].parent;
+            if parent == NO_KEY {
+                return;
+            }
+            if let Some(list) = self.nodes[parent as usize].list.as_mut() {
+                list.note_cell_forwarded_anchor(k, by);
+            }
+            k = parent;
+        }
+        self.ask_outer(view, None, by);
     }
 
     /// A parent-viewport list asks its view to scroll to `to` (animated or
@@ -494,6 +530,7 @@ impl<M: TextEngine> Core<M> {
         if let Some(own) = node.list.as_mut() {
             // A list of its own moves its window as for its own commands.
             if let Some((to, animated)) = to {
+                own.clear_forwarded_anchors();
                 own.pin(None, to, animated, false);
                 if !animated {
                     own.jump(to);
@@ -532,23 +569,43 @@ impl<M: TextEngine> Core<M> {
             let Some(node) = self.nodes.get_mut(view as usize) else {
                 continue;
             };
+            if let Some(own) = node.list.as_mut() {
+                own.clear_forwarded_anchors();
+            }
             let id = node.id;
             let Some(scroll) = node.scroll.as_mut() else {
                 continue;
             };
-            let Some(asked) = scroll.asked.take() else {
+            let dependents_len = scroll.dependents.len();
+            let asked = scroll.asked.take();
+            for i in 0..dependents_len {
+                let d = self.nodes[view as usize]
+                    .scroll
+                    .as_ref()
+                    .expect("scroll")
+                    .dependents[i];
+                if let Some(list) = self.nodes[d as usize].list.as_mut() {
+                    list.clear_forwarded_anchors();
+                }
+            }
+            let Some(asked) = asked else {
                 continue;
             };
             // The scroll to goes last and to the sum, since a scroll back may
             // go before the content shrinks. An animated one starts from the
             // offset the scroll by compensated; an instant one makes it moot.
-            let (to, by) = match asked.to {
+            let (to, mut by) = match asked.to {
                 Some((to, animated)) => (
                     Some((to + asked.by, animated)),
                     if animated { asked.by } else { 0.0 },
                 ),
                 None => (None, asked.by),
             };
+            if to.is_none() && by != 0.0 {
+                by += self.retract_batch_list_scroll_by(view, id);
+            }
+            let node = &mut self.nodes[view as usize];
+            let scroll = node.scroll.as_mut().expect("scroll");
             let horizontal = scroll.horizontal;
             let content_item = scroll.content_item.filter(|&(b, _)| b == batch);
             let along = |v: f32| {
