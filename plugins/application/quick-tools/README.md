@@ -2,7 +2,7 @@
 
 Migration of `codex/quick-tools` onto `rust-preview` (`72162299f`), developed on
 `codex/quick-tools-rust`. Maka's Rust Host owns the services; NSH renders the UI
-through GPUI on macOS. There is no Electron renderer. The optional BrowserMCP
+through its native AppKit backend on macOS. There is no Electron renderer. The optional BrowserMCP
 provider runs as an external Node process, owned and cancelled by the Rust shell.
 
 ## Run / 运行
@@ -21,7 +21,7 @@ native application before testing real assistant predictions or AI ranking.
 
 ## Migrated implementation / 已接入代码
 
-- Persistent, separate GPUI panel, Option+Space global toggle, configurable global
+- Persistent, separate AppKit NSPanel hosting an NSH view, Option+Space global toggle, configurable global
   and per-item shortcuts. Command reveals numeric hints; Command+1–9 executes rows
   or actions. Arrow navigation, Command+K action menu, aliases, favorites, recent
   usage, ICU Chinese segmentation and BM25F search.

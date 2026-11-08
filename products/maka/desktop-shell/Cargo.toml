@@ -47,7 +47,26 @@ nsh-platform-windows.workspace = true
 nsh-platform-macos.workspace = true
 objc2 = "0.6"
 objc2-foundation = "0.3.2"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSDraggingItem", "NSDraggingSession", "std", "NSEvent", "NSWorkspace", "NSRunningApplication", "block2"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "NSApplication",
+  "NSButton",
+  "NSControl",
+  "NSDraggingItem",
+  "NSDraggingSession",
+  "NSEvent",
+  "NSGraphics",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSSavePanel",
+  "NSScreen",
+  "NSView",
+  "NSWindow",
+  "NSWorkspace",
+] }
 block2 = "0.6.2"
 raw-window-handle = "0.6"
 

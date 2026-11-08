@@ -31,7 +31,6 @@ const result = spawnSync(
     stdio: 'inherit',
     env: {
       ...process.env,
-      MAKA_GPUI: '1',
       MAKA_QUICK_NATIVE: helper,
       MAKA_QUICK_WEB_NODE: process.execPath,
       MAKA_QUICK_WEB_ENTRY: resolve(repo, 'node_modules/@jackwener/browsermcp/dist/src/main.js'),

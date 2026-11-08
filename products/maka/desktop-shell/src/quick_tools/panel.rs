@@ -1,21 +1,48 @@
 /* Licensed under the Apache License, Version 2.0. See LICENSE and NOTICE. */
-//! A persistent, nonactivating GPUI panel with its own JS event channel.
+//! A persistent, nonactivating AppKit panel with its own JS event channel.
+//!
+//! Requests are ordered by one Tokio task. Everything that touches the panel
+//! window hops to AppKit's main thread, where the panel and its engine live.
 use nsh_engine::{EngineConfig, HostCall, HostChannel, JsonValue, Limits};
-use nsh_platform_gpui::{
-    AppOptions, AppView,
-    gpui::{self, AppContext as _, Focusable as _},
+use nsh_platform_macos::{AppOptions, AppView, with_running_view};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSBackingStoreType, NSModalResponse,
+    NSModalResponseOK, NSOpenPanel, NSPanel, NSResponder, NSRunningApplication, NSWindow,
+    NSWindowAnimationBehavior, NSWindowButton, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWorkspace,
 };
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tokio::sync::{mpsc, oneshot, watch};
+
+const WIDTH: f64 = 680.;
+const HEIGHT: f64 = 400.;
+/// AppKit's pop-up menu level: above the user's other windows, like Spotlight.
+const POP_UP_LEVEL: isize = 101;
 
 pub enum Request {
     Load(Box<EngineConfig>),
     Shortcut(JsonValue),
     Error(JsonValue),
-    Show { settings: bool },
+    Show {
+        settings: bool,
+    },
     Settings(HostCall, bool),
-    Hide { restore_focus: bool },
+    Hide {
+        restore_focus: bool,
+    },
+    /// The panel stopped being the key window.
+    Resigned,
     Modifiers(JsonValue),
     Assistant(HostCall),
     PickPackage(HostCall),
@@ -31,7 +58,17 @@ pub struct Control {
     shortcuts: mpsc::Sender<HostCall>,
     runtime: tokio::runtime::Handle,
     releases: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    state: Arc<Shared>,
 }
+
+/// What the request task and the main thread both read.
+#[derive(Default)]
+struct Shared {
+    visible: AtomicBool,
+    /// A file dialog is open; losing key status to it does not dismiss the panel.
+    picking: AtomicBool,
+}
+
 impl Control {
     pub fn new(
         runtime: &tokio::runtime::Handle,
@@ -46,6 +83,7 @@ impl Control {
                 shortcuts,
                 runtime: runtime.clone(),
                 releases: Arc::default(),
+                state: Arc::default(),
             },
             receive,
         )
@@ -108,6 +146,8 @@ impl Control {
             call.resolve(JsonValue::Null);
         });
     }
+    /// Connects the main workbench's configuration, and (re)loads the panel
+    /// for the connection it belongs to.
     pub fn attach(&self, config: &mut EngineConfig) {
         self.session_handlers(&config.host, false);
         let mut params = config.host.params();
@@ -125,28 +165,17 @@ impl Control {
         });
         let _ = self.send.try_send(Request::Load(Box::new(config.clone())));
     }
-    pub fn run(
-        self,
-        mut requests: mpsc::Receiver<Request>,
-        main: gpui::WindowHandle<AppView>,
-        cx: &mut gpui::App,
-    ) {
-        cx.spawn(async move |cx| {
-            let mut panel: Option<gpui::WindowHandle<AppView>> = None;
+    pub fn run(self, mut requests: mpsc::Receiver<Request>) {
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            let state = self.state.clone();
+            let mut loaded = false;
             let mut events = HostChannel::new();
-            let mut _dismiss_observers = None;
-            let mut previous_app = None;
-            let visible = std::rc::Rc::new(std::cell::Cell::new(false));
-            let picking = std::rc::Rc::new(std::cell::Cell::new(false));
             let mut preferences = JsonValue::Null;
             while let Some(request) = requests.recv().await {
                 match request {
                     Request::Load(mut config) => {
-                        _dismiss_observers = None;
-                        if let Some(old) = panel.take() {
-                            let _ = old.update(cx, |_, window, _| window.remove_window());
-                        }
-                        visible.set(false);
+                        state.visible.store(false, Ordering::Release);
                         // HostChannel::clone shares a single engine attachment. Never clone the main
                         // channel into a second VM: it would steal events from the workbench.
                         config.host = HostChannel::new();
@@ -190,162 +219,80 @@ impl Control {
                             });
                         self.session_handlers(&config.host, true);
                         events = config.host.clone();
-                        let (active, foreground) = tokio::sync::watch::channel(false);
+                        let (active, foreground) = watch::channel(false);
                         config.context =
                             config.context.with(maka_workbench::Foreground(foreground));
-                        let close = self.send.clone();
-                        let opened = cx.update(|cx| {
-                            let bounds = gpui::Bounds::centered(
-                                None,
-                                gpui::size(gpui::px(680.), gpui::px(400.)),
-                                cx,
-                            );
-                            cx.open_window(
-                                gpui::WindowOptions {
-                                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
-                                    kind: gpui::WindowKind::PopUp,
-                                    titlebar: None,
-                                    is_minimizable: false,
-                                    focus: false,
-                                    show: false,
-                                    is_resizable: false,
-                                    is_movable: false,
-                                    ..Default::default()
-                                },
-                                |window, cx| {
-                                    let view = cx.new(|cx| {
-                                        AppView::new(
-                                            AppOptions {
-                                                app_id: "org.apache.maka.quick-tools".into(),
-                                                title: "Maka Quick Tools".into(),
-                                                size: (680, 400),
-                                                limits: Limits::standalone(),
-                                                data_dir: config.data_dir.clone(),
-                                                ..Default::default()
-                                            },
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                    let app = view.read(cx);
-                                    app.own_window(window, cx);
-                                    app.on_close_request(move |_, _, _| {
-                                        let _ = close.try_send(Request::Hide {
-                                            restore_focus: true,
-                                        });
-                                    });
-                                    app.load_with_config(*config);
-                                    view
-                                },
-                            )
-                        });
-                        match opened {
-                            Ok(window) => {
-                                let shown = visible.clone();
-                                let dialog = picking.clone();
-                                let channel = events.clone();
-                                let _ = window.update(cx, |_, window, cx| {
-                                    let shown_on_event = shown.clone();
-                                    let dialog_on_event = dialog.clone();
-                                    let send = self.send.clone();
-                                    with_native_window(window, |native| {
-                                        let number: isize =
-                                            unsafe { objc2::msg_send![native, windowNumber] };
-                                        _dismiss_observers =
-                                            Some(super::dismiss::DismissObservers::new(
-                                                number,
-                                                move || {
-                                                    if shown_on_event.get()
-                                                        && !dialog_on_event.get()
-                                                    {
-                                                        let _ = send.try_send(Request::Hide {
-                                                            restore_focus: false,
-                                                        });
-                                                    }
-                                                },
-                                            ));
-                                    });
-                                    active.send_replace(window.is_window_active());
-                                    cx.observe_window_activation(window, move |_, window, _| {
-                                        let focused = window.is_window_active();
-                                        if !active.send_replace(focused)
-                                            || focused
-                                            || !shown.get()
-                                            || dialog.get()
-                                        {
-                                            return;
-                                        }
-                                        // Ordering and focusing the panel can briefly send a resign
-                                        // notification. Check again once AppKit finishes the reveal.
-                                        let shown = shown.clone();
-                                        let dialog = dialog.clone();
-                                        let channel = channel.clone();
-                                        window.on_next_frame(move |window, _| {
-                                            if !window.is_window_active()
-                                                && !dialog.get()
-                                                && shown.replace(false)
-                                            {
-                                                hide(window);
-                                                let _ = channel.send(
-                                                    "quickTools.visibility",
-                                                    json!({"visible":false}),
-                                                );
-                                            }
-                                        });
-                                        window.refresh();
-                                    })
-                                    .detach();
-                                });
-                                panel = Some(window);
-                            }
-                            Err(error) => eprintln!("Quick Tools window: {error}"),
-                        }
+                        let send = self.send.clone();
+                        let state = state.clone();
+                        on_main(move || open(*config, active, send, state));
+                        loaded = true;
                     }
                     Request::Shortcut(message) => {
                         let source = message["source"].clone();
-                        let id = message["id"].as_str().unwrap_or("toggle");
-                        let show = id != "toggle" || !visible.get();
-                        visible.set(show);
+                        let id = message["id"].as_str().unwrap_or("toggle").to_owned();
+                        let show = id != "toggle" || !state.visible.load(Ordering::Acquire);
+                        state.visible.store(show, Ordering::Release);
                         let _ = events.send(
                             "quickTools.visibility",
                             json!({"visible":show,"source":source,"home":show && id == "toggle"}),
                         );
-                        if let Some(panel) = panel {
-                            let _ = panel.update(cx, |view, window, cx| {
+                        on_main(move || {
+                            with_panel(|panel| {
                                 if show {
-                                    present(window, view, cx, &mut previous_app);
+                                    panel.present();
                                 } else {
-                                    dismiss_panel(window, &mut previous_app);
+                                    panel.dismiss();
                                 }
                             });
-                        }
+                        });
                         if id != "toggle" {
                             let _ = events.send("quickTools.execute", json!({"id":id}));
                         }
                     }
                     Request::Show { settings } => {
-                        visible.set(true);
+                        state.visible.store(true, Ordering::Release);
                         let _ = events.send(
                             "quickTools.visibility",
                             json!({"visible":true,"home":true,"settings":settings}),
                         );
-                        if let Some(panel) = panel {
-                            let _ = panel.update(cx, |view, window, cx| {
-                                present(window, view, cx, &mut previous_app);
-                            });
-                        }
+                        on_main(|| {
+                            with_panel(Panel::present);
+                        });
                     }
                     Request::Hide { restore_focus } => {
-                        if !restore_focus {
-                            previous_app = None;
-                        }
-                        visible.set(false);
+                        state.visible.store(false, Ordering::Release);
                         let _ = events.send("quickTools.visibility", json!({"visible":false}));
-                        if let Some(panel) = panel {
-                            let _ = panel.update(cx, |_, window, _| {
-                                dismiss_panel(window, &mut previous_app)
+                        on_main(move || {
+                            with_panel(|panel| {
+                                if !restore_focus {
+                                    panel.previous_app.set(None);
+                                }
+                                panel.dismiss();
                             });
+                        });
+                    }
+                    Request::Resigned => {
+                        if !state.visible.load(Ordering::Acquire)
+                            || state.picking.load(Ordering::Acquire)
+                        {
+                            continue;
                         }
+                        // Ordering and focusing the panel can briefly resign key status.
+                        // The hop to the main thread checks again once AppKit finishes.
+                        let state = state.clone();
+                        let channel = events.clone();
+                        on_main(move || {
+                            with_panel(|panel| {
+                                if !panel.window.isKeyWindow()
+                                    && !state.picking.load(Ordering::Acquire)
+                                    && state.visible.swap(false, Ordering::AcqRel)
+                                {
+                                    panel.window.orderOut(None);
+                                    let _ = channel
+                                        .send("quickTools.visibility", json!({"visible":false}));
+                                }
+                            });
+                        });
                     }
                     Request::Error(value) => {
                         let _ = events.send("quickTools.error", value);
@@ -361,25 +308,21 @@ impl Control {
                             call.reject("Invalid Quick Tools height");
                             continue;
                         };
-                        if let Some(panel) = panel {
-                            match gpui::AnyWindowHandle::from(panel).update(cx, |_, window, cx| {
-                                position(window, Some(height as f64));
-                                // AppKit resizes synchronously while this GPUI window is borrowed.
-                                // Refresh its viewport after the native frame has been set.
-                                window.bounds_changed(cx);
-                            }) {
-                                Ok(()) => call.resolve(JsonValue::Null),
-                                Err(error) => call.reject(error.to_string()),
+                        on_main(move || {
+                            let resized = with_panel(|panel| {
+                                position(&panel.window, Some(height as f64));
+                            });
+                            match resized {
+                                Some(()) => call.resolve(JsonValue::Null),
+                                None => call.reject("Quick Tools window is unavailable"),
                             }
-                        } else {
-                            call.reject("Quick Tools window is unavailable");
-                        }
+                        });
                     }
                     Request::Settings(call, from_panel) => {
                         let destination = if from_panel {
                             self.main.lock().unwrap_or_else(|e| e.into_inner()).clone()
                         } else {
-                            panel.map(|_| events.clone())
+                            loaded.then(|| events.clone())
                         };
                         let result = destination
                             .ok_or_else(|| "Quick Tools is unavailable".to_string())
@@ -424,7 +367,7 @@ impl Control {
                             continue;
                         };
                         let token = uuid::Uuid::new_v4().to_string();
-                        let (reply, receive) = tokio::sync::oneshot::channel();
+                        let (reply, receive) = oneshot::channel();
                         self.releases
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -433,18 +376,13 @@ impl Control {
                             "quickTools.session.release",
                             json!({"sessionId":id,"token":token}),
                         );
-                        let settled = self
-                            .runtime
-                            .spawn(async move {
-                                tokio::time::timeout(std::time::Duration::from_secs(10), receive)
-                                    .await
-                            })
-                            .await;
+                        let settled =
+                            tokio::time::timeout(std::time::Duration::from_secs(10), receive).await;
                         self.releases
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .remove(&token);
-                        if sent.is_ok() && matches!(settled, Ok(Ok(Ok(true)))) {
+                        if sent.is_ok() && matches!(settled, Ok(Ok(true))) {
                             call.resolve(json!(true));
                         } else {
                             call.reject(
@@ -453,21 +391,13 @@ impl Control {
                         }
                     }
                     Request::PickPackage(call) => {
-                        picking.set(true);
-                        let choice = cx
-                            .update(|cx| {
-                                cx.prompt_for_paths(gpui::PathPromptOptions {
-                                    files: true,
-                                    directories: false,
-                                    multiple: false,
-                                    prompt: None,
-                                })
-                            })
-                            .await;
-                        picking.set(false);
+                        state.picking.store(true, Ordering::Release);
+                        let (chosen, choice) = oneshot::channel();
+                        on_main(move || choose_file(chosen));
+                        let choice = choice.await;
+                        state.picking.store(false, Ordering::Release);
                         match choice {
-                            Ok(Ok(Some(paths))) if !paths.is_empty() => {
-                                let file = paths[0].clone();
+                            Ok(Some(file)) => {
                                 let result = self
                                     .runtime
                                     .spawn_blocking(move || -> Result<String, String> {
@@ -490,9 +420,8 @@ impl Control {
                                     Err(error) => call.reject(error.to_string()),
                                 }
                             }
-                            Ok(Ok(_)) => call.resolve(JsonValue::Null),
-                            Ok(Err(error)) => call.reject(error.to_string()),
-                            Err(error) => call.reject(error.to_string()),
+                            Ok(None) => call.resolve(JsonValue::Null),
+                            Err(_) => call.reject("The file dialog is unavailable"),
                         }
                     }
                     Request::Assistant(call) => {
@@ -500,9 +429,17 @@ impl Control {
                             self.main.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                         {
                             let _ = channel.send("quickTools.assistant", call.data().clone());
-                            let _ = main.update(cx, |_, window, cx| {
-                                cx.activate(true);
-                                window.activate_window();
+                            with_running_view(|view| {
+                                let Some(mtm) = MainThreadMarker::new() else {
+                                    return;
+                                };
+                                NSApplication::sharedApplication(mtm).activate();
+                                if let Some(window) = view.view().window() {
+                                    if window.isMiniaturized() {
+                                        window.deminiaturize(None);
+                                    }
+                                    window.makeKeyAndOrderFront(None);
+                                }
                             });
                             call.resolve(json!(true));
                         } else {
@@ -511,96 +448,246 @@ impl Control {
                     }
                 }
             }
-        })
-        .detach();
+        });
     }
 }
-// Keep the search bar anchored while taller pages expand downwards.
-fn position(window: &gpui::Window, height: Option<f64>) {
-    use objc2_foundation::{NSPoint, NSRect, NSSize};
-    with_native_window(window, |native| unsafe {
-        let screen: *mut objc2::runtime::AnyObject = objc2::msg_send![native, screen];
-        if screen.is_null() {
-            return;
-        }
-        let area: NSRect = objc2::msg_send![screen, visibleFrame];
-        let current: NSRect = objc2::msg_send![native, frame];
-        let height = height.unwrap_or(current.size.height).min(area.size.height);
-        let width = 680_f64.min(area.size.width);
-        let inset = ((area.size.height - 400.) / 2.)
-            .min(area.size.height - 560.)
-            .max(0.);
-        let frame = NSRect::new(
-            NSPoint::new(
-                area.origin.x + (area.size.width - width) / 2.,
-                area.origin.y + area.size.height - inset - height,
-            ),
-            NSSize::new(width, height),
-        );
-        if frame != current {
-            let _: () = objc2::msg_send![native, setFrame: frame, display: true];
-        }
-    });
-}
 
-// AppKit activates both the key and main windows. Assign both roles to the
-// panel first so the workbench keeps its place behind the user's other windows.
-fn present(
-    window: &mut gpui::Window,
-    view: &AppView,
-    cx: &mut gpui::App,
-    previous: &mut Option<i32>,
-) {
-    use objc2_app_kit::{NSRunningApplication, NSWorkspace};
-    let app = NSRunningApplication::currentApplication();
-    if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
-        if front.processIdentifier() != app.processIdentifier() {
-            *previous = Some(front.processIdentifier());
-        } else if !window.is_window_active() {
-            *previous = None;
-        }
+/// Closes the panel and stops its engine. The main-thread barrier between
+/// connections and the end of the app call this, so no engine outlives its Host.
+pub fn close_all() {
+    if let Some(panel) = PANEL.with(|panel| panel.borrow_mut().take()) {
+        panel.view.stop();
+        panel.window.orderOut(None);
     }
-    position(window, None);
-    with_native_window(window, |native| unsafe {
-        let _: () = objc2::msg_send![native, makeKeyAndOrderFront: std::ptr::null::<objc2::runtime::AnyObject>()];
-        let _: () = objc2::msg_send![native, makeMainWindow];
-    });
-    cx.activate(true);
-    window.activate_window();
-    window.focus(&view.focus_handle(cx), cx);
 }
 
-fn dismiss_panel(window: &gpui::Window, previous: &mut Option<i32>) {
-    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-    if let Some(pid) = previous.take() {
-        if NSRunningApplication::currentApplication().isActive() && window.is_window_active() {
-            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-                app.activateWithOptions(NSApplicationActivationOptions::empty());
+/// Runs `f` on AppKit's main thread while the workbench runs.
+fn on_main(f: impl FnOnce() + Send + 'static) {
+    with_running_view(move |_| f());
+}
+
+struct Panel {
+    window: Retained<QuickPanel>,
+    view: Rc<AppView>,
+    _dismiss: super::dismiss::DismissObservers,
+    /// The app to give focus back to when the panel is dismissed.
+    previous_app: Cell<Option<i32>>,
+}
+
+thread_local! {
+    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+}
+
+fn with_panel<T>(f: impl FnOnce(&Panel) -> T) -> Option<T> {
+    PANEL.with(|panel| panel.borrow().as_ref().map(f))
+}
+
+struct PanelIvars {
+    active: watch::Sender<bool>,
+    send: mpsc::Sender<Request>,
+}
+
+define_class!(
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MakaQuickToolsPanel"]
+    #[ivars = PanelIvars]
+    struct QuickPanel;
+    unsafe impl NSObjectProtocol for QuickPanel {}
+    impl QuickPanel {
+        // A panel without a visible title bar still takes the keyboard.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool { true }
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main_window(&self) -> bool { true }
+        #[unsafe(method(becomeKeyWindow))]
+        fn become_key_window(&self) {
+            // SAFETY: NSWindow's implementation on this window's main thread.
+            unsafe { let _: () = msg_send![super(self), becomeKeyWindow]; }
+            self.ivars().active.send_replace(true);
+        }
+        #[unsafe(method(resignKeyWindow))]
+        fn resign_key_window(&self) {
+            // SAFETY: NSWindow's implementation on this window's main thread.
+            unsafe { let _: () = msg_send![super(self), resignKeyWindow]; }
+            if self.ivars().active.send_replace(false) {
+                let _ = self.ivars().send.try_send(Request::Resigned);
             }
         }
+        // Command-W hides the panel; it lives as long as its connection.
+        #[unsafe(method(performClose:))]
+        fn perform_close(&self, _sender: Option<&NSObject>) {
+            let _ = self.ivars().send.try_send(Request::Hide { restore_focus: true });
+        }
     }
-    hide(window);
-}
+);
 
-fn hide(window: &gpui::Window) {
-    with_native_window(window, |native| unsafe {
-        let _: () =
-            objc2::msg_send![native, orderOut: std::ptr::null::<objc2::runtime::AnyObject>()];
+fn open(
+    config: EngineConfig,
+    active: watch::Sender<bool>,
+    send: mpsc::Sender<Request>,
+    state: Arc<Shared>,
+) {
+    close_all();
+    let mtm = MainThreadMarker::new().expect("the Quick Tools panel runs on AppKit's main thread");
+    let options = AppOptions {
+        app_id: "org.apache.maka.quick-tools".into(),
+        title: "Maka Quick Tools".into(),
+        size: (WIDTH as i32, HEIGHT as i32),
+        limits: Limits::standalone(),
+        data_dir: config.data_dir.clone(),
+        ..Default::default()
+    };
+    let frame = NSRect::new(NSPoint::new(0., 0.), NSSize::new(WIDTH, HEIGHT));
+    let dismiss_send = send.clone();
+    let allocated = QuickPanel::alloc(mtm).set_ivars(PanelIvars { active, send });
+    // SAFETY: NSWindow's designated initializer for our initialized subclass.
+    let window: Retained<QuickPanel> = unsafe {
+        msg_send![
+            super(allocated),
+            initWithContentRect: frame,
+            styleMask: NSWindowStyleMask::Titled
+                | NSWindowStyleMask::FullSizeContentView
+                | NSWindowStyleMask::NonactivatingPanel,
+            backing: NSBackingStoreType::Buffered,
+            defer: false
+        ]
+    };
+    // SAFETY: PANEL owns the window until close_all drops it.
+    unsafe {
+        window.setReleasedWhenClosed(false);
+    }
+    window.setTitle(&NSString::from_str(&options.title));
+    window.setTitlebarAppearsTransparent(true);
+    window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+    for kind in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = window.standardWindowButton(kind) {
+            button.setHidden(true);
+        }
+    }
+    window.setMovable(false);
+    // The panel hides itself when it loses focus; AppKit hiding it behind our
+    // back on deactivation would leave the visibility state stale.
+    window.setHidesOnDeactivate(false);
+    window.setLevel(POP_UP_LEVEL);
+    window.setAnimationBehavior(NSWindowAnimationBehavior::UtilityWindow);
+    window.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    let view = AppView::new(mtm, options);
+    window.setContentView(Some(&view.view()));
+    view.load_with_config(config);
+    let dismiss = super::dismiss::DismissObservers::new(window.windowNumber(), move || {
+        if state.visible.load(Ordering::Acquire) && !state.picking.load(Ordering::Acquire) {
+            let _ = dismiss_send.try_send(Request::Hide {
+                restore_focus: false,
+            });
+        }
+    });
+    PANEL.with(|panel| {
+        *panel.borrow_mut() = Some(Panel {
+            window,
+            view,
+            _dismiss: dismiss,
+            previous_app: Cell::new(None),
+        });
     });
 }
 
-fn with_native_window(window: &gpui::Window, f: impl FnOnce(*mut objc2::runtime::AnyObject)) {
-    use raw_window_handle::RawWindowHandle;
-    if let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window) {
-        if let RawWindowHandle::AppKit(handle) = handle.as_raw() {
-            // SAFETY: GPUI owns this live NSView; only the UI-thread callbacks above call us.
-            unsafe {
-                let view = handle.ns_view.as_ptr().cast::<objc2::runtime::AnyObject>();
-                let native: *mut objc2::runtime::AnyObject = objc2::msg_send![view, window];
-                if !native.is_null() {
-                    f(native);
+impl Panel {
+    // AppKit activates both the key and main windows. Assign both roles to the
+    // panel first so the workbench keeps its place behind the user's other windows.
+    fn present(&self) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let app = NSRunningApplication::currentApplication();
+        if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+            if front.processIdentifier() != app.processIdentifier() {
+                self.previous_app.set(Some(front.processIdentifier()));
+            } else if !self.window.isKeyWindow() {
+                self.previous_app.set(None);
+            }
+        }
+        position(&self.window, None);
+        self.window.makeKeyAndOrderFront(None);
+        self.window.makeMainWindow();
+        NSApplication::sharedApplication(mtm).activate();
+        if let Some(root) = self.view.view().subviews().firstObject() {
+            self.window.makeFirstResponder(Some(&root));
+        }
+    }
+
+    fn dismiss(&self) {
+        if let Some(pid) = self.previous_app.take() {
+            if NSRunningApplication::currentApplication().isActive() && self.window.isKeyWindow() {
+                if let Some(app) =
+                    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                {
+                    app.activateWithOptions(NSApplicationActivationOptions::empty());
                 }
             }
         }
+        self.window.orderOut(None);
     }
+}
+
+// Keep the search bar anchored while taller pages expand downwards.
+fn position(window: &NSWindow, height: Option<f64>) {
+    let Some(screen) = window.screen() else {
+        return;
+    };
+    let area = screen.visibleFrame();
+    let current = window.frame();
+    let height = height.unwrap_or(current.size.height).min(area.size.height);
+    let width = WIDTH.min(area.size.width);
+    let inset = ((area.size.height - HEIGHT) / 2.)
+        .min(area.size.height - 560.)
+        .max(0.);
+    let frame = NSRect::new(
+        NSPoint::new(
+            area.origin.x + (area.size.width - width) / 2.,
+            area.origin.y + area.size.height - inset - height,
+        ),
+        NSSize::new(width, height),
+    );
+    if frame != current {
+        window.setFrame_display(frame, true);
+    }
+}
+
+/// Asks for one plugin package. The dialog sits above the panel's level.
+/// Runs the package picker as a sheet on the panel. A sheet needs no application
+/// activation, so the main window stays put, and AppKit returns key status to
+/// the panel when the sheet ends; the queued resign then finds a key panel.
+fn choose_file(done: oneshot::Sender<Option<PathBuf>>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        let _ = done.send(None);
+        return;
+    };
+    let Some(window) = with_panel(|panel| panel.window.clone()) else {
+        let _ = done.send(None);
+        return;
+    };
+    let dialog = NSOpenPanel::openPanel(mtm);
+    dialog.setCanChooseFiles(true);
+    dialog.setCanChooseDirectories(false);
+    dialog.setAllowsMultipleSelection(false);
+    let done = Cell::new(Some(done));
+    let chosen = dialog.clone();
+    let handler = block2::RcBlock::new(move |response: NSModalResponse| {
+        let file = (response == NSModalResponseOK)
+            .then(|| chosen.URL().and_then(|url| url.path()))
+            .flatten()
+            .map(|path| PathBuf::from(path.to_string()));
+        if let Some(done) = done.take() {
+            let _ = done.send(file);
+        }
+    });
+    dialog.beginSheetModalForWindow_completionHandler(&window, &handler);
 }

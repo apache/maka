@@ -17,25 +17,15 @@
  * under the License.
  */
 
-import { textTooltip } from "./ui";
-import {
-  Canvas,
-  computed,
-  effect,
-  inputAction,
-  signal,
-  Text,
-  View,
-  Overlay,
-  List,
-} from "nsh";
-import type { ListRef } from "nsh";
-import { Button } from "nsh/base";
-import { reduceMotion, platform, windowSize } from "nsh";
-import type { Position } from "./history";
-import { C, controlStyle, captionTextStyle, isDark } from "./ui";
-import { Icon } from "./Icon";
-import { tr } from "./locale";
+import { textTooltip } from './ui';
+import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
+import type { ListRef } from 'nsh';
+import { Button } from 'nsh/base';
+import { reduceMotion, platform, windowSize } from 'nsh';
+import type { Position } from './history';
+import { C, controlStyle, captionTextStyle, isDark } from './ui';
+import { Icon } from './Icon';
+import { tr } from './locale';
 
 const markPitch = () => (platform.isTerminal ? 16 : 12);
 const railInset = platform.isTerminal ? 0 : 6;
@@ -48,14 +38,14 @@ function RailFade(props: { bottom: boolean }) {
       accessibilityElementsHidden
       style={[
         {
-          position: "absolute",
+          position: 'absolute',
           left: 0,
           top: props.bottom ? undefined : 0,
           bottom: props.bottom ? 0 : undefined,
           width: railWidth(),
           height: 24,
         },
-        { pointerEvents: "none" },
+        { pointerEvents: 'none' },
       ]}
       draw={(cx) => {
         const fade = cx.createLinearGradient(0, 0, 0, 24);
@@ -72,9 +62,9 @@ export type TurnNavigationItem = {
   turnId: string;
   label: string;
   anchor:
-    | { kind: "loaded"; position: Position }
+    | { kind: 'loaded'; position: Position }
     | {
-        kind: "landmark";
+        kind: 'landmark';
         through: number;
         position: Position;
         lastPosition: Position;
@@ -94,8 +84,8 @@ function NavigationMark(props: {
   return (
     <View onMouseEnter={props.hover} onMouseLeave={props.leave}>
       <Button
-        accessibilityLabel={tr("Jump to turn: {label}", {
-          label: props.item().label || tr("Recorded turn"),
+        accessibilityLabel={tr('Jump to turn: {label}', {
+          label: props.item().label || tr('Recorded turn'),
         })}
         tooltip={
           <Overlay
@@ -112,31 +102,24 @@ function NavigationMark(props: {
               backgroundColor: C.surface,
               borderWidth: 1,
               borderColor: C.line,
-              pointerEvents: "none",
+              pointerEvents: 'none',
             }}
           >
             <Text
               style={[
-                { ...captionTextStyle, color: C.text, fontWeight: "500" },
+                { ...captionTextStyle, color: C.text, fontWeight: '500' },
                 { numberOfLines: 1 },
               ]}
             >
-              {props.item().label || tr("Recorded turn")}
+              {props.item().label || tr('Recorded turn')}
             </Text>
             <If when={props.preview()}>
-              <Text
-                style={[
-                  { ...captionTextStyle, color: C.muted },
-                  { numberOfLines: 2 },
-                ]}
-              >
+              <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 2 }]}>
                 {props.preview()}
               </Text>
             </If>
             <If when={props.busy}>
-              <Text style={{ ...captionTextStyle, color: C.muted }}>
-                {tr("Navigating…")}
-              </Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Navigating…')}</Text>
             </If>
           </Overlay>
         }
@@ -145,15 +128,15 @@ function NavigationMark(props: {
         style={{
           height: markPitch(),
           width: railWidth(),
-          alignItems: "flex-start",
+          alignItems: 'flex-start',
           paddingLeft: platform.isTerminal ? 0 : 7,
-          justifyContent: "center",
+          justifyContent: 'center',
         }}
         focusStyle={{ backgroundColor: C.raised }}
       >
         <If when={platform.isTerminal}>
           <Text style={{ color: props.active ? C.text : C.line }}>
-            {props.busy ? "◌" : props.active ? "●" : "━"}
+            {props.busy ? '◌' : props.active ? '●' : '━'}
           </Text>
         </If>
         <If when={!platform.isTerminal}>
@@ -163,11 +146,17 @@ function NavigationMark(props: {
               width: [19, 14, 9][props.distance] ?? 6,
               borderRadius: 1,
               backgroundColor: isDark()
-                ? (props.active || props.distance === 0 ? "#ffffff" : C.muted)
-                : (props.distance === 0 ? "#383b43" : props.active ? "#72757d" : "#b3b5ba"),
-              transitionProperty: "width",
+                ? props.active || props.distance === 0
+                  ? '#ffffff'
+                  : C.muted
+                : props.distance === 0
+                  ? '#383b43'
+                  : props.active
+                    ? '#72757d'
+                    : '#b3b5ba',
+              transitionProperty: 'width',
               transitionDuration: reduceMotion() ? 0 : 150,
-              transitionTimingFunction: "ease-out",
+              transitionTimingFunction: 'ease-out',
             }}
           />
         </If>
@@ -187,22 +176,16 @@ export function TurnNavigation(props: {
   cancel(): void;
 }) {
   const hovered = signal<string | null>(null);
-  const hoveredIndex = computed(() =>
-    props.items().findIndex((item) => item.turnId === hovered()),
-  );
+  const hoveredIndex = computed(() => props.items().findIndex((item) => item.turnId === hovered()));
   const height = signal(0);
   const offset = signal(0);
-  const contentHeight = computed(
-    () => props.items().length * markPitch() + railInset * 2,
-  );
+  const contentHeight = computed(() => props.items().length * markPitch() + railInset * 2);
   const frameHeight = computed(() => {
     // Bound the instrument's geometry, never its item count or history source.
     const available = Math.min(420, Math.max(0, height() - railMargin * 2));
     return Math.min(
       contentHeight(),
-      platform.isTerminal
-        ? Math.floor(available / markPitch()) * markPitch()
-        : available,
+      platform.isTerminal ? Math.floor(available / markPitch()) * markPitch() : available,
     );
   });
   const activeIndex = computed(() => {
@@ -235,13 +218,13 @@ export function TurnNavigation(props: {
   return (
     <View
       onLayout={({ bounds: frame }) => height.set(frame.size.height)}
-      style={{ width: railWidth(), minHeight: 0, justifyContent: "center" }}
+      style={{ width: railWidth(), minHeight: 0, justifyContent: 'center' }}
     >
       <View style={{ width: railWidth(), height: frameHeight() }}>
         <List
           ref={rail}
           testID="turn-navigation"
-          accessibilityLabel={tr("Turn navigation")}
+          accessibilityLabel={tr('Turn navigation')}
           each={props.items()}
           keyExtractor={(item) => item.turnId}
           estimatedItemSize={markPitch()}
@@ -257,15 +240,10 @@ export function TurnNavigation(props: {
               active={
                 platform.isTerminal
                   ? props.active() === item().turnId
-                  : (props.visible?.().has(item().turnId) ??
-                    props.active() === item().turnId)
+                  : (props.visible?.().has(item().turnId) ?? props.active() === item().turnId)
               }
-              distance={
-                hoveredIndex() < 0
-                  ? Infinity
-                  : Math.abs(index() - hoveredIndex())
-              }
-              preview={() => props.preview?.(item().turnId) ?? ""}
+              distance={hoveredIndex() < 0 ? Infinity : Math.abs(index() - hoveredIndex())}
+              preview={() => props.preview?.(item().turnId) ?? ''}
               hover={() => hovered.set(item().turnId)}
               leave={() => {
                 if (hovered() === item().turnId) hovered.set(null);
@@ -278,28 +256,24 @@ export function TurnNavigation(props: {
         <If when={!platform.isTerminal && offset() > 0}>
           <RailFade bottom={false} />
         </If>
-        <If
-          when={
-            !platform.isTerminal && offset() + frameHeight() < contentHeight()
-          }
-        >
+        <If when={!platform.isTerminal && offset() + frameHeight() < contentHeight()}>
           <RailFade bottom />
         </If>
         <If when={props.busy()}>
           <Button
-            accessibilityLabel={tr("Cancel turn navigation")}
-            tooltip={textTooltip(() => tr("Cancel navigation"))}
+            accessibilityLabel={tr('Cancel turn navigation')}
+            tooltip={textTooltip(() => tr('Cancel navigation'))}
             onPress={props.cancel}
             style={{
-              position: "absolute",
+              position: 'absolute',
               right: 0,
-              top: "100%",
+              top: '100%',
               marginTop: platform.isTerminal ? 0 : 8,
               width: railWidth(),
               height: platform.isTerminal ? 32 : markPitch(),
               borderRadius: 8,
-              alignItems: "center",
-              justifyContent: "center",
+              alignItems: 'center',
+              justifyContent: 'center',
               backgroundColor: C.card,
             }}
             hoverStyle={{ backgroundColor: C.cardRaised }}
@@ -317,34 +291,28 @@ export function TurnNavigation(props: {
  * `paused`: the view is already at the end but stopped following live output
  * (an expanded tool is being read), so the button resumes rather than descends.
  */
-export function ReturnToLatest(props: {
-  visible: boolean;
-  paused?: boolean;
-  activate(): void;
-}) {
+export function ReturnToLatest(props: { visible: boolean; paused?: boolean; activate(): void }) {
   return (
     <If when={props.visible}>
       <View
         style={[
           {
-            position: "absolute",
+            position: 'absolute',
             left: 0,
             right: 0,
             bottom: 8,
-            alignItems: "center",
+            alignItems: 'center',
           },
-          { pointerEvents: "box-none" },
+          { pointerEvents: 'box-none' },
         ]}
       >
         <Button
-          accessibilityLabel={
-            props.paused ? tr("Resume following") : tr("Return to latest")
-          }
+          accessibilityLabel={props.paused ? tr('Resume following') : tr('Return to latest')}
           onPress={props.activate}
           style={{
             ...controlStyle,
-            flexDirection: "row",
-            alignItems: "center",
+            flexDirection: 'row',
+            alignItems: 'center',
             gap: 8,
             backgroundColor: C.cardRaised,
           }}
@@ -355,7 +323,7 @@ export function ReturnToLatest(props: {
             <Icon name="latest" color={C.secondary} />
           </If>
           <Text style={{ ...captionTextStyle, color: C.text }}>
-            {props.paused ? tr("Resume following") : tr("Latest")}
+            {props.paused ? tr('Resume following') : tr('Latest')}
           </Text>
         </Button>
       </View>

@@ -70,7 +70,11 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
     let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
-    let config = shell.attach(first.config.clone());
+    let (quick, quick_requests) =
+        crate::quick_tools::panel::Control::new(runtime.handle(), directory.clone());
+    let mut config = shell.attach(first.config.clone());
+    quick.attach(&mut config);
+    quick.clone().run(quick_requests);
     carry_out(requests, &runtime);
     let windows = permission_requests(&first);
     refuse_reloads(
@@ -83,7 +87,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         runtime.handle(),
     );
     let (quit, quitting) = watch::channel(false);
-    let following = runtime.spawn(follow(first, root, shell, windows, quitting));
+    let following = runtime.spawn(follow(first, root, shell, quick, windows, quitting));
     run_app_with_config(
         config,
         AppOptions {
@@ -99,6 +103,7 @@ pub fn run(first: Connection, root: Root, runtime: Runtime) -> Result<(), String
         },
     );
     permissions::close_all();
+    crate::quick_tools::panel::close_all();
     quit.send_replace(true);
     runtime
         .block_on(following)
@@ -117,6 +122,7 @@ async fn follow(
     current: Connection,
     root: Root,
     shell: Shell,
+    quick: crate::quick_tools::panel::Control,
     mut windows: mpsc::UnboundedReceiver<SystemPermissionWindow>,
     mut quit: watch::Receiver<bool>,
 ) {
@@ -159,6 +165,7 @@ async fn follow(
         let (closed, closing) = tokio::sync::oneshot::channel();
         with_running_view(move |view| {
             permissions::close_all();
+            crate::quick_tools::panel::close_all();
             view.stop();
             let _ = closed.send(());
         });
@@ -217,6 +224,7 @@ async fn follow(
             .take_requests();
         refuse_reloads(reloading, &tokio::runtime::Handle::current());
         configuration = shell.attach(config);
+        quick.attach(&mut configuration);
         let config = configuration.clone();
         with_running_view(move |view| view.load_with_config(config));
     }
