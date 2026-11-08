@@ -24,7 +24,7 @@ pub fn start(
             let file = directory.join("default/quick-tools/shortcuts.json");
             let bindings = match tokio::fs::read(&file).await {
                 Ok(bytes) => serde_json::from_slice::<JsonValue>(&bytes).map_err(std::io::Error::other)?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({"toggle":"Alt+Space"}),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
                 Err(e) => return Err(e),
             };
             stdin.write_all(format!("{}\n",json!({"request":"startup","bindings":bindings})).as_bytes()).await?;

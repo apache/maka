@@ -600,12 +600,11 @@ fn open(
 }
 
 impl Panel {
-    // AppKit activates both the key and main windows. Assign both roles to the
-    // panel first so the workbench keeps its place behind the user's other windows.
+    // Like Spotlight or Raycast, the panel takes the keyboard without
+    // activating Maka: a nonactivating panel becomes key while the user's
+    // app stays frontmost, so the workbench never comes forward and the
+    // previous app keeps its menu bar and focus.
     fn present(&self) {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
         let app = NSRunningApplication::currentApplication();
         if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
             if front.processIdentifier() != app.processIdentifier() {
@@ -616,8 +615,6 @@ impl Panel {
         }
         position(&self.window, None);
         self.window.makeKeyAndOrderFront(None);
-        self.window.makeMainWindow();
-        NSApplication::sharedApplication(mtm).activate();
         if let Some(root) = self.view.view().subviews().firstObject() {
             self.window.makeFirstResponder(Some(&root));
         }

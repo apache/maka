@@ -83,7 +83,7 @@ export class QuickTools {
     return task;
   }
   private web = new WebPlugins();
-  private shortcuts: Record<string, string> = { toggle: 'Alt+Space' };
+  private shortcuts: Record<string, string> = {};
   private words = new Map<string, string[]>();
   private preferences: Record<string, Preference> = {};
   history: InputHistory = { search: [], assistant: [] };
@@ -176,7 +176,7 @@ export class QuickTools {
     await this.packages.start();
     this.history = normalizeInputHistory(await storage.read('input-history', {}));
     this.preferences = await storage.read('preferences', {});
-    this.shortcuts = await storage.read('shortcuts', { toggle: 'Alt+Space' });
+    this.shortcuts = await storage.read('shortcuts', {});
     for (const builtin of builtins.filter(
       (builtin) =>
         !this.packages.records.some((record) => record.bundle.manifest.id === builtin.manifest.id),
