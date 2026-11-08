@@ -264,6 +264,7 @@ pub(crate) fn translation(x: f64, y: f64, z: f64) -> Matrix {
 }
 
 /// Where `(x, y)` of the plane lands under row-vector transform `m` (`None` behind the viewer).
+#[cfg(feature = "terminal")]
 pub(crate) fn map_point(m: &Matrix, x: f32, y: f32) -> Option<(f32, f32)> {
     let m = &m.0;
     let (x, y) = (x as f64, y as f64);
@@ -278,6 +279,7 @@ pub(crate) fn map_point(m: &Matrix, x: f32, y: f32) -> Option<(f32, f32)> {
 }
 
 /// The axis-aligned bounds of `bounds` once mapped by `m`.
+#[cfg(feature = "terminal")]
 pub(crate) fn map_bounds(m: &Matrix, bounds: Bounds<Points>) -> Option<Bounds<Points>> {
     let (x, y) = (bounds.origin.x.0, bounds.origin.y.0);
     let (w, h) = (bounds.size.width.0, bounds.size.height.0);
@@ -2040,6 +2042,7 @@ impl NshView {
 
     /// The axis-aligned box of this view (in its own coordinates) left in sight
     /// by clipping ancestors below the surface root.
+    #[cfg(feature = "terminal")]
     pub(crate) fn visible_bounds(&self) -> Bounds<Points> {
         let size = self.ns().bounds().size;
         let (w, h) = (size.width as f32, size.height as f32);
