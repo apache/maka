@@ -420,9 +420,8 @@ pub(super) fn desktop_composing_escape() {
     };
 
     const DESKTOP_APP: &str = r#"
-import { mount, signal, View, keymap } from "nsh";
+import { host, keymap, mount, signal, View } from "nsh";
 import { Dialog, Input } from "nsh/base";
-import { host } from "nsh/host";
 
 function App() {
   const open = signal(true);
@@ -486,7 +485,13 @@ mount(App);
     window.setContentView(Some(&view.view()));
 
     let code = nsh_bundler::compile_module("DesktopEscape.tsx", DESKTOP_APP, &[]).unwrap();
-    let mut config = EngineConfig::new(App::Js(Bundle::source(code)));
+    let mut policy = nsh_engine::Policy::default();
+    policy
+        .declared
+        .get_or_insert_default()
+        .host
+        .push("log".into());
+    let mut config = EngineConfig::new(App::Js(Bundle::source(code).with_policy(policy)));
     config.ui_sets = vec![nsh_base::registry()];
     config.host = view.host();
     view.load_with_config(config);
