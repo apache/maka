@@ -1627,10 +1627,11 @@ impl NshView {
         if ns.window().is_none() || ns.isHiddenOrHasHiddenAncestor() || !self.can_target() {
             return false;
         }
-        if self
-            .try_state()
-            .is_none_or(|s| s.props.pointer_events == PointerEvents::BoxNone)
-        {
+        // An input's own `box-none` lets presses through to what it covers
+        // (RichEditor's caret sink); its keyboard focus does not depend on it.
+        if self.try_state().is_none_or(|s| {
+            s.kind != ViewKind::Input && s.props.pointer_events == PointerEvents::BoxNone
+        }) {
             return false;
         }
         let mut parent = self.parent_view();
