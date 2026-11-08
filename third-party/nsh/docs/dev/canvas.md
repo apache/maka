@@ -42,7 +42,10 @@ redraw (`Damage::All`) when it cannot bound the change, and the platform replays
 the pixels are those of a full redraw. Linux rasterizes each canvas into tiled textures (`canvas.rs` `Raster`) and
 replays only the damaged area; Linux and macOS (`canvas.rs` `Prefix`) also keep what is painted before the first
 animated operation, for long drawings; canvases macOS repaints often are replayed by Core Animation on its threads (`canvas.rs` `Cadence`)
-(`docs/dev/macos.md`). On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
+(`docs/dev/macos.md`). macOS can split a small source-over animated suffix of a shorter drawing into its own
+content layer, retaining the preceding picture between drawing changes. `DamageScan::painted_after` bounds all
+suffix paints in the preceding state; unsupported or large suffixes keep the whole-canvas path.
+On Linux, a canvas out of sight (outside a clipping ancestor or the window) is not
 drawn until it comes into sight: its animations ask for no frames. Android, the web runtime and the GPUI backend (which rasterizes the drawing, text outlines
 included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `canvas.rs`) still redraw the
 whole canvas. Numbers:

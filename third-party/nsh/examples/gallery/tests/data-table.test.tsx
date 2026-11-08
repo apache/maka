@@ -5,10 +5,21 @@ import { expect, open, test } from "nsh/test";
 
 const desktop = { platform: "macos", width: 1000, height: 700 } as const;
 
-test("the DataTable demo makes only the cells in view, and selects a row", async () => {
+/**
+ * The DataTable demo with its quotes still: a tick every 33 ms keeps the
+ * app from settling, so each step in a real window would wait it out.
+ */
+const still = async () => {
   const app = await open("../App.tsx", desktop);
   await app.press("role:button[DataTable]");
   await app.waitFor("Apple 1");
+  await app.press("label:Toggle live updates");
+  await app.waitFor("Live off");
+  return app;
+};
+
+test("the DataTable demo makes only the cells in view, and selects a row", async () => {
+  const app = await still();
   // The first rows and columns are made; the last ones, far away, are not.
   expect(app.shows("Price")).toBe(true);
   expect(app.shows("Tencent 1000000")).toBe(false);
@@ -26,9 +37,7 @@ test("the DataTable demo makes only the cells in view, and selects a row", async
 });
 
 test("the DataTable demo selects cells and columns", async () => {
-  const app = await open("../App.tsx", desktop);
-  await app.press("role:button[DataTable]");
-  await app.waitFor("Apple 1");
+  const app = await still();
   await app.press("Cells");
   // The ID data column already supplies numbers; cell mode adds no row-number gutter.
   expect(app.count("text:7")).toBe(1);
@@ -44,9 +53,7 @@ test("the DataTable demo selects cells and columns", async () => {
 });
 
 test("the DataTable demo sorts with a title's sort button and scrolls to a row", async () => {
-  const app = await open("../App.tsx", desktop);
-  await app.press("role:button[DataTable]");
-  await app.waitFor("Apple 1");
+  const app = await still();
   // Ascending, then descending: the app serves the rows the other way up.
   await app.press("id:sort:id");
   await app.press("id:sort:id");
@@ -70,11 +77,8 @@ test("the DataTable demo's quotes tick live, and stop", async () => {
 });
 
 test("the DataTable demo serves the rows a far scroll lands on", async () => {
-  const app = await open("../App.tsx", desktop);
-  await app.press("role:button[DataTable]");
-  await app.waitFor("Apple 1");
   // The rows served, not the ticks, are what this looks at.
-  await app.press("label:Toggle live updates");
+  const app = await still();
   await app.press("label:Go to row 500000");
   await app.waitFor("text:/rows 500000/");
   // Whatever the number of rows in view, the page served starts at a
@@ -93,16 +97,15 @@ test("the DataTable demo serves the rows a far scroll lands on", async () => {
   }
 });
 
-test("the DataTable demo's horizontal bar drags the columns, and back", async () => {
-  const app = await open("../App.tsx", desktop);
-  await app.press("role:button[DataTable]");
-  await app.waitFor("Apple 1");
-  // The desktops' bar under the table leads while it is dragged: the
-  // table follows it without sending its echoes back.
-  await app.drag("id:data-table-scrollbar", { x: -900, y: 0 });
+test("the DataTable demo's horizontal bar scrolls the columns, and back", async () => {
+  const app = await still();
+  // The desktops' bar under the table leads while it scrolls: the table
+  // follows it without sending its echoes back. A scroll, as a trackpad or
+  // a wheel gives it: a mouse drags no desktop scroll view's content.
+  await app.scroll("id:data-table-scrollbar", 900);
   await app.waitFor("TTM");
   expect(app.shows("Price")).toBe(false);
-  await app.drag("id:data-table-scrollbar", { x: 900, y: 0 });
+  await app.scroll("id:data-table-scrollbar", -900);
   await app.waitFor("Price");
   expect(app.shows("TTM")).toBe(false);
 });

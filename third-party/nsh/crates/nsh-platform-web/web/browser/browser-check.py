@@ -1,22 +1,26 @@
-"""Real-browser lifecycle checks. Requires Python Playwright and Chromium.
+"""Player lifecycle checks on Chromium, Firefox and WebKit; Chromium interaction checks.
 
-Run with --wasm pointing to a browser (or browser-tests) Wasm build.
+Requires Python Playwright and its browser binaries. Use --wasm with a browser
+(or browser-tests) Wasm build. Failures are saved under .nsh/browser-tests.
 """
 import argparse
 import asyncio
 import functools
 import http.server
+import json
 import pathlib
 import shutil
 import tempfile
 import threading
+import traceback
+from contextlib import contextmanager
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError, async_playwright
 
 
 async def check_scroll_content(page):
     """A scroll view's contentStyle / contentClass style a container its children go into."""
-    from playwright.async_api import TimeoutError
     warnings = []
     listen = lambda message: warnings.append(message.text)
     page.on("console", listen)
@@ -60,7 +64,23 @@ async def check_scroll_content(page):
     await page.evaluate("player.stop()")
 
 
-async def check(wasm, chrome):
+APP_SOURCE = '''import {mount,signal,cleanup,host} from 'nsh';
+import {element,prop,append,insert} from 'nsh:rt';
+const run=parent.harness.active;
+mount(()=>{
+  const count=signal(0),root=element('view'),label=element('text');
+  prop(root,'style',{width:240,height:60});prop(label,'testID','count');
+  insert(label,()=>`${run}:${count()}`);append(root,label);
+  host.on('ping',()=>{count.update(n=>n+1);parent.harness.events.push(`ping:${run}`);});
+  cleanup(()=>parent.harness.events.push(`cleaned:${run}`));
+  parent.harness.events.push(`mounted:${run}`);
+  return root;
+});
+'''
+
+
+@contextmanager
+def serve(wasm):
     with tempfile.TemporaryDirectory(prefix="nsh-browser-") as directory:
         root = pathlib.Path(directory)
         source = pathlib.Path(__file__).resolve().parent.parent
@@ -80,10 +100,28 @@ append(root,view);return root;});
 ''')
         (root / "index.html").write_text('''<!doctype html><style>html,body,#app{height:100%;margin:0}</style><div id="app"></div><script type="module">
 import {createPlayer} from './nsh.js';
-window.errors=[]; window.player=await createPlayer(document.querySelector('#app'),{wasm:'./nsh.wasm',onError:e=>errors.push(e)});
+window.errors=[];
+window.harness={events:[],gates:{},outcomes:{},expectedReports:[]};
+window.player=await createPlayer(document.querySelector('#app'),{wasm:'./nsh.wasm',onError:e=>errors.push(String(e))});
 window.ready=true;
 </script>''')
-        (root / "app.js").write_text('''import {host,nextTick,View,signal,mount,cleanup} from 'nsh';
+        (root / "app.js").write_text(APP_SOURCE)
+        (root / "hot.js").write_text('''import "nsh:hot";
+import * as nsh from "nsh";
+import * as rt from "nsh:rt";
+__nsh_hot.define("App.js",function(module,exports,require){
+''' + APP_SOURCE.replace(
+            "import {mount,signal,cleanup,host} from 'nsh';",
+            'const {mount,signal,cleanup,host}=require("nsh");').replace(
+            "import {element,prop,append,insert} from 'nsh:rt';",
+            'const {element,prop,append,insert}=require("nsh:rt");') + '''
+});
+__nsh_hot.start("App.js",{"nsh":{...nsh,__esModule:true},"nsh:rt":{...rt,__esModule:true}});
+''')
+        (root / "brands.js").write_text(APP_SOURCE.replace(
+            "cleanup(()=>parent.harness.events.push(`cleaned:${run}`));",
+            "cleanup(()=>{parent.harness.events.push(`cleaned:${run}`);parent.result.cleaned++;});") + '''
+import {nextTick,View} from 'nsh';
 import {Menu} from 'nsh/desktop';
 import {InputAccessoryView} from 'nsh/mobile';
 import {Buffer} from 'buffer';
@@ -93,7 +131,6 @@ try { nextTick(null); } catch(e) { result.errorBrand=e instanceof TypeError; }
 result.functionBrand=View instanceof Function && InputAccessoryView instanceof Function;
 result.promiseBrand=Menu.popup([]) instanceof Promise;
 result.bufferBrand=Buffer.from('abc') instanceof Uint8Array;
-mount(()=>{const value=signal(1);cleanup(()=>result.cleaned++);result.read=value;return null;});
 result.runs++;
 ''')
         (root / "scroll.js").write_text('''import {mount,signal} from 'nsh';
@@ -108,8 +145,9 @@ const extra=element('view');prop(extra,'testID','extra');prop(extra,'style',{wid
 insert(scroll,()=>show()?extra:null,last);
 append(root,scroll);return root;});
 ''')
-        (root / "bad.js").write_text("import {mount,cleanup} from 'nsh'; mount(()=>{cleanup(()=>parent.result.failedCleaned++);return null;}); throw new Error('startup failed');")
-        (root / "slow.js").write_text("await new Promise(resolve=>setTimeout(resolve,300)); parent.result.late=true;")
+        (root / "bad.js").write_text("import './app.js'; throw new Error('fixture startup failed');")
+        (root / "slow.js").write_text("import './app.js'; parent.harness.events.push('entered:slow'); await parent.harness.gates.slow.promise;")
+        (root / "held.js").write_text(APP_SOURCE)
         (root / "styles.js").write_text('''import {mount} from 'nsh';
 import {element,prop,append} from 'nsh:rt';
 mount(()=>{const root=element('view');const view=element('view');
@@ -151,93 +189,49 @@ const first=hint('first hint'),second=hint('second hint');const shown=signal(fir
 prop(trigger,'tooltip',()=>shown());
 append(root,trigger);return root;});
 ''')
-        (root / "cleanup.js").write_text("import {mount,cleanup} from 'nsh'; mount(()=>{cleanup(()=>{throw new Error('cleanup failed');});return null;});")
+        (root / "cleanup.js").write_text(APP_SOURCE.replace(
+            "cleanup(()=>parent.harness.events.push(`cleaned:${run}`));",
+            "cleanup(()=>{const e=new Error('fixture cleanup failed');parent.harness.expectedReports.push(e.stack??String(e));throw e;});cleanup(()=>parent.harness.events.push(`cleaned:${run}`));"))
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        page_origin = f"http://127.0.0.1:{server.server_port}"
+
+        class CorsHandler(http.server.SimpleHTTPRequestHandler):
+            def end_headers(self):
+                self.send_header("Access-Control-Allow-Origin", page_origin)
+                super().end_headers()
+
+        cdn = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+            functools.partial(CorsHandler, directory=directory))
+        (root / "cdn.html").write_text((root / "index.html").read_text().replace(
+            "from './nsh.js'", f"from 'http://127.0.0.1:{cdn.server_port}/nsh.js'"))
+        servers = [server, cdn]
+        threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers]
+        for thread in threads:
+            thread.start()
         try:
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
-                # A mouse and a viewport at least 600 wide: the desktop idiom, which the platform props check needs.
-                page = await browser.new_page(viewport={"width": 1280, "height": 720})
-                await page.goto(f"http://127.0.0.1:{server.server_port}/index.html")
-                await page.wait_for_function("window.ready")
-                # The web's and, in the desktop idiom, the desktop's platform props apply; iOS' and Android's do not.
-                from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-                warnings = []
-                listen = lambda message: warnings.append(message.text)
-                page.on("console", listen)
-                await page.evaluate("player.runModule('./platform.js')")
-                view = page.locator("[data-testid=platform]")
-                # Attached, not visible: without the web's style it has no size.
-                await view.wait_for(state="attached")
-                read = lambda: view.evaluate("el => [getComputedStyle(el).backgroundColor, el.getAttribute('aria-label')]")
-                seen = {"set": await read()}
-                # A key the new object no longer has is unset.
-                await page.evaluate("document.querySelector('iframe').contentWindow.dropWebStyle()")
-                try:
-                    await page.wait_for_function(
-                        "getComputedStyle(document.querySelector('[data-testid=platform]')).backgroundColor !== 'rgb(0, 255, 0)'",
-                        timeout=2000)
-                except PlaywrightTimeoutError:
-                    pass  # The assertion below says what it read.
-                seen["web emptied"] = await read()
-                page.remove_listener("console", listen)
-                assert seen == {
-                    "set": ["rgb(0, 255, 0)", "desktop"],
-                    "web emptied": ["rgba(0, 0, 0, 0)", "desktop"],
-                }, seen
-                assert not [w for w in warnings if "unsupported prop" in w], warnings
-                assert await page.evaluate("errors.length") == 0, await page.evaluate("errors.map(String)")
-                await page.evaluate("player.stop()")
-                result = await page.evaluate('''async()=>{
-                  window.result={events:[],runs:0,cleaned:0,failedCleaned:0};
-                  for(let i=0;i<3;i++) {
-                    player.hostEvent('before',i);
-                    await player.runModule('./app.js');
-                    player.stop();
-                  }
-                  try { await player.runModule('./bad.js'); } catch(e) { result.failure=String(e); }
-                  result.framesAfterFailure=document.querySelectorAll('iframe').length;
-                  const slow=player.runModule('./slow.js').catch(e=>String(e));
-                  await new Promise(r=>setTimeout(r,50));
-                  await player.runModule('./app.js');
-                  result.cancelled=await slow;
-                  await new Promise(r=>setTimeout(r,350));
-                  player.stop();
-                  result.framesAfterStop=document.querySelectorAll('iframe').length;
-                  return result;
-                }''')
-                assert result["events"] == [0, 1, 2], result
-                assert all(result[k] for k in ["errorBrand", "functionBrand", "promiseBrand", "bufferBrand"]), result
-                assert result["runs"] == 4 and result["cleaned"] == 4, result
-                assert result["failedCleaned"] == 1 and "startup failed" in result["failure"], result
-                assert result["framesAfterFailure"] == result["framesAfterStop"] == 0, result
-                assert "disposed" in result["cancelled"] and not result.get("late"), result
-                for script in ["bootstrap.js", "realm.js"]:
-                    await page.route(f"**/browser/{script}", lambda route: route.abort())
-                    failure = await page.evaluate('''async()=>{
-                      try { await player.runModule('./app.js'); return {resolved:true}; }
-                      catch(e) { return {error:String(e),frames:document.querySelectorAll('iframe').length}; }
-                    }''')
-                    assert failure.get("error") and failure["frames"] == 0, failure
-                    await page.unroute(f"**/browser/{script}")
-                reentrant = await page.evaluate('''async()=>{
-                  let reports=0;
-                  player.options.onError=()=>{reports++;player.reset();};
-                  await player.runModule('./cleanup.js');
-                  player.stop();
-                  return {reports,frames:document.querySelectorAll('iframe').length};
-                }''')
-                assert reentrant == {"reports": 1, "frames": 0}, reentrant
-                await check_state_styles(page)
-                await check_other_states(page)
-                await check_tooltip_function(page)
-                print(result)
-                await check_scroll_content(page)
-                await browser.close()
+            yield f"http://127.0.0.1:{server.server_port}/index.html"
         finally:
-            server.shutdown()
+            for s, thread in zip(servers, threads, strict=True):
+                s.shutdown()
+                s.server_close()
+                thread.join()
+
+
+async def check_platform_props(page):
+    """Web and desktop props apply; removing a key clears its previous value."""
+    await page.evaluate("player.runModule('./platform.js')")
+    view = page.locator("[data-testid=platform]")
+    await view.wait_for(state="attached")
+    seen = {"set": await view.evaluate("el => [getComputedStyle(el).backgroundColor, el.getAttribute('aria-label')]")}
+    await page.evaluate("document.querySelector('iframe').contentWindow.dropWebStyle()")
+    await page.wait_for_function(
+        "getComputedStyle(document.querySelector('[data-testid=platform]')).backgroundColor !== 'rgb(0, 255, 0)'")
+    seen["web emptied"] = await view.evaluate("el => [getComputedStyle(el).backgroundColor, el.getAttribute('aria-label')]")
+    assert seen == {
+        "set": ["rgb(0, 255, 0)", "desktop"],
+        "web emptied": ["rgba(0, 0, 0, 0)", "desktop"],
+    }, seen
 
 
 async def check_state_styles(page):
@@ -377,9 +371,424 @@ async def check_tooltip_function(page):
     await page.evaluate("player.stop()")
 
 
+async def begin(page, run, entry="./app.js", *, source=False, options=None):
+    # Observe rejection immediately: a cancelled startup can finish while Python
+    # is checking its replacement. Never leave a rejected promise unhandled.
+    await page.evaluate('''({run,entry,source,options})=>{
+      harness.active=run;
+      const load=source ? player.runSource(entry) : player.runModule(entry,options);
+      load.then(()=>harness.outcomes[run]={status:'resolved'},
+        e=>harness.outcomes[run]={status:'rejected',error:String(e),report:e.stack??String(e)});
+    }''', {"run": run, "entry": entry, "source": source, "options": options or {}})
+
+
+async def outcome(page, run, status="resolved", error=None):
+    await page.wait_for_function("run => !!harness.outcomes[run]", arg=run)
+    result = await page.evaluate("run => harness.outcomes[run]", run)
+    assert result["status"] == status, result
+    if error:
+        assert error in result.get("error", ""), result
+
+
+async def rendered(page, run, count=0):
+    await page.wait_for_function(
+        "text => document.querySelector('[data-testid=count]')?.textContent === text",
+        arg=f"{run}:{count}")
+
+
+async def ping(page, run, count=1):
+    await page.evaluate("player.hostEvent('ping',null)")
+    await rendered(page, run, count)
+
+
+async def stopped(page, runs):
+    await page.evaluate("player.stop();player.stop()")
+    assert await page.locator("iframe").count() == 0
+    events = await page.evaluate("harness.events")
+    for run in runs:
+        assert events.count(f"cleaned:{run}") == 1, events
+
+
+async def start(page, run, entry="./app.js", **options):
+    await begin(page, run, entry, **options)
+    await outcome(page, run)
+    await rendered(page, run)
+    await ping(page, run)
+
+
+async def import_map_order(page):
+    scripts = await page.evaluate('''()=>Array.from(
+      document.querySelector('iframe').contentDocument.scripts,
+      script=>({type:script.type,src:script.src,map:script.type==='importmap'?JSON.parse(script.textContent).imports:null}))''')
+    assert [script["type"] for script in scripts] == ["", "importmap", "module"], scripts
+    assert scripts[0]["src"].endswith("/browser/bootstrap.js"), scripts
+    assert scripts[2]["src"].endswith("/browser/realm.js"), scripts
+    assert {"nsh", "nsh:rt", "buffer"} <= scripts[1]["map"].keys(), scripts
+
+
+async def check_module(page):
+    # No nativeExports metadata: the complete catalog still precedes the first
+    # module load, including engines that ignore maps inserted afterwards.
+    await start(page, "module")
+    await import_map_order(page)
+    await stopped(page, ["module"])
+
+
+async def check_source(page):
+    await start(page, "module")
+    await start(page, "source", APP_SOURCE, source=True)
+    assert await page.locator("iframe").count() == 1
+    await stopped(page, ["module", "source"])
+
+
+async def check_native_exports(page):
+    await start(page, "native", options={"nativeExports": {
+        "nsh": ["mount", "signal", "cleanup", "host"],
+        "nsh:rt": ["element", "prop", "append", "insert"],
+    }})
+    await import_map_order(page)
+    await stopped(page, ["native"])
+
+
+async def check_namespace(page):
+    source = APP_SOURCE.replace(
+        "import {mount,signal,cleanup,host} from 'nsh';",
+        "import * as nsh from 'nsh'; const {mount,signal,cleanup,host}=nsh;")
+    await start(page, "namespace", source, source=True)
+    await import_map_order(page)
+    await stopped(page, ["namespace"])
+
+
+async def check_development(page):
+    await start(page, "development", "./hot.js")
+    await import_map_order(page)
+    assert await page.evaluate("typeof document.querySelector('iframe').contentWindow.__nsh_hot.start") == "function"
+    await stopped(page, ["development"])
+
+
+async def check_repeated(page):
+    runs = [f"repeat-{i}" for i in range(3)]
+    for run in runs:
+        await start(page, run)
+        await stopped(page, [run])
+    await stopped(page, runs)
+
+
+async def check_brands(page):
+    await page.evaluate("window.result={events:[],runs:0,cleaned:0}")
+    for i in range(3):
+        await page.evaluate("i => player.hostEvent('before',i)", i)
+        await start(page, f"brand-{i}", "./brands.js")
+        await stopped(page, [f"brand-{i}"])
+    result = await page.evaluate("result")
+    assert result["events"] == [0, 1, 2], result
+    assert result["runs"] == result["cleaned"] == 3, result
+    assert all(result[key] for key in ["errorBrand", "functionBrand", "promiseBrand", "bufferBrand"]), result
+
+
+async def check_startup_failure(page):
+    await begin(page, "bad", "./bad.js")
+    await outcome(page, "bad", "rejected", "fixture startup failed")
+    await page.evaluate("harness.expectedReports.push(harness.outcomes.bad.report)")
+    await stopped(page, ["bad"])
+    assert len(await page.evaluate("errors")) == 1
+    await start(page, "recovered")
+    await stopped(page, ["bad", "recovered"])
+
+
+async def check_loading(page, replace):
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    failures = []
+
+    async def hold(route):
+        entered.set()
+        await release.wait()
+        try:
+            await route.fulfill(status=200, content_type="text/javascript", body=APP_SOURCE)
+        except PlaywrightError as error:
+            # Removing the iframe may cancel its request before the gate opens.
+            # Only that cancellation is allowed, not an arbitrary routing error.
+            if not route.request.failure:
+                failures.append(str(error))
+        finally:
+            finished.set()
+
+    await page.route("**/held.js", hold)
+    try:
+        await begin(page, "old", "./held.js")
+        await asyncio.wait_for(entered.wait(), 10)
+        if replace:
+            await start(page, "new")
+        else:
+            await page.evaluate("player.stop()")
+        await outcome(page, "old", "rejected", "disposed")
+        if not replace:
+            assert await page.locator("iframe").count() == 0
+        release.set()
+        await asyncio.wait_for(finished.wait(), 10)
+        assert not failures, failures
+        if not replace:
+            await start(page, "new")
+        await ping(page, "new", 2)
+        await stopped(page, ["new"])
+    finally:
+        release.set()
+        await page.unroute("**/held.js", hold)
+
+
+async def check_tla(page, replace):
+    await page.evaluate('''()=>{
+      let release;const promise=new Promise(resolve=>release=resolve);
+      harness.gates.slow={promise,release};
+    }''')
+    try:
+        await begin(page, "old", "./slow.js")
+        await page.wait_for_function("harness.events.includes('entered:slow')")
+        await rendered(page, "old")
+        if replace:
+            await start(page, "new")
+        else:
+            await stopped(page, ["old"])
+        await outcome(page, "old", "rejected", "disposed")
+        await page.evaluate("harness.gates.slow.release()")
+        # The detached realm need not resume its continuation. Assert the
+        # public cancellation result and that its replacement stays usable.
+        if not replace:
+            await start(page, "new")
+        await ping(page, "new", 2)
+        await stopped(page, ["old", "new"])
+    finally:
+        await page.evaluate("harness.gates.slow.release()")
+
+
+async def check_facade_failure(page, script):
+    pattern = f"**/browser/{script}"
+    await page.route(pattern, lambda route: route.abort())
+    try:
+        await begin(page, "failed")
+        reason = "could not load the browser facade" if script == "bootstrap.js" else "could not load the app realm"
+        await outcome(page, "failed", "rejected", reason)
+        await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
+        assert await page.locator("iframe").count() == 0
+        assert len(await page.evaluate("errors")) == 1
+    finally:
+        await page.unroute(pattern)
+    await start(page, "recovered")
+    await stopped(page, ["recovered"])
+
+
+async def check_bootstrap_execution_failure(page, code, expected_error=None):
+    pattern = "**/browser/bootstrap.js"
+    origin = await page.evaluate("location.origin")
+    await page.route(pattern, lambda route: route.fulfill(
+        status=200, content_type="text/javascript", body=code,
+        headers={"Access-Control-Allow-Origin": origin}))
+    try:
+        await begin(page, "failed")
+        await outcome(page, "failed", "rejected")
+        await page.evaluate("harness.expectedReports.push(harness.outcomes.failed.report)")
+        if expected_error is not None:
+            assert await page.evaluate("harness.outcomes.failed.error") == expected_error
+        assert await page.locator("iframe").count() == 0
+        assert len(await page.evaluate("errors")) == 1
+    finally:
+        await page.unroute(pattern)
+    await start(page, "recovered")
+    await stopped(page, ["recovered"])
+
+
+async def check_cdn_bootstrap(page):
+    await page.goto(page.url.replace("/index.html", "/cdn.html"))
+    await page.wait_for_function("window.ready")
+    await start(page, "cdn")
+    await import_map_order(page)
+    assert await page.evaluate('''()=>Array.from(
+      document.querySelector('iframe').contentDocument.scripts).filter(s=>s.src)
+      .every(s=>new URL(s.src).origin !== location.origin)''')
+    await stopped(page, ["cdn"])
+    # A successful cross-origin fetch must also retain execution errors rather
+    # than muting them to a generic missing-initialization failure.
+    await check_bootstrap_execution_failure(page, "throw 0;", expected_error="0")
+
+
+async def check_cleanup_failure(page):
+    await page.evaluate('''()=>{
+      harness.reports=0;
+      player.options.onError=e=>{errors.push(String(e));harness.reports++;player.reset();};
+    }''')
+    await start(page, "cleanup", "./cleanup.js")
+    await stopped(page, ["cleanup"])
+    assert await page.evaluate("harness.reports") == 1
+    await start(page, "recovered")
+    await stopped(page, ["cleanup", "recovered"])
+    assert await page.evaluate("harness.reports") == 1
+
+
+def lifecycle_cases():
+    return [
+        ("module", check_module, ()),
+        ("cdn-bootstrap", check_cdn_bootstrap, ()),
+        ("source-replaces-module", check_source, ()),
+        ("native-exports", check_native_exports, ()),
+        ("namespace-import", check_namespace, ()),
+        ("development-factory", check_development, ()),
+        ("repeated-start-stop", check_repeated, ()),
+        ("host-queue-and-brands", check_brands, ()),
+        ("startup-failure", check_startup_failure, ()),
+        *[(f"loading-{action}", functools.partial(check_loading, replace=action == "replace"), ("/held.js",))
+          for action in ("stop", "replace")],
+        *[(f"tla-{action}", functools.partial(check_tla, replace=action == "replace"), ())
+          for action in ("stop", "replace")],
+        *[(f"failed-{script[:-3]}", functools.partial(check_facade_failure, script=script),
+           (f"/browser/{script}",)) for script in ("bootstrap.js", "realm.js")],
+        *[(f"bootstrap-{name}", functools.partial(check_bootstrap_execution_failure, code=code), ())
+          for name, code in [("syntax-error", "const = ;"),
+                             ("throw", "throw new Error('fixture bootstrap failed');"),
+                             ("missing-callback", "void 0;")]],
+        ("bootstrap-falsy-throw", functools.partial(check_bootstrap_execution_failure,
+                                                  code="throw 0;", expected_error="0"), ()),
+        ("cleanup-failure", check_cleanup_failure, ()),
+    ]
+
+
+def unexpected(log, reports, failed_paths):
+    errors = []
+    for message in log:
+        text = message.get("text", "")
+        url = message.get("url", "")
+        if message["kind"] == "requestfailed":
+            if not any(url.endswith(path) for path in failed_paths):
+                errors.append(message)
+        elif message["kind"] == "pageerror" or message.get("type") == "error":
+            if message["kind"] == "console" and text in [f"[nsh] {report}" for report in reports]:
+                continue
+            # Browser resource diagnostics differ; only the deliberately failed
+            # request's own URL is allowed, not every error in a negative case.
+            if message["kind"] == "console" and any(url.endswith(path) for path in failed_paths):
+                continue
+            errors.append(message)
+        elif message.get("type") == "warning" and "unsupported prop" in text:
+            errors.append(message)
+    return errors
+
+
+async def run_case(browser, url, directory, name, test, failed_paths):
+    directory = directory / name
+    directory.mkdir(parents=True, exist_ok=True)
+    for artifact in ("trace.zip", "failure.png"):
+        (directory / artifact).unlink(missing_ok=True)
+    context, page, tracing = None, None, False
+    log = []
+    result = {"case": name, "stage": "context-setup", "status": "failed", "log": log}
+    try:
+        async with asyncio.timeout(45):
+            context = await browser.new_context(viewport={"width": 1280, "height": 720})
+            result["stage"] = "trace-setup"
+            await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            tracing = True
+            result["stage"] = "page-setup"
+            page = await context.new_page()
+            page.set_default_timeout(10000)
+            page.on("console", lambda m: log.append({"kind": "console", "type": m.type, "text": m.text, "url": m.location.get("url", "")}))
+            page.on("pageerror", lambda e: log.append({"kind": "pageerror", "text": str(e)}))
+            page.on("requestfailed", lambda r: log.append({"kind": "requestfailed", "url": r.url, "text": r.failure}))
+            result["stage"] = "page-startup"
+            await page.goto(url)
+            await page.wait_for_function("window.ready")
+            result["stage"] = "check"
+            await test(page)
+            result["stage"] = "stop"
+            await page.evaluate("player.stop()")
+            assert await page.locator("iframe").count() == 0
+            result["stage"] = "errors"
+            reported, expected = await page.evaluate("[errors,harness.expectedReports]")
+            # WebKit's Error.stack omits the message. Compare the exact stack
+            # observed at the deliberate throw/rejection, not its formatting.
+            assert reported == expected, {"reported": reported, "expected": expected}
+            assert not unexpected(log, expected, failed_paths), unexpected(log, expected, failed_paths)
+            result.update(status="passed", stage="done")
+    except Exception:
+        result["error"] = traceback.format_exc()
+    finally:
+        if page:
+            try:
+                async with asyncio.timeout(10):
+                    result["fixture"] = await page.evaluate("({events:window.harness?.events,outcomes:window.harness?.outcomes,errors:window.errors,frames:document.querySelectorAll('iframe').length})")
+                    if result["status"] != "passed":
+                        await page.screenshot(path=str(directory / "failure.png"), full_page=True, timeout=5000)
+            except Exception as error:
+                result["diagnostic_error"] = str(error)
+            try:
+                async with asyncio.timeout(5):
+                    await page.evaluate("window.player?.stop()")
+            except Exception as error:
+                result.update(status="failed", stop_error=str(error))
+        if tracing and context:
+            try:
+                await asyncio.wait_for(context.tracing.stop(
+                    **({"path": str(directory / "trace.zip")} if result["status"] != "passed" else {})), 10)
+            except Exception as error:
+                result.update(status="failed", trace_error=str(error))
+        if context:
+            try:
+                await asyncio.wait_for(context.close(), 10)
+            except Exception as error:
+                result.update(status="failed", close_error=str(error))
+        (directory / "result.json").write_text(json.dumps(result, indent=2))
+    print(f"{browser.browser_type.name} {name}: {result['status']} ({result['stage']})", flush=True)
+    if result["status"] != "passed":
+        print(result.get("error", result), flush=True)
+    return result["status"] == "passed"
+
+
+async def check(wasm, chrome, browser_name, suite, artifacts):
+    directory = pathlib.Path(artifacts) / browser_name
+    directory.mkdir(parents=True, exist_ok=True)
+    summary = {"browser": browser_name, "suite": suite, "status": "failed"}
+    try:
+        with serve(wasm) as url:
+            async with async_playwright() as playwright:
+                options: dict = {"timeout": 20000}
+                if browser_name == "chromium":
+                    options["args"] = ["--no-sandbox"]
+                if chrome:
+                    options["executable_path"] = chrome
+                browser = await getattr(playwright, browser_name).launch(**options)
+                summary["version"] = browser.version
+                try:
+                    cases = lifecycle_cases() if suite in ("all", "lifecycle") else []
+                    if suite in ("all", "interaction"):
+                        cases += [(name, test, ()) for name, test in [
+                            ("platform-props", check_platform_props),
+                            ("pointer-styles", check_state_styles),
+                            ("state-styles", check_other_states),
+                            ("tooltip", check_tooltip_function),
+                            ("scroll-content", check_scroll_content),
+                        ]]
+                    passed = [await run_case(browser, url, directory, *case) for case in cases]
+                    summary.update(passed=sum(passed), total=len(passed), status="passed" if all(passed) else "failed")
+                finally:
+                    await asyncio.wait_for(browser.close(), 10)
+    except Exception:
+        summary["status"] = "failed"
+        summary["error"] = traceback.format_exc()
+        print(summary["error"], flush=True)
+    finally:
+        (directory / "result.json").write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary), flush=True)
+    return summary["status"] == "passed"
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wasm", required=True)
-    parser.add_argument("--chrome", default=shutil.which("chromium") or shutil.which("google-chrome"))
+    parser.add_argument("--chrome", help="override the Chromium executable only")
+    parser.add_argument("--browser", choices=["chromium", "firefox", "webkit"], default="chromium")
+    parser.add_argument("--suite", choices=["lifecycle", "interaction", "all"], default="all")
+    parser.add_argument("--artifacts", default=".nsh/browser-tests")
     args = parser.parse_args()
-    asyncio.run(check(args.wasm, args.chrome))
+    if args.chrome and args.browser != "chromium":
+        parser.error("--chrome requires --browser chromium")
+    if args.browser != "chromium" and args.suite != "lifecycle":
+        parser.error("Firefox and WebKit currently require --suite lifecycle")
+    raise SystemExit(0 if asyncio.run(check(args.wasm, args.chrome, args.browser, args.suite, args.artifacts)) else 1)

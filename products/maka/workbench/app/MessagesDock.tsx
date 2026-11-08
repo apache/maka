@@ -253,7 +253,7 @@ export function createMessagesDock(
       }
     }
   };
-  const rowHeight = platform.isTerminal ? 32 : 40;
+  const rowHeight = platform.idiom === 'terminal' ? 32 : 40;
   const readerHeight = height;
   const feedback = () => (
     <>

@@ -21,10 +21,10 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, platform } from 'nsh';
-import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
+import { currentWindow, isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
-export const ownTitleBar = isAvailable && platform.desktop;
+export const ownTitleBar = isAvailable && platform.desktop && platform.idiom !== 'terminal';
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 /** How far the desktop's content panel sits from the window's top, right and bottom edges. */
@@ -32,12 +32,16 @@ export const PANEL_INSET = 8;
 
 // The window's colors follow the system until Settings › General chooses
 // (`appearance.ts`); the system's menus and controls follow them too.
-if (ownTitleBar) Window.setTitleBar({ style: 'hidden', height: TITLE_BAR_HEIGHT });
+if (ownTitleBar) {
+  Window.get('main')?.set({ titleBar: { style: 'hidden', height: TITLE_BAR_HEIGHT } });
+}
 
 /** Titles the window (Mission Control, the Dock's and the Window menu's
  * lists) with `title`, else the app's name. */
 export function windowTitle(title: () => string | null) {
-  if (ownTitleBar) effect(() => Window.setTitle(title() ?? 'Maka'));
+  if (!ownTitleBar) return;
+  const win = currentWindow();
+  effect(() => win.set({ title: title() ?? 'Maka' }));
 }
 
 /** Room for the window controls at the left end of a header along the top edge. */

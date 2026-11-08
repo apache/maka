@@ -4,9 +4,12 @@
 //! is [`nsh_core::transition`]'s; this module decides which views
 //! animate and runs their frames.
 //!
-//! A view that animates gets a [`Live`] in [`ViewState::live`] and a tick
-//! callback that runs until nothing is left to animate; other views carry
-//! nothing and cost nothing.
+//! A view that animates gets a [`Live`] in [`ViewState::live`] and a frame
+//! callback on its surface ([`Surface::add_frame_callback`]) that runs
+//! until nothing is left to animate, and tells when what animates next
+//! ends ([`Live::deadline`]), so a view animating out is removed on time
+//! while the window draws no frames; other views carry nothing and cost
+//! nothing.
 //!
 //! Frames and styles are animated by writing the in-between values into
 //! the view's state (`frame`, `style`) on every tick while [`Live`] keeps
@@ -28,14 +31,17 @@
 
 use std::rc::Rc;
 
-use gtk4::{gdk, glib, graphene, gsk, prelude::*};
+use gtk4::{graphene, gsk, prelude::*};
 pub(crate) use nsh_core::transition::Live;
 use nsh_core::{
     AttributedText, Bounds, LayoutAnimation, Points, ViewKind, ViewStyle,
     transition::{self, Extra},
 };
 
-use crate::{surface::Surface, view::NshView};
+use crate::{
+    surface::{Next, Surface},
+    view::NshView,
+};
 
 /// `m` followed by `extra` (in the view's local space).
 pub(crate) fn apply_extra(extra: Extra, mut m: gsk::Transform, height: f32) -> gsk::Transform {
@@ -74,19 +80,27 @@ fn navigated(view: &NshView) -> bool {
 /// Runs `f` on the view's [`Live`] (made if needed) and makes sure it
 /// ticks while something animates.
 fn animate(surface: &Rc<Surface>, view: &NshView, f: impl FnOnce(&mut Live)) {
-    let mut s = view.state_mut();
-    let live = s.live.get_or_insert_with(Box::default);
-    f(live);
-    if live.ticking() {
-        // The tick drops it once idle.
-    } else if live.idle() {
-        s.live = None;
-    } else {
-        live.set_ticking(true);
-        let weak = Rc::downgrade(surface);
-        view.add_tick_callback(move |view, clock| match weak.upgrade() {
-            Some(surface) => tick(&surface, view, clock),
-            None => glib::ControlFlow::Break,
+    let start = {
+        let mut s = view.state_mut();
+        let live = s.live.get_or_insert_with(Box::default);
+        f(live);
+        if live.ticking() {
+            // The tick drops it once idle.
+            false
+        } else if live.idle() {
+            s.live = None;
+            false
+        } else {
+            live.set_ticking(true);
+            true
+        }
+    };
+    if start {
+        // Weak: a deleted view's callback does not keep it.
+        let view = view.downgrade();
+        surface.add_frame_callback(move |_, now| match view.upgrade() {
+            Some(view) => tick(&view, now * 1000.0),
+            None => Next::Done,
         });
     }
 }
@@ -138,7 +152,7 @@ pub(crate) fn removing(
 
 /// `view` is deleted and does not animate out: its animations end with it.
 /// A keyframe `animation` repeats for good, and its frame callback would
-/// keep the deleted view and the display frames going.
+/// keep the display frames going for the deleted view.
 pub(crate) fn deleted(view: &NshView) {
     view.state_mut().live = None;
 }
@@ -214,30 +228,32 @@ fn ancestor_dying(view: &NshView) -> bool {
     false
 }
 
-fn tick(surface: &Rc<Surface>, view: &NshView, clock: &gdk::FrameClock) -> glib::ControlFlow {
-    let now = clock.frame_time() as f64 / 1000.0;
+/// One frame (`now` in ms, the frame clock's) of `view`'s animations: what
+/// it has left, its next end in seconds.
+fn tick(view: &NshView, now: f64) -> Next {
     // A view deleted inside a deleted subtree leaves with its ancestor
     // instead of fading on its own (deletions arrive in any order, so this
     // is decided once the batch is applied).
     let starting_out = view.state().live.as_ref().is_some_and(|l| l.leaving());
     let inherited = starting_out && ancestor_dying(view);
 
-    let step = {
+    let (step, deadline) = {
         let mut s = view.state_mut();
         let s = &mut *s;
         let Some(mut live) = s.live.take() else {
-            return glib::ControlFlow::Break;
+            return Next::Done;
         };
         if inherited {
             live.leave_with_ancestor();
         }
-        // Finishing clears `ticking`: returning `Break` removes the
+        // Finishing clears `ticking`: returning `Done` removes the
         // callback.
         let step = live.step(now, &mut s.frame, &mut s.style);
+        let deadline = live.deadline(now);
         if !live.idle() {
             s.live = Some(live);
         }
-        step
+        (step, deadline)
     };
 
     if step.removed {
@@ -248,18 +264,16 @@ fn tick(surface: &Rc<Surface>, view: &NshView, clock: &gdk::FrameClock) -> glib:
             parent.queue_allocate();
             parent.queue_draw();
         }
-        return glib::ControlFlow::Break;
+        return Next::Done;
     }
     if step.resized {
         view.queue_allocate();
-        if view.kind() == ViewKind::Scroll {
-            crate::scroll::resized(surface, view);
-        }
     }
     view.moved();
-    if step.finished {
-        glib::ControlFlow::Break
-    } else {
-        glib::ControlFlow::Continue
+    match deadline {
+        _ if step.finished => Next::Done,
+        Some(ms) => Next::At(ms / 1000.0),
+        // Only keyframes repeating forever: they only draw.
+        None => Next::Frame,
     }
 }

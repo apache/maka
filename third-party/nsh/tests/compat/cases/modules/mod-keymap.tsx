@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/keymap`
 // on the headless runtime (iOS, an Apple platform): the labels of keystrokes,
 // bindings made and removed in both forms, and the keystrokes `bind`
 // refuses. Its

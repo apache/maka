@@ -4,7 +4,8 @@ export const itemsProps = ["each", "children", "keyExtractor", "stickyHeaderIndi
 const own = new Set([...itemsProps.filter(k => !["stickyHeaderIndices", "viewabilityConfig", "refreshing", "onRefresh", "onLoadMore"].includes(k)), "ref", "estimatedItemSize", "loadMoreAtStartThreshold", "separator"]);
 export function createLists(invoke, values, reactive, dom, live, wake) {
   const lists = new Map(), rt = dom.rt;
-  const slot = value => typeof value === "function" ? reactive.untracked(() => value({})) : value;
+  // `<If>` and `<Each>` are memos, the insert's to track (as QuickJS's `slot`).
+  const slot = value => typeof value === "function" && !values.signals.has(value) && !values.memos.has(value) ? reactive.untracked(() => value({})) : value;
   const remove = (parent, entry) => { invoke(306, [parent, entry.node]); entry.dispose(); };
   const render = (props = {}) => {
     const node = rt.element("list"), id = values.nodeIds.get(node);
@@ -110,9 +111,10 @@ export function createLists(invoke, values, reactive, dom, live, wake) {
             const content = reactive.untracked(() => state.props.children(item, index));
             if ("separator" in state.props) {
               let separator, made = false;
+              const owner = reactive.getOwner();
               rt.insert(cell, () => {
                 if (index() >= (state.props.each?.length ?? 0) - 1) return content;
-                if (!made) { separator = slot(state.props.separator); made = true; }
+                if (!made) { separator = reactive.runWithOwner(owner, () => slot(state.props.separator)); made = true; }
                 return state.props.inverted ? [separator, content] : [content, separator];
               });
             } else rt.insert(cell, content);

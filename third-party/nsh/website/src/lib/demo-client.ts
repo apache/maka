@@ -1,3 +1,4 @@
+import { playSelect } from './sound';
 /** The page's theme, as the player takes it (`?theme=`). */
 export const siteTheme = () => (document.documentElement.classList.contains('light') ? 'light' : 'dark');
 
@@ -172,7 +173,11 @@ function layoutDemo(demo: HTMLElement, all: HTMLElement[]) {
       for (const other of all) if (other !== demo) other.dispatchEvent(new CustomEvent('demo-layout', { detail: layout }));
     }
   };
-  for (const b of buttons) b.addEventListener('click', () => apply(b.dataset.demoLayout as Layout, true));
+  for (const b of buttons)
+    b.addEventListener('click', () => {
+      if (demo.dataset.layout !== b.dataset.demoLayout) playSelect();
+      apply(b.dataset.demoLayout as Layout, true);
+    });
   demo.addEventListener('demo-layout', (e) => apply((e as CustomEvent<Layout>).detail, false));
   apply(savedLayout(), false);
 }
@@ -200,7 +205,10 @@ export function initDemos(root: ParentNode = document) {
       }
     };
     for (const tab of tabs) {
-      tab.addEventListener('click', () => show(tab.dataset.demoView!));
+      tab.addEventListener('click', () => {
+        if (demo.dataset.view !== tab.dataset.demoView) playSelect();
+        show(tab.dataset.demoView!);
+      });
       tab.addEventListener('keydown', (event) => {
         if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
         event.preventDefault();

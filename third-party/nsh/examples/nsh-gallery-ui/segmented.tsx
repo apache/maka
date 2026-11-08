@@ -1,14 +1,18 @@
-import { platform, Text } from "nsh";
+import { Text } from "nsh";
 import { Tab, Tabs } from "nsh/base";
-import { colors, finish } from "./theme";
+import { play } from "./sound";
+import { colors, TERMINAL_ROW, terminal } from "./theme";
+import { segmentedLook } from "./look/tabs";
 
 /**
  * Segments with a raised thumb that springs to the selected one (`count`
  * shows a quiet number after a label): `nsh/base`'s `Tabs`, a tab per
- * segment, in the gallery's look. With a pointer it is as wide as its
- * labels (30 points high, 12-point type, the thumb's corners 6 and the
- * track's 9); on a touch screen, or with `fill`, it spans the row and its
- * segments share it equally, their labels centered.
+ * segment, in `segmentedLook`. With a pointer it is as wide as its labels
+ * (30 points high, 12-point type, the thumb's corners 6 and the track's 9);
+ * on a touch screen, or with `fill`, it spans the row and its segments
+ * share it equally, their labels centered. The terminal shows the segments
+ * on one row as wide as their words (`fill` too), the selected one as its
+ * selection, without the track.
  *
  * The thumb is the list's indicator: the core places it on the selected
  * tab and springs it to the next one natively, as its own frame alone, so
@@ -22,61 +26,52 @@ export function Segmented<T extends string>(props: {
   size?: "small" | "regular";
   fill?: boolean;
 }) {
-  const pointer = platform.desktop;
-  const spread = !pointer || !!props.fill;
-  // The track's padding: the thumb sits inside it.
-  const inset = 2;
-  const height = pointer ? (props.size === "small" ? 26 : 30) : props.size === "small" ? 32 : 36;
+  if (terminal) {
+    return (
+      <Tabs style={{ height: TERMINAL_ROW, flexDirection: "row" }}>
+        <Each of={props.options}>
+          {(option) => (
+            <Tab
+              selected={props.value === option().value}
+              onPress={() => {
+                if (option().value !== props.value) {
+                  play("select");
+                  props.onChange(option().value);
+                }
+              }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
+              <Text style={{ numberOfLines: 1, fontSize: 13, fontWeight: "500", color: props.value === option().value ? colors.text : colors.muted }}>
+                {option().label}
+              </Text>
+              <If when={option().count !== undefined}>
+                <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{option().count}</Text>
+              </If>
+            </Tab>
+          )}
+        </Each>
+      </Tabs>
+    );
+  }
+  // The size and `fill` are read once, as a control's shape is.
+  const look = segmentedLook({ size: props.size, fill: props.fill });
   return (
-    <Tabs
-      style={{
-        height,
-        flexDirection: "row",
-        alignSelf: spread ? "stretch" : "flex-start",
-        padding: inset,
-        borderRadius: pointer ? 9 : 10,
-        borderCurve: "continuous",
-        backgroundColor: colors.track,
-        boxShadow: finish.track.boxShadow,
-        borderWidth: 1,
-        borderColor: finish.track.borderColor,
-      }}
-      indicatorStyle={{
-        top: inset,
-        bottom: inset,
-        borderRadius: pointer ? 6 : 7,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        ...finish.raised,
-      }}
-    >
+    <Tabs style={look.style} indicatorStyle={look.indicatorStyle}>
       <Each of={props.options}>
         {(option) => (
           <Tab
             selected={props.value === option().value}
             onPress={() => {
-              if (option().value !== props.value) props.onChange(option().value);
+              if (option().value !== props.value) {
+                  play("select");
+                  props.onChange(option().value);
+                }
             }}
-            style={{
-              ...(spread ? { flex: 1, paddingHorizontal: 8 } : { paddingHorizontal: 10 }),
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 5,
-            }}
+            {...look.segment({ selected: () => props.value === option().value })}
           >
-            <Text
-              style={{
-                numberOfLines: 1,
-                fontSize: pointer ? 12 : props.size === "small" ? 13 : 14,
-                fontWeight: "500",
-                color: props.value === option().value ? colors.text : colors.muted,
-              }}
-            >
-              {option().label}
-            </Text>
+            <Text style={look.label(props.value === option().value)}>{option().label}</Text>
             <If when={option().count !== undefined}>
-              <Text style={{ fontSize: pointer ? 11 : 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{option().count}</Text>
+              <Text style={look.count}>{option().count}</Text>
             </If>
           </Tab>
         )}

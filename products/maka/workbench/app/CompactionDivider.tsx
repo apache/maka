@@ -52,7 +52,7 @@ export function NoteDivider(props: { label: string }) {
   // The terminal draws a border as a line of cells; the desktop paints no
   // zero-height border, so there the line is a filled point.
   const lineStyle = () =>
-    platform.isTerminal
+    platform.idiom === 'terminal'
       ? { flex: 1, borderTopWidth: 1, borderTopColor: C.line }
       : { flex: 1, height: 1, backgroundColor: C.line };
   return (

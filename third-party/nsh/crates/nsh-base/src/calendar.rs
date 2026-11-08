@@ -21,7 +21,8 @@
 //!   days are one stop of Tab, on the selected day, else today, else the
 //!   first; the arrows move a day or a week, Home and End to the week's
 //!   ends, Page Up and Down a month (with Shift a year), Return and Space
-//!   select. Moving past the shown months turns them.
+//!   select. Disabled days take no focus: a move passes over them, and
+//!   the stop is never on one. Moving past the shown months turns them.
 //! - **Items**: every control is an item the app draws (`renderItem`,
 //!   [`CalendarEntry`]: what it is, its kind, value and date, never its
 //!   state) and styles (`itemClass`): `selected:` on the selected date or
@@ -45,6 +46,17 @@
 //!   a calendar in a sheet as wide as a phone spans it, and one in a popup
 //!   that fits its content keeps the items' own widths. The app's
 //!   `itemClass` / `monthClass` (`flex-none`) take that back.
+//! - **In a terminal** (`cal`'s month): each day column is two Cells, its
+//!   number right-aligned, the columns two blank Cells apart (the
+//!   terminal's layout keeps that much between controls side by side) and
+//!   the months two further; the calendar draws the days, the years and
+//!   the arrows as text and leaves out `itemClass` / `itemStyle` (the app's
+//!   `renderItem` still draws the weekdays and the header's labels); today
+//!   is bold and the days of the months around muted, and the painter
+//!   bands the selected days from their state. The weekdays head their
+//!   columns. The month and the year views (four years a row) are centered
+//!   in the days' width, so the calendar, and a date picker's popup, keeps
+//!   its width as the view changes.
 
 use std::{collections::HashSet, rc::Rc};
 
@@ -58,7 +70,10 @@ use nsh_core::{
     prelude::*,
 };
 
-use crate::keys::directed;
+use crate::{
+    keys::directed,
+    terminal::{Tone, cell_width, is_terminal, tone_color},
+};
 
 /// How many years a page of the year view shows (`gpui-base`'s 20).
 const YEARS_PER_PAGE: usize = 20;
@@ -66,6 +81,9 @@ const YEARS_PER_PAGE: usize = 20;
 const MONTHS_PER_ROW: usize = 3;
 /// How many years a row of the year view has.
 const YEARS_PER_ROW: usize = 5;
+/// How many years a row of a terminal's year view has: four years two
+/// blank Cells apart fit in the width of a month of days, which five do not.
+const TERMINAL_YEARS_PER_ROW: usize = 4;
 /// The most weeks a month shows: a month's grid has this many rows, those
 /// it does not use hidden, so that a turn changes what the cells show and
 /// makes none.
@@ -504,7 +522,8 @@ pub enum CalendarItemKind {
     YearToggle,
     /// The next month, or page of years.
     Next,
-    /// A day of the week over the days.
+    /// A day of the week over the days: its column's header (a column
+    /// header for screen readers), which takes no press.
     Weekday,
     /// A day.
     #[default]
@@ -519,8 +538,9 @@ pub enum CalendarItemKind {
 /// `CalendarItemState` without its states), so the drawing is made once
 /// and kept while the item's state changes. The states are the item's
 /// classes: `selected:` (the date, every day of a range, the shown month
-/// or year, the open view's toggle), `disabled:` (what takes no press),
-/// `focus:` (the day with the keyboard), and on the days the `data-*`
+/// or year, the open view's toggle), `disabled:` (a day, an arrow that
+/// takes no press; the weekdays and the months' titles are labels, never
+/// disabled), `focus:` (the day with the keyboard), and on the days the `data-*`
 /// attributes `data-range-start`, `data-range-end`, `data-range-middle`,
 /// `data-today` and `data-outside` (`group-selected:`,
 /// `group-data-range-start:`, ... inside, under `group` in `itemClass`).
@@ -606,10 +626,11 @@ pub struct CalendarProps {
     pub row_style: Prop<Style>,
     /// The classes of each item: `selected:` while selected (the date,
     /// every day of a range, the shown month or year, the open view's
-    /// toggle), `disabled:` while it takes no press, `focus:` with the
-    /// keyboard on it; on the days `data-range-start:`,
-    /// `data-range-end:`, `data-range-middle:` (a range's days), `data-today:`
-    /// and `data-outside:` (a day of the months around); with `group`, the
+    /// toggle), `disabled:` while a day or an arrow takes no press (the
+    /// weekdays and the months' titles are labels, never disabled),
+    /// `focus:` with the keyboard on it; on the days `data-range-start:`,
+    /// `data-range-end:`, `data-range-middle:` (a range's days),
+    /// `data-today:` and `data-outside:` (a day of the months around); with `group`, the
     /// content follows them (`group-selected:`, `group-data-today:`, ...).
     pub item_class: Prop<Option<SharedString>>,
     /// The inline style of each item, over its classes: its text styles
@@ -749,6 +770,8 @@ pub(crate) struct Grid {
     js_disabled: Stored<HashSet<NaiveDate>>,
     /// Changes when the app's JS function's answers change.
     js_answered: Signal<u64>,
+    /// The calendar shows its terminal form ([`is_terminal`]).
+    terminal: bool,
 }
 
 impl Grid {
@@ -773,6 +796,7 @@ impl Grid {
             moving: stored(false),
             js_disabled: stored(HashSet::new()),
             js_answered: signal(0),
+            terminal: is_terminal(),
         };
         let first = stored(true);
         effect(move || {
@@ -932,11 +956,37 @@ impl Grid {
         let page = self.page.get();
         let last = page + Months::new(self.months());
         let shown = |d: &NaiveDate| *d >= page && *d < last;
-        self.shown
+        let day = self
+            .shown
             .with(|v| v.start())
             .filter(shown)
             .or(Some(self.today).filter(shown))
-            .unwrap_or(page)
+            .unwrap_or(page);
+        // A disabled day takes no focus: the stop is the next day that
+        // does, else the one before.
+        if !self.disabled(day) {
+            return day;
+        }
+        day.iter_days()
+            .take_while(shown)
+            .chain(day.iter_days().rev().take_while(shown))
+            .find(|d| !self.disabled(*d))
+            .unwrap_or(day)
+    }
+
+    /// The day the keys reach from `to`, a move from `from`: `to` itself,
+    /// else, a disabled day taking no focus, the first that does stepping
+    /// on by `skip` days (in the direction of the move, back toward `from`
+    /// for Home and End), none past `from` nor further than a year.
+    fn enabled_toward(self, to: NaiveDate, from: NaiveDate, skip: i64) -> Option<NaiveDate> {
+        let mut day = to;
+        for _ in 0..=366 / skip.unsigned_abs() {
+            if day == from || !untracked(|| self.disabled(day)) {
+                return Some(day);
+            }
+            day = day.checked_add_signed(chrono::TimeDelta::days(skip))?;
+        }
+        None
     }
 
     /// Gives the days' stop the keyboard focus once it is made (a date
@@ -972,43 +1022,63 @@ impl Grid {
                 return;
             }
             let rtl = layout_rtl();
-            let by = move |f: Step| {
+            // A disabled day takes no focus (and a focus sent to one would
+            // leave the days, unbinding these keys): a move past it goes on
+            // to the next day that takes it, `skip` days at a time.
+            let by = move |f: Step, skip: i64| {
                 move |_: &str| {
                     let first_day = self.config.first_day_of_week.get_untracked();
                     let from = untracked(|| self.stop());
-                    if let Some(day) = f(from, first_day) {
+                    if let Some(day) =
+                        f(from, first_day).and_then(|to| self.enabled_toward(to, from, skip))
+                    {
                         self.move_to(day);
                     }
                 }
             };
-            let keys: [(&str, Step); 10] = [
-                ("left", |d, _| d.pred_opt()),
-                ("right", |d, _| d.succ_opt()),
-                ("up", |d, _| d.checked_sub_days(Days::new(7))),
-                ("down", |d, _| d.checked_add_days(Days::new(7))),
-                ("home", |d, f| {
-                    let back = (d.weekday().num_days_from_sunday() + 7 - f % 7) % 7;
-                    d.checked_sub_days(Days::new(back as u64))
-                }),
-                ("end", |d, f| {
-                    let back = (d.weekday().num_days_from_sunday() + 7 - f % 7) % 7;
-                    d.checked_add_days(Days::new(6 - back as u64))
-                }),
-                ("pageup", |d, _| d.checked_sub_months(Months::new(1))),
-                ("pagedown", |d, _| d.checked_add_months(Months::new(1))),
-                ("shift+pageup", |d, _| d.checked_sub_months(Months::new(12))),
-                ("shift+pagedown", |d, _| {
-                    d.checked_add_months(Months::new(12))
-                }),
+            let keys: [(&str, Step, i64); 10] = [
+                ("left", |d, _| d.pred_opt(), -1),
+                ("right", |d, _| d.succ_opt(), 1),
+                ("up", |d, _| d.checked_sub_days(Days::new(7)), -7),
+                ("down", |d, _| d.checked_add_days(Days::new(7)), 7),
+                (
+                    "home",
+                    |d, f| {
+                        let back = (d.weekday().num_days_from_sunday() + 7 - f % 7) % 7;
+                        d.checked_sub_days(Days::new(back as u64))
+                    },
+                    1,
+                ),
+                (
+                    "end",
+                    |d, f| {
+                        let back = (d.weekday().num_days_from_sunday() + 7 - f % 7) % 7;
+                        d.checked_add_days(Days::new(6 - back as u64))
+                    },
+                    -1,
+                ),
+                ("pageup", |d, _| d.checked_sub_months(Months::new(1)), -1),
+                ("pagedown", |d, _| d.checked_add_months(Months::new(1)), 1),
+                (
+                    "shift+pageup",
+                    |d, _| d.checked_sub_months(Months::new(12)),
+                    -1,
+                ),
+                (
+                    "shift+pagedown",
+                    |d, _| d.checked_add_months(Months::new(12)),
+                    1,
+                ),
             ];
-            for (key, f) in keys {
+            for (key, f, skip) in keys {
                 on_key_with(
                     &directed(key, rtl),
                     KeyOptions {
                         when: When::NotEditing,
                         repeat: true,
+                        ..Default::default()
                     },
-                    by(f),
+                    by(f, skip),
                 );
             }
             for key in ["enter", "space"] {
@@ -1018,6 +1088,7 @@ impl Grid {
                     KeyOptions {
                         when: When::NotEditing,
                         repeat: false,
+                        ..Default::default()
                     },
                     move |_| {
                         let day = untracked(|| self.stop());
@@ -1042,6 +1113,27 @@ pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyEle
         }
     });
 
+    let titles = dynamic(move || {
+        let months = grid.months();
+        if months == 1 {
+            return vec![
+                toggle(grid, CalendarItemKind::MonthToggle),
+                toggle(grid, CalendarItemKind::YearToggle),
+            ];
+        }
+        (0..months).map(|m| title(grid, m)).collect()
+    });
+    // A terminal's header is `cal`'s: the month and the year together,
+    // between the arrows at the calendar's ends.
+    let titles = match grid.terminal {
+        true => view()
+            .flex_row()
+            .gap(cells(1))
+            .style_when(move || grid.months() > 1, |s| s.gap(cells(MONTH_GAP)))
+            .child(titles)
+            .into_element(),
+        false => titles.into_element(),
+    };
     let header = view()
         .flex_row()
         .items_center()
@@ -1049,16 +1141,7 @@ pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyEle
         .app_class(config.header_class)
         .inline_style(config.header_style)
         .child(nav(grid, CalendarItemKind::Previous))
-        .child(dynamic(move || {
-            let months = grid.months();
-            if months == 1 {
-                return vec![
-                    toggle(grid, CalendarItemKind::MonthToggle),
-                    toggle(grid, CalendarItemKind::YearToggle),
-                ];
-            }
-            (0..months).map(|m| title(grid, m)).collect()
-        }))
+        .child(titles)
         .child(nav(grid, CalendarItemKind::Next));
 
     // Made again only when the view or the number of months changes: a
@@ -1069,6 +1152,7 @@ pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyEle
             let changed = changed.clone();
             view()
                 .flex_row()
+                .when(grid.terminal, |v| v.gap(cells(MONTH_GAP)))
                 .app_class(config.body_class)
                 .inline_style(config.body_style)
                 .children(
@@ -1078,16 +1162,38 @@ pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyEle
                 )
                 .into_element()
         }
-        Mode::Month => rows(
+        Mode::Month => centered(
             grid,
-            (1..=12)
-                .map(|m| picker_item(grid, CalendarItemKind::Month, m as usize))
-                .collect(),
-            MONTHS_PER_ROW,
+            rows(
+                grid,
+                (1..=12)
+                    .map(|m| picker_item(grid, CalendarItemKind::Month, m as usize))
+                    .collect(),
+                MONTHS_PER_ROW,
+            ),
         ),
-        Mode::Year => year_view(grid),
+        Mode::Year => centered(grid, year_view(grid)),
     });
     vec![header.into_element(), body]
+}
+
+/// The month or the year view, in a terminal centered in the width of the
+/// day view's months: the calendar (a date picker's popup with it) keeps
+/// its width as the view changes, and the header its arrows at the ends.
+fn centered(grid: Grid, body: AnyElement) -> AnyElement {
+    match grid.terminal {
+        true => {
+            let months = grid.months() as usize;
+            let width = months * MONTH_CELLS + months.saturating_sub(1) * 2 * MONTH_GAP_CELLS;
+            view()
+                .w(cells(width))
+                .flex_none()
+                .items_center()
+                .child(body)
+                .into_element()
+        }
+        false => body,
+    }
 }
 
 /// `items` in rows of `per_row`: the month view.
@@ -1099,11 +1205,12 @@ fn rows(grid: Grid, items: Vec<AnyElement>, per_row: usize) -> AnyElement {
         let mut row: Vec<_> = items.by_ref().take(per_row).collect();
         // A short last row keeps the columns of the others.
         while row.len() < per_row {
-            row.push(view().flex_1().into_element());
+            row.push(filler(grid).into_element());
         }
         rows.push(
             view()
                 .flex_row()
+                .when(grid.terminal, |v| v.gap(cells(1)))
                 .app_class(config.row_class)
                 .inline_style(config.row_style)
                 .children(row)
@@ -1117,28 +1224,33 @@ fn rows(grid: Grid, items: Vec<AnyElement>, per_row: usize) -> AnyElement {
         .into_element()
 }
 
-/// The year view: a page of years in rows of [`YEARS_PER_ROW`], each place
-/// showing the year it holds on the page (a turn of the pages changes the
-/// numbers); places past the last year are empty, and rows of them go.
+/// The year view: a page of years in rows of [`YEARS_PER_ROW`] (in a
+/// terminal [`TERMINAL_YEARS_PER_ROW`]), each place showing the year it
+/// holds on the page (a turn of the pages changes the numbers); places past
+/// the last year are empty, and rows of them go.
 fn year_view(grid: Grid) -> AnyElement {
     let config = grid.config;
+    let per_row = match grid.terminal {
+        true => TERMINAL_YEARS_PER_ROW,
+        false => YEARS_PER_ROW,
+    };
     let end = computed(move || grid.years().end);
     let holds = move |at: usize| grid.year_page.get() + (at as i32) < end.get();
     let row = move |r: usize| {
-        let first = r * YEARS_PER_ROW;
+        let first = r * per_row;
         view()
             .flex_row()
             .app_class(config.row_class)
             .inline_style(config.row_style)
             .children(
-                (first..first + YEARS_PER_ROW)
+                (first..first + per_row)
                     .map(|at| {
                         // A short last row keeps the columns of the others.
                         when(
                             move || holds(at),
                             move || picker_item(grid, CalendarItemKind::Year, at),
                         )
-                        .otherwise(|| view().flex_1())
+                        .otherwise(move || filler(grid))
                         .into_element()
                     })
                     .collect::<Vec<_>>(),
@@ -1148,15 +1260,56 @@ fn year_view(grid: Grid) -> AnyElement {
         .app_class(config.body_class)
         .inline_style(config.body_style)
         .children(
-            (0..YEARS_PER_PAGE / YEARS_PER_ROW)
+            (0..YEARS_PER_PAGE.div_ceil(per_row))
                 .map(|r| match r {
                     // A page starts at a year of the range.
                     0 => row(r).into_element(),
-                    _ => when(move || holds(r * YEARS_PER_ROW), move || row(r)).into_element(),
+                    _ => when(move || holds(r * per_row), move || row(r)).into_element(),
                 })
                 .collect::<Vec<_>>(),
         )
         .into_element()
+}
+
+/// How many Cells a terminal calendar's day column is: a day's number,
+/// right-aligned (`cal`'s grid).
+const DAY_CELLS: usize = 2;
+/// How many blank Cells part two day columns: the terminal's layout keeps
+/// two between controls side by side, which read as words.
+const DAY_GAP: usize = 2;
+/// The gap and the padding that part two months of a terminal calendar,
+/// in Cells' points (24pt: two columns each).
+const MONTH_GAP: usize = 3;
+/// The blank columns [`MONTH_GAP`]'s padding makes.
+const MONTH_GAP_CELLS: usize = 2;
+/// How wide a month of a terminal calendar is, in Cells: seven day
+/// columns [`DAY_GAP`] apart.
+const MONTH_CELLS: usize = 7 * DAY_CELLS + 6 * DAY_GAP;
+
+/// `n` Cells of a terminal's grid.
+fn cells(n: usize) -> Points {
+    cell_width() * n as f32
+}
+
+/// A short row's place for an item it does not have: the share of the
+/// width an item takes (none in a terminal, whose items keep their own).
+fn filler(grid: Grid) -> View {
+    view().when(!grid.terminal, |v| v.flex_1())
+}
+
+/// A day column's place in a row of a month: an equal share of the width,
+/// or in a terminal [`DAY_CELLS`] Cells, its content right-aligned.
+trait Column {
+    fn column(self, grid: Grid) -> Self;
+}
+
+impl Column for View {
+    fn column(self, grid: Grid) -> Self {
+        match grid.terminal {
+            true => self.w(cells(DAY_CELLS)).flex_none().items_end(),
+            false => self.flex_1(),
+        }
+    }
 }
 
 /// The shown year and month, `offset` months on.
@@ -1165,19 +1318,25 @@ fn page_at(grid: Grid, offset: u32) -> NaiveDate {
 }
 
 /// An item's states, which its classes read: `selected` and `disabled`
-/// (screen readers hear them too).
+/// (screen readers hear them too), and what screen readers call it.
 #[derive(Clone, Copy)]
 struct States {
     selected: Memo<bool>,
     disabled: Memo<bool>,
+    /// A button, but for the labels that take no press.
+    role: AccessibilityRole,
 }
 
 impl States {
-    /// States that do not change.
-    fn fixed(selected: bool, disabled: bool) -> Self {
+    /// A label that takes no press, `role` for screen readers (a weekday
+    /// heads its column, a month's title its month): neither selected nor
+    /// disabled, as nothing about it is unavailable (screen readers, and
+    /// terminals without colors, would call a disabled one so).
+    fn label(role: AccessibilityRole) -> Self {
         Self {
-            selected: computed(move || selected),
-            disabled: computed(move || disabled),
+            selected: computed(|| false),
+            disabled: computed(|| false),
+            role,
         }
     }
 }
@@ -1198,13 +1357,28 @@ fn item(
     shown: Option<Memo<bool>>,
 ) -> View {
     let config = grid.config;
-    let custom = computed(move || config.render_item.with(Option::is_some));
+    // A terminal draws the numbers and glyphs itself (the days, the years,
+    // Previous and Next), as text on the grid; the app's function draws
+    // the labels it names (the weekdays, the toggles, the months).
+    let own = grid.terminal
+        && matches!(
+            untracked(|| entry.with(|e| e.kind)),
+            CalendarItemKind::Day
+                | CalendarItemKind::Year
+                | CalendarItemKind::Previous
+                | CalendarItemKind::Next
+        );
+    let custom = computed(move || !own && config.render_item.with(Option::is_some));
     let label = Rc::new(label);
     let content = content.unwrap_or_else(|| label.clone());
     let key = Rc::new(key);
-    let States { selected, disabled } = states;
+    let States {
+        selected,
+        disabled,
+        role,
+    } = states;
     view()
-        .role(AccessibilityRole::Button)
+        .role(role)
         .disabled(disabled)
         .accessibility_state(move || AccessibilityState {
             selected: selected.get(),
@@ -1212,8 +1386,10 @@ fn item(
             ..AccessibilityState::default()
         })
         .label(move || label())
-        .app_class(config.item_class)
-        .inline_style(move || config.item_style.get())
+        .when(!grid.terminal, |v| {
+            v.app_class(config.item_class)
+                .inline_style(move || config.item_style.get())
+        })
         .child(dynamic(move || {
             if custom.get() {
                 let key = key.clone();
@@ -1254,6 +1430,7 @@ fn nav(grid: Grid, kind: CalendarItemKind) -> AnyElement {
     let states = States {
         selected: computed(|| false),
         disabled,
+        role: AccessibilityRole::Button,
     };
     let label = if previous {
         config.previous_accessibility_label
@@ -1271,7 +1448,9 @@ fn nav(grid: Grid, kind: CalendarItemKind) -> AnyElement {
                 .get()
                 .unwrap_or_else(|| if previous { "‹" } else { "›" }.into())
         },
-        None,
+        grid.terminal.then(|| -> Rc<dyn Fn() -> SharedString> {
+            Rc::new(move || if previous { "‹" } else { "›" }.into())
+        }),
         None,
     )
     .on_press(move || {
@@ -1320,6 +1499,7 @@ fn toggle(grid: Grid, kind: CalendarItemKind) -> AnyElement {
     let states = States {
         selected: computed(move || grid.view.get() == opens),
         disabled: computed(|| false),
+        role: AccessibilityRole::Button,
     };
     let key: SharedString = if month { "month-toggle" } else { "year-toggle" }.into();
     item(
@@ -1355,7 +1535,8 @@ fn toggle(grid: Grid, kind: CalendarItemKind) -> AnyElement {
 }
 
 /// The title of month `offset` of a calendar of several: a month toggle
-/// that takes no press (`gpui-base` shows each month's label there).
+/// that takes no press, its month's header (`gpui-base` shows each month's
+/// label there).
 fn title(grid: Grid, offset: u32) -> AnyElement {
     let entry = computed(move || {
         let page = page_at(grid, offset);
@@ -1372,11 +1553,23 @@ fn title(grid: Grid, offset: u32) -> AnyElement {
         grid,
         move || key.clone(),
         entry,
-        States::fixed(false, true),
+        States::label(AccessibilityRole::Header),
         move || entry.with(|e| format!("{} {}", e.month, e.year).into()),
         None,
         None,
     )
+    // Over its month in a terminal: the month's width and the blank Cells
+    // before it ([`month`]'s), less the arrow and its two blank Cells
+    // beside the first and the last.
+    .when(grid.terminal, |v| {
+        let last = offset + 1 == untracked(|| grid.months());
+        let lead = if offset > 0 { MONTH_GAP_CELLS } else { 0 };
+        let arrows = 3 * (usize::from(offset == 0) + usize::from(last));
+        v.w(cells(lead + MONTH_CELLS - arrows))
+            .when(offset > 0, |v| v.pl(cells(MONTH_GAP)))
+            .flex_none()
+            .items_center()
+    })
     .into_element()
 }
 
@@ -1415,6 +1608,7 @@ fn picker_item(grid: Grid, kind: CalendarItemKind, at: usize) -> AnyElement {
             }
         }),
         disabled: computed(|| false),
+        role: AccessibilityRole::Button,
     };
     let key: SharedString = format!("{}-{at}", if is_month { "month" } else { "year" }).into();
     item(
@@ -1426,7 +1620,13 @@ fn picker_item(grid: Grid, kind: CalendarItemKind, at: usize) -> AnyElement {
         None,
         None,
     )
-    .flex_1()
+    .when(!grid.terminal, |v| v.flex_1())
+    // A terminal's month numbers (without the app's labels) are right-aligned
+    // in two Cells, as the days are: the rows are as wide as each other and
+    // center as a block, `10 11 12` under `1 2 3`.
+    .when(grid.terminal && is_month, |v| {
+        v.min_w(cells(DAY_CELLS)).items_end()
+    })
     .on_press(move || {
         let value = untracked(value);
         grid.page.update(|p| {
@@ -1458,7 +1658,10 @@ fn month(grid: Grid, offset: u32, changed: Rc<dyn Fn(Date)>) -> AnyElement {
             .app_class(config.row_class)
             .inline_style(config.row_style)
     };
-    let weekdays = row().children(
+    // The weekdays are labels, which the terminal's layout keeps no
+    // blank Cells between as it does the days' buttons: a gap of 24pt (two
+    // columns) keeps them over their days.
+    let weekdays = row().when(grid.terminal, |v| v.gap(cells(3))).children(
         (0..7)
             .map(|at| weekday(grid, offset, at))
             .collect::<Vec<_>>(),
@@ -1489,7 +1692,10 @@ fn month(grid: Grid, offset: u32, changed: Rc<dyn Fn(Date)>) -> AnyElement {
         })
         .collect::<Vec<_>>();
     view()
-        .flex_1()
+        .when(!grid.terminal, |v| v.flex_1())
+        // The body's gap and as many blank Cells again: two months apart,
+        // as their days are.
+        .when(grid.terminal && offset > 0, |v| v.pl(cells(MONTH_GAP)))
         .app_class(config.month_class)
         .inline_style(config.month_style)
         .child(weekdays)
@@ -1511,12 +1717,12 @@ fn weekday(grid: Grid, offset: u32, at: u32) -> AnyElement {
         grid,
         move || key.clone(),
         entry,
-        States::fixed(false, true),
+        States::label(AccessibilityRole::ColumnHeader),
         move || day.get().to_string().into(),
         None,
         None,
     )
-    .flex_1()
+    .column(grid)
     .into_element()
 }
 
@@ -1616,6 +1822,7 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     let states = States {
         selected: computed(move || marks.get().selected),
         disabled,
+        role: AccessibilityRole::Button,
     };
     let me = element_ref();
     let laid_out = signal(false);
@@ -1654,7 +1861,19 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     .project_data("range-middle", move || marks.get().middle)
     .project_data("today", move || entry.with(|e| e.today))
     .project_data("outside", move || entry.with(|e| e.outside))
-    .flex_1()
+    .column(grid)
+    // A terminal marks today bold and the other months' days muted; the
+    // painter bands the selected days and fades the disabled ones.
+    .when(grid.terminal, |v| {
+        v.style_when(
+            move || entry.with(|e| e.outside),
+            |s| s.text_color(tone_color(Tone::Muted)),
+        )
+        .style_when(
+            move || entry.with(|e| e.today),
+            |s| s.font_weight(FontWeight::BOLD),
+        )
+    })
     .element_ref(&me)
     .on_layout(move |_: &Bounds<Points>| {
         if !laid_out.get_untracked() {

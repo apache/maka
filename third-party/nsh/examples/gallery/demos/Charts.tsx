@@ -1,8 +1,8 @@
 import type { JSX } from "nsh";
-import { Canvas, cleanup, createAnimatedValue, Easing, effect, LayoutAnimation, List, reduceMotion, signal, Text, token, View } from "nsh";
+import { Canvas, cleanup, createAnimatedValue, Easing, effect, LayoutAnimation, List, reduceMotion, signal, Text, View } from "nsh";
 import { Arc, Area, Bar, Cell, Dot, Grid, Line, Pie, Plot, PlotAppearScope, PlotAxis, PlotLabel, RadialGrid, RadialLine, Rule, Sankey, Treemap } from "nsh/base/plot";
 import { platform } from "nsh";
-import { alpha, Button, Card, chart, colors, DemoPage, finish, focusRing, Legend, mono, Segmented, toneColor, type Tone } from "../ui";
+import { alpha, Button, Card, categoryColors, chart, colors, DemoPage, focusRing, Legend, mono, plotAxisText, plotBaseline, plotCrossLine, plotDotClass, plotGrid, plotHoverDot, plotReference, plotTooltip, plotTooltipTitle, plotWash, Segmented, seriesColors, toneColor, type Tone } from "../ui";
 
 const pointer = platform.desktop;
 const size = pointer ? { gap: 10, switch: "small" as const } : { gap: 12, switch: "regular" as const };
@@ -16,20 +16,20 @@ function random(seed: number) {
   };
 }
 
-/** Values on the axes: small, monospaced and faint, so the marks lead. */
-const axis = { fontSize: 10.5, fontFamily: mono, color: colors.faint, fontVariant: ["tabular-nums" as const] };
+/** Values on the axes: small, monospaced and faint, so the marks lead
+ * (`plotAxisText`). These read the theme where they are drawn (functions),
+ * so they follow the appearance. */
+const axis = plotAxisText;
 /** An axis' labels under a plot: a line of `axis` text 8 below its edge. */
-const below = { ...axis, lineHeight: 13, paddingTop: 8 };
+const below = () => ({ ...axis(), lineHeight: 13, paddingTop: 8 });
 /** The room under a plot for those labels: its margin. */
 const BELOW = 8 + 13;
 /** A tooltip's title: a small monospaced caps label over its values. */
-const tipTitle = { fontSize: 10, fontFamily: mono, letterSpacing: 0.8, color: colors.muted };
+const tipTitle = plotTooltipTitle;
 /** A floating tooltip card. */
-const tipCard = { ...finish.menu, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, gap: 6 };
+const tipCard = plotTooltip;
 /** A wash under a line: `color` at `top` opacity fading out to the baseline. */
-const wash = (color: string, top = 0.18) => ({
-  backgroundImage: `linear-gradient(to bottom, ${alpha(color, top)}, ${alpha(color, 0)})`,
-});
+const wash = plotWash;
 const fixed = (n: number, digits = 2) => n.toFixed(digits);
 const count = (n: number) => Math.round(n).toLocaleString("en-US");
 const signed = (n: number, digits = 2) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(digits)}`;
@@ -185,14 +185,13 @@ function Live() {
           motion={{ appear: { duration: 900, easing: "easeOut" }, update: REFIT, enter: { duration: 120 }, exit: { duration: 160 }, pointer: { stiffness: 380, damping: 36 } }}
           accessibilityLabel={`NSHL, the last minute, ${fixed(last())}, ${signed((change() / OPEN) * 100)}% on the day`}
           accessibilityValue={{ text: hover() == null ? undefined : `${clock(points()[hover()!].t)}, ${fixed(points()[hover()!].price)}` }}
-          crossLineClass="w-px h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.22) }}
-          dotClass="size-2.5 rounded-full border-2"
+          {...plotCrossLine()}
+          dotClass={plotDotClass}
           tooltipPlacement="pointer"
           tooltipOffset={10}
           tooltipContent={
-            <View style={tipCard}>
-              <Text style={tipTitle}>{clock(points()[tip()].t)}</Text>
+            <View style={tipCard()}>
+              <Text style={tipTitle()}>{clock(points()[tip()].t)}</Text>
               <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text, fontVariant: ["tabular-nums"] }}>{fixed(points()[tip()].price)}</Text>
             </View>
           }
@@ -203,13 +202,13 @@ function Live() {
           focusStyle={focusRing(4)}
           style={{ height: LIVE_HEIGHT, marginRight: GUTTER, marginBottom: BELOW }}
         >
-          <Grid y={grid()} style={{ stroke: colors.line }} />
+          <Grid y={grid()} style={plotGrid()} />
           {/* The open: a faint dashed reference, while it is in view. */}
-          <Grid y={OPEN > domain()[0] && OPEN < domain()[1] ? [OPEN] : []} style={{ stroke: alpha(colors.text, 0.28), strokeDasharray: "2 4" }} />
+          <Grid y={OPEN > domain()[0] && OPEN < domain()[1] ? [OPEN] : []} style={plotReference()} />
           <Area backgroundStyle={wash(toneColor(tone()), 0.2)} hoverDotClass="hidden" />
           {/* The channel: each tick's high and low of the ten before it, the line running inside. */}
           <Area y1="high" y0="low" style={{ fill: alpha(toneColor(tone()), 0.12) }} hoverDotClass="hidden" />
-          <Line style={{ stroke: toneColor(tone()), strokeWidth: 1.75 }} hoverDotStyle={{ backgroundColor: toneColor(tone()), borderColor: colors.inset }} />
+          <Line style={{ stroke: toneColor(tone()), strokeWidth: 1.75 }} hoverDotStyle={plotHoverDot(toneColor(tone()))} />
           {/* The newest point: a dot ringed in the inset's color, its halo breathing. */}
           <View style={{ position: "absolute", left: "100%", top: y(last()), width: 0, height: 0, pointerEvents: "none" }}>
             <If when={breathing()}>
@@ -222,7 +221,7 @@ function Live() {
             placement="right"
             tickValues={grid().filter((v) => Math.abs(y(v) - y(last())) > 14)}
             format={(v) => fixed(v)}
-            labelStyle={{ ...axis, paddingLeft: 10 }}
+            labelStyle={{ ...axis(), paddingLeft: 10 }}
           />
           {/* The window's high over its point, and the last price's tag at its height in the gutter. */}
           <PlotLabel
@@ -234,7 +233,7 @@ function Live() {
                 align: peakAlign(),
                 class: "-translate-y-full",
                 // On the card's color, so a grid line near the high passes behind it.
-                style: { ...axis, color: colors.muted, marginTop: -6, paddingHorizontal: 4, borderRadius: 3, backgroundColor: colors.surface },
+                style: { ...axis(), color: colors.muted, marginTop: -6, paddingHorizontal: 4, borderRadius: 3, backgroundColor: colors.surface },
               },
               {
                 text: fixed(last()),
@@ -257,7 +256,7 @@ function Live() {
             ]}
           />
           {/* The window's seconds under it, the first and last at its ends. */}
-          <PlotAxis ticks={SECONDS.length} format={(_, i) => SECONDS[i]} labelStyle={below} />
+          <PlotAxis ticks={SECONDS.length} format={(_, i) => SECONDS[i]} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
@@ -354,13 +353,12 @@ function Depth() {
           motion={{ appear: { duration: 700, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 160 }, pointer: { stiffness: 420, damping: 40 } }}
           accessibilityLabel={`Order book depth within ${range()} ticks: ${count(bids())} bid, ${count(asks())} asked`}
           accessibilityValue={{ text: hover() == null ? undefined : `${side() === "bid" ? "Bids" : "Asks"} to ${fixed(shown().price)}: ${count(shown().bid ?? shown().ask ?? 0)}` }}
-          crossLineClass="w-px h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.22) }}
-          dotClass="size-2.5 rounded-full border-2"
+          {...plotCrossLine()}
+          dotClass={plotDotClass}
           tooltipOffset={6}
           tooltipContent={
-            <View style={tipCard}>
-              <Text style={{ ...tipTitle, color: toneColor(side() === "bid" ? "up" : "down") }}>{side() === "bid" ? `BIDS ≥ ${fixed(shown().price)}` : `ASKS ≤ ${fixed(shown().price)}`}</Text>
+            <View style={tipCard()}>
+              <Text style={{ ...tipTitle(), color: toneColor(side() === "bid" ? "up" : "down") }}>{side() === "bid" ? `BIDS ≥ ${fixed(shown().price)}` : `ASKS ≤ ${fixed(shown().price)}`}</Text>
               <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text, fontVariant: ["tabular-nums"] }}>{count(shown().bid ?? shown().ask ?? 0)}</Text>
             </View>
           }
@@ -371,17 +369,17 @@ function Depth() {
           focusStyle={focusRing(4)}
           style={{ height: DEPTH_HEIGHT, marginBottom: BELOW }}
         >
-          <Grid y={ticks(0, top(), 3)} style={{ stroke: colors.line }} />
+          <Grid y={ticks(0, top(), 3)} style={plotGrid()} />
           {/* The middle: a dashed hairline in the spread. */}
           <View style={{ position: "absolute", left: at(MID), top: 0, bottom: 0, borderLeftWidth: 1, borderStyle: "dashed", borderColor: alpha(colors.text, 0.2), pointerEvents: "none" }} />
           <Area y1="bid" curve="stepAfter" backgroundStyle={wash(toneColor("up"), 0.22)} hoverDotClass="hidden" />
           <Area y1="ask" curve="stepAfter" backgroundStyle={wash(toneColor("down"), 0.22)} hoverDotClass="hidden" />
           <Line y="bid" curve="stepAfter" style={{ stroke: toneColor("up"), strokeWidth: 1.5 }} hoverDotStyle={dot("bid", "up")} />
           <Line y="ask" curve="stepAfter" style={{ stroke: toneColor("down"), strokeWidth: 1.5 }} hoverDotStyle={dot("ask", "down")} />
-          <Grid y={[0]} style={{ stroke: colors.border }} />
+          <Grid y={[0]} style={plotBaseline()} />
           {/* The prices at the ends, and the middle a shade firmer. */}
-          <PlotAxis tickValues={[lo(), hi()]} format={(v) => fixed(v)} labelStyle={below} />
-          <PlotAxis tickValues={[MID]} format={(v) => fixed(v)} labelStyle={{ ...below, color: colors.muted }} />
+          <PlotAxis tickValues={[lo(), hi()]} format={(v) => fixed(v)} labelStyle={below()} />
+          <PlotAxis tickValues={[MID]} format={(v) => fixed(v)} labelStyle={{ ...below(), color: colors.muted }} />
         </Plot>
       </View>
       {/* The balance: each side's share of what the book holds in view. */}
@@ -471,7 +469,7 @@ function Drawdown() {
           {shown().drawdown < -0.05 ? `${signed(shown().drawdown, 1)}% from the high` : "at a high"}
         </Text>
         <View style={{ flex: 1 }} />
-        <Text style={{ ...axis, color: colors.muted }}>{`DAY ${shown().day + 1}`}</Text>
+        <Text style={{ ...axis(), color: colors.muted }}>{`DAY ${shown().day + 1}`}</Text>
       </View>
       <View style={{ marginTop: size.gap, gap: 6 }}>
         <Plot
@@ -486,18 +484,17 @@ function Drawdown() {
           motion={{ appear: { duration: 1000, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 160 } }}
           accessibilityLabel={`Portfolio value over 120 days, ${signed(total, 1)}%; worst drawdown ${signed(TROUGH.drawdown, 1)}% from day ${PEAK.day + 1} to day ${TROUGH.day + 1}`}
           accessibilityValue={{ text: hover() == null ? undefined : `Day ${shown().day + 1}, $${count(shown().value)}, ${signed(shown().drawdown, 1)}%` }}
-          crossLineClass="w-px h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.22) }}
-          dotClass="size-2.5 rounded-full border-2"
+          {...plotCrossLine()}
+          dotClass={plotDotClass}
           onHoverChange={follow("equity")}
           focusStyle={focusRing(4)}
           style={{ height: EQUITY_HEIGHT }}
         >
           {/* The worst run, from its high to its low, its value hatched under the curve. */}
           <View style={{ position: "absolute", left: across(PEAK.day), width: `${((TROUGH.day - PEAK.day) / (EQUITY.length - 1)) * 100}%`, top: 0, bottom: 0, backgroundColor: alpha(colors.danger, 0.04), pointerEvents: "none" }}>
-            <Text style={{ ...axis, position: "absolute", left: 6, top: 6, color: toneColor("danger") }}>{`MAX ${signed(TROUGH.drawdown, 1)}%`}</Text>
+            <Text style={{ ...axis(), position: "absolute", left: 6, top: 6, color: toneColor("danger") }}>{`MAX ${signed(TROUGH.drawdown, 1)}%`}</Text>
           </View>
-          <Grid y={ticks(VALUE_LO, VALUE_HI, 3)} style={{ stroke: colors.line }} />
+          <Grid y={ticks(VALUE_LO, VALUE_HI, 3)} style={plotGrid()} />
           <Area backgroundStyle={wash(toneColor("accent"), 0.16)} hoverDotClass="hidden" />
           {/* Hairline stripes 6pt apart, falling to the right. */}
           <Area
@@ -506,7 +503,7 @@ function Drawdown() {
             backgroundStyle={{ backgroundImage: `repeating-linear-gradient(-45deg, ${alpha(colors.danger, 0.32)} 0px, ${alpha(colors.danger, 0.32)} 1px, transparent 1px, transparent 6px)` }}
             hoverDotClass="hidden"
           />
-          <Line style={{ stroke: toneColor("accent"), strokeWidth: 1.75 }} hoverDotStyle={{ backgroundColor: toneColor("accent"), borderColor: colors.inset }} />
+          <Line style={{ stroke: toneColor("accent"), strokeWidth: 1.75 }} hoverDotStyle={plotHoverDot(toneColor("accent"))} />
           {mark("equity", "accent")}
         </Plot>
         {/* Underwater: hanging from zero, deeper red the further down. */}
@@ -518,8 +515,7 @@ function Drawdown() {
           motion={{ appear: { duration: 1000, easing: "easeOut" }, enter: { duration: 120 }, exit: { duration: 160 } }}
           accessibilityLabel={`Drawdown from the high, at worst ${signed(TROUGH.drawdown, 1)}% on day ${TROUGH.day + 1}`}
           accessibilityValue={{ text: hover() == null ? undefined : `Day ${shown().day + 1}, ${signed(shown().drawdown, 1)}% from the high` }}
-          crossLineClass="w-px h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.22) }}
+          {...plotCrossLine()}
           dotClass="size-2 rounded-full border-2"
           onHoverChange={follow("water")}
           focusStyle={focusRing(4)}
@@ -530,18 +526,18 @@ function Drawdown() {
             backgroundStyle={{ backgroundImage: `linear-gradient(to bottom, ${alpha(colors.danger, 0.04)}, ${alpha(colors.danger, 0.26)})` }}
             hoverDotClass="hidden"
           />
-          <Line style={{ stroke: toneColor("danger"), strokeWidth: 1.25 }} hoverDotStyle={{ backgroundColor: toneColor("danger"), borderColor: colors.inset }} />
+          <Line style={{ stroke: toneColor("danger"), strokeWidth: 1.25 }} hoverDotStyle={plotHoverDot(toneColor("danger"))} />
           {/* The floor's value over its edge, and the low marked where it is. */}
-          <PlotAxis placement="left" labelPlacement="inside" tickValues={[DD_FLOOR]} format={(v) => `${v}%`} labelStyle={{ ...axis, paddingBottom: 2 }} />
+          <PlotAxis placement="left" labelPlacement="inside" tickValues={[DD_FLOOR]} format={(v) => `${v}%`} labelStyle={{ ...axis(), paddingBottom: 2 }} />
           <View style={{ position: "absolute", left: across(TROUGH.day), top: (TROUGH.drawdown / DD_FLOOR) * WATER_HEIGHT, width: 0, height: 0, pointerEvents: "none" }}>
             <View style={{ position: "absolute", left: -3.5, top: -3.5, width: 7, height: 7, borderRadius: 3.5, borderWidth: 1.5, borderColor: colors.inset, backgroundColor: toneColor("danger") }} />
             {/* Under the dot, where the curve never is (the low is its lowest point); a width of
                 its own, centered on the dot: the zero-width anchor would wrap it at every break. */}
-            <Text style={{ ...axis, lineHeight: 13, position: "absolute", left: -32, top: 5, width: 64, textAlign: "center", color: toneColor("danger") }}>{`${signed(TROUGH.drawdown, 1)}%`}</Text>
+            <Text style={{ ...axis(), lineHeight: 13, position: "absolute", left: -32, top: 5, width: 64, textAlign: "center", color: toneColor("danger") }}>{`${signed(TROUGH.drawdown, 1)}%`}</Text>
           </View>
           {mark("water", "danger")}
           {/* The days under both plots: the first, then every 30th. */}
-          <PlotAxis tickValues={DAYS} format={(v) => (v === 0 ? "Day 1" : String(v + 1))} labelStyle={below} />
+          <PlotAxis tickValues={DAYS} format={(v) => (v === 0 ? "Day 1" : String(v + 1))} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
@@ -568,7 +564,9 @@ const RESOURCES: { name: string; color: string; unit: string; total: number; use
   { name: "Memory", color: chart.s2, unit: "GB", total: 256, used: { now: 141, day: 188, week: 214 } },
   { name: "Network", color: chart.s3, unit: "Gbps", total: 10, used: { now: 3.2, day: 7.4, week: 8.9 } },
 ];
-const RINGS = pointer ? 164 : 172;
+/** In a terminal the rings take more Cells, so the average and its
+ * caption fit in the innermost ring's hole, clear of its arcs. */
+const RINGS = platform.idiom === "terminal" ? 224 : pointer ? 164 : 172;
 /** Each ring's width and the gap between rings, in points. */
 const RING_WIDTH = 11;
 const RING_GAP = 5;
@@ -624,7 +622,7 @@ function Capacity() {
                 <Text style={{ flex: 1, fontSize: 13, color: colors.text }}>{r.name}</Text>
                 <Text style={{ fontSize: 15, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>{`${fixed(share(r) * 100, 0)}%`}</Text>
               </View>
-              <Text style={{ ...axis, marginLeft: 16 }}>{`${r.used[period()]} / ${r.total} ${r.unit}`}</Text>
+              <Text style={{ ...axis(), marginLeft: 16 }}>{`${r.used[period()]} / ${r.total} ${r.unit}`}</Text>
             </View>
           ))}
         </View>
@@ -648,7 +646,7 @@ const REVENUE = REGIONS.reduce((sum, r) => sum + r.revenue, 0);
 /** The theme's series colors, in the regions' order (read where used, so
  * they follow the appearance): the plot's ordinal `colorScale` gives each
  * region's slice the next one, as the legend gives its key. */
-const palette = () => [chart.s1, chart.s2, chart.s3, chart.s4, chart.s5];
+const palette = seriesColors;
 /** The leader lines of the pie's labels, each in its slice's color. */
 const STROKES = ["stroke-chart-1", "stroke-chart-2", "stroke-chart-3", "stroke-chart-4", "stroke-chart-5"];
 const money = (k: number) => (k >= 1000 ? `$${(k / 1000).toFixed(2)}M` : `$${k}k`);
@@ -815,14 +813,13 @@ function Sales() {
           accessibilityLabel={`Sales per month, online and in store, highest in ${SALES.reduce((a, b) => (total(b) > total(a) ? b : a)).month}`}
           accessibilityValue={{ text: hover() == null ? undefined : `${shown().month}, ${shown().online}k online, ${shown().store}k in store` }}
           // The band of the month under the pointer: a faint tint over it.
-          crossLineClass="w-full h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.05) }}
+          {...plotCrossLine({ band: true })}
           onHoverChange={({ index }) => hover.set(index)}
           focusStyle={focusRing(4)}
           style={{ height: SALES_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
-          <Grid y={[40, 80, 120]} style={{ stroke: colors.line }} />
-          <Grid y={[0]} style={{ stroke: colors.border }} />
+          <Grid y={[40, 80, 120]} style={plotGrid()} />
+          <Grid y={[0]} style={plotBaseline()} />
           <Bar
             value="online"
             stack={stacked() ? "sales" : undefined}
@@ -845,8 +842,8 @@ function Sales() {
             style={{ fill: chart.s2 }}
           />
           {/* The grid's values right of it, as d3 writes them, and a month under each band. */}
-          <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ ...axis, width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
-          <PlotAxis format={(v) => MONTHS[v]} labelStyle={below} />
+          <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ ...axis(), width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
+          <PlotAxis format={(v) => MONTHS[v]} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4, alignSelf: pointer ? "flex-start" : "stretch", width: pointer ? 220 : undefined }}>
@@ -965,7 +962,7 @@ function Bridge() {
   return (
     <Card icon="stocks" title="Profit bridge" subtitle="A quarter's revenue down to net profit, step by step">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{(shown()?.name ?? "Net profit").toUpperCase()}</Text>
+        <Text style={tipTitle()}>{(shown()?.name ?? "Net profit").toUpperCase()}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: shown() ? toneColor(toneOf(shown()!)) : colors.text, fontVariant: ["tabular-nums"] }}>
             {shown() ? (shown()!.kind === "total" ? millions(shown()!.end) : signedMillions(amount(shown()!))) : millions(net())}
@@ -991,13 +988,12 @@ function Bridge() {
           motion={{ appear: { duration: 900, easing: "easeOut" }, update: BRIDGE_UPDATE, enter: { duration: 150 }, exit: { duration: 150 }, pointer: { stiffness: 320, damping: 32 } }}
           accessibilityLabel={`Profit bridge, ${quarter()}: ${millions(revenue())} revenue to ${millions(net())} net profit, a net margin of ${margin(net())}`}
           accessibilityValue={{ text: shown() && `${shown()!.name}: ${shown()!.kind === "total" ? millions(shown()!.end) : signedMillions(amount(shown()!))}` }}
-          crossLineClass="w-full h-full"
-          crossLineStyle={{ backgroundColor: alpha(colors.text, 0.05) }}
+          {...plotCrossLine({ band: true })}
           onHoverChange={({ index }) => hover.set(index)}
           focusStyle={focusRing(4)}
           style={{ height: BRIDGE_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
-          <Grid y={[40, 80, 120]} style={{ stroke: colors.line }} />
+          <Grid y={[40, 80, 120]} style={plotGrid()} />
           {/* Connectors: each step's level carried across the gap to the next step, placed on the
               scales (from a band's right edge, half a band past its middle) so they follow the
               plot's ranges and glide with a new quarter. */}
@@ -1009,7 +1005,7 @@ function Bridge() {
               style: { width: gap(), height: 0, borderTopWidth: 1, borderStyle: "dashed", borderColor: alpha(colors.text, 0.3) },
             }))}
           />
-          <Grid y={[0]} style={{ stroke: colors.border }} />
+          <Grid y={[0]} style={plotBaseline()} />
           <Bar
             value="end"
             base="start"
@@ -1020,8 +1016,8 @@ function Bridge() {
             label={(d: Step) => (d.kind === "total" ? fixed(d.end, 1) : signed(d.end - d.start, 1))}
             labelStyle={labelStyle}
           />
-          <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ ...axis, width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
-          <PlotAxis format={(v) => steps()[v].short} labelStyle={below} />
+          <PlotAxis placement="right" tickValues={[0, 40, 80, 120]} labelStyle={{ ...axis(), width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
+          <PlotAxis format={(v) => steps()[v].short} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
@@ -1178,7 +1174,7 @@ function Funnel() {
   return (
     <Card icon="stocks" title="Conversion funnel" subtitle="From a first visit to a first trade, and what each stage keeps">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{(shown()?.name ?? "Visits to first trade").toUpperCase()}</Text>
+        <Text style={tipTitle()}>{(shown()?.name ?? "Visits to first trade").toUpperCase()}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>
             {shown() ? count(shown()!.count) : percentOf(overall())}
@@ -1293,7 +1289,7 @@ function Funnel() {
                   ...dim(i),
                 }}
               >
-                <Text style={{ ...axis, color: colors.text }}>{i === 0 ? "100%" : percentOf(rows()[i].kept)}</Text>
+                <Text style={{ ...axis(), color: colors.text }}>{i === 0 ? "100%" : percentOf(rows()[i].kept)}</Text>
               </View>
             </View>
           ))}
@@ -1301,7 +1297,7 @@ function Funnel() {
             <View style={{ position: "absolute", right: 0, top: funnelRow(k).gap - 7, height: 14, justifyContent: "center", opacity: necksIn[k] }}>
               <Text
                 class={fading}
-                style={{ ...axis, fontSize: 10, paddingRight: 6, color: leak().name === name ? toneColor("down") : colors.faint, ...dim(k + 1) }}
+                style={{ ...axis(), fontSize: 10, paddingRight: 6, color: leak().name === name ? toneColor("down") : colors.faint, ...dim(k + 1) }}
               >
                 {`−${percentOf(1 - rows()[k + 1].kept)}`}
               </Text>
@@ -1430,7 +1426,7 @@ function Candles() {
     </If>
   );
   const ohlc = (label: string, v: number) => (
-    <Text style={{ ...axis, color: colors.faint }}>
+    <Text style={{ ...axis(), color: colors.faint }}>
       {`${label} `}
       <Text style={{ color: colors.text }}>{fixed(v)}</Text>
     </Text>
@@ -1441,7 +1437,7 @@ function Candles() {
       <View style={{ gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={{ fontSize: 13, fontFamily: mono, color: colors.muted }}>NSHL</Text>
-          <Text style={tipTitle}>{shown().date.toUpperCase()}</Text>
+          <Text style={tipTitle()}>{shown().date.toUpperCase()}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>{fixed(shown().close)}</Text>
@@ -1454,7 +1450,7 @@ function Candles() {
           {ohlc("H", shown().high)}
           {ohlc("L", shown().low)}
           {ohlc("C", shown().close)}
-          <Text style={{ ...axis, color: colors.faint }}>
+          <Text style={{ ...axis(), color: colors.faint }}>
             {"VOL "}
             <Text style={{ color: colors.text }}>{`${fixed(shown().volume, 1)}M`}</Text>
           </Text>
@@ -1477,7 +1473,7 @@ function Candles() {
           focusStyle={focusRing(4)}
           style={{ height: PRICE_HEIGHT, marginRight: GUTTER }}
         >
-          <Grid y={grid()} style={{ stroke: colors.line }} />
+          <Grid y={grid()} style={plotGrid()} />
           {/* The last close: a dotted level across the days. */}
           <Grid y={[last().close]} style={{ stroke: alpha(toneColor(last().dir), 0.55), strokeDasharray: "2 3" }} />
           {/* Wicks under bodies, both in the day's tone. */}
@@ -1489,7 +1485,7 @@ function Candles() {
             placement="right"
             tickValues={grid().filter((v) => Math.abs(y(v) - y(last().close)) > 14)}
             format={(v) => fixed(v, 0)}
-            labelStyle={{ ...axis, paddingLeft: 10 }}
+            labelStyle={{ ...axis(), paddingLeft: 10 }}
           />
           <PlotAxis
             placement="right"
@@ -1526,10 +1522,10 @@ function Candles() {
           {/* A day's volume in one of two series, so each takes its tone, faded under the candles'. */}
           <Bar value="upVolume" stack="volume" cornerRadii={{ topLeft: 1, topRight: 1 }} stagger={0.6} inactiveOpacity={0.3} style={{ fill: alpha(colors.up, 0.45) }} />
           <Bar value="downVolume" stack="volume" cornerRadii={{ topLeft: 1, topRight: 1 }} stagger={0.6} inactiveOpacity={0.3} style={{ fill: alpha(colors.down, 0.45) }} />
-          <Grid y={[0]} style={{ stroke: colors.border }} />
+          <Grid y={[0]} style={plotBaseline()} />
           {mark("volume")}
-          <PlotAxis placement="right" tickValues={[topVolume() / 1.12]} format={(v) => `${fixed(v, 0)}M`} labelStyle={{ ...axis, paddingLeft: 10 }} />
-          <PlotAxis tickValues={dates()} format={dayNames(rows())} labelStyle={below} />
+          <PlotAxis placement="right" tickValues={[topVolume() / 1.12]} format={(v) => `${fixed(v, 0)}M`} labelStyle={{ ...axis(), paddingLeft: 10 }} />
+          <PlotAxis tickValues={dates()} format={dayNames(rows())} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
@@ -1585,8 +1581,7 @@ type RiskPeriod = (typeof RISK_PERIODS)[number]["value"];
 const SECTORS = ["Technology", "Financials", "Energy", "Healthcare", "Consumer"] as const;
 type Sector = (typeof SECTORS)[number];
 /** Each sector's color: the accent leads, the others the theme's quiet hues. */
-const sectorColor = (s: Sector) =>
-  ({ Technology: chart.s1, Financials: colors.info, Energy: colors.warn, Healthcare: token("violet"), Consumer: chart.s3 })[s];
+const sectorColor = (s: Sector) => categoryColors()[SECTORS.indexOf(s)];
 /** A holding: its market cap in billions and, per period, its annualized
  * volatility and return in percent ([vol, ret]). */
 type Holding = { ticker: string; name: string; sector: Sector; cap: number; p: Record<RiskPeriod, [number, number]> };
@@ -1668,11 +1663,11 @@ function RiskReturn() {
   const ring = { outlineWidth: 1.5, outlineOffset: 2, outlineColor: colors.text };
   const plotWidth = signal(0);
   // On the card's color, so the grid and the index's lines pass under the words.
-  const corner = { ...axis, color: colors.faint, paddingHorizontal: 6, paddingVertical: 4, backgroundColor: colors.surface, borderRadius: 4 };
+  const corner = { ...axis(), color: colors.faint, paddingHorizontal: 6, paddingVertical: 4, backgroundColor: colors.surface, borderRadius: 4 };
   return (
     <Card icon="stocks" title="Risk vs return" subtitle="Each holding's volatility against its return, sized by market cap">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>
+        <Text style={tipTitle()}>
           {shown() ? `${shown()!.ticker === "SPX" ? "S&P 500" : shown()!.ticker} · ${shown()!.ticker === "SPX" ? "BENCHMARK" : shown()!.name.toUpperCase()}` : `PORTFOLIO · ${period()}`}
         </Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
@@ -1701,7 +1696,7 @@ function RiskReturn() {
       </View>
       <View style={{ marginTop: size.gap + 4 }} onLayout={({ bounds }) => plotWidth.set(bounds.size.width)}>
         {/* The y axis' title, over its ticks on the right. */}
-        <Text style={{ ...axis, color: colors.faint, alignSelf: "flex-end", marginBottom: 6 }}>Return, annualized ↑</Text>
+        <Text style={{ ...axis(), color: colors.faint, alignSelf: "flex-end", marginBottom: 6 }}>Return, annualized ↑</Text>
         <Plot
           data={rows()}
           x="vol"
@@ -1717,8 +1712,8 @@ function RiskReturn() {
           focusStyle={focusRing(4)}
           style={{ height: RISK_HEIGHT, marginRight: AXIS + 8, marginBottom: BELOW }}
         >
-          <Grid x={VOL_TICKS} y={RET_TICKS} style={{ stroke: colors.line }} />
-          <Grid y={[0]} style={{ stroke: colors.border }} />
+          <Grid x={VOL_TICKS} y={RET_TICKS} style={plotGrid()} />
+          <Grid y={[0]} style={plotBaseline()} />
           {/* The index's risk and return: the quadrants' edges. */}
           <Grid x={[index().vol]} y={[index().ret]} style={{ stroke: alpha(colors.text, 0.3), strokeDasharray: "2 4" }} />
           <PlotLabel
@@ -1750,11 +1745,11 @@ function RiskReturn() {
             hoverDotClass="rounded-full"
             hoverDotStyle={ring}
           />
-          <PlotAxis placement="right" tickValues={RET_TICKS} format={(v) => (v === 0 ? "0" : `${signed(v, 0)}%`)} labelStyle={{ ...axis, width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
-          <PlotAxis tickValues={VOL_TICKS} format={(v) => `${v}%`} labelStyle={below} />
+          <PlotAxis placement="right" tickValues={RET_TICKS} format={(v) => (v === 0 ? "0" : `${signed(v, 0)}%`)} labelStyle={{ ...axis(), width: AXIS + 8, paddingLeft: 8, textAlign: "right" }} />
+          <PlotAxis tickValues={VOL_TICKS} format={(v) => `${v}%`} labelStyle={below()} />
         </Plot>
         {/* The x axis' title, under its ticks' end. */}
-        <Text style={{ ...axis, color: colors.faint, alignSelf: "flex-end", marginRight: AXIS + 8, marginTop: 2 }}>Volatility →</Text>
+        <Text style={{ ...axis(), color: colors.faint, alignSelf: "flex-end", marginRight: AXIS + 8, marginTop: 2 }}>Volatility →</Text>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
         <Figures>
@@ -1858,7 +1853,7 @@ function Targets() {
   return (
     <Card icon="stocks" title="Price targets" subtitle="Where analysts see each stock in a year, against today's price">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{shown() ? `${shown()!.ticker} · ${shown()!.analysts} ANALYSTS` : `${name().toUpperCase()} · ${rows().length} STOCKS`}</Text>
+        <Text style={tipTitle()}>{shown() ? `${shown()!.ticker} · ${shown()!.analysts} ANALYSTS` : `${name().toUpperCase()} · ${rows().length} STOCKS`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>
             {shown() ? dollars(shown()!.mean) : pct(median(rows().map((r) => r.meanUp)))}
@@ -1898,9 +1893,9 @@ function Targets() {
           focusStyle={focusRing(4)}
           style={{ height: height(), marginLeft: 44, marginBottom: BELOW }}
         >
-          <Grid x={UPSIDE_TICKS.filter((v) => v !== 0)} style={{ stroke: colors.line }} />
+          <Grid x={UPSIDE_TICKS.filter((v) => v !== 0)} style={plotGrid()} />
           {/* Today's price: no upside. */}
-          <Grid x={[0]} style={{ stroke: colors.border }} />
+          <Grid x={[0]} style={plotBaseline()} />
           <Rule value="highUp" base="lowUp" stagger={0.4} inactiveOpacity={0.35} style={{ stroke: alpha(colors.text, 0.3), strokeWidth: 2 }} />
           <Dot value="priorUp" r={3.5} stagger={0.4} inactiveOpacity={0.35} style={{ fill: colors.surface, stroke: colors.muted, strokeWidth: 1.5 }} hoverDotClass="hidden" />
           {/* The pointer finds a stock's dot from anywhere on its row. */}
@@ -1915,8 +1910,8 @@ function Targets() {
             hoverDotClass="rounded-full"
             hoverDotStyle={{ outlineWidth: 1.5, outlineOffset: 1.5, outlineColor: colors.text }}
           />
-          <PlotAxis placement="left" format={tickersOf(rows())} labelStyle={{ ...axis, width: 44, paddingRight: 10, textAlign: "right", color: colors.muted }} />
-          <PlotAxis tickValues={UPSIDE_TICKS} format={(v) => (v === 0 ? "Today" : `${signed(v, 0)}%`)} labelStyle={below} />
+          <PlotAxis placement="left" format={tickersOf(rows())} labelStyle={{ ...axis(), width: 44, paddingRight: 10, textAlign: "right", color: colors.muted }} />
+          <PlotAxis tickValues={UPSIDE_TICKS} format={(v) => (v === 0 ? "Today" : `${signed(v, 0)}%`)} labelStyle={below()} />
         </Plot>
       </View>
       <View style={{ marginTop: size.gap + 4 }}>
@@ -1988,7 +1983,7 @@ const TAPE_HEIGHT = 176;
 const SIDE = 40;
 /** Shares in millions, as a chart writes them: 40M, 1.2B. */
 const shares = (m: number) => (m === 0 ? "0" : m >= 1000 ? `${fixed(m / 1000, m % 1000 === 0 ? 0 : 1)}B` : `${fixed(m, 0)}M`);
-const AXIS_TITLE = { fontSize: 10, fontFamily: mono, letterSpacing: 0.8, color: colors.faint };
+const AXIS_TITLE = () => ({ fontSize: 10, fontFamily: mono, letterSpacing: 0.8, color: colors.faint });
 const DUAL_UPDATE = { duration: 600, easing: "easeInOut" } as const;
 
 /** A line's swatch in a legend: a short stroke with a dot on it. */
@@ -2039,7 +2034,7 @@ function VolumePrice() {
       <View style={{ gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={{ fontSize: 13, fontFamily: mono, color: colors.muted }}>ORBX</Text>
-          <Text style={tipTitle}>{shown().title.toUpperCase()}</Text>
+          <Text style={tipTitle()}>{shown().title.toUpperCase()}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>{`$${fixed(shown().close)}`}</Text>
@@ -2052,8 +2047,8 @@ function VolumePrice() {
       </View>
       {/* Each scale's title over its own axis. */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: size.gap + 2, marginBottom: 6 }}>
-        <Text style={AXIS_TITLE}>SHARES</Text>
-        <Text style={AXIS_TITLE}>USD</Text>
+        <Text style={AXIS_TITLE()}>SHARES</Text>
+        <Text style={AXIS_TITLE()}>USD</Text>
       </View>
       <Plot
         data={rows()}
@@ -2071,12 +2066,12 @@ function VolumePrice() {
         style={{ height: TAPE_HEIGHT, marginLeft: SIDE, marginRight: SIDE, marginBottom: BELOW }}
       >
         {/* No values: the lines follow the aligned steps both axes share. */}
-        <Grid style={{ stroke: colors.line }} />
+        <Grid style={plotGrid()} />
         <Bar value="volume" color="dir" cornerRadii={{ topLeft: 1.5, topRight: 1.5 }} stagger={0.5} inactiveOpacity={0.4} />
         <Line y="close" scale="y2" curve="linear" style={{ stroke: chart.s1, strokeWidth: 2 }} />
-        <PlotAxis placement="left" format={shares} labelStyle={{ ...axis, width: SIDE, paddingRight: 8, textAlign: "right" }} />
-        <PlotAxis placement="right" scale="y2" format={(v) => fixed(v, 0)} labelStyle={{ ...axis, width: SIDE, paddingLeft: 8 }} />
-        <PlotAxis tickValues={dates()} format={(v) => rows()[v]?.label ?? ""} labelStyle={below} />
+        <PlotAxis placement="left" format={shares} labelStyle={{ ...axis(), width: SIDE, paddingRight: 8, textAlign: "right" }} />
+        <PlotAxis placement="right" scale="y2" format={(v) => fixed(v, 0)} labelStyle={{ ...axis(), width: SIDE, paddingLeft: 8 }} />
+        <PlotAxis tickValues={dates()} format={(v) => rows()[v]?.label ?? ""} labelStyle={below()} />
       </Plot>
       <View style={{ marginTop: size.gap + 4 }}>
         <Figures>
@@ -2130,15 +2125,15 @@ function Margins() {
   return (
     <Card icon="stocks" title="Revenue and margin" subtitle="Quarterly revenue on the left, net margin on the right">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{shown().quarter.replace(" ", " 20").toUpperCase()}</Text>
+        <Text style={tipTitle()}>{shown().quarter.replace(" ", " 20").toUpperCase()}</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 16, rowGap: 4, marginTop: 2 }}>
           <Legend color={alpha(chart.s2, 0.5)} label="Revenue" value={`$${fixed(shown().revenue, 1)}B`} />
           <LineKey color={chart.s1} label="Net margin" value={`${signed(shown().margin, 1)}%`} />
         </View>
       </View>
       <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: size.gap + 2, marginBottom: 6 }}>
-        <Text style={AXIS_TITLE}>USD</Text>
-        <Text style={AXIS_TITLE}>MARGIN</Text>
+        <Text style={AXIS_TITLE()}>USD</Text>
+        <Text style={AXIS_TITLE()}>MARGIN</Text>
       </View>
       <Plot
         data={rows()}
@@ -2153,9 +2148,9 @@ function Margins() {
         focusStyle={focusRing(4)}
         style={{ height: MARGIN_HEIGHT, marginLeft: SIDE, marginRight: SIDE, marginBottom: 2 * BELOW + 2 }}
       >
-        <Grid style={{ stroke: colors.line }} />
+        <Grid style={plotGrid()} />
         {/* Zero, the same line on both scales. */}
-        <Grid y={[0]} style={{ stroke: colors.border }} />
+        <Grid y={[0]} style={plotBaseline()} />
         <Bar value="revenue" cornerRadii={{ topLeft: 3, topRight: 3 }} stagger={0.4} inactiveOpacity={0.45} style={{ fill: alpha(chart.s2, 0.5) }} />
         <Line
           y="margin"
@@ -2166,11 +2161,11 @@ function Margins() {
           hoverDotStyle={{ width: 11, height: 11, borderRadius: 5.5, borderWidth: 2, borderColor: chart.s1, backgroundColor: colors.surface }}
           style={{ stroke: chart.s1, strokeWidth: 2 }}
         />
-        <PlotAxis placement="left" format={(v) => (v < 0 ? "" : v === 0 ? "$0" : `$${fixed(v, 0)}B`)} labelStyle={{ ...axis, width: SIDE, paddingRight: 8, textAlign: "right" }} />
-        <PlotAxis placement="right" scale="y2" format={(v) => `${v < 0 ? "−" : ""}${fixed(Math.abs(v), 0)}%`} labelStyle={{ ...axis, width: SIDE, paddingLeft: 8 }} />
+        <PlotAxis placement="left" format={(v) => (v < 0 ? "" : v === 0 ? "$0" : `$${fixed(v, 0)}B`)} labelStyle={{ ...axis(), width: SIDE, paddingRight: 8, textAlign: "right" }} />
+        <PlotAxis placement="right" scale="y2" format={(v) => `${v < 0 ? "−" : ""}${fixed(Math.abs(v), 0)}%`} labelStyle={{ ...axis(), width: SIDE, paddingLeft: 8 }} />
         {/* The quarters, and under them each year in the middle of its four, so the labels fit a phone. */}
-        <PlotAxis format={(v) => QUARTER_NAMES[v].slice(0, 2)} labelStyle={below} />
-        <PlotAxis tickValues={[1.5, 5.5]} format={(v) => (v < 4 ? "2025" : "2026")} labelStyle={{ ...below, paddingTop: BELOW + 2, color: colors.muted }} />
+        <PlotAxis format={(v) => QUARTER_NAMES[v].slice(0, 2)} labelStyle={below()} />
+        <PlotAxis tickValues={[1.5, 5.5]} format={(v) => (v < 4 ? "2025" : "2026")} labelStyle={{ ...below(), paddingTop: BELOW + 2, color: colors.muted }} />
       </Plot>
       <View style={{ marginTop: size.gap + 4 }}>
         <Figures>
@@ -2292,7 +2287,7 @@ function Ramp(props: { colors: string[]; labels: string[] }) {
       <View style={{ height: 6, borderRadius: 3, backgroundImage: `linear-gradient(to right, ${props.colors.join(", ")})` }} />
       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
         {props.labels.map((l) => (
-          <Text style={{ ...axis, fontSize: 10 }}>{l}</Text>
+          <Text style={{ ...axis(), fontSize: 10 }}>{l}</Text>
         ))}
       </View>
     </View>
@@ -2322,12 +2317,12 @@ function Correlation() {
   const width = signal(0);
   // A phone's narrow card: smaller tickers, and the coefficients leave the cells too small for them.
   const compact = () => width() > 0 && width() < 320;
-  const tick = () => ({ ...axis, fontSize: compact() ? 9 : 10.5, color: colors.muted });
+  const tick = () => ({ ...axis(), fontSize: compact() ? 9 : 10.5, color: colors.muted });
   const ramp = () => [colors.info, colors.line, chart.s1];
   return (
     <Card icon="table" title="Holdings correlation" subtitle="How closely each pair of holdings moves, from their daily returns">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{shown() ? `${shown()!.a} × ${shown()!.b}` : `${PAIR_TICKERS.length} HOLDINGS · ${lookback()}`}</Text>
+        <Text style={tipTitle()}>{shown() ? `${shown()!.a} × ${shown()!.b}` : `${PAIR_TICKERS.length} HOLDINGS · ${lookback()}`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>
             {coefficient(shown()?.r ?? mean())}
@@ -2450,14 +2445,14 @@ function Seasonality() {
   const width = signal(0);
   // A phone's narrow card: smaller labels, the returns left out of cells too small for them.
   const compact = () => width() > 0 && width() < 340;
-  const tick = () => ({ ...axis, fontSize: compact() ? 9 : 10.5 });
+  const tick = () => ({ ...axis(), fontSize: compact() ? 9 : 10.5 });
   const ramp = () => [colors.down, colors.line, colors.up];
   const gutter = () => (compact() ? 34 : 36);
   const totals = () => (compact() ? 46 : 54);
   return (
     <Card icon="chart" title="Monthly returns" subtitle="Every month since 2020, red for a loss and green for a gain">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{shown() ? `${shown()!.month.toUpperCase()} ${shown()!.year}` : `${name().toUpperCase()} · 2020–2026`}</Text>
+        <Text style={tipTitle()}>{shown() ? `${shown()!.month.toUpperCase()} ${shown()!.year}` : `${name().toUpperCase()} · 2020–2026`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: shown() ? toneColor(shown()!.ret >= 0 ? "up" : "down") : colors.text, fontVariant: ["tabular-nums"] }}>
             {pct(shown()?.ret ?? total())}
@@ -2578,12 +2573,12 @@ function Activity() {
   const meanAt = (slot: string) => at(slot).reduce((s, r) => s + r.trades, 0) / at(slot).length;
   const width = signal(0);
   const compact = () => width() > 0 && width() < 340;
-  const tick = () => ({ ...axis, fontSize: compact() ? 9 : 10.5 });
+  const tick = () => ({ ...axis(), fontSize: compact() ? 9 : 10.5 });
   const ramp = () => [colors.line, chart.s1];
   return (
     <Card icon="layers" title="Trading activity" subtitle="Trades every half hour of a week, the busier the brighter">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{shown() ? `${shown()!.day.toUpperCase()} ${shown()!.slot}–${slotEnd(shown()!.slot)}` : `${market()} · TRADES PER HALF HOUR`}</Text>
+        <Text style={tipTitle()}>{shown() ? `${shown()!.day.toUpperCase()} ${shown()!.slot}–${slotEnd(shown()!.slot)}` : `${market()} · TRADES PER HALF HOUR`}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>{thousands(shown()?.trades ?? perDay())}</Text>
           <Text style={{ flexShrink: 1, fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>
@@ -2660,8 +2655,8 @@ function Factors() {
           focusStyle={{ ...focusRing(4), borderRadius: RADAR / 2 }}
           style={{ width: RADAR, height: RADAR, marginHorizontal: 40, marginVertical: 10 }}
         >
-          <RadialGrid rings={[25, 50, 75]} outerRadius={RADAR_RIM} style={{ stroke: colors.line }} />
-          <RadialGrid rings={[100]} spokes outerRadius={RADAR_RIM} style={{ stroke: colors.border }} />
+          <RadialGrid rings={[25, 50, 75]} outerRadius={RADAR_RIM} style={plotGrid()} />
+          <RadialGrid rings={[100]} spokes outerRadius={RADAR_RIM} style={plotBaseline()} />
           <RadialLine
             radius={bench()}
             closed
@@ -2705,7 +2700,7 @@ function Factors() {
         </Plot>
         <View style={{ alignSelf: "stretch", flexGrow: 1, flexBasis: pointer ? 200 : undefined, justifyContent: "center", gap: 12 }}>
           <View style={{ gap: 2 }}>
-            <Text style={tipTitle}>{shown()?.name.toUpperCase() ?? "ALL SIX FACTORS"}</Text>
+            <Text style={tipTitle()}>{shown()?.name.toUpperCase() ?? "ALL SIX FACTORS"}</Text>
             <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
               <Text style={{ fontSize: 26, fontWeight: "600", letterSpacing: -0.6, color: colors.text, fontVariant: ["tabular-nums"] }}>{fixed(ours(), 1)}</Text>
               <Text style={{ fontSize: 12, color: colors.muted }}>{shown() ? "score" : "mean score"}</Text>
@@ -2766,7 +2761,9 @@ const TO = ["to-chart-2/30", "to-chart-3/30", "to-chart-1/30", "to-chart-1/30", 
 const FLOW_HEIGHT = pointer ? 196 : 220;
 /** The room left of the segments' names and right of the results'. */
 const FLOW_LEFT = 58;
-const FLOW_RIGHT = 64;
+// A terminal's names are a Cell per letter plus a Cell's padding: "Net
+// income" takes eleven.
+const FLOW_RIGHT = platform.idiom === "terminal" ? 88 : 64;
 /** Columns closer than this break two-word names over two lines, so the
  * names centered over neighbouring columns do not run into each other. */
 const FLOW_NARROW = 72;
@@ -2794,7 +2791,7 @@ function Flows() {
   return (
     <Card icon="stocks" title="Flows" subtitle="A quarter's revenue from its segments to net income">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{ACCOUNTS[shown()].name.toUpperCase()}</Text>
+        <Text style={tipTitle()}>{ACCOUNTS[shown()].name.toUpperCase()}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: colors.text, fontVariant: ["tabular-nums"] }}>
             {billions(through(quarter(), shown()))}
@@ -2804,7 +2801,7 @@ function Flows() {
       </View>
       <View
         onLayout={({ bounds }) => column.set((bounds.size.width - FLOW_LEFT - FLOW_RIGHT - 3) / 4)}
-        style={{ marginTop: size.gap + 18, marginBottom: 6 }}
+        style={{ marginBottom: 6 }}
       >
         <Plot
           data={ACCOUNTS}
@@ -2814,8 +2811,10 @@ function Flows() {
           accessibilityValue={{ text: hover() == null ? undefined : `${ACCOUNTS[hover()!].name}: ${billions(through(quarter(), hover()!))}, ${margin(hover()!)} of revenue` }}
           onHoverChange={({ index }) => hover.set(index)}
           focusStyle={focusRing(4)}
-          // Room for the segments' names left of them and the results' right.
-          style={{ height: FLOW_HEIGHT, marginLeft: FLOW_LEFT, marginRight: FLOW_RIGHT }}
+          // Room for the segments' names left of them, the results' right
+          // and the rest's above: the chart's own margins, which a terminal
+          // keeps as its labels' gutters inside the card too.
+          style={{ height: FLOW_HEIGHT, marginTop: size.gap + 18, marginLeft: FLOW_LEFT, marginRight: FLOW_RIGHT }}
         >
           <Sankey
             links={income(quarter())}
@@ -2827,7 +2826,7 @@ function Flows() {
             nodeClass={(_, i) => NODE[i]}
             linkBackgroundClass={(link) => `bg-linear-to-r ${FROM[link.source]} ${TO[link.target]}`}
             nodeLabel={name}
-            nodeLabelStyle={{ ...axis, color: colors.muted, padding: 5, numberOfLines: 2 }}
+            nodeLabelStyle={{ ...axis(), color: colors.muted, padding: 5, numberOfLines: 2 }}
           />
         </Plot>
       </View>
@@ -3076,7 +3075,7 @@ function MarketMap() {
   return (
     <Card icon="stocks" title="Market map" subtitle="The largest stocks by sector, sized by market cap and colored by their change">
       <View style={{ gap: 4 }}>
-        <Text style={tipTitle}>{readout().title}</Text>
+        <Text style={tipTitle()}>{readout().title}</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
           <Text style={{ fontSize: 22, fontWeight: "600", letterSpacing: -0.4, color: toneColor(tone(readout().value)), fontVariant: ["tabular-nums"] }}>
             {pct(readout().value, 2)}
@@ -3113,7 +3112,7 @@ function MarketMap() {
           valueLabelStyle={{ fontSize: 10, fontWeight: "400", opacity: 0.85, fontVariant: ["tabular-nums"] }}
           groupLabel="name"
           groupLabelClass="px-1 text-muted-foreground"
-          groupLabelStyle={{ ...axis, lineHeight: 18, letterSpacing: 0.6 }}
+          groupLabelStyle={{ ...axis(), lineHeight: 18, letterSpacing: 0.6 }}
           hoverClass="rounded-xs outline-2 outline-foreground"
         />
       </Plot>
@@ -3122,7 +3121,7 @@ function MarketMap() {
         <View class="h-2 rounded-full bg-linear-to-r from-down via-inset to-up" />
         <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
           {[-range(), -range() / 2, 0, range() / 2, range()].map((v) => (
-            <Text style={axis}>{v === 0 ? "0" : `${signed(v, v % 1 ? 1 : 0)}%`}</Text>
+            <Text style={axis()}>{v === 0 ? "0" : `${signed(v, v % 1 ? 1 : 0)}%`}</Text>
           ))}
         </View>
       </View>
@@ -3212,8 +3211,8 @@ function Allocation() {
         tooltipPlacement="pointer"
         tooltipOffset={12}
         tooltipContent={
-          <View style={tipCard}>
-            <Text style={tipTitle}>{shown().parent == null ? `${shown().name.toUpperCase()} · ${rows().filter((p) => p.parent === shown().id).length} POSITIONS` : `${shown().id} · ${shown().cls.toUpperCase()}`}</Text>
+          <View style={tipCard()}>
+            <Text style={tipTitle()}>{shown().parent == null ? `${shown().name.toUpperCase()} · ${rows().filter((p) => p.parent === shown().id).length} POSITIONS` : `${shown().id} · ${shown().cls.toUpperCase()}`}</Text>
             <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text }}>{shown().parent == null ? shown().name : shown().name}</Text>
             <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${kUsd(valueOf(shown()))} · ${weight(valueOf(shown()))} of the portfolio`}</Text>
           </View>
@@ -3285,5 +3284,5 @@ function Allocation() {
  * grids hairlines, tooltips floating cards with a caps title.
  */
 export function Charts() {
-  return <DemoPage cards={[Live, Depth, Drawdown, Capacity, Revenue, Sales, Bridge, Funnel, Candles, RiskReturn, Targets, VolumePrice, Margins, Correlation, Seasonality, Activity, Factors, Flows, MarketMap, Allocation, Watchlist]} />;
+  return <DemoPage lazy cards={[Live, Depth, Drawdown, Capacity, Revenue, Sales, Bridge, Funnel, Candles, RiskReturn, Targets, VolumePrice, Margins, Correlation, Seasonality, Activity, Factors, Flows, MarketMap, Allocation, Watchlist]} />;
 }

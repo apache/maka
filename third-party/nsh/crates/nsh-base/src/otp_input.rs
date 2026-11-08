@@ -28,12 +28,16 @@
 //!   while it is empty (`gpui-base`'s `BlinkCursor`: 500 ms, held for 300 ms
 //!   after an edit; steady with reduced motion). A cell that holds a digit
 //!   has the attribute `data-filled` (`data-filled:` classes, and
-//!   `group-data-filled:` inside a `group` cell), masked or not.
+//!   `group-data-filled:` inside a `group` cell), masked or not. In a
+//!   terminal an empty cell shows its slot, `·` muted
+//!   ([`crate::terminal::OTP_EMPTY`]), a masked digit `●`
+//!   ([`crate::terminal::OTP_MASK`]), and the terminal's own cursor is the
+//!   caret, in the middle Cell of the cell that takes the next digit.
 
 use std::time::Duration;
 
 use nsh_core::{
-    AutoFill,
+    AutoFill, TouchEvent, TouchPhase,
     element::{Style, TextPartStyle},
     prelude::*,
 };
@@ -203,11 +207,12 @@ impl Blink {
     }
 
     /// Shows the caret, then blinks it after `hold` (none with reduced
-    /// motion): hidden for `BLINK`, shown for `BLINK`, and so on.
+    /// motion, nor in a terminal, whose own cursor stands for the caret):
+    /// hidden for `BLINK`, shown for `BLINK`, and so on.
     fn start(self, hold: Duration) {
         self.stop();
         self.opacity.set(1.0);
-        if untracked(reduce_motion) {
+        if untracked(reduce_motion) || crate::terminal::is_terminal() {
             return;
         }
         let ms = |d: Duration| d.as_secs_f32() * 1000.0;
@@ -295,6 +300,8 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
         code,
         focused,
         blink,
+        terminal: crate::terminal::is_terminal(),
+        frames: signal(Vec::new()),
     };
 
     let changed = move |text: &str| {
@@ -351,11 +358,35 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
     };
 
     let (groups, group_class, group_style) = (props.groups, props.group_class, props.group_style);
+    let per_group = computed(move || {
+        let length = parts.length.get() as usize;
+        length
+            .div_ceil(group_count(length, groups.get() as usize))
+            .max(1)
+    });
+    // A terminal shows its own cursor at the input (`caret(false)`, no
+    // width): on the cell that takes the next digit, where it goes.
+    let group_frames = signal(Vec::new());
+    let sink = computed(move || {
+        let ix = parts.active();
+        let cell = parts
+            .frames
+            .with(|f: &Vec<Bounds<Points>>| f.get(ix).copied())?;
+        let group =
+            group_frames.with(|f: &Vec<Bounds<Points>>| f.get(ix / per_group.get()).copied())?;
+        let metrics = text_metrics("", "0");
+        let (width, height) = (metrics.width, metrics.height);
+        let middle = |size: Points, step: Points| {
+            step * (crate::terminal::columns_in(size, step).saturating_sub(1) / 2) as f32
+        };
+        Some(Point::new(
+            group.origin.x + cell.origin.x + middle(cell.size.width, width),
+            group.origin.y + cell.origin.y + middle(cell.size.height, height),
+        ))
+    });
     let cells = dynamic(move || {
         let length = parts.length.get() as usize;
-        let per_group = length
-            .div_ceil(group_count(length, groups.get() as usize))
-            .max(1);
+        let per_group = per_group.get();
         let mut rows: Vec<Vec<AnyElement>> = Vec::new();
         for ix in 0..length {
             if ix % per_group == 0 {
@@ -364,9 +395,13 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
             rows.last_mut().expect("a group").push(parts.cell(ix));
         }
         rows.into_iter()
-            .map(|cells| {
+            .enumerate()
+            .map(|(g, cells)| {
                 // The field tells screen readers the code.
                 view()
+                    .when(parts.terminal, |v| {
+                        v.on_layout(move |b: &Bounds<Points>| put(group_frames, g, *b))
+                    })
                     .accessibility_elements_hidden(true)
                     .project_disabled(parts.disabled)
                     .app_class(group_class)
@@ -376,45 +411,65 @@ pub fn OtpInput(props: OtpInputProps, cx: Scope<OtpInputEvent>) -> impl IntoElem
             .collect::<Vec<_>>()
     });
 
-    view().disabled(props.disabled).child(cells).child(
-        input()
-            .element_ref(&field_ref)
-            .absolute()
-            .inset_0()
-            .p_0()
-            .border(px(0.0))
-            .bg(AdaptiveColor::TRANSPARENT)
-            .text_color(AdaptiveColor::TRANSPARENT)
-            .selection_color(transparent_black())
-            .caret(false)
-            .keyboard_type(KeyboardType::Number)
-            .auto_fill(AutoFill::OneTimeCode)
-            .auto_correct(false)
-            .auto_capitalize(AutoCapitalize::None)
-            .masked(props.masked)
-            .disabled(props.disabled)
-            .optional_label(props.accessibility_label)
-            .value(move || field.get())
-            .on_change(move |text: &str| changed(text))
-            .on_selection_change(move |selection: &Selection| {
-                // The caret stays at the end: nothing is edited in the
-                // middle.
-                let end = utf16_len(&field.get_untracked());
-                if (selection.start, selection.end) != (end, end) {
-                    field_ref.set_selection(end, end);
+    view()
+        .disabled(props.disabled)
+        // In a terminal the field is no wider than a Cell, under none of
+        // the cells: a press on them gives it the keys, as the field
+        // over them does elsewhere.
+        .when(parts.terminal, |v| {
+            v.on_touch(move |e: &TouchEvent| {
+                if e.phase == TouchPhase::Start && !parts.disabled.get_untracked() {
+                    field_ref.focus();
                 }
             })
-            .on_focus(move || {
-                focused.set(true);
-                blink.start(BLINK);
-                cx.emit(OtpInputEvent::Focus);
-            })
-            .on_blur(move || {
-                focused.set(false);
-                blink.stop();
-                cx.emit(OtpInputEvent::Blur);
-            }),
-    )
+        })
+        .child(cells)
+        .child(
+            input()
+                .element_ref(&field_ref)
+                .absolute()
+                .when(!parts.terminal, |v| v.inset_0())
+                .when(parts.terminal, |v| {
+                    let at = move || sink.get().unwrap_or_default();
+                    v.left(move || Length::from(at().x))
+                        .top(move || Length::from(at().y))
+                        .w(px(0.0))
+                        .h(crate::terminal::cell_height())
+                })
+                .p_0()
+                .border(px(0.0))
+                .bg(AdaptiveColor::TRANSPARENT)
+                .text_color(AdaptiveColor::TRANSPARENT)
+                .selection_color(transparent_black())
+                .caret(false)
+                .keyboard_type(KeyboardType::Number)
+                .auto_fill(AutoFill::OneTimeCode)
+                .auto_correct(false)
+                .auto_capitalize(AutoCapitalize::None)
+                .masked(props.masked)
+                .disabled(props.disabled)
+                .optional_label(props.accessibility_label)
+                .value(move || field.get())
+                .on_change(move |text: &str| changed(text))
+                .on_selection_change(move |selection: &Selection| {
+                    // The caret stays at the end: nothing is edited in the
+                    // middle.
+                    let end = utf16_len(&field.get_untracked());
+                    if (selection.start, selection.end) != (end, end) {
+                        field_ref.set_selection(end, end);
+                    }
+                })
+                .on_focus(move || {
+                    focused.set(true);
+                    blink.start(BLINK);
+                    cx.emit(OtpInputEvent::Focus);
+                })
+                .on_blur(move || {
+                    focused.set(false);
+                    blink.stop();
+                    cx.emit(OtpInputEvent::Blur);
+                }),
+        )
 }
 
 /// What the cells show and read.
@@ -430,6 +485,22 @@ struct Cells {
     code: Code,
     focused: Signal<bool>,
     blink: Blink,
+    /// In a terminal: the cells' frames (in their group), for its cursor.
+    terminal: bool,
+    frames: Signal<Vec<Bounds<Points>>>,
+}
+
+/// Keeps `bounds` as the frame of item `ix`.
+fn put(frames: Signal<Vec<Bounds<Points>>>, ix: usize, bounds: Bounds<Points>) {
+    if frames.with_untracked(|f| f.get(ix) == Some(&bounds)) {
+        return;
+    }
+    frames.update(|f| {
+        if f.len() <= ix {
+            f.resize(ix + 1, Bounds::default());
+        }
+        f[ix] = bounds;
+    });
 }
 
 impl Cells {
@@ -448,7 +519,11 @@ impl Cells {
     /// the input has the focus.
     fn cell(self, ix: usize) -> AnyElement {
         let digit = move || self.code.get().chars().nth(ix);
+        let frames = self.frames;
         view()
+            .when(self.terminal, |v| {
+                v.on_layout(move |b: &Bounds<Points>| put(frames, ix, *b))
+            })
             .project_focused(move || {
                 self.focused.get() && !self.disabled.get() && self.active() == ix
             })
@@ -461,23 +536,41 @@ impl Cells {
                     move || digit().is_some(),
                     move || {
                         text(move || match digit() {
-                            Some(_) if self.masked.get() => MASK.to_owned(),
+                            Some(_) if self.masked.get() => match self.terminal {
+                                true => crate::terminal::OTP_MASK.to_owned(),
+                                false => MASK.to_owned(),
+                            },
                             Some(c) => c.to_string(),
                             None => String::new(),
                         })
                     },
                 )
                 .otherwise(move || {
+                    // A terminal's empty cell shows its slot, muted; its
+                    // caret is the terminal's own cursor, at the field (the
+                    // sink above), over the slot's Cell.
+                    if self.terminal {
+                        return Some(
+                            text(crate::terminal::OTP_EMPTY)
+                                .text_color(crate::terminal::tone_color(
+                                    crate::terminal::Tone::Muted,
+                                ))
+                                .into_element(),
+                        );
+                    }
                     // Mounted while the cell takes the next digit; it
                     // blinks natively.
-                    when(
-                        move || self.focused.get() && self.active() == ix,
-                        move || {
-                            view()
-                                .app_class(self.caret_class)
-                                .inline_style(self.caret_style)
-                                .bind_opacity(&self.blink.opacity)
-                        },
+                    Some(
+                        when(
+                            move || !self.terminal && self.focused.get() && self.active() == ix,
+                            move || {
+                                view()
+                                    .app_class(self.caret_class)
+                                    .inline_style(self.caret_style)
+                                    .bind_opacity(&self.blink.opacity)
+                            },
+                        )
+                        .into_element(),
                     )
                 }),
             )

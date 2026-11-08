@@ -1,4 +1,4 @@
-import { Image, type JSX, signal, Text, View } from "nsh";
+import { Image, type JSX, platform, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import logo from "../logo@2x.png";
 import { Icon, type IconName } from "../icons";
@@ -8,26 +8,24 @@ import { colors, DemoPage } from "../ui";
  * The gallery's design built from class strings alone: the surfaces and the
  * citrus accent are the tokens of `theme.json` (`bg-card`, `border-line`,
  * `text-brand`, ...: each switches with the appearance by itself), the light
- * and depth (`finish` in ui.tsx) are gradients and arbitrary shadows with
+ * and depth (`finish` in ui.tsx) are flat fills and arbitrary shadows with
  * `dark:` variants, everything else is stock Tailwind.
  */
-const photo = "https://picsum.photos/seed/nsh-tailwind/600/400";
+const photo = "https://pbs.twimg.com/media/HS6UGjvXkAAyHtp?format=jpg&name=small";
 
-/** The finishes of ui.tsx as classes: a top-lit gradient, a highlight along the top edge, a soft shadow. */
+/** The finishes of ui.tsx (`finishes.json`) as classes: a flat fill, a highlight along the top edge, a soft shadow. */
 const finish = {
-  card:
-    "bg-linear-to-b from-white to-[#fafaf8] inset-shadow-[0_1px_0_#ffffff] shadow-[0_6px_20px_rgba(20,20,10,0.08)] " +
-    "dark:from-[#1d1e22] dark:to-[#17181b] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.06)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.38)]",
-  inset: "inset-shadow-[0_1px_2px_rgba(20,20,10,0.07)] dark:inset-shadow-[0_1px_3px_rgba(0,0,0,0.55)]",
+  card: "bg-card shadow-[0_1px_0_rgba(10,15,25,0.04)] dark:shadow-[0_1px_0_rgba(0,0,0,0.35)]",
+  inset: "inset-shadow-[0_1px_1px_rgba(10,15,25,0.03)] dark:inset-shadow-[0_1px_1px_rgba(0,0,0,0.2)]",
   raised:
-    "bg-linear-to-b from-white to-[#f2f2ee] inset-shadow-[0_1px_0_#ffffff] shadow-[0_1px_2px_rgba(20,20,10,0.12)] " +
-    "dark:from-[#2d2f34] dark:to-[#222428] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.08)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.45)]",
+    "bg-[#f3f4f7] border-[#cacbcd] inset-shadow-[0_1px_0_#ffffff] shadow-[0_1px_0_rgba(10,15,25,0.05)] " +
+    "dark:bg-[#33353b] dark:border-[rgba(0,0,0,0.5)] dark:inset-shadow-[0_1px_1px_rgba(255,255,255,0.08)] dark:shadow-[0_1px_1px_rgba(0,0,0,0.12)]",
   light:
-    "bg-linear-to-b from-[#2c2e33] to-[#16171a] inset-shadow-[0_1px_0_rgba(255,255,255,0.14)] shadow-[0_3px_10px_rgba(20,20,10,0.22)] " +
-    "dark:from-[#fbfbfc] dark:to-[#d4d6d9] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.9)] dark:shadow-[0_3px_10px_rgba(0,0,0,0.4)]",
+    "bg-[#c6ef6a] border-[#9cc43a] inset-shadow-[0_1px_0_rgba(255,255,255,0.55)] shadow-[0_1px_0_rgba(60,90,0,0.14)] " +
+    "dark:bg-[#c4ec6a] dark:border-[rgba(40,60,0,0.55)] dark:inset-shadow-[0_1px_1px_rgba(255,255,255,0.35)] dark:shadow-[0_1px_1px_rgba(0,0,0,0.12)]",
   accent:
-    "bg-linear-to-b from-[#d8f88f] to-[#bde65a] inset-shadow-[0_1px_0_rgba(255,255,255,0.6)] shadow-[0_3px_10px_rgba(110,150,20,0.25)] " +
-    "dark:from-[#dbf893] dark:to-[#b3dd4e] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.45)] dark:shadow-[0_3px_12px_rgba(200,242,109,0.22)]",
+    "bg-[#c6ef6a] border-[#9cc43a] inset-shadow-[0_1px_0_rgba(255,255,255,0.55)] shadow-[0_1px_0_rgba(60,90,0,0.14)] " +
+    "dark:bg-[#c4ec6a] dark:border-[rgba(40,60,0,0.55)] dark:inset-shadow-[0_1px_1px_rgba(255,255,255,0.35)] dark:shadow-[0_1px_1px_rgba(0,0,0,0.12)]",
 };
 
 /** A card: an icon tile, a title and the classes it shows, over a darker inset. */
@@ -58,7 +56,7 @@ function Label(props: { children: string }) {
 function Hero() {
   return (
     <View
-      class="overflow-hidden rounded-2xl border border-border bg-linear-to-br from-white via-[#fafaf8] to-inset p-5 inset-shadow-[0_1px_0_#ffffff] shadow-[0_6px_20px_rgba(20,20,10,0.08)] dark:from-[#26282d] dark:via-card dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.08)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.38)]"
+      class="overflow-hidden rounded-2xl border border-border bg-linear-to-br from-white via-[#f9fafb] to-inset p-5 inset-shadow-[0_1px_0_#ffffff] shadow-[0_6px_20px_rgba(16,20,30,0.08)] dark:from-[#26282d] dark:via-card dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.08)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.38)]"
     >
       <View class="absolute -right-20 -top-24 size-72 rounded-full bg-radial from-brand-fill/20 to-transparent to-70%" />
       <View class="flex-row flex-wrap items-center gap-2">
@@ -96,7 +94,7 @@ function Stats() {
       <View class="grid grid-cols-2 gap-2">
         <Each of={stats}>
           {(s) => (
-            <View class="gap-1 rounded-[10px] border border-line bg-linear-to-b from-white to-[#fafaf8] p-3 inset-shadow-[0_1px_0_#ffffff] dark:from-[#1d1e22] dark:to-[#17181b] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.05)]">
+            <View class="gap-1 rounded-[10px] border border-line bg-linear-to-b from-white to-[#f9fafb] p-3 inset-shadow-[0_1px_0_#ffffff] dark:from-[#1d1e22] dark:to-[#17181b] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.05)]">
               <Text class="text-xs text-zinc-500">{s().label}</Text>
               <Text class="text-[26px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 tabular-nums">{s().value}</Text>
               <Text style={{ numberOfLines: 1 }} class={`text-xs tabular-nums ${s().tone}`}>
@@ -125,24 +123,24 @@ function Buttons() {
   const count = signal(0);
   const busy = signal(false);
   return (
-    <Card icon="components" title="Buttons" subtitle="active: hover: transition disabled: bg-linear-to-b">
+    <Card icon="components" title="Buttons" subtitle="active: hover: transition disabled:">
       <View
         onPress={() => count.set(count() + 1)}
-        class={`h-11 flex-row items-center justify-center rounded-[10px] bg-zinc-900 dark:bg-zinc-100 ${finish.light} transition duration-150 active:scale-[0.97] active:opacity-90`}
+        class={`h-11 flex-row items-center justify-center rounded-[10px] border ${finish.light} transition duration-150 active:scale-[0.97] active:opacity-90`}
       >
-        <Text class="text-[15px] font-semibold text-white dark:text-zinc-900">Pressed {count()}×</Text>
+        <Text class="text-[15px] font-semibold text-on-brand">Pressed {count()}×</Text>
       </View>
       <View class="flex-row gap-2">
         <View
           onPress={() => count.set(0)}
-          class={`h-11 flex-1 items-center justify-center rounded-[10px] border border-border bg-raised ${finish.raised} transition active:scale-95 active:opacity-80`}
+          class={`h-11 flex-1 items-center justify-center rounded-[10px] border ${finish.raised} transition active:scale-95 active:opacity-80`}
         >
           <Text class="text-[15px] font-semibold text-zinc-900 dark:text-zinc-100">Reset</Text>
         </View>
         <View
           onPress={() => busy.set(!busy())}
           disabled={busy()}
-          class={`h-11 flex-1 items-center justify-center rounded-[10px] bg-brand-fill ${finish.accent} transition active:scale-95 hover:opacity-90 disabled:opacity-40`}
+          class={`h-11 flex-1 items-center justify-center rounded-[10px] border ${finish.accent} transition active:scale-95 hover:opacity-90 disabled:opacity-40`}
         >
           <Text class="text-[15px] font-semibold text-on-brand">{busy() ? "Disabled" : "Disable me"}</Text>
         </View>
@@ -164,7 +162,7 @@ function Cards() {
   ];
   return (
     <Card icon="styles" title="Cards and badges" subtitle="group-active: ring-inset shadow-*">
-      <View class="group flex-row items-center gap-3 rounded-xl bg-linear-to-b from-white to-[#f2f2ee] p-3 shadow-md shadow-black/10 ring-1 ring-inset ring-black/5 dark:from-[#2d2f34] dark:to-[#222428] dark:shadow-black/40 dark:ring-white/10 transition-transform duration-200 active:scale-[0.98]">
+      <View class="group flex-row items-center gap-3 rounded-xl bg-linear-to-b from-white to-[#f1f2f5] p-3 shadow-md shadow-black/10 ring-1 ring-inset ring-black/5 dark:from-[#2d2f34] dark:to-[#222428] dark:shadow-black/40 dark:ring-white/10 transition-transform duration-200 active:scale-[0.98]">
         <Image src={logo} class="size-12 rounded-[10px]" />
         <View class="flex-1 gap-0.5">
           <Text class="text-base font-semibold text-zinc-900 dark:text-zinc-100">Group press</Text>
@@ -398,14 +396,19 @@ function Inputs() {
     <Card icon="form" title="Inputs" subtitle="focus: placeholder: caret-*">
       <Input
         placeholder="Focus me"
-        class="h-11 rounded-[10px] border border-border bg-card px-3.5 inset-shadow-[0_1px_2px_rgba(20,20,10,0.07)] text-[15px] text-zinc-900 placeholder:text-zinc-400 caret-brand focus:border-brand focus:ring-2 focus:ring-brand-fill/40 dark:inset-shadow-[0_1px_3px_rgba(0,0,0,0.55)] dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:ring-brand-fill/25"
+        class="h-11 rounded-[10px] border border-border bg-card px-3.5 inset-shadow-[0_1px_2px_rgba(16,20,30,0.07)] text-[15px] text-zinc-900 placeholder:text-zinc-400 caret-brand focus:border-brand focus:ring-2 focus:ring-brand-fill/40 dark:inset-shadow-[0_1px_3px_rgba(0,0,0,0.55)] dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:ring-brand-fill/25"
       />
       <Label>Focus adds a border and a ring; the placeholder and caret colors are classes too.</Label>
     </Card>
   );
 }
 
-const sections: (() => JSX.Element)[] = [Hero, Stats, Buttons, Cards, Layout, Shadows, Gradients, Typography, Effects, Motion, Lists, Inputs, Colors];
+// A terminal's Cells draw no shadows or filters: those cards are left out there. Gradients
+// fill each Cell with their color at it.
+const sections: (() => JSX.Element)[] =
+  platform.idiom === "terminal"
+    ? [Hero, Stats, Buttons, Cards, Layout, Gradients, Typography, Motion, Lists, Inputs, Colors]
+    : [Hero, Stats, Buttons, Cards, Layout, Shadows, Gradients, Typography, Effects, Motion, Lists, Inputs, Colors];
 
 export function Tailwind() {
   return <DemoPage cards={sections} />;

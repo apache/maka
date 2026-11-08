@@ -259,6 +259,7 @@ expect fetch.url=via url
 expect fetch.blob=true|text/x-a|from blob|TypeError
 expect fetch.asset=[asset:/images/flag.png,200,true,73,73,[80,78,71]]
 expect fetch.assetHead=[image/png,true]
+expect fetch.assetSpelling=[200,asset:/images/flag.png?v=2,image/png,73]
 expect fetch.assetMissing=threw TypeError
 expect fetch.badScheme=threw TypeError
 expect fetch.badUrl=threw TypeError

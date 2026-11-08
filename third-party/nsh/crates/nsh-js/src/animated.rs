@@ -2205,9 +2205,9 @@ pub(crate) const EXPORTS: &[Item] = &[
    * starts from where the last one left it). */
   extractOffset(): void;
   /** Animates to `to` over `duration` ms. Resolves with `{ finished }`. */
-  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<{ finished: boolean }>;
+  timing(to: number, options?: TimingConfig): Promise<{ finished: boolean }>;
   /** Springs to `to`. Resolves with `{ finished }`. */
-  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<{ finished: boolean }>;
+  spring(to: number, options?: Omit<SpringConfig, "toValue">): Promise<{ finished: boolean }>;
   /** Coasts from `velocity` (units per second) and slows down; within
    * `clamp` it stops at a bound, or bounces back keeping `bounce` (0..1) of
    * its speed. */
@@ -2284,6 +2284,20 @@ export interface DecayConfig {
   /** The fraction of its speed it keeps bouncing off a bound (0, the
    * default: it stops there). */
   bounce?: number;
+  /** The highest frame rate it needs, in Hz (the screen's highest by
+   * default); platforms that can lower their frame rate honor it. */
+  frameRate?: number;
+}
+
+/** A timing: `duration` ms (300) along `easing` (ease in-out), after
+ * `delay` ms. */
+export interface TimingConfig {
+  duration?: number;
+  easing?: Easing;
+  delay?: number;
+  /** The highest frame rate it needs, in Hz (the screen's highest by
+   * default); platforms that can lower their frame rate honor it. */
+  frameRate?: number;
 }
 
 /** A spring (React Native's `Animated.spring` config). */
@@ -2293,6 +2307,9 @@ export interface SpringConfig {
   damping?: number;
   mass?: number;
   velocity?: number;
+  /** The highest frame rate it needs, in Hz (the screen's highest by
+   * default); platforms that can lower their frame rate honor it. */
+  frameRate?: number;
 }
 
 /** Easing functions (React Native's `Easing`). */
@@ -2339,6 +2356,9 @@ export interface KeyframeTiming {
   iterations?: number | "infinite";
   /** Which way they play (`"normal"`). */
   direction?: PlaybackDirection;
+  /** The highest frame rate they need, in Hz (the screen's highest by
+   * default); platforms that can lower their frame rate honor it. */
+  frameRate?: number;
 }
 
 /** `Animated.keyframes`' config. */
@@ -2438,7 +2458,7 @@ export interface CompositeAnimation {
 
 /** Animations composed natively (React Native's `Animated`). */
 export interface AnimatedModule {
-  timing(value: AnimatedValue, config: { toValue: number; duration?: number; easing?: Easing; delay?: number }): CompositeAnimation;
+  timing(value: AnimatedValue, config: TimingConfig & { toValue: number }): CompositeAnimation;
   spring(value: AnimatedValue, config: SpringConfig): CompositeAnimation;
   decay(value: AnimatedValue, config?: DecayConfig): CompositeAnimation;
   sequence(list: CompositeAnimation[]): CompositeAnimation;
@@ -2556,6 +2576,56 @@ mod tests {
             Op::CreateText { text, .. } => Some(text.to_string()),
             _ => None,
         })
+    }
+
+    #[test]
+    fn animations_take_their_frame_rate() {
+        use nsh_core::animation::{AnimationOp as A, Composite};
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { Animated, AnimatedValue, createMotion } from "nsh";
+            const v = new AnimatedValue(0);
+            v.timing(1, { duration: 400, frameRate: 30 });
+            v.spring(0, { frameRate: 60 });
+            v.decay({ velocity: 100, frameRate: 24 });
+            v.timing(1);
+            Animated.sequence([
+                Animated.timing(v, { toValue: 1, frameRate: 30 }),
+                Animated.delay(100),
+                Animated.keyframes(v, { keyframes: [0, 1, 0], frameRate: 20 }),
+            ]).start();
+            const motion = createMotion();
+            motion.play("pulse", { frameRate: 15 });
+            globalThis.keep = [v, motion];
+            "#,
+        )
+        .unwrap();
+        let ops = animation_ops(&host);
+        let drivers: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                A::Start { driver, .. } => Some(driver.frame_rate()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drivers, [Some(30.0), Some(60.0), Some(24.0), None]);
+        let composites: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                A::StartComposite { spec, .. } => Some(spec),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(composites.len(), 2, "{ops:?}");
+        // The highest of its steps, the keyframes' 20 under the timing's 30.
+        assert_eq!(composites[0].frame_rate(), Some(30.0));
+        let Composite::Sequence(steps) = composites[0] else {
+            panic!("{:?}", composites[0]);
+        };
+        assert_eq!(steps[2].frame_rate(), Some(20.0));
+        // A motion's options give every channel's steps the rate.
+        assert_eq!(composites[1].frame_rate(), Some(15.0));
     }
 
     #[test]

@@ -13,7 +13,9 @@ use anyhow::{Context as _, bail};
 
 /// Minimum Android version (API 28, Android 9), as the runtime is built.
 pub(crate) const MIN_SDK: u32 = 28;
-const TARGET_SDK: u32 = 35;
+/// The Android version apps target unless `nsh.json` `android.targetSdk`
+/// names another (API 35, Android 15: what Google Play requires).
+pub(crate) const DEFAULT_TARGET_SDK: u32 = 35;
 /// The ABIs the runtime is built for: `nsh package --abi`'s values.
 pub(crate) const ABIS: [&str; 3] = ["arm64-v8a", "armeabi-v7a", "x86_64"];
 /// The ABIs `nsh package` puts into an APK unless `--abi` names others:
@@ -48,13 +50,14 @@ impl Sdk {
         Ok(Sdk { root, build_tools })
     }
 
-    fn android_jar(&self) -> anyhow::Result<PathBuf> {
+    /// The platform an app targeting `level` compiles against.
+    fn android_jar(&self, level: u32) -> anyhow::Result<PathBuf> {
         let jar = self
             .root
-            .join(format!("platforms/android-{TARGET_SDK}/android.jar"));
+            .join(format!("platforms/android-{level}/android.jar"));
         if !jar.exists() {
             bail!(
-                "{} missing: install it with `sdkmanager \"platforms;android-{TARGET_SDK}\"`",
+                "{} missing: install it with `sdkmanager \"platforms;android-{level}\"`",
                 jar.display()
             );
         }
@@ -93,7 +96,7 @@ impl Sdk {
             .env(
                 format!("BINDGEN_EXTRA_CLANG_ARGS_{env_triple}"),
                 format!(
-                    "--sysroot=\"{}\"",
+                    "--target={clang_target}{MIN_SDK} --sysroot=\"{}\"",
                     toolchain
                         .join("sysroot")
                         .display()
@@ -166,10 +169,18 @@ pub(crate) struct Apk<'a> {
     pub(crate) label: &'a str,
     pub(crate) version_name: &'a str,
     pub(crate) version_code: u32,
+    /// The API level the app targets (`targetSdkVersion`), which it also
+    /// compiles against.
+    pub(crate) target_sdk: u32,
     /// `com.longbridge.nsh.DevActivity` or `com.longbridge.nsh.AppActivity`.
     pub(crate) activity: &'a str,
     /// Development builds: debuggable, cleartext HTTP (the dev server).
     pub(crate) dev: bool,
+    /// The app may show notifications: `POST_NOTIFICATIONS` is declared.
+    pub(crate) notifications: bool,
+    /// URL schemes that open the app (nsh.json `schemes`): one
+    /// `VIEW` intent filter.
+    pub(crate) schemes: &'a [String],
     /// A Rust app: its `libnsh.so` has the root, which `AppActivity` runs
     /// instead of a bundle (manifest meta-data `com.longbridge.nsh.RUST`).
     pub(crate) rust: bool,
@@ -188,6 +199,26 @@ pub(crate) struct Apk<'a> {
     pub(crate) signing: Signing,
 }
 
+/// What `nsh package --target android` writes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Format {
+    /// An APK: installed directly (`adb install`, sideloading).
+    #[default]
+    Apk,
+    /// An Android App Bundle: uploaded to Google Play, which builds the
+    /// APKs each device installs.
+    Aab,
+}
+
+impl Format {
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Format::Apk => "apk",
+            Format::Aab => "aab",
+        }
+    }
+}
+
 /// How to sign the APK.
 pub(crate) enum Signing {
     /// `~/.android/debug.keystore`, created if missing.
@@ -201,7 +232,15 @@ pub(crate) enum Signing {
 }
 
 pub(crate) fn build_apk(sdk: &Sdk, apk: &Apk<'_>, out: &Path) -> anyhow::Result<()> {
-    let work = out.with_extension("apk-work");
+    build(sdk, apk, Format::Apk, out)
+}
+
+/// Writes `apk` to `out` as an APK or an Android App Bundle. A bundle's
+/// manifest and resources are linked in the protobuf format and its files
+/// laid out as Google Play reads them (module `base`): the same as Gradle's
+/// `bundleRelease`, without Gradle or bundletool.
+pub(crate) fn build(sdk: &Sdk, apk: &Apk<'_>, format: Format, out: &Path) -> anyhow::Result<()> {
+    let work = out.with_extension(format!("{}-work", format.extension()));
     if work.exists() {
         fs::remove_dir_all(&work)?;
     }
@@ -210,14 +249,19 @@ pub(crate) fn build_apk(sdk: &Sdk, apk: &Apk<'_>, out: &Path) -> anyhow::Result<
     // Resources: only the launcher icon.
     let mut flat = Vec::new();
     if let Some(icon) = apk.icon {
-        let res = work.join("res/mipmap-xxxhdpi");
+        // aapt2 parses the file's path itself: the components joined in one
+        // go (`join("res/mipmap-xxxhdpi")`) leave a mix of `/` and `\` on
+        // Windows, which it calls no valid file path. Joined by component
+        // the path comes out uniform.
+        let res = work.join("res").join("mipmap-xxxhdpi");
         fs::create_dir_all(&res)?;
-        resize_png(icon, &res.join("ic_launcher.png"), 192)?;
+        let icon_path = res.join("ic_launcher.png");
+        resize_png(icon, &icon_path, 192)?;
         let compiled = work.join("compiled");
         fs::create_dir_all(&compiled)?;
         run(Command::new(sdk.tool("aapt2"))
             .arg("compile")
-            .arg(res.join("ic_launcher.png"))
+            .arg(&icon_path)
             .arg("-o")
             .arg(&compiled))?;
         for entry in fs::read_dir(&compiled)? {
@@ -233,22 +277,34 @@ pub(crate) fn build_apk(sdk: &Sdk, apk: &Apk<'_>, out: &Path) -> anyhow::Result<
         .arg("-o")
         .arg(&base)
         .arg("-I")
-        .arg(sdk.android_jar()?)
+        .arg(sdk.android_jar(apk.target_sdk)?)
         .arg("--manifest")
         .arg(&manifest)
         .args(["--min-sdk-version", &MIN_SDK.to_string()])
-        .args(["--target-sdk-version", &TARGET_SDK.to_string()])
+        .args(["--target-sdk-version", &apk.target_sdk.to_string()])
         .args(["--version-code", &apk.version_code.to_string()])
         .args(["--version-name", apk.version_name]);
     if apk.dev {
         link.arg("--debug-mode");
     }
+    if format == Format::Aab {
+        link.arg("--proto-format");
+    }
     link.args(&flat);
     run(&mut link)?;
 
+    if format == Format::Aab {
+        let unsigned = work.join("unsigned.aab");
+        write_bundle(&base, &unsigned, apk)?;
+        sign_bundle(&apk.signing, &unsigned)?;
+        fs::rename(&unsigned, out)?;
+        fs::remove_dir_all(&work)?;
+        return Ok(());
+    }
+
     // Code, native libraries and app files.
     let unaligned = work.join("unaligned.apk");
-    add_files(&base, &unaligned, apk)?;
+    add_files(&base, &unaligned, apk, &Layout::APK)?;
     let aligned = work.join("aligned.apk");
     // `-P 16`: shared libraries on 16 KB pages (Android 15 devices).
     run(Command::new(sdk.tool("zipalign"))
@@ -282,22 +338,53 @@ fn manifest_xml(apk: &Apk<'_>) -> String {
         .replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;");
+    let post_notifications = if apk.notifications {
+        "\n    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />"
+    } else {
+        ""
+    };
+    // A link opens the running app (`onNewIntent`), not another activity in
+    // the caller's task.
+    let launch_mode = if apk.schemes.is_empty() {
+        ""
+    } else {
+        r#" android:launchMode="singleTask""#
+    };
+    let schemes = if apk.schemes.is_empty() {
+        String::new()
+    } else {
+        let data: String = apk
+            .schemes
+            .iter()
+            .map(|s| format!("\n                <data android:scheme=\"{s}\" />"))
+            .collect();
+        format!(
+            "\n            <intent-filter>\n                <action android:name=\"android.intent.action.VIEW\" />\n                <category android:name=\"android.intent.category.DEFAULT\" />\n                <category android:name=\"android.intent.category.BROWSABLE\" />{data}\n            </intent-filter>"
+        )
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package}">
-    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.INTERNET" />{post_notifications}
     <application android:label="{label}"{icon}{cleartext}
         android:extractNativeLibs="false"
         android:enableOnBackInvokedCallback="true"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material{theme}.NoActionBar">{rust}
-        <activity android:name="{activity}" android:exported="true"
+        <!-- Serves the app's own files to the apps that open them
+            (`SystemUi.openPath`): the authority matches what
+            `FilesProvider.uriFor` builds. -->
+        <provider android:name="com.longbridge.nsh.FilesProvider"
+            android:authorities="{package}.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <activity android:name="{activity}" android:exported="true"{launch_mode}
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
+            </intent-filter>{schemes}
         </activity>
     </application>
 </manifest>
@@ -308,18 +395,176 @@ fn manifest_xml(apk: &Apk<'_>) -> String {
     )
 }
 
-/// Copies `base` (manifest, resources) and adds the dex, the libraries
-/// (stored: the system maps them in place) and the assets.
-fn add_files(base: &Path, out: &Path, apk: &Apk<'_>) -> anyhow::Result<()> {
+/// Where an APK or a bundle keeps what [`add_files`] puts in.
+struct Layout {
+    /// Prefix of what `aapt2 link` wrote; a bundle's manifest goes to
+    /// `manifest/` under it.
+    linked: &'static str,
+    dex: &'static str,
+    lib: &'static str,
+    assets: &'static str,
+}
+
+impl Layout {
+    const APK: Layout = Layout {
+        linked: "",
+        dex: "classes.dex",
+        lib: "lib",
+        assets: "assets",
+    };
+    /// The bundle's one module, `base`.
+    const BUNDLE: Layout = Layout {
+        linked: "base/",
+        dex: "base/dex/classes.dex",
+        lib: "base/lib",
+        assets: "base/assets",
+    };
+}
+
+/// An Android App Bundle: the module `base` from the proto-format `linked`,
+/// [`add_files`]' code, libraries and assets, the libraries' ABIs
+/// (`base/native.pb`) and `BundleConfig.pb`.
+fn write_bundle(linked: &Path, out: &Path, apk: &Apk<'_>) -> anyhow::Result<()> {
+    let files = work_file(out, "files.zip");
+    let abis = add_files(linked, &files, apk, &Layout::BUNDLE)?;
     use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
-    let mut input = ZipArchive::new(fs::File::open(base)?)?;
+    let mut input = ZipArchive::new(fs::File::open(&files)?)?;
     let mut zip = ZipWriter::new(fs::File::create(out)?);
     for i in 0..input.len() {
         zip.raw_copy_file(input.by_index_raw(i)?)?;
     }
     let deflate = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    zip.start_file("base/native.pb", deflate)?;
+    zip.write_all(&native_pb(&abis)?)?;
+    zip.start_file("BundleConfig.pb", deflate)?;
+    zip.write_all(&bundle_config_pb())?;
+    zip.finish()?;
+    fs::remove_file(&files)?;
+    Ok(())
+}
+
+fn work_file(next_to: &Path, name: &str) -> PathBuf {
+    next_to.with_file_name(name)
+}
+
+/// Protobuf wire format, as much as the bundle's two files need.
+mod pb {
+    pub(super) fn varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push(value as u8 | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    /// A length-delimited field: a string or a message.
+    pub(super) fn bytes(out: &mut Vec<u8>, field: u32, value: &[u8]) {
+        varint(out, (u64::from(field) << 3) | 2);
+        varint(out, value.len() as u64);
+        out.extend_from_slice(value);
+    }
+
+    /// A varint field: an enum.
+    pub(super) fn enumeration(out: &mut Vec<u8>, field: u32, value: u64) {
+        varint(out, u64::from(field) << 3);
+        varint(out, value);
+    }
+}
+
+/// The bundletool version the bundle says built it, which picks the
+/// defaults Google Play builds the APKs with (native libraries stay
+/// uncompressed, as `extractNativeLibs="false"` needs).
+const BUNDLETOOL_VERSION: &str = "1.18.1";
+
+/// `BundleConfig { bundletool { version } }` (bundletool's `config.proto`).
+fn bundle_config_pb() -> Vec<u8> {
+    let mut bundletool = Vec::new();
+    pb::bytes(&mut bundletool, 2, BUNDLETOOL_VERSION.as_bytes());
+    let mut config = Vec::new();
+    pb::bytes(&mut config, 1, &bundletool);
+    config
+}
+
+/// `NativeLibraries`: one `lib/<abi>` directory per ABI with its targeting
+/// (bundletool's `files.proto`), from which Google Play makes one split per
+/// ABI.
+fn native_pb(abis: &[String]) -> anyhow::Result<Vec<u8>> {
+    let mut libraries = Vec::new();
+    for abi in abis {
+        // `targeting.proto`'s `Abi.AbiAlias`.
+        let alias = match abi.as_str() {
+            "armeabi-v7a" => 2,
+            "arm64-v8a" => 3,
+            "x86" => 4,
+            "x86_64" => 5,
+            other => bail!("no bundle targeting for ABI {other}"),
+        };
+        let mut abi_message = Vec::new();
+        pb::enumeration(&mut abi_message, 1, alias);
+        let mut targeting = Vec::new();
+        pb::bytes(&mut targeting, 1, &abi_message);
+        let mut directory = Vec::new();
+        pb::bytes(&mut directory, 1, format!("lib/{abi}").as_bytes());
+        pb::bytes(&mut directory, 2, &targeting);
+        pb::bytes(&mut libraries, 1, &directory);
+    }
+    Ok(libraries)
+}
+
+/// Signs a bundle with `jarsigner` (JAR signing: what Google Play checks
+/// an upload against; `apksigner` signs only APKs).
+fn sign_bundle(signing: &Signing, bundle: &Path) -> anyhow::Result<()> {
+    let (keystore, alias, password) = keystore(signing)?;
+    run(Command::new(java_tool("jarsigner"))
+        .args(["-sigalg", "SHA256withRSA", "-digestalg", "SHA-256"])
+        .arg("-keystore")
+        .arg(&keystore)
+        .args(["-storepass", &password])
+        .args(["-keypass", &password])
+        .arg(bundle)
+        .arg(&alias))
+    .context("sign the bundle (is a JDK installed?)")
+}
+
+/// A JDK tool: in `JAVA_HOME`, else on the path.
+fn java_tool(name: &str) -> PathBuf {
+    let exe = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    env::var_os("JAVA_HOME")
+        .map(|home| PathBuf::from(home).join("bin").join(&exe))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from(exe))
+}
+
+/// Copies `base` (manifest, resources) and adds the dex, the libraries
+/// (stored: the system maps them in place) and the assets, where `layout`
+/// keeps them; returns the ABIs of the libraries.
+fn add_files(
+    base: &Path,
+    out: &Path,
+    apk: &Apk<'_>,
+    layout: &Layout,
+) -> anyhow::Result<Vec<String>> {
+    use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
+    let mut input = ZipArchive::new(fs::File::open(base)?)?;
+    let mut zip = ZipWriter::new(fs::File::create(out)?);
+    for i in 0..input.len() {
+        let file = input.by_index_raw(i)?;
+        let name = file.name()?.into_owned();
+        if layout.linked.is_empty() {
+            zip.raw_copy_file(file)?;
+        } else if name == "AndroidManifest.xml" {
+            zip.raw_copy_file_rename(file, format!("{}manifest/{name}", layout.linked))?;
+        } else {
+            zip.raw_copy_file_rename(file, format!("{}{name}", layout.linked))?;
+        }
+    }
+    let deflate = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    zip.start_file("classes.dex", deflate)?;
+    zip.start_file(layout.dex, deflate)?;
     let mut dex = Vec::new();
     fs::File::open(apk.runtime.join("classes.dex"))
         .context("runtime classes.dex missing")?
@@ -356,20 +601,32 @@ fn add_files(base: &Path, out: &Path, apk: &Apk<'_>) -> anyhow::Result<()> {
             );
         }
         let so = libs.join(abi).join("libnsh.so");
-        zip.start_file(format!("lib/{abi}/libnsh.so"), stored)?;
+        zip.start_file(format!("{}/{abi}/libnsh.so", layout.lib), stored)?;
         zip.write_all(&fs::read(&so)?)?;
     }
     for (path, bytes) in &apk.assets {
         // Bytecode and images are compressed already or small.
-        zip.start_file(format!("assets/{path}"), deflate)?;
+        zip.start_file(format!("{}/{path}", layout.assets), deflate)?;
         zip.write_all(bytes)?;
     }
     zip.finish()?;
-    Ok(())
+    Ok(abis.to_vec())
 }
 
 fn sign(sdk: &Sdk, signing: &Signing, apk: &Path) -> anyhow::Result<()> {
-    let (keystore, alias, password) = match signing {
+    let (keystore, alias, password) = keystore(signing)?;
+    run(Command::new(sdk.tool("apksigner"))
+        .args(["sign", "--ks"])
+        .arg(&keystore)
+        .args(["--ks-key-alias", &alias])
+        .args(["--ks-pass", &format!("pass:{password}")])
+        .args(["--key-pass", &format!("pass:{password}")])
+        .arg(apk))
+}
+
+/// The keystore, key alias and password of `signing`.
+fn keystore(signing: &Signing) -> anyhow::Result<(PathBuf, String, String)> {
+    Ok(match signing {
         Signing::Debug => (
             debug_keystore()?,
             "androiddebugkey".to_owned(),
@@ -380,14 +637,7 @@ fn sign(sdk: &Sdk, signing: &Signing, apk: &Path) -> anyhow::Result<()> {
             alias,
             password,
         } => (path.clone(), alias.clone(), password.clone()),
-    };
-    run(Command::new(sdk.tool("apksigner"))
-        .args(["sign", "--ks"])
-        .arg(&keystore)
-        .args(["--ks-key-alias", &alias])
-        .args(["--ks-pass", &format!("pass:{password}")])
-        .args(["--key-pass", &format!("pass:{password}")])
-        .arg(apk))
+    })
 }
 
 /// The standard debug keystore, created like Android Studio does.
@@ -523,15 +773,17 @@ pub(crate) fn adb(sdk: &Sdk, serial: &str, args: &[&str]) -> anyhow::Result<Stri
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_rust_app_runs_its_root() {
-        let apk = |rust| super::Apk {
+    fn apk(rust: bool, notifications: bool) -> super::Apk<'static> {
+        super::Apk {
             package: "com.example.app",
             label: "App",
             version_name: "1.0",
             version_code: 1,
+            target_sdk: super::DEFAULT_TARGET_SDK,
             activity: "com.longbridge.nsh.AppActivity",
             dev: false,
+            notifications,
+            schemes: &[],
             rust,
             dark: false,
             runtime: std::path::Path::new("."),
@@ -539,15 +791,59 @@ mod tests {
             icon: None,
             assets: Vec::new(),
             signing: super::Signing::Debug,
-        };
+        }
+    }
+
+    #[test]
+    fn a_rust_app_runs_its_root() {
         // `AppActivity` reads it from the application's meta-data.
         let flag = r#"<meta-data android:name="com.longbridge.nsh.RUST" android:value="true" />"#;
-        let manifest = super::manifest_xml(&apk(true));
+        let manifest = super::manifest_xml(&apk(true, false));
         assert!(manifest.contains(flag), "{manifest}");
         let application = manifest.find("<application").unwrap();
         let activity = manifest.find("<activity").unwrap();
         let at = manifest.find(flag).unwrap();
         assert!(application < at && at < activity, "{manifest}");
-        assert!(!super::manifest_xml(&apk(false)).contains("com.longbridge.nsh.RUST"));
+        assert!(!super::manifest_xml(&apk(false, false)).contains("com.longbridge.nsh.RUST"));
+    }
+
+    #[test]
+    fn a_packaged_app_declares_the_files_provider() {
+        // `SystemUi.openPath` hands the system's viewer a `content:` URI
+        // of this authority; without the declaration the provider is not
+        // resolved and the file cannot be opened.
+        let manifest = super::manifest_xml(&apk(false, false));
+        let provider = "<provider android:name=\"com.longbridge.nsh.FilesProvider\"";
+        assert!(manifest.contains(provider), "{manifest}");
+        assert!(
+            manifest.contains("android:exported=\"false\""),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains("android:grantUriPermissions=\"true\""),
+            "{manifest}"
+        );
+        let application = manifest.find("<application").unwrap();
+        let activity = manifest.find("<activity").unwrap();
+        let at = manifest.find(provider).unwrap();
+        assert!(application < at && at < activity, "{manifest}");
+    }
+
+    #[test]
+    fn only_an_app_granted_notifications_declares_their_permission() {
+        let permission = "android.permission.POST_NOTIFICATIONS";
+        assert!(super::manifest_xml(&apk(false, true)).contains(permission));
+        assert!(!super::manifest_xml(&apk(false, false)).contains(permission));
+    }
+
+    #[test]
+    fn bundle_metadata_is_what_bundletool_writes() {
+        // `bundletool build-bundle` 1.18.1's own `BundleConfig.pb` and, for
+        // a module with these two ABIs, `base/native.pb`.
+        assert_eq!(super::bundle_config_pb(), b"\x0a\x08\x12\x061.18.1");
+        let abis = ["arm64-v8a".to_owned(), "armeabi-v7a".to_owned()];
+        let mut expected = b"\x0a\x15\x0a\x0dlib/arm64-v8a\x12\x04\x0a\x02\x08\x03".to_vec();
+        expected.extend_from_slice(b"\x0a\x17\x0a\x0flib/armeabi-v7a\x12\x04\x0a\x02\x08\x02");
+        assert_eq!(super::native_pb(&abis).unwrap(), expected);
     }
 }

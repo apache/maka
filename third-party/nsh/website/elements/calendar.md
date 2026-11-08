@@ -122,7 +122,8 @@ The calendar opens on the month of the value (a range's start), else today's.
 ## Months and views
 
 `numberOfMonths` shows that many months side by side, from the shown one on; Previous and Next turn them one month at
-a time. `firstDayOfWeek` is the day the weeks start on, `0` Sunday (the default) to `6` Saturday.
+a time. `firstDayOfWeek` is the day the weeks start on, `0` Sunday (the default) to `6` Saturday; the user's is
+`localeSettings().firstDayOfWeek % 7` ([Regional preferences](../docs/device-and-environment.md#regional-preferences)).
 
 The header holds Previous, two toggles and Next:
 
@@ -160,7 +161,7 @@ months and the years. Each is drawn in a part styled by `itemClass` and `itemSty
 | Variant | The item |
 |---|---|
 | `selected:` | Is selected: the date, every day of a complete range (its ends included, as React Aria's range calendar), a half range's start, the shown month or year, the open view's toggle. Screen readers hear it selected. |
-| `disabled:` | Takes no press: a disabled date, a weekday, a month's title, Previous and Next in the month view or at the ends of the years. |
+| `disabled:` | Is unavailable: a disabled date, Previous and Next in the month view or at the ends of the years. The weekdays and the months' titles are labels, which screen readers hear as column headers and headers: they take no press and keep their own look. |
 | `focus:` | Has the keyboard. |
 | `data-range-start:`, `data-range-end:` | Is a complete range's first or last day (a range of one day is both). |
 | `data-range-middle:` | Is a day inside a complete range, not an end. |
@@ -237,7 +238,8 @@ language.
 
 ## Keyboard
 
-The days are one stop of Tab: it lands on the selected day, else today, else the first shown day. Then:
+The days are one stop of Tab: it lands on the selected day, else today, else the first shown day, passing over
+disabled days, which take no focus. Then:
 
 | Key | Action |
 |---|---|
@@ -249,7 +251,8 @@ The days are one stop of Tab: it lands on the selected day, else today, else the
 | Return, Space | Picks the day. |
 
 In a right-to-left layout the weeks run from the right, so Left is the day after and Right the day before; Up and Down
-keep the weeks. Moving past the shown months turns them. Previous, the toggles, Next, the months and the years take
+keep the weeks. A key that reaches a disabled day goes on to the next day that is not, in the direction it moves (Home
+and End back toward the day they left). Moving past the shown months turns them. Previous, the toggles, Next, the months and the years take
 presses.
 `gpui-base`'s days take presses only; the keys are NSH's, after the WAI-ARIA date picker dialog.
 

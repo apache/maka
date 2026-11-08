@@ -167,6 +167,20 @@ pub(super) fn document(
             extensions: props.extensions.get(),
             plugins: plugins.clone(),
         };
+        if matches!(request.input, Input::Document(_))
+            || (request.source_id.is_none() && request.plugins.is_empty())
+        {
+            work.with(|work| {
+                work.latest = Some(request.clone());
+                work.pending = false;
+                work.running = false;
+            });
+            document.set(request.parse());
+            shown.replace(Some(request.clone()));
+            source.set(Some(request));
+            failure.set(None);
+            return;
+        }
         let (start, replacement) = work.with(|work| {
             if work.latest.as_ref() == Some(&request) {
                 return (false, false);

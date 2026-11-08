@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     sight::Sights,
     surface::Surface,
-    view::{NshView, Views},
+    view::{NshView, Planned, Views},
 };
 
 /// The views of a surface.
@@ -28,9 +28,17 @@ pub(crate) struct Mounter {
     /// Views whose drawing changed while they could not be seen
     /// ([`Mounter::draw_when_shown`]).
     stale: RefCell<Vec<NshView>>,
+    /// During a window's live resize, the views out of sight whose frames
+    /// wait to be placed ([`Mounter::place_shown`]).
+    unplaced: RefCell<Vec<NshView>>,
+    /// Whether the window is in a live resize.
+    live_resize: bool,
     /// The ancestors [`Mounter::revisit`] resolved (kept for the
     /// allocations; cleared on each pass).
     sights: RefCell<Sights<NshView>>,
+    /// The same over the frames waiting to be placed
+    /// ([`Mounter::place_shown`]).
+    planned_sights: RefCell<Sights<NshView>>,
 }
 
 impl Mounter {
@@ -43,7 +51,10 @@ impl Mounter {
             layout_animation: None,
             rtl: false,
             stale: RefCell::default(),
+            unplaced: RefCell::default(),
+            live_resize: false,
             sights: RefCell::default(),
+            planned_sights: RefCell::default(),
         }
     }
 
@@ -85,6 +96,16 @@ impl Mounter {
         }
     }
 
+    /// Takes views the surface put off while a batch held the mounter
+    /// ([`crate::surface::Surface::draw_when_shown`]); whether it could.
+    pub(crate) fn adopt_stale(&self, views: &mut Vec<NshView>) -> bool {
+        let Ok(mut stale) = self.stale.try_borrow_mut() else {
+            return false;
+        };
+        stale.append(views);
+        true
+    }
+
     /// Draws the views [`Mounter::draw_when_shown`] put off that can be
     /// seen now (after scrolls, batches and frames). Views out of the tree
     /// wait (their content is drawn once they show); deleted ones are
@@ -122,6 +143,59 @@ impl Mounter {
         true
     }
 
+    /// The window's live resize starts or ends. Its end places every view
+    /// still waiting, so nothing outside a drag sees a frame not applied.
+    pub(crate) fn set_live_resize(&mut self, on: bool) {
+        self.live_resize = on;
+        if !on {
+            for view in std::mem::take(self.unplaced.get_mut()) {
+                view.set_unplaced(false);
+                if self.alive(&view) {
+                    view.moved();
+                }
+            }
+        }
+    }
+
+    /// Places the views whose frames waited and that can be seen now, where
+    /// they are or where they go: left where it is, a view whose new frame is
+    /// out of sight would stay on screen over what took its place. A window's
+    /// live resize changes the frame of every view of a long page on every
+    /// size, and moving a view costs the main thread and Core Animation's
+    /// commit whether it shows or not.
+    pub(crate) fn place_shown(&self) {
+        let Ok(mut unplaced) = self.unplaced.try_borrow_mut() else {
+            return;
+        };
+        if unplaced.is_empty() {
+            return;
+        }
+        let Ok(mut sights) = self.sights.try_borrow_mut() else {
+            return;
+        };
+        let Ok(mut planned) = self.planned_sights.try_borrow_mut() else {
+            return;
+        };
+        sights.clear();
+        planned.clear();
+        let shown: Vec<NshView> = unplaced
+            .extract_if(.., |v| {
+                !self.alive(v) || planned.shows(&Planned, v) || sights.shows(&Views, v)
+            })
+            .collect();
+        sights.clear();
+        planned.clear();
+        drop(sights);
+        drop(planned);
+        drop(unplaced);
+        for view in shown {
+            view.set_unplaced(false);
+            if self.alive(&view) {
+                view.moved();
+            }
+        }
+    }
+
     /// Whether `view` is still mounted (not deleted).
     fn alive(&self, view: &NshView) -> bool {
         self.views.get(&view.state().id) == Some(view)
@@ -150,6 +224,13 @@ impl Mounter {
         match item {
             MountItem::Create { id, kind } => {
                 let view = NshView::new(surface.mtm, *id, *kind);
+                // The mounter places it by its frame alone. Once its window
+                // lays out with Auto Layout, AppKit gives a view that
+                // translates its autoresizing mask constraints, anchors and
+                // layout storage that nothing here reads: hundreds of bytes
+                // per view. The root keeps them: the host places it.
+                view.ns()
+                    .setTranslatesAutoresizingMaskIntoConstraints(false);
                 crate::access::created(&view);
                 match kind {
                     ViewKind::Input => crate::text_input::create(surface, &view),
@@ -171,34 +252,35 @@ impl Mounter {
                 parent,
                 child,
                 before,
-            } => self.insert(surface, *parent, *child, *before),
-            MountItem::ProjectRoot {
-                parent,
-                id,
-                following,
             } => {
-                let before = self.root_anchor(*parent, *id, following);
-                self.insert(surface, *parent, *id, before);
-            }
-            MountItem::RetireListCell { id, request, roots } => {
-                let path = crate::input::focus_path(surface);
-                let retired = !roots.iter().any(|root| path.contains(root));
-                if retired {
-                    for root in roots {
-                        if let Some(view) = self.get(*root) {
-                            crate::input::retiring(surface, view);
-                            crate::scroll::detached(view);
-                            crate::navigation::park_retired_root(surface, view);
-                        }
+                let (Some(parent), Some(child)) = (self.get(*parent), self.get(*child)) else {
+                    return;
+                };
+                match child.kind() {
+                    ViewKind::Modal => return crate::navigation::present(surface, child),
+                    ViewKind::HeaderItem => {
+                        return crate::navigation::header_item(surface, parent, child);
                     }
+                    ViewKind::InputAccessory => {
+                        return crate::text_input::accessory(surface, parent, child);
+                    }
+                    _ => {}
                 }
-                surface.control(|control| {
-                    control.set_focus_path(path);
-                    control.retire_list_cell(*id, *request, retired);
-                });
+                let before = before
+                    .and_then(|b| self.views.get(&b))
+                    .filter(|b| b.parent_view().as_ref() == Some(parent));
+                if child.has_parent() {
+                    child.unparent();
+                }
+                child.insert_before(parent, before);
+                crate::transition::inserted(surface, child, self.layout_animation.as_ref());
+                if parent.kind() == ViewKind::Stack {
+                    crate::navigation::stack_changed(surface, parent, Some(child));
+                }
+                if parent.kind() == ViewKind::Scroll {
+                    crate::scroll::child_inserted(parent);
+                }
             }
-            // Native roots already parked before their acknowledgement.
-            MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = self.get(*id) {
                     crate::text_input::removing(surface, view);
@@ -212,7 +294,6 @@ impl Mounter {
                 crate::file_drop::deleted(surface, *id);
                 if let Some(view) = self.views.remove(id) {
                     crate::text_input::removing(surface, &view);
-                    crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
                     crate::shader::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
@@ -228,7 +309,12 @@ impl Mounter {
             }
             MountItem::Frame { id, frame } => {
                 let Some(view) = self.get(*id) else { return };
-                if *id == ROOT_ID {
+                // The root and a window's root fill their window: the
+                // platform reports their size (`set_root_size`), and the
+                // core's frame for them is never theirs to take (it is
+                // the one of a dialog over the main window until the
+                // window's size comes).
+                if *id == ROOT_ID || crate::window::is_window(surface, *id) {
                     return;
                 }
                 let mut frame = *frame;
@@ -247,7 +333,20 @@ impl Mounter {
                     return;
                 }
                 let old = std::mem::replace(&mut view.state_mut().frame, *frame);
-                view.moved();
+                // Plain views go through `place_shown`, which needs no
+                // answer from anything they contain.
+                if self.live_resize
+                    && self.layout_animation.is_none()
+                    && matches!(view.kind(), ViewKind::View | ViewKind::Text)
+                    && view.state().live.is_none()
+                {
+                    if view.set_unplaced(true) {
+                        self.unplaced.borrow_mut().push(view.clone());
+                    }
+                    crate::sight::moved();
+                } else {
+                    view.moved();
+                }
                 crate::transition::frame_changed(
                     surface,
                     view,
@@ -281,11 +380,14 @@ impl Mounter {
             } => {
                 if let Some(view) = self.get(*id) {
                     let old = view.state().text.as_ref().map(|t| t.text.clone());
+                    let same = crate::text::draws_the_same(view, text, layout, *content);
                     crate::text::set(view, text, layout, *content);
                     if let Some(old) = old {
                         crate::transition::text_changed(surface, view, &old, text);
                     }
-                    self.draw_when_shown(view, Damage::All);
+                    if !same {
+                        self.draw_when_shown(view, Damage::All);
+                    }
                     crate::access::text_changed(view);
                 }
             }
@@ -448,57 +550,9 @@ impl Mounter {
             // The animator's (`Surface::apply`).
             MountItem::Animation(_)
             | MountItem::AnimationBindings { .. }
-            | MountItem::ComponentPropSlots { .. } => {}
-        }
-    }
-
-    fn root_anchor(&self, parent: NodeId, id: NodeId, following: &[NodeId]) -> Option<NodeId> {
-        let (Some(parent), Some(root)) = (self.get(parent), self.get(id)) else {
-            return None;
-        };
-        // These roots use navigation/accessory hosting, not the source
-        // parent's ordinary NSView child order.
-        if matches!(
-            root.kind(),
-            ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
-        ) {
-            return None;
-        }
-        following.iter().copied().find(|id| {
-            self.get(*id).is_some_and(|candidate| {
-                !matches!(
-                    candidate.kind(),
-                    ViewKind::Modal | ViewKind::HeaderItem | ViewKind::InputAccessory
-                ) && candidate.parent_view().as_ref() == Some(parent)
-            })
-        })
-    }
-
-    fn insert(&self, surface: &Rc<Surface>, parent: NodeId, child: NodeId, before: Option<NodeId>) {
-        let (Some(parent), Some(child)) = (self.get(parent), self.get(child)) else {
-            return;
-        };
-        match child.kind() {
-            ViewKind::Modal => return crate::navigation::present(surface, child),
-            ViewKind::HeaderItem => return crate::navigation::header_item(surface, parent, child),
-            ViewKind::InputAccessory => {
-                return crate::text_input::accessory(surface, parent, child);
-            }
-            _ => {}
-        }
-        let before = before
-            .and_then(|id| self.get(id))
-            .filter(|view| view.parent_view().as_ref() == Some(parent));
-        if child.has_parent() {
-            child.unparent();
-        }
-        child.insert_before(parent, before);
-        crate::transition::inserted(surface, child, self.layout_animation.as_ref());
-        if parent.kind() == ViewKind::Stack {
-            crate::navigation::stack_changed(surface, parent, Some(child));
-        }
-        if parent.kind() == ViewKind::Scroll {
-            crate::scroll::child_inserted(parent);
+            | MountItem::ComponentPropSlots { .. }
+            | MountItem::TreeOrder(_)
+            | MountItem::ProjectStates { .. } => {}
         }
     }
 
@@ -543,11 +597,6 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
-            Command::ReplaceRange { .. } => {
-                if let Some(view) = view {
-                    crate::text_input::replace_range(view, command);
-                }
-            }
             Command::ScrollTo { y, animated, .. }
                 if view.is_some_and(|v| v.kind() == ViewKind::Input) =>
             {
@@ -569,6 +618,11 @@ impl Mounter {
                 }
             }
             Command::ImageInfo { .. } => crate::image::command(surface, id, command),
+            // A window of the app's own (`Window.open`) shows dialog root
+            // `id`.
+            Command::Desktop(desktop) if id != ROOT_ID => {
+                crate::window::command(surface, id, view, desktop);
+            }
             Command::SetJsResponder { .. } | Command::ClearJsResponder => {
                 crate::input::command(surface, id, command);
             }
@@ -579,6 +633,7 @@ impl Mounter {
             | Command::InjectJavaScript(_)
             | Command::PostMessage(_)
             | Command::SendInput(_)
+            | Command::Load(_)
             | Command::Seek(_)
             | Command::Native { .. } => {
                 if let Some(view) = view {

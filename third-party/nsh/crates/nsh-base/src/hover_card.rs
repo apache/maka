@@ -243,6 +243,7 @@ pub fn HoverCard(props: HoverCardProps, cx: Scope<HoverCardEvent>) -> impl IntoE
                 return trigger
                     .accessibility_state(move || AccessibilityState {
                         expanded: Some(open.get()),
+                        has_popup: true,
                         ..AccessibilityState::default()
                     })
                     .on_press(move || {

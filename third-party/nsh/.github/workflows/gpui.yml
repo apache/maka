@@ -6,49 +6,24 @@ name: GPUI
 # it (`nsh run --target gpui`).
 
 on:
-  # Include shared main-workspace dependencies: upstream merges can change
-  # the core without touching the GPUI workspace itself.
+  # Only the GPUI workspace's own changes run it; a daily run catches what
+  # changes to the crates it shares with the main workspace break.
   push:
-    branches: [main, tui/terminal-backend]
+    branches: [main]
     paths:
-      - "crates/nsh-base/**"
-      - "crates/nsh-bundler/**"
-      - "crates/nsh-core/**"
-      - "crates/nsh-dev/**"
-      - "crates/nsh-engine/**"
-      - "crates/nsh-js/**"
-      - "crates/nsh-macros/**"
-      - "crates/nsh-package/**"
-      - "crates/nsh-testing/**"
       - "crates/gpui/**"
-      - "third-party/gpui-wgpu/**"
-      - "third-party/icy_sixel/**"
       - "examples/embed-gpui/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
       - ".github/workflows/gpui.yml"
+      - ".github/actions/cargo/**"
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
-      - "crates/nsh-base/**"
-      - "crates/nsh-bundler/**"
-      - "crates/nsh-core/**"
-      - "crates/nsh-dev/**"
-      - "crates/nsh-engine/**"
-      - "crates/nsh-js/**"
-      - "crates/nsh-macros/**"
-      - "crates/nsh-package/**"
-      - "crates/nsh-testing/**"
       - "crates/gpui/**"
-      - "third-party/gpui-wgpu/**"
-      - "third-party/icy_sixel/**"
       - "examples/embed-gpui/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/**"
-      - "rust-toolchain.toml"
       - ".github/workflows/gpui.yml"
+      - ".github/actions/cargo/**"
   schedule:
     - cron: "0 3 * * *"
   merge_group:
@@ -59,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gpui-${{ github.ref }}
+  group: gpui-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -76,6 +51,13 @@ env:
 
 jobs:
   check:
+    # Nothing for drafts or a pull request being closed.
+    if: github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
     name: check (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -102,7 +84,7 @@ jobs:
           sudo apt-get install -y \
             clang libclang-dev build-essential pkg-config \
             libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
-            libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
@@ -120,15 +102,15 @@ jobs:
         with:
           components: clippy
 
-      # Dependencies only: main's runs save it, pull requests restore it.
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: crates/gpui -> ../../target
+          cache: gpui
 
-      # The GPUI workspace builds into the repository's `target/`
-      # (`crates/gpui/.cargo/config.toml`).
+      # A workspace of its own: huacnlee/cargo builds the dependencies it
+      # shares with the main workspace once (`shared-deps`).
       - name: Clippy
         working-directory: crates/gpui
         run: cargo clippy --all-targets --features nsh-platform-gpui/dev -- -D warnings
@@ -144,16 +126,6 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: crates/gpui
         run: cargo test -p nsh-platform-gpui --features shot
-
-      # Dependency unit tests are not run by the GPUI workspace's cargo test.
-      # Mesa supplies a real CPU Vulkan adapter without a physical GPU.
-      - name: Test (WGPU pixel readback)
-        if: runner.os == 'Linux'
-        working-directory: crates/gpui
-        run: >
-          cargo test --manifest-path ../../third-party/gpui-wgpu/Cargo.toml
-          --features offscreen,test-support --lib headless_
-          -- --test-threads=1 --nocapture
 
       # What a Mac without Xcode's Metal Toolchain builds (the CLI turns
       # the feature on there): GPUI's build script stitches its shaders

@@ -163,7 +163,7 @@ function ConnectionList(props: { owner: ModelSettingsOwner }) {
 
 function Monogram(props: { name: string; muted: boolean }) {
   return (
-    <If when={!platform.isTerminal}>
+    <If when={platform.idiom !== 'terminal'}>
       <View
         style={[
           {

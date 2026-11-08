@@ -63,12 +63,12 @@ Use separate checkouts at the baseline and this PR, with the same toolchain/envi
 cargo build -p nsh-cli
 target/debug/nsh package examples/counter --target web -o /tmp/nsh-counter
 target/debug/nsh package examples/gallery --target web -o /tmp/nsh-gallery
-node crates/nsh-platform-web/web/browser/package-size.mjs /tmp/nsh-gallery/Gallery --require-browser --brotli-budget=4000000
+node crates/nsh-platform-web/web/browser/package-size.mjs /tmp/nsh-gallery/Gallery --require-browser --brotli-budget=5000000
 ```
 
 The baseline does not have the measurement script; use this PR's script against its output, omitting
 `--require-browser`. To separate initial/optional code, pass `--requests=requests.json`, an array of URLs
-recorded during cold navigation. The CI 4 MB ceiling detects regressions; it is not the 1 MB design target.
+recorded during cold navigation. The CI reports the total against a 5 MB ceiling without failing the build (the site is published either way); it is not the 1 MB design target.
 
 Validated locally:
 

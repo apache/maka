@@ -62,7 +62,7 @@ function Counter() {
 }
 ```
 
-点击只会更新读取 `count` 的那一个文本节点。`counter()` / `Counter` 本身只运行一次。Rust 的 signal 是一个 `Copy` 句柄，闭包用 `move` 获取它即可随意使用。
+点击只会更新读取 `count` 的那一个文本节点。`counter()` / `Counter` 本身只运行一次。Rust 的 signal 是一个 `Copy` 句柄，闭包用 `move` 获取它即可随意使用。TSX 的 `set` 和 `update` 已绑定到所属的 signal，可以单独传递：`[1, 2].forEach(count.set)`、`attempt(busy.set, …)`。
 
 signal 可以把每次写入都算作变化，TSX 还可以用自己的方式比较值：
 

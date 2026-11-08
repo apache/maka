@@ -39,6 +39,7 @@ fn collect(items: &[MenuItem], prefix: &str, enabled: bool, out: &mut Vec<Entry>
                 label,
                 enabled: open,
                 items,
+                ..
             } => collect(items, &format!("{prefix}{label} > "), enabled && *open, out),
         }
     }

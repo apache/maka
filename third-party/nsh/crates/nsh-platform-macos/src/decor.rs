@@ -82,8 +82,8 @@ impl Kind {
     }
 }
 
-/// What shapes the layers: when it is unchanged, only colors may need
-/// setting again.
+/// What shapes the layers: when it and the blend mode are unchanged, only
+/// colors may need setting again.
 #[derive(Clone, PartialEq)]
 struct Shape {
     kind: Kind,
@@ -101,6 +101,12 @@ struct Shape {
     tint: Option<Color>,
     outline: nsh_core::Outline,
     effects: Option<std::sync::Arc<nsh_core::Effects>>,
+    /// The glass effect, its tint, and `macos={{ backdrop }}`: a change
+    /// redraws the backdrop (its material, style or tint), which no other
+    /// entry of the shape covers.
+    glass: nsh_core::GlassEffect,
+    glass_tint: Option<Color>,
+    backdrop: Option<nsh_core::MacOsBackdrop>,
     /// It shows a shader's frames ([`crate::shader`]).
     shader: bool,
 }
@@ -141,11 +147,15 @@ pub(crate) struct Decor {
     /// `tintColor`: the image layer shows this color through a mask of the
     /// image.
     tint: Option<(Color, Retained<CALayer>)>,
-    /// Layered shadows, gradients, outline, filters.
-    visual: crate::visual::Visual,
+    /// Layered shadows, gradients, outline, filters: boxed once a view has
+    /// one, since most views have none and a view's state is allocated
+    /// with its AppKit view.
+    visual: Option<Box<crate::visual::Visual>>,
     /// What was applied last.
     shape: Option<Box<Shape>>,
     colors: Option<Colors>,
+    /// The `mixBlendMode` set on the view's layer (`normal`: none).
+    blend: nsh_core::BlendMode,
 }
 
 impl Decor {
@@ -572,15 +582,17 @@ impl Decor {
             layer.setShadowPath(None);
         }
         let covered = covers_shadows && kind != Kind::Text;
-        self.visual.apply(
-            view,
-            layer,
-            style,
-            local,
-            radii,
-            kind == Kind::Text,
-            covered,
-        );
+        let text = kind == Kind::Text;
+        match &mut self.visual {
+            Some(visual) => visual.apply(view, layer, style, local, radii, text, covered),
+            None => {
+                let mut visual = crate::visual::Visual::default();
+                visual.apply(view, layer, style, local, radii, text, covered);
+                if !visual.is_empty() {
+                    self.visual = Some(Box::new(visual));
+                }
+            }
+        }
     }
 
     /// Draws borders with differing sides: the ring between the outer and
@@ -719,7 +731,13 @@ pub(crate) fn apply(view: &NshView) {
         borders: borders.colors,
     };
     let reshape = state.decor.shape.as_deref() != Some(&shape);
-    if !reshape && state.decor.colors == Some(colors) {
+    // `mixBlendMode` goes on the view's own layer, which composites its
+    // content layer, fill layers and the container clipped children live
+    // in as one with what is behind it: a view that gains or loses either
+    // keeps the filter where it is (the view's layer stays the outermost).
+    let blend = state.style.blend_mode;
+    let blend_changed = state.decor.blend != blend;
+    if !reshape && state.decor.colors == Some(colors) && !blend_changed {
         return;
     }
     quiet(|| {
@@ -732,9 +750,13 @@ pub(crate) fn apply(view: &NshView) {
         let d = &state.decor;
         d.set_background(&layer, colors.background);
         d.set_border_colors(&layer, container.as_deref(), &borders);
+        if blend_changed {
+            crate::visual::set_blend(&layer, blend);
+        }
     });
     state.decor.shape = Some(Box::new(shape));
     state.decor.colors = Some(colors);
+    state.decor.blend = blend;
     drop(guard);
     if kind == Kind::Image {
         // An image decodes at its view's size, once that is known.
@@ -759,6 +781,9 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
         tint: style.tint_color,
         outline: style.outline,
         effects: style.effects.clone(),
+        glass: style.glass_effect,
+        glass_tint: style.glass_tint_color,
+        backdrop: style.macos_backdrop,
         shader: s.shader.as_ref().is_some_and(|s| s.fills()),
     }
 }

@@ -12,6 +12,12 @@ name: Release
 #   workflow or to how xtask builds the distribution. With a tag it releases
 #   that tag.
 #
+# - Every night it builds the latest `main` and publishes it as the release
+#   `nightly`, a prerelease that is never the latest: `install.sh --nightly`
+#   installs it. A night without new commits
+#   builds nothing. There is one `nightly` tag, moved to each build's commit,
+#   never a tag per night. Running it by hand with *nightly* publishes one now.
+#
 # Pull requests and the merge queue never run it: its three builds are CI's
 # longest and held the runners every queued pull request waited for.
 #
@@ -25,18 +31,25 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  schedule:
+    # 18:00 UTC, 02:00 in Singapore: after the day's merges.
+    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       tag:
         description: "Tag to release (e.g. v0.1.0); empty: build only"
         required: false
         type: string
+      nightly:
+        description: "Publish the latest main as the nightly release"
+        required: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || ((github.event_name == 'schedule' || inputs.nightly) && 'nightly') || github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -46,10 +59,47 @@ defaults:
 env:
   CARGO_TERM_COLOR: always
   TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+  NIGHTLY: ${{ github.event_name == 'schedule' || inputs.nightly == true }}
 
 jobs:
+  # What to build: the tag, the latest main for the nightly (nothing when
+  # the nightly already has it), or the branch the run was started on.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.plan.outputs.ref }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ -n "$TAG" && "$NIGHTLY" == true ]]; then
+            echo "::error::a run releases a tag or the nightly, not both"
+            exit 1
+          fi
+          build=true
+          if [[ -n "$TAG" ]]; then
+            ref="$TAG"
+          elif [[ "$NIGHTLY" == true ]]; then
+            ref=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+            built=$(gh api "repos/$GH_REPO/commits/nightly" --jq .sha 2> /dev/null || true)
+            if [[ "$ref" == "$built" && "$GITHUB_EVENT_NAME" == schedule ]]; then
+              echo "The nightly already has main ($ref)."
+              build=false
+            fi
+          else
+            ref="$GITHUB_SHA"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
   dist:
     name: dist (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -68,8 +118,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # A release run builds the tag, never the branch it was started on.
-          ref: ${{ env.TAG || github.ref }}
+          # A release run builds the tag, never the branch it was started on;
+          # the nightly builds the commit of main the plan saw.
+          ref: ${{ needs.plan.outputs.ref }}
 
       - name: Check the version
         if: env.TAG != ''
@@ -273,3 +324,40 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: assets/*
+
+  # The nightly replaces the previous one: its release and its tag are
+  # deleted and made again at the new commit, the assets under the same
+  # names. `gh release create` uploads them to a draft and publishes it
+  # once all are up, so the release is missing only for that upload.
+  nightly:
+    name: Nightly
+    needs: [plan, dist]
+    if: needs.plan.outputs.build == 'true' && (github.event_name == 'schedule' || inputs.nightly == true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nsh-*
+          path: assets
+          merge-multiple: true
+
+      - name: Publish the nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.ref }}
+        run: |
+          short="${SHA:0:7}"
+          notes=$(cat <<NOTES
+          The latest \`main\`, built $(date -u +%Y-%m-%d) from [\`$short\`](https://github.com/$GH_REPO/commit/$SHA). It is rebuilt every night that \`main\` changes.
+
+          \`\`\`sh
+          curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
+          \`\`\`
+          NOTES
+          )
+          gh release delete nightly --cleanup-tag --yes 2> /dev/null || true
+          gh release create nightly assets/* --target "$SHA" --prerelease --latest=false \
+            --title "nsh nightly ($short)" --notes "$notes"

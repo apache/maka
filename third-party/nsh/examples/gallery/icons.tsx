@@ -1,9 +1,10 @@
 // The gallery uses the internal shared icon set, and Lucide's icons where a
 // demo needs more (`lucide.ts`, made by `scripts/lucide.py`).
-import { Canvas, type CanvasRenderingContext2D, Path2D } from "nsh";
+import { Canvas, type CanvasRenderingContext2D, Path2D, Text } from "nsh";
+import { terminal } from "../nsh-gallery-ui/theme";
 import { lucide, type LucideElement, type LucideName } from "./lucide";
 
-export { Icon, type IconName } from "../nsh-gallery-ui/icons";
+export { Icon, IconLabel, type IconName } from "../nsh-gallery-ui/icons";
 
 /** The Lucide icons the gallery draws. */
 export type LucideIconName = LucideName;
@@ -68,4 +69,21 @@ export function LucideIcon(props: { name: LucideIconName; size?: number; tint: s
       }}
     />
   );
+}
+
+/** A Lucide icon as an SVG `data:` URL, for what takes an image rather than a
+ * view: a native menu item's `icon`, which shows it in the menu's text color. */
+export function lucideSvg(name: LucideIconName): string {
+  const elements = (lucide[name] as LucideElement[]).map(({ tag, ...attributes }) => {
+    const written = Object.entries(attributes).map(([key, value]) => `${key}="${value}"`);
+    return `<${tag} ${written.join(" ")}/>`;
+  });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${elements.join("")}</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** An icon-only control's Lucide icon, or in the terminal its short
+ * `label` as text in the icon's tint (`IconLabel`'s Lucide form). */
+export function LucideLabel(props: { name: LucideIconName; label: string; size?: number; tint: string }) {
+  return terminal ? <Text style={{ color: props.tint }}>{props.label}</Text> : <LucideIcon name={props.name} size={props.size} tint={props.tint} />;
 }

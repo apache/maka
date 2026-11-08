@@ -288,7 +288,8 @@ pub struct DiffViewProps {
     /// The font size, in points (default 13).
     #[prop(default = Points(13.0))]
     pub font_size: Prop<Points>,
-    /// The height of a row, in points (default 20).
+    /// The height of a row, in points (default 20; in a terminal a row is
+    /// one Cell, whatever this is).
     #[prop(default = Points(20.0))]
     pub line_height: Prop<Points>,
     /// The separators of collapsed lines, drawn by the app (by default a

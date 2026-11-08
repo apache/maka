@@ -11,8 +11,8 @@ use super::{
     Accessible, AnyElement, Interactive, IntoReactive,
     builder::{ElNode, Element, IntoElement, IntoListener, Listener, ParentElement},
     events::{
-        self, CaretEvent, Composition, NativeEvent, OverlayPosition, Selection, VideoInfo,
-        VideoProgress, WebNavigation,
+        self, CaretEvent, Composition, HintReason, NativeEvent, OverlayPosition, Selection,
+        VideoInfo, VideoProgress, WebNavigation,
     },
 };
 use crate::{
@@ -71,7 +71,6 @@ crate::static_reactive!(ResizeMode: ResizeMode);
 crate::static_reactive!(ReturnKeyType: ReturnKeyType);
 crate::static_reactive!(SubmitBehavior: SubmitBehavior);
 crate::static_reactive!(PasteBehavior: PasteBehavior);
-crate::static_reactive!(Vec<crate::input_tokens::InputTokenRule>: Vec<crate::input_tokens::InputTokenRule>);
 crate::static_reactive!(crate::EllipsizeMode: crate::EllipsizeMode);
 crate::static_reactive!(JsonValue: JsonValue);
 crate::static_reactive!(StatusBarSetting: StatusBarSetting, crate::StatusBarStyle);
@@ -749,14 +748,6 @@ impl Input {
         self.bind_prop(multiline, |multiline: bool| Prop::Multiline(multiline))
     }
 
-    /// Styles and atomically edits token captures in the native text input.
-    pub fn tokens(
-        self,
-        tokens: impl IntoReactive<Vec<crate::input_tokens::InputTokenRule>>,
-    ) -> Self {
-        self.bind_prop(tokens, Prop::InputTokens)
-    }
-
     /// Whether a multiline input's scroll bar shows (default yes): the
     /// platform's indicator, or the app's built-in bar once it set one.
     pub fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
@@ -1246,13 +1237,6 @@ impl Overlay {
         self.bind_prop(margin, |m| Prop::Overlay(OverlayProp::Margin(m)))
     }
 
-    /// Focuses this popup's controls while it is shown and returns focus to
-    /// its still-valid opener on closing (terminal and GPUI). Background
-    /// presses remain available; an outside press's new focus is preserved.
-    pub fn focus_return(self, enabled: impl IntoReactive<bool>) -> Self {
-        self.bind_prop(enabled, |v| Prop::Overlay(OverlayProp::FocusReturn(v)))
-    }
-
     /// A press went down outside it, its anchor and the overlays inside it
     /// (where, in the root view). Closing is the listener's: leave it out
     /// of the view.
@@ -1273,19 +1257,14 @@ impl Overlay {
 
     /// Makes it a hint (a tooltip): shown once the pointer rested on its
     /// anchor (its parent without one) for `delay`, until the pointer
-    /// leaves or presses the anchor, on the desktops only; it is placed
+    /// leaves or presses the anchor, on the desktops only, and while the
+    /// keyboard focus is on the anchor (or in it, outside an overlay), in
+    /// every idiom, until the focus leaves; Escape hides it. It is placed
     /// against the anchor and should not take the pointer
     /// ([`super::Styled::pointer_events`] none). [`Self::hint_open`] decides
     /// instead of the pointer.
     pub fn hint(self, delay: impl IntoReactive<std::time::Duration>) -> Self {
         self.bind_prop(delay, |d| Prop::Overlay(OverlayProp::Hint(Some(d))))
-    }
-
-    /// Also show a hint while its anchor has native keyboard focus.
-    pub fn hint_on_focus(self, enabled: impl IntoReactive<bool>) -> Self {
-        self.bind_prop(enabled, |enabled| {
-            Prop::Overlay(OverlayProp::HintOnFocus(enabled))
-        })
     }
 
     /// A hint shown (`Some(true)`) or hidden (`Some(false)`) whatever the
@@ -1296,16 +1275,26 @@ impl Overlay {
         self.bind_prop(open, |o| Prop::Overlay(OverlayProp::Open(o)))
     }
 
-    /// The pointer rested on a hint's anchor for its delay: it asks to
-    /// show (and shows, unless [`Self::hint_open`] decides).
-    pub fn on_hint_show<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Show, listener.into_listener(), events::unit)
+    /// The pointer rested on a hint's anchor for its delay, or the
+    /// keyboard focus came to it: it asks to show (and shows, unless
+    /// [`Self::hint_open`] decides), with why.
+    pub fn on_hint_show<M>(self, listener: impl IntoListener<HintReason, M>) -> Self {
+        self.listen(
+            EventKind::Show,
+            listener.into_listener(),
+            events::hint_reason,
+        )
     }
 
-    /// The pointer left or pressed a hint's anchor, or the hint left the
-    /// view, after it asked to show: it asks to hide.
-    pub fn on_hint_hide<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Dismiss, listener.into_listener(), events::unit)
+    /// The pointer left or pressed a hint's anchor, the focus left it,
+    /// Escape was pressed or the hint left the view, after it asked to
+    /// show: it asks to hide, with why.
+    pub fn on_hint_hide<M>(self, listener: impl IntoListener<HintReason, M>) -> Self {
+        self.listen(
+            EventKind::Dismiss,
+            listener.into_listener(),
+            events::hint_reason,
+        )
     }
 
     /// The core placed it against its anchor: the side it went on, its
@@ -1492,6 +1481,55 @@ impl WebView {
         self.bind_prop(enabled, |enabled: bool| {
             Prop::Native(NativeProp::BackForwardGestures(enabled))
         })
+    }
+
+    /// Keeps the page's website data (cookies, storage, the cache) only
+    /// as long as the web view, apart from the app's other web views
+    /// (default no; Android: no HTTP cache and no saved form data). Read
+    /// when the web view is made, so it takes a value, not a signal.
+    pub fn incognito(self, incognito: bool) -> Self {
+        self.set(Prop::Native(NativeProp::Incognito(incognito)))
+    }
+
+    /// Serves the page the URLs of `scheme` (`"app-image"` for
+    /// `<img src="app-image:1">`) from the app: `handler` answers each
+    /// request with bytes and a MIME type
+    /// ([`WebResourceRequest::respond`](crate::web_resource::WebResourceRequest::respond)),
+    /// now or later and from any thread, and the web engine loads them as
+    /// it loads any subresource, with no `data:` URL or script in between
+    /// (iOS and macOS, Linux). The platform calls `handler` on its main
+    /// thread, so it returns at once and leaves slow work to a thread of
+    /// its own. Several schemes are several calls; one called again
+    /// replaces its handler. `scheme` is a letter followed by letters,
+    /// digits, `+`, `-` or `.`, none of the web's or the system's (`http`,
+    /// `file`, `data`, ...): another is ignored with a warning. Read when
+    /// the web view is made, as [`incognito`](Self::incognito)
+    /// ([`crate::web_resource`]).
+    pub fn url_scheme(
+        self,
+        scheme: &str,
+        handler: impl Fn(crate::web_resource::WebResourceRequest) + Send + Sync + 'static,
+    ) -> Self {
+        let scheme = match crate::web_resource::WebUrlScheme::new(scheme, handler) {
+            Ok(scheme) => scheme,
+            Err(e) => {
+                log::warn!(target: "js", "web view: {e}");
+                return self;
+            }
+        };
+        let mut schemes = self
+            .0
+            .attrs
+            .props
+            .iter()
+            .find_map(|p| match p {
+                Prop::Native(NativeProp::UrlSchemes(list)) => Some(list.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        schemes.retain(|s| s.scheme() != scheme.scheme());
+        schemes.push(scheme);
+        self.set(Prop::Native(NativeProp::UrlSchemes(schemes)))
     }
 
     /// A page started loading.
@@ -2413,6 +2451,13 @@ impl IntoReactive<Option<crate::shader::TransitionShader>> for crate::shader::Tr
     }
 }
 
+/// A backdrop where an optional one goes (`.macos_backdrop(backdrop)`).
+impl IntoReactive<Option<crate::MacOsBackdrop>> for crate::MacOsBackdrop {
+    fn into_reactive(self) -> super::Reactive<Option<crate::MacOsBackdrop>> {
+        super::Reactive::Static(Some(self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2553,5 +2598,29 @@ mod tests {
         let set = uniforms(&view.0.attrs);
         assert_eq!(set.0.len(), 1);
         assert_eq!(value(&set, "speed"), Some(UniformValue::Number(3.0)));
+    }
+
+    #[test]
+    fn web_view_url_scheme_builder_collects_schemes() {
+        let web = web_view_html("<img src=\"a:1\">", None)
+            .url_scheme("a", |request| request.fail())
+            .url_scheme("b", |request| request.fail())
+            // Replaces `a`'s handler.
+            .url_scheme("A", |request| request.fail())
+            // Not a scheme the app may serve: ignored.
+            .url_scheme("https", |request| request.fail());
+        let schemes: Vec<String> = web
+            .0
+            .attrs
+            .props
+            .iter()
+            .find_map(|p| match p {
+                Prop::Native(NativeProp::UrlSchemes(list)) => {
+                    Some(list.iter().map(|s| s.scheme().to_owned()).collect())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(schemes, ["b", "a"]);
     }
 }

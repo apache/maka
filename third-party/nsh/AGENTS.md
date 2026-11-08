@@ -14,8 +14,7 @@ with Direct2D (`nsh-platform-windows`), Linux with GTK 4 widgets (`nsh-platform-
 backend for standalone apps (AppKit, Win32, GTK 4); the GPUI backend (`nsh-platform-gpui`) draws on macOS, Windows and
 Linux and is the backend for embedding in GPUI / GPUI Kit apps; the web platform
 (`nsh-platform-web`) renders apps as HTML in a browser page, and `nsh package --target web` publishes them as static
-sites. The terminal backend (`nsh-platform-tui`) draws into Ratatui buffers on all three desktops and embeds in
-terminal apps. NSH is layered as GPUI Kit is: `nsh-core` is NSH's `gpui` (primitives, layout, rendering), `nsh-base` its
+sites. NSH is layered as GPUI Kit is: `nsh-core` is NSH's `gpui` (primitives, layout, rendering), `nsh-base` its
 `gpui-base` (unstyled base components: behavior, state, focus, accessibility, no look); a styled component library,
 NSH's `gpui-component`, is never part of NSH: apps and the community build theirs on `nsh-base`, or customize the UI
 in the app itself.
@@ -50,7 +49,7 @@ crates/
                        the standard modules among them (`runtime/fs.rs`: `fs/promises`, `runtime/process.rs`, `runtime/net.rs`,
                        `runtime/websocket.rs`, `runtime/os.rs`) on the `System` their calls get (capabilities, data directory, quotas, per-VM state)
   nsh-base/            `nsh/base`, NSH's `gpui-base`: unstyled base components (behavior, state, focus, accessibility; the look is the
-                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Link`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Carousel` and its parts (slides on a native scroll view snapping to the slides' laid-out starts, previous / next, a pagination with a followed indicator, keys, a seamless loop of runways and translations the animation graph computes from the scroll offset: `carousel.rs`), `Avatar` / `AvatarGroup` (`avatar.rs`: a picture with its image status tracked natively and a row that places its first `limit`), `Toggle` / `ToggleGroup` (a toggle button and a toolbar of them: `toggle.rs`), `Toolbar` / `ToolbarGroup` / `ToolbarSeparator` (a bar of buttons, toggles and links: `toolbar.rs`; `roving.rs` the roving focus `Tabs`, `RadioGroup`, `ToggleGroup` and `Toolbar` share, its items in tree order through the core's `watch_order`), `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Calendar` (`calendar.rs`: views, disabled dates, the days' keys), `TimeField` (`time_field.rs`: segments over one native text field), `DatePicker` (`date_picker.rs`: a calendar and time field in a popup; `popup.rs`'s `dropdown` is the popup `Select`, `Combobox` and `DatePicker` share), `Collapsible`, `Accordion` and its parts (`accordion.rs`: items open by the app's `value`, one at a time or several, panels revealed as `Collapsible`'s), `Progress`, `Command` (a command palette: a search field over commands filtered natively, virtualized: `command.rs`), `Tree` (items that hold items, virtualized, one Tab stop: `tree.rs`), `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `ColorPicker` and its parts `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch`, `ColorEyeDropper` (a color in RGB, HSL, HSB or OKLCH: `color_picker/`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`, `Treemap`: `plot/treemap/`), `Input` (a native text input, made by `nsh-js`), the status
+                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Link`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Carousel` and its parts (slides on a native scroll view snapping to the slides' laid-out starts, previous / next, a pagination with a followed indicator, keys, a seamless loop of runways and translations the animation graph computes from the scroll offset: `carousel.rs`), `Avatar` / `AvatarGroup` (`avatar.rs`: a picture with its image status tracked natively and a row that places its first `limit`), `Toggle` / `ToggleGroup` (a toggle button and a toolbar of them: `toggle.rs`), `Toolbar` / `ToolbarGroup` / `ToolbarSeparator` (a bar of buttons, toggles and links: `toolbar.rs`; `roving.rs` the roving focus `Tabs`, `RadioGroup`, `ToggleGroup` and `Toolbar` share, its items in tree order through the core's `watch_order`), `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Calendar` (`calendar.rs`: views, disabled dates, the days' keys), `TimeField` (`time_field.rs`: segments over one native text field), `DatePicker` (`date_picker.rs`: a calendar and time field in a popup; `popup.rs`'s `dropdown` is the popup `Select`, `Combobox` and `DatePicker` share), `Collapsible`, `Accordion` and its parts (`accordion.rs`: items open by the app's `value`, one at a time or several, panels revealed as `Collapsible`'s), `Progress`, `Terminal` (a program's output and the keys sent back: `term/`, its emulator on `vte`, `TerminalEmulator` the app's replacement), `Command` (a command palette: a search field over commands filtered natively, virtualized: `command.rs`), `Tree` (items that hold items, virtualized, one Tab stop: `tree.rs`), `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `ColorPicker` and its parts `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch`, `ColorEyeDropper` (a color in RGB, HSL, HSB or OKLCH: `color_picker/`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`, `Treemap`: `plot/treemap/`), `Input` (a native text input, made by `nsh-js`), the status
                        bar, `TextView` (Markdown / HTML documents: `text_view/`, docs/dev/text-view.md), `ResizablePanelGroup` / `ResizablePanel` (`resizable/`), `DockArea` (a dockable workspace: splits, tab groups and edge docks whose layout is
                        data, `dock/`, docs/dev/dock.md), `Editor` (a code editor: highlighting, several carets, folds, search, diagnostics;
                        `editor/`, docs/dev/editor.md), `DiffView` (the changes between two texts or of a patch, split or unified: `diff/`,
@@ -83,6 +82,7 @@ crates/
                        feature `shader`: the native backends' shader renderer (`shader.rs`: shader views' WGSL rendered with
                        wgpu offscreen, read back asynchronously, never blocking the main thread; docs/dev/shaders.md)
   nsh-package/         Signed packages (`.nshpkg`): Ed25519 keys, release-key certificates, revocation lists, the trust store
+  nsh-updater/          App self-update: manifests and their signatures, verified downloads, replacing the installed app on the desktop (docs/dev/updater.md); `nsh-core`'s `runtime/updater.rs` is its JS face, `nsh/updater`
   nsh-bundler/         Bundler: rolldown + Oxc (TS stripping) + NSH's JSX compiler (`jsx.rs`, docs/dev/native-pipeline.md) + source maps;
                        imports of the native modules stay imports (`plugin.rs`), so a bundle holds only the app's code;
                        the app's themes (nsh.json `tailwind` / `theme`, checked, handed to the renderer by the entry) and the
@@ -120,6 +120,7 @@ crates/
                        the test agent's platform part (`agent.rs`: `nsh test --target linux`) (docs/dev/linux.md)
   nsh-linux-host/      Development host on Linux (`nsh run --target linux`): connects to a dev server or runs a bundle
   nsh-linux-app/       Release runner on Linux: the executable of apps built by `nsh package --target linux`
+  nsh-platform-apple/  Shared by the macOS and iOS backends: the Speech recognizer and the notification center
   nsh-platform-macos/  AppKit backend (macOS): one flipped, layer-backed `NSView` per node decorated by Core Animation, CoreText text
                        (typeset on the engine thread), desktop input and scroll views as on Linux, navigation, video, web views,
                        native components, AppView, standalone app; feature `dev` as above (docs/dev/macos.md)
@@ -132,13 +133,6 @@ crates/
                        AppView, standalone app; feature `dev` as above (docs/dev/windows.md)
   nsh-windows-host/    Development host on Windows (`nsh run --target windows`): connects to a dev server or runs a bundle
   nsh-windows-app/     Release runner on Windows: the executable of apps built by `nsh package --target windows`
-  nsh-platform-tui/   Terminal backend (macOS, Windows, Linux): retained scene, terminal text measurement, focus and editing,
-                       scrolling, navigation, native animation, worker-rendered images and canvas through detected graphics
-                       protocols or half blocks;
-                       AppView embeds in a Ratatui region, run_app owns a standalone terminal; feature `dev`: hot reload;
-                       --script renders deterministic UTF-8 snapshots in memory (docs/dev/tui.md)
-  nsh-tui-host/        Development host in a terminal (`nsh run --target tui`): connects to a dev server or runs a bundle
-  nsh-tui-app/         Release runner in a terminal (`nsh package --target tui`)
   gpui/                The GPUI backend: a workspace of its own (`crates/gpui/Cargo.toml`, its own `Cargo.lock` and GPUI's dependencies),
                        excluded from the main one, so the main workspace's builds, tests and CI never build GPUI:
   gpui/nsh-platform-gpui/ GPUI backend (macOS, Windows, Linux): the Windows backend's retained `NshView` tree, input,
@@ -166,6 +160,9 @@ crates/
                        `compat record <version>`: records a release there)
 tests/compat/         The apps whose scripts check the API apps use (`nsh-compat` builds and runs them): `cases/<domain>/` (one app per
                       domain, a module per case, `script.txt`), `examples/<app>.txt` (the scripts of examples)
+skills/               The skills for coding agents that build apps with NSH (`npx skills add longbridge/nsh`): `skills/nsh`, `skills/nsh-design-guides`;
+                      their guides are verbatim copies of `website/docs/`, their recipes of `examples/tasks-rs` and `examples/tasks`, and `website/tests/skills.test.ts`
+                      fails when a copy differs: after changing one, copy it (`cp website/docs/coding-guides.md skills/nsh/references/`)
 docs/                 Documentation; `docs/dev/`: for developers of nsh (architecture, internals, decisions, pitfalls)
 website/              The documentation site (Astro; guides, element / component / API reference in English and zh-CN) and its
                       runnable demos (`website/demos/*.tsx`, live on the site through the WebAssembly runtime); see its README
@@ -184,8 +181,15 @@ The TSX gallery and website demos share their internal styled UI in `examples/ns
 icons, finishes, theme and table part classes. Change shared visual rules there. `examples/gallery/ui.tsx` keeps
 the gallery shell/navigation; `website/demos/palette.ts` is the documentation adapter. See that layer's README.
 
+**Gallery examples must be beautiful and refined.** A demo in `examples/gallery` or `examples/gallery-rs` is what people
+judge NSH by, so one is finished only when it looks designed: colors from the theme's tokens (up and down, too, as
+`text-up` / `text-down`), restrained gradients or real photographs instead of saturated placeholder tints, nothing clipped,
+even spacing and alignment, no leftover boxes or debug-looking labels. Photos come from the ones the gallery already
+uses, so a page does not download many images, and do not repeat within a page unless the demo compares one picture.
+Check a screenshot, in dark and light, before calling a demo done.
+
 Dependency direction: `nsh-core` ← `nsh-js` ← `nsh-engine` (also ← `nsh-package`) ← `nsh-platform-*` ←
-`nsh-ios-host` / `nsh-ios-app` / `nsh-linux-host` / `nsh-linux-app` / `nsh-macos-host` / `nsh-macos-app` / `nsh-windows-host` / `nsh-windows-app` / `nsh-gpui-host` / `nsh-tui-host` / `nsh-tui-app`; `nsh-cli` depends on `nsh-bundler`, `nsh-js` and `nsh-engine`; `nsh-bundler`'s feature `bundle` depends on `nsh-js` (to check
+`nsh-ios-host` / `nsh-ios-app` / `nsh-linux-host` / `nsh-linux-app` / `nsh-macos-host` / `nsh-macos-app` / `nsh-windows-host` / `nsh-windows-app` / `nsh-gpui-host`; `nsh-cli` depends on `nsh-bundler`, `nsh-js` and `nsh-engine`; `nsh-bundler`'s feature `bundle` depends on `nsh-js` (to check
 imports against the names native modules export); `nsh-base` depends on `nsh-core` only and is used by the bundler
 (declarations), the platforms and the CLI (registry). An app's own crates (its UI sets) depend on `nsh-core` only and
 are never linked into the CLI: it reads their UI sets as data (`nsh_core::element::description`); the hosts and runners
@@ -213,7 +217,6 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | the macOS backend (`nsh-platform-macos`, AppKit) | `docs/dev/macos.md` |
 | the Windows backend (`nsh-platform-windows`, Win32 / Direct2D) | `docs/dev/windows.md` |
 | the GPUI backend (`nsh-platform-gpui`, macOS / Windows / Linux) | `docs/dev/gpui.md` |
-| the terminal backend (`nsh-platform-tui`, Ratatui) | `docs/dev/tui.md` |
 | anything apps use: exports, `nsh:rt`, props, events, style keys, Tailwind, declarations, behavior, formats | `docs/dev/compatibility.md` |
 | a hot path | `docs/dev/performance.md` (baselines) |
 | anything platform-specific | `docs/dev/pitfalls.md` (verified constraints, by area) |
@@ -248,6 +251,12 @@ to, put the details in nsh-docs and the summary here. Before changing an area, r
 
 ## Commands
 
+Build with [huacnlee/cargo](https://github.com/huacnlee/cargo), a drop-in Cargo fork for machines full of Git worktrees
+and agents: they share one build directory that stays under a size limit on its own, so nothing needs cleaning or
+configuring. `curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh` installs it (Windows:
+`irm https://huacnlee.github.io/cargo/install.ps1 | iex`); `cargo -V` names it. `cargo +nightly` and
+`rust-toolchain.toml` keep working.
+
 ```sh
 cargo run [-- <app>] [-- --target catalyst|ios|android|gpui]                       # the gallery on this machine's backend (AppKit / GTK / Win32), hot reload; rebuilt and restarted on Rust changes
 cargo run -- accordion [--section settings]                                        # the gallery opened at one demo (by name), only its section with that title: no taps or scrolling
@@ -281,9 +290,6 @@ echo 'await app.screenshot("a.png"); await app.press("label:Navigation"); await 
 ./target/debug/nsh run examples/gallery --target linux                     # in a GTK window (the default on Linux)
 ./target/debug/nsh run examples/gallery --target windows                   # in a Win32 window, 1200×800 (the default on Windows)
 ./target/debug/nsh run examples/gallery --target gpui                      # in a GPUI window (macOS, Windows, Linux), as GPUI apps embed it
-./target/debug/nsh run examples/terminal-workbench --target tui            # in this terminal, with hot reload
-./target/debug/nsh package examples/terminal-workbench --target tui        # console executable and resources, archived for this OS
-./target/debug/nsh-tui-host --bundle build/bundle.nshc --size 120x40 --script "wait 300; shot screen.txt; quit"   # headless text snapshot
 ./target/debug/nsh run examples/gallery --target web                       # in the browser (the dev server serves the page)
 ./target/debug/nsh package examples/gallery --target web --run             # a static site (files named by content), served on this machine
 ./target/debug/nsh package examples/gallery --target ios-simulator --run   # installable app (.app / .ipa / .apk)
@@ -312,8 +318,6 @@ cargo clippy -p nsh-platform-web --target wasm32-unknown-unknown --features comp
 cargo clippy -p nsh-platform-linux -p nsh-linux-host -p nsh-linux-app --all-targets      # the Linux backend (on Linux; empty elsewhere)
 cargo clippy -p nsh-platform-macos -p nsh-macos-host -p nsh-macos-app --all-targets --features nsh-platform-macos/dev   # the macOS backend (on macOS)
 cargo clippy -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app --all-targets   # the Windows backend (on Windows; empty elsewhere)
-cargo clippy -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app --all-targets   # the terminal backend (macOS / Windows / Linux)
-cargo test -p nsh-platform-tui -p nsh-tui-host -p nsh-tui-app                  # tests and in-memory terminal rendering, no display needed
 cargo test -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app               # its tests (on Windows; they open no window)
 (cd crates/gpui && cargo clippy --all-targets --features nsh-platform-gpui/dev)        # the GPUI backend, its own workspace (empty off the desktops)
 (cd crates/gpui && cargo test && cargo +nightly fmt --all)                              # its tests (they open no window) and formatting
@@ -324,7 +328,8 @@ cd website && bun run dev                                                       
 host it is an empty crate, so always run clippy on platform code with the Catalyst target. Likewise
 `nsh-platform-android` is empty off Android: check it with `cargo xtask android` (which sets up the NDK linker, `CC`,
 `AR` and bindgen's sysroot) and `cargo xtask clippy-android`. `nsh-platform-linux` and its hosts are empty off Linux:
-check them on Linux, with the GTK 4 (≥ 4.14) development packages installed. `nsh-platform-macos` and its hosts are
+check them on Linux, with the GTK 4 (≥ 4.14) and GStreamer (core and base plug-ins, for sounds) development packages
+installed. `nsh-platform-macos` and its hosts are
 empty off macOS (`target_os = "macos"`, not Catalyst). `nsh-platform-windows` and its hosts are empty off Windows:
 check them on Windows, with the MSVC Build Tools, the Windows SDK and LLVM (libclang for QuickJS' bindings);
 `RUST_MIN_STACK=268435456` if rustc overflows its stack on the `windows` crate. The GPUI backend (`crates/gpui`) is
@@ -335,12 +340,6 @@ Wayland / xkbcommon / fontconfig packages plus GTK 3, WebKitGTK 4.1 (feature `we
 feature `runtime-shaders` (`docs/dev/gpui.md`), which the CLI turns on when `xcrun metal` fails. It builds into the
 repository's `target/`; dependencies only it uses are declared in `crates/gpui/Cargo.toml`, not the root. `.cargo/config.toml` sets
 `IPHONEOS_DEPLOYMENT_TARGET = 15.0` for Rust and C alike.
-
-The terminal backend is in the main workspace and builds on macOS, Windows and Linux using Rust libraries and the
-OS console facilities. It needs the common C compiler / libclang setup for QuickJS when building with `js`, and
-supports Rust-root embedding with `--no-default-features`. Layout stays in virtual points (one cell is 8×16 points
-by default); only terminal IO, rendering, script input and embedding regions use cells. Keep those units explicit
-when changing text measurement, clipping, pointer input or scripts (`docs/dev/tui.md`).
 
 ## Rules
 
@@ -459,7 +458,7 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
     empty. A command that runs at the commit (a component's or ref's method) cannot throw: given an unknown id or
     index it does nothing and logs a warning.
   - Methods whose parameters may grow take their options as one object (`net.connect({ host, port })`,
-    `Window.setTitleBar({ style, height })`); parameters the user judged will not grow stay positional
+    `WindowRef.setBounds({ origin, size, animated })`); parameters the user judged will not grow stay positional
     (`setSelection(start, end?)`, `seek(seconds)`, `DockArea.addPanel(panel, placement?, size?)`,
     `DataTable.scrollToRow(row, animated?)`, `Editor.revealPosition(position, center)`, a range's start and end):
     decided per method by the user (2026-10-28), not changed on reading this rule.
@@ -606,10 +605,22 @@ Every pull-request workflow also handles `merge_group: checks_requested`, so Git
 combined commit. Queue runs execute the full workflow without PR path filters; Compat always builds on a queue
 run. Website deployment runs only on pushes and manual dispatches. `.github/ci/paths.py` checks the queue
 trigger alongside the dependency paths.
-CI builds without incremental state or debug info, caches dependencies only (`Swatinem/rust-cache`, saved by `main`,
-restored by pull requests) and ignores the toolchain file's mobile targets (`RUSTUP_TOOLCHAIN=stable`) except in the
-release. Files a crate reads from outside its directory (`include_bytes!`, test fixtures) go into its workflows'
-`files` in `paths.py`.
+Runners are the bottleneck, so a run takes one only when its result can still matter. Every pull-request
+workflow takes `pull_request` `types: [opened, synchronize, reopened, ready_for_review, closed]` (`paths.py` checks
+it), and its jobs skip drafts and the `closed` event: a draft runs nothing until it is marked ready, and closing or
+merging a pull request starts a run that runs nothing but takes its concurrency group, cancelling the runs it still
+has queued or running. The jobs that build (all but `CI paths`) are debounced: they name the environment
+`ci-debounce` with `deployment: false`, whose wait timer holds them a few minutes without a runner, so a push
+followed by another within that time cancels the first run before it starts. Each workflow's concurrency group is
+the pull request's number, or the ref for pushes and queue runs (`github.event.pull_request.number || github.ref`):
+a merged pull request's `closed` event carries the base branch as its ref, so a group of the ref alone would cancel
+`main`'s run of the merge commit. Groups cancel in progress (Website's pushes to `main` queue instead: each one
+deploys).
+CI builds with huacnlee/cargo, as developers do: `.github/actions/cargo` installs a pinned release after the toolchain
+and caches the dependencies' builds (`~/.cargo/targets/shared-deps`) with the registry, one cache per job, saved by
+`main` and restored by pull requests. It builds without incremental state or debug info and ignores the toolchain
+file's mobile targets (`RUSTUP_TOOLCHAIN=stable`) except in the release. Files a crate reads from outside its
+directory (`include_bytes!`, test fixtures) go into its workflows' `files` in `paths.py`.
 
 ## Parallel agents
 
@@ -619,21 +630,11 @@ code and its tests and report which tests to run; the main session runs builds a
 
 ## Review and parallel workspaces
 
-For PR reviews and work involving multiple agents, **consider LayerFS before creating a Git worktree**. When
-isolated workspaces are needed and the workload fits the available Linux environment, prefer separate LayerFS
-branches and mounted Workspaces from the same committed input. Give each agent its own Workspace; reuse a warm
-snapshot only when its OS, architecture, toolchain and dependencies match the task.
-
-Reuse an existing prepared LayerFS deployment first. Start with `./scripts/layerfs status` and follow
-`docs/dev/layerfs.md`; use `./scripts/layerfs prepare` when setup is needed. The script's `prepare`, `smoke` and
-`status` commands prepare and validate the deployment. Create agent
-branches and mount Workspaces through the pinned LayerFS SDK described in that guide; a smoke run is a validation
-trial, not an agent's development Workspace. Keep source changes in Git and submit them through pull requests.
-
-Use a Git worktree when a concrete constraint makes LayerFS unsuitable, such as an unavailable Docker/FUSE
-environment or a task requiring native macOS, iOS or Windows tooling. State the reason briefly and proceed without
-an extra approval checkpoint. Read-only reviews that need no isolated workspace can inspect the checkout or Git
-objects directly. Preserve the existing parallel-agent build and test limits whichever workspace mechanism is used.
+For PR reviews and work involving multiple agents, give each agent a Git worktree beside the repository
+(`git worktree add ../nsh.worktrees/<name>`); with huacnlee/cargo ("Commands") they share one build directory, so a new
+worktree rebuilds little. Read-only reviews that need no isolated workspace can inspect the checkout or Git objects
+directly. Preserve the existing parallel-agent build and test limits. Keep source changes in Git and submit them through
+pull requests.
 
 ## Verification after changes
 
@@ -641,8 +642,9 @@ objects directly. Preserve the existing parallel-agent build and test limits whi
 2. Changes to the runtime (`nsh-js`), engine or core: run `nsh test --trace` and check item counts and timings. Changes to
    anything apps use: `cargo xtask compat` passes, and `tests/compat/` checks the change (`docs/dev/compatibility.md`).
 3. Changes to the platform layer: launch with `nsh run`, check screenshots and simulate input where needed (the terminal needs the Screen
-   Recording and Accessibility permissions; while the screen is locked the frontmost app is `loginwindow` and clicks fail, but window
-   screenshots still work). iOS simulator: `xcrun simctl io booted screenshot`, `xcrun simctl ui booted appearance dark`.
+   Recording and Accessibility permissions; while the screen is locked the frontmost app is `loginwindow` and the
+   system's clicks fail, but window screenshots still work, and `nsh test --target macos` runs as unlocked: it is the way
+   to check a macOS change while the screen is locked). iOS simulator: `xcrun simctl io booted screenshot`, `xcrun simctl ui booted appearance dark`.
    Android: `adb exec-out screencap -p`, `adb shell input tap|swipe|text|keyevent` (all work with the screen locked).
    The desktops: `nsh test <entry> --target macos|linux|windows|gpui` with steps on standard input
    (`await app.screenshot("a.png"); await app.press("label:Plan")`) opens the app in the platform's window, acts with
@@ -651,5 +653,3 @@ objects directly. Preserve the existing parallel-agent build and test limits whi
    without a display (`docs/dev/linux.md`). GPUI on Linux: on a rootful Xwayland display of its own started with
    `-shm` (`DISPLAY=:N`, `WEBKIT_DISABLE_DMABUF_RENDERER=1` for web views); screenshots are read from the X server
    (`docs/dev/gpui.md`).
-   Terminal: `nsh-tui-host --bundle … --size 120x40 --script "wait 300; shot screen.txt; key Tab; type 你好; quit"`
-   renders in memory and saves UTF-8 text; coordinates and resize dimensions use cells (`docs/dev/tui.md`).

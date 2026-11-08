@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The dev server serves the page at every path of the app (`/sports/football`) and its files at the root. -->
+<base href="/">
 <title>nsh dev</title>
 <meta name="color-scheme" content="light dark">
 <style>
@@ -245,7 +247,9 @@
         send({ type: "step_done", id: message.id, outcome: player.testStep(message.step) });
         break;
       case "root":
-        // The app is this runtime's own Rust root (a test session's).
+        // The app is this runtime's own Rust root. Outside a test session
+        // `hello` has started it already: it runs once.
+        if (running) break;
         running = { session, version: 0 };
         showStatus("");
         player.runRust();

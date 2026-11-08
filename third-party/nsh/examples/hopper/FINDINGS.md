@@ -12,8 +12,9 @@ workaround here in the same change.
 
 ## By design
 
-- Styled controls (switch, slider, segmented control, stepper, menu, tab bar) are the app's own: NSH ships
-  primitives and capabilities, and the app draws its controls with them (`ui.tsx` and the tab bar in `App.tsx`).
+- Styled controls (switch, slider, segmented control, stepper, menu, tab bar) are the app's own look: the switch
+  and the segmented control are `nsh/base`'s `Switch` and `Tabs` with the app's parts, the others are drawn with
+  NSH's primitives (`ui.tsx` and the tab bar in `App.tsx`).
 
 ## Fixed
 
@@ -26,8 +27,7 @@ workaround here in the same change.
 - `locationX` is relative to the touched view, and there was no `measure()`: `ref.measure()` gives a view's `pageX` /
   `pageY`, and `track` (`ui.tsx`) follows the finger in page coordinates, so the slider's children take touches.
 - No keyboard for signed numbers: `keyboardType="numbers-and-punctuation"` has a minus key (the ± button is gone).
-- `borderColor` could not be animated natively: `borderColor`, `color` and shadows bind to animated values; the
-  switch's knob ring animates.
+- `borderColor` could not be animated natively: `borderColor`, `color` and shadows bind to animated values.
 - QuickJS had no `Intl`: `Intl.NumberFormat` / `DateTimeFormat` and `toLocaleString` are formatted in Rust.
 - No `isPointInPath`: `cx.isPointInPath` / `isPointInStroke` are answered in Rust; the RCS quads and the tank in
   the mass section are hit-tested with paths.

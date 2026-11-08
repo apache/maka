@@ -83,13 +83,6 @@ const open = signal(false);
 `closeOnEscape={false}` keeps it open on Escape and back (`onCancel` still hears them, to ask first);
 `closeOnPressOutside={false}` keeps it open on presses outside.
 
-## A separate anchor
-
-A controlled popover can use `anchor={rowRef}` to follow an element rendered elsewhere, without moving that element
-into `trigger`. The ref is a `ViewRef` in the same root view and takes precedence over the trigger's bounds. Keep the
-anchor mounted while the popover is open; close the popup when its virtualized row retires. The anchor controls
-placement: keyboard focus returns to the actual opener, such as a list's search field.
-
 ## Phones and desktops
 
 A popover is anchored to its trigger on every device: what it shows belongs next to what opened it.
@@ -137,7 +130,6 @@ with inline styles. When the user asks for less motion, it appears and goes at o
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape and the Android back button close it. |
 | `closeOnPressOutside` | `.close_on_press_outside(..)` | `boolean` | `true` | A press outside closes it. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the popup, the box the content is in. |
-| `anchor` | `.anchor(..)` | `ViewRef \| null` | none | An element rendered elsewhere to place it against, before the trigger's bounds. |
 | `popupStartingClass`, `popupStartingStyle` | `.popup_starting_class(..)`, `.popup_starting_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup's look in its first frame, over its own: its transitions run from it. |
 | `popupEndingClass`, `popupEndingStyle` | `.popup_ending_class(..)`, `.popup_ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup's look once closed, over its own: it stays while its transitions run. |
 | `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens it; it is placed against it. While the popover is open its `aria-expanded:` classes and `expandedStyle` apply. |

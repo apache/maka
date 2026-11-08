@@ -1,53 +1,50 @@
-//! Native Shell in a terminal, using the shared engine and Taffy layout.
+//! Native Shell surfaces embedded in a terminal grid.
 //!
-//! Mount batches update a retained surface. Text is measured on the engine
-//! thread in virtual points and rendered as terminal cells. Ratatui owns
-//! buffer differences; an embedding host keeps control of terminal IO.
+//! The embedding app owns the terminal and event loop. Each [`AppView`]
+//! runs an engine, applies complete commits during rendering, and draws
+//! into the area supplied by the app. [`CellTextEngine`] measures on the
+//! same fixed grid that drawing and input use.
 
 mod app;
 mod canvas;
-mod composite;
-mod editor;
-mod fonts;
+mod dialog;
 mod geometry;
+mod gradient;
 mod image;
-mod image_state;
 mod input;
-mod media;
-mod metrics;
-mod motion;
+mod key_scheme;
+mod keyboard;
+mod menu;
+mod mount;
 mod native;
 mod navigation;
-mod net;
-mod protocol;
+mod palette;
+mod perf;
 mod render;
-mod script;
-mod scroll;
-mod selectable_view;
-mod services;
+#[cfg(feature = "run-app")]
+mod run;
+mod scrollbar;
+mod search;
+mod selection;
 mod surface;
 mod text;
-mod worker;
+mod text_input;
+mod view;
 
-pub use crossterm;
-pub use nsh_core::platform::Appearance;
-pub use nsh_engine::{App, Bundle, Limits, Root};
-pub use ratatui;
-pub use ratatui_image;
+pub use nsh_core::platform::{Appearance, Locale};
+pub use nsh_engine::{App, AppError, Bundle, CacheOptions, HostChannel, Limits, Root};
+pub use perf::{FrameMetrics, MeasuredBackend, MeasuredWriter};
 
+#[cfg(feature = "run-app")]
+pub use crate::run::{RunEvent, run_app};
 pub use crate::{
-    app::{AppOptions, AppSource, AppView, AssetBase, init_logging, run_app, set_ui_sets},
-    input::{InputContext, InputEdit},
-    metrics::CellMetrics,
-    native::{
-        ComponentContext, ComponentEvent, ComponentFactory, ComponentResponse, Components,
-        NativeComponent,
+    app::{
+        AccessibleNode, AppOptions, AppView, ColorDepth, InputContext, TerminalCapabilities,
+        WakeCallback,
     },
-    protocol::{ImageProtocol, ProtocolType},
-    services::{
-        AccessibleNode, ClipboardContent, HostServices, ServiceCancellation, ServiceOutput,
-        ServiceRequest, SystemServices,
-    },
-    surface::{Surface, SurfaceEvent},
-    text::TerminalTextEngine,
+    geometry::CellSize,
+    image::{ImageProtocol, ProtocolType},
+    input::{CursorStyle, Handled, Input, Modifiers, MouseButton, MouseInput, MouseKind},
+    native::{ComponentFactory, NativeComponent},
+    text::{CellTextEngine, PreparedText},
 };

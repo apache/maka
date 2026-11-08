@@ -1,7 +1,7 @@
 import { Canvas, type CanvasRenderingContext2D, cleanup, type GestureResponderEvent, Path2D, signal, Text, View } from "nsh";
 import { Animated, createAnimatedValue, Easing, type AnimatedValue } from "nsh";
 import logo from "../logo@2x.png";
-import { alpha, Button, Caption, Card, colors, DemoPage, Figure, finish, hint, isDark, Legend, type Palette, Segmented, Stat } from "../ui";
+import { alpha, Button, Caption, Card, colors, DemoPage, Figure, finish, hint, isDark, Legend, type Palette, Segmented, Stat, terminal } from "../ui";
 
 const TAU = Math.PI * 2;
 const SANS = (size: number, weight = "400") => `${weight} ${size}px system-ui`;
@@ -155,7 +155,7 @@ function Dial() {
           cx.save();
           cx.translate(centerX, cy);
           cx.rotate(angle);
-          cx.shadowColor = isDark() ? "rgba(0,0,0,0.6)" : "rgba(20,20,10,0.3)";
+          cx.shadowColor = isDark() ? "rgba(0,0,0,0.6)" : "rgba(16,20,30,0.3)";
           cx.shadowBlur = 6;
           cx.fillStyle = colors.text;
           cx.beginPath();
@@ -311,6 +311,12 @@ const ridges = days.map((_, d) => {
   return Array.from({ length: 25 }, (_, h) => peaks.reduce((s, p, k) => s + weights[k] * Math.exp(-((h - p) ** 2) / 6), 0.04));
 });
 
+const ridgePeak = Math.max(...ridges.flat());
+
+/** Each day's hue, around the wheel from the theme's citrus. */
+const dayHues = [78, 140, 175, 205, 232, 268, 322];
+const dayColor = (d: number, a = 1) => `hsla(${dayHues[d]}, ${isDark() ? 78 : 62}%, ${isDark() ? 68 : 40}%, ${a})`;
+
 function Ridgeline() {
   const sweep = reveal(1400);
   return (
@@ -322,16 +328,15 @@ function Ridgeline() {
     >
       <Caption label="Gate B, last week" note="Peak 12:00–14:00" />
       <Canvas
-        style={{ height: 210 }}
+        style={{ height: 230 }}
         draw={(cx, { width, height }) => {
           cx.font = SANS(11);
           const left = cx.measureText("Mon").width + 10;
-          const bottom = 18;
-          const step = (height - bottom - 30) / (days.length - 1);
+          const bottom = 22;
+          const amp = 40;
+          const top = amp + 6;
+          const step = (height - bottom - top) / (days.length - 1);
           const x = (h: number) => left + (h / 24) * (width - left);
-          // Peak window and hour labels.
-          dashed(cx, x(12), 0, x(12), height - bottom, colors.border);
-          dashed(cx, x(14), 0, x(14), height - bottom, colors.border);
           cx.fillStyle = colors.faint;
           cx.textBaseline = "alphabetic";
           for (const h of [0, 6, 12, 18, 24]) {
@@ -344,38 +349,48 @@ function Ridgeline() {
           cx.rect(0, 0, sweep.t.mul(width), height);
           cx.clip();
           ridges.forEach((series, d) => {
-            const base = 30 + d * step;
-            const amp = 46;
-            const y = (v: number) => base - v * amp;
+            const base = top + d * step;
+            const y = (v: number) => base - (v / ridgePeak) * amp;
+            // The curve alone: the fill closes it, the line stays open.
+            const curve = () => {
+              cx.moveTo(x(0), y(series[0]));
+              for (let h = 1; h < series.length; h++) {
+                const mx = (x(h - 1) + x(h)) / 2;
+                cx.quadraticCurveTo(x(h - 1), y(series[h - 1]), mx, (y(series[h - 1]) + y(series[h])) / 2);
+              }
+              cx.lineTo(x(24), y(series[24]));
+            };
             cx.beginPath();
-            cx.moveTo(x(0), base);
-            cx.lineTo(x(0), y(series[0]));
-            for (let h = 1; h < series.length; h++) {
-              const mx = (x(h - 1) + x(h)) / 2;
-              cx.quadraticCurveTo(x(h - 1), y(series[h - 1]), mx, (y(series[h - 1]) + y(series[h])) / 2);
-            }
-            cx.lineTo(x(24), y(series[24]));
+            curve();
             cx.lineTo(x(24), base);
+            cx.lineTo(x(0), base);
             cx.closePath();
-            // Occlude the ridge behind, then a low-alpha fill and the line.
+            // Occlude the ridge behind, then a fill that fades to the baseline.
             cx.fillStyle = colors.inset;
             cx.fill();
-            const weekend = d >= 5;
-            cx.fillStyle = weekend ? infoA(0.18) : accentA(0.1 + d * 0.025);
+            // A short fade below the crests, so the curves stay what reads.
+            const fade = cx.createLinearGradient(0, base - amp, 0, base - amp * 0.3);
+            fade.addColorStop(0, dayColor(d, 0.34));
+            fade.addColorStop(1, dayColor(d, 0));
+            cx.fillStyle = fade;
             cx.fill();
-            cx.strokeStyle = weekend ? colors.info : colors.accent;
-            cx.lineWidth = 1.25;
+            cx.strokeStyle = dayColor(d);
+            cx.lineWidth = 1.5;
+            cx.lineJoin = "round";
+            cx.beginPath();
+            curve();
             cx.stroke();
           });
+          // The peak window, over the ridges so it reads as one band.
+          dashed(cx, x(12), 0, x(12), height - bottom, alpha(colors.muted, 0.35));
+          dashed(cx, x(14), 0, x(14), height - bottom, alpha(colors.muted, 0.35));
           cx.restore();
-          cx.fillStyle = colors.muted;
-          days.forEach((day, d) => cx.fillText(day, 0, 30 + d * step - 2));
+          days.forEach((day, d) => {
+            cx.fillStyle = dayColor(d);
+            cx.fillText(day, 0, top + d * step - 2);
+          });
         }}
       />
-      <View style={{ flexDirection: "row", gap: 16 }}>
-        <Legend color={colors.accent} label="Weekday" />
-        <Legend color={colors.info} label="Weekend" />
-      </View>
     </Card>
   );
 }
@@ -602,6 +617,10 @@ function Clock() {
 // ---------------------------------------------------------------------------
 // Path2D: SVG path data, filled or stroked.
 
+/** A glyph's side: a terminal leaves an icon-sized canvas out, so there
+ * it is larger, a block of braille dots with no tile around it. */
+const GLYPH = terminal ? 64 : 30;
+
 const glyphs: { name: string; d: string; color: keyof Palette; stroke?: boolean }[] = [
   { name: "Heart", d: "M12 21s-7-4.35-9.5-8.5C.5 8.5 3 4 7 4c2 0 3.5 1 5 3 1.5-2 3-3 5-3 4 0 6.5 4.5 4.5 8.5C19 16.65 12 21 12 21z", color: "danger" },
   { name: "Star", d: "M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 21 12 17.27 5.82 21 7 14.14l-5-4.87 6.91-1.01z", color: "warn" },
@@ -619,23 +638,27 @@ function Glyphs() {
             return (
               <View style={{ alignItems: "center", gap: 8 }}>
                 <View
-                  style={{
-                    width: 60,
-                    height: 60,
-                    borderRadius: 18,
-                    borderCurve: "continuous",
-                    backgroundColor: colors.raised,
-                    ...finish.raised,
-                    borderWidth: 1,
-                    borderColor: colors.border,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
+                  style={
+                    terminal
+                      ? { alignItems: "center" }
+                      : {
+                          width: 60,
+                          height: 60,
+                          borderRadius: 18,
+                          borderCurve: "continuous",
+                          backgroundColor: colors.raised,
+                          ...finish.raised,
+                          borderWidth: 1,
+                          borderColor: colors.border,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }
+                  }
                 >
                   <Canvas
-                    style={{ width: 30, height: 30 }}
+                    style={{ width: GLYPH, height: GLYPH }}
                     draw={(cx) => {
-                      cx.scale(30 / 24, 30 / 24);
+                      cx.scale(GLYPH / 24, GLYPH / 24);
                       if (glyph().stroke) {
                         cx.strokeStyle = colors[glyph().color];
                         cx.lineWidth = 2.5;
@@ -663,67 +686,106 @@ function Glyphs() {
 // Images, clipping, shadows, compositing, dashes, radial gradients.
 
 function Compositing() {
+  const label = { flex: 1, fontSize: 13, color: colors.muted, textAlign: "center" } as const;
   return (
     <Card icon="image" title="Compositing" subtitle="Clip, shadow, destination-out, dashes">
       <Canvas
-        style={{ height: 120 }}
+        style={{ height: 132 }}
         draw={(cx, { width, height }) => {
           const cy = height / 2;
-          // An image clipped to a circle, with a ring.
+          const shadow = isDark() ? "rgba(0,0,0,0.55)" : "rgba(16,20,30,0.2)";
+          // An image clipped to a disc: larger than the disc, so the clip shows.
+          const c1 = width / 6;
+          cx.save();
+          cx.shadowColor = shadow;
+          cx.shadowBlur = 16;
+          cx.shadowOffsetY = 6;
+          cx.fillStyle = colors.raised;
+          cx.beginPath();
+          cx.arc(c1, cy, 40, 0, TAU);
+          cx.fill();
+          cx.restore();
           cx.save();
           cx.beginPath();
-          cx.arc(46, cy, 42, 0, TAU);
+          cx.arc(c1, cy, 40, 0, TAU);
           cx.clip();
-          cx.fillStyle = colors.raised;
-          cx.fillRect(0, 0, 92, height);
-          cx.drawImage(logo, 10, cy - 36, 72, 72);
+          const disc = cx.createLinearGradient(c1 - 40, cy - 40, c1 + 40, cy + 40);
+          disc.addColorStop(0, colors.raised);
+          disc.addColorStop(1, colors.inset);
+          cx.fillStyle = disc;
+          cx.fillRect(c1 - 40, cy - 40, 80, 80);
+          cx.drawImage(logo, c1 - 46, cy - 46, 92, 92);
           cx.restore();
-          cx.strokeStyle = colors.border;
+          cx.strokeStyle = accentA(0.55);
           cx.lineWidth = 1.5;
           cx.beginPath();
-          cx.arc(46, cy, 42, 0, TAU);
+          cx.arc(c1, cy, 44, 0, TAU);
           cx.stroke();
-          // A shadowed card with a hole punched through (destination-out).
-          const centerX = width / 2;
+          // A ticket with a shadow; its notches and hole are cut out (destination-out).
+          const c2 = width / 2;
           cx.save();
-          cx.shadowColor = isDark() ? "rgba(0,0,0,0.7)" : "rgba(20,20,10,0.25)";
-          cx.shadowBlur = 14;
+          cx.shadowColor = shadow;
+          cx.shadowBlur = 16;
           cx.shadowOffsetY = 6;
-          const g = cx.createLinearGradient(centerX - 46, 0, centerX + 46, height);
-          g.addColorStop(0, colors.accentFill);
-          g.addColorStop(1, "#7fbf3a");
-          cx.fillStyle = g;
+          const paper = cx.createLinearGradient(c2 - 52, cy - 36, c2 + 52, cy + 36);
+          paper.addColorStop(0, colors.accentFill);
+          paper.addColorStop(1, "#7fbf3a");
+          cx.fillStyle = paper;
           cx.beginPath();
-          cx.roundRect(centerX - 46, cy - 40, 92, 80, 16);
+          cx.roundRect(c2 - 52, cy - 36, 104, 72, 14);
           cx.fill();
           cx.restore();
           cx.globalCompositeOperation = "destination-out";
           cx.beginPath();
-          cx.arc(centerX, cy, 18, 0, TAU);
+          cx.arc(c2 + 20, cy - 36, 8, 0, TAU);
+          cx.arc(c2 + 20, cy + 36, 8, 0, TAU);
           cx.fill();
-          cx.globalCompositeOperation = "source-over";
-          // A radial gradient with a dashed outline.
-          const rx = width - 46;
-          const rg = cx.createRadialGradient(rx - 10, cy - 12, 4, rx, cy, 40);
-          rg.addColorStop(0, "#ffe2a8");
-          rg.addColorStop(0.55, colors.warn);
-          rg.addColorStop(1, alpha(colors.danger, 0.2));
-          cx.fillStyle = rg;
           cx.beginPath();
-          cx.arc(rx, cy, 38, 0, TAU);
+          cx.arc(c2 - 16, cy, 13, 0, TAU);
           cx.fill();
-          cx.setLineDash([5, 5]);
-          cx.strokeStyle = colors.warn;
-          cx.lineWidth = 1.5;
+          cx.setLineDash([4, 4]);
+          cx.lineWidth = 2;
           cx.beginPath();
-          cx.arc(rx, cy, 43, 0, TAU);
+          cx.moveTo(c2 + 20, cy - 26);
+          cx.lineTo(c2 + 20, cy + 26);
           cx.stroke();
+          cx.setLineDash([]);
+          cx.globalCompositeOperation = "source-over";
+          // A lit sphere in its glow, a dashed orbit and a small moon.
+          const c3 = (5 * width) / 6;
+          const glow = cx.createRadialGradient(c3, cy, 22, c3, cy, 52);
+          glow.addColorStop(0, alpha(colors.warn, 0.32));
+          glow.addColorStop(1, alpha(colors.warn, 0));
+          cx.fillStyle = glow;
+          cx.beginPath();
+          cx.arc(c3, cy, 52, 0, TAU);
+          cx.fill();
+          const lit = cx.createRadialGradient(c3 - 10, cy - 12, 2, c3, cy, 30);
+          lit.addColorStop(0, "#fff3d6");
+          lit.addColorStop(0.35, "#ffc05c");
+          lit.addColorStop(0.75, "#e8743b");
+          lit.addColorStop(1, "#a93f2c");
+          cx.fillStyle = lit;
+          cx.beginPath();
+          cx.arc(c3, cy, 30, 0, TAU);
+          cx.fill();
+          cx.setLineDash([3, 5]);
+          cx.strokeStyle = alpha(colors.warn, 0.6);
+          cx.lineWidth = 1.25;
+          cx.beginPath();
+          cx.arc(c3, cy, 42, 0, TAU);
+          cx.stroke();
+          cx.setLineDash([]);
+          cx.fillStyle = "#ffe2a8";
+          cx.beginPath();
+          cx.arc(c3 + 42 * Math.cos(-0.7), cy + 42 * Math.sin(-0.7), 4, 0, TAU);
+          cx.fill();
         }}
       />
-      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <Text style={{ fontSize: 13, color: colors.muted }}>Clipped image</Text>
-        <Text style={{ fontSize: 13, color: colors.muted }}>Cut-out</Text>
-        <Text style={{ fontSize: 13, color: colors.muted }}>Radial gradient</Text>
+      <View style={{ flexDirection: "row" }}>
+        <Text style={label}>Clipped image</Text>
+        <Text style={label}>Cut-out</Text>
+        <Text style={label}>Radial gradient</Text>
       </View>
     </Card>
   );
@@ -732,15 +794,42 @@ function Compositing() {
 // ---------------------------------------------------------------------------
 // Touch drawing: each move draws again from JS.
 
+/** "NSH" as strokes, each point a fraction of a letter's box. */
+const SAMPLE: { letter: number; points: [number, number][] }[] = [
+  { letter: 0, points: [[0, 1], [0, 0], [1, 1], [1, 0]] },
+  {
+    letter: 1,
+    points: [
+      [0.95, 0.16], [0.8, 0.05], [0.55, 0], [0.3, 0.02], [0.1, 0.12], [0.05, 0.26], [0.15, 0.4], [0.4, 0.49],
+      [0.7, 0.57], [0.92, 0.7], [0.95, 0.84], [0.8, 0.95], [0.5, 1], [0.22, 0.97], [0.05, 0.84],
+    ],
+  },
+  { letter: 2, points: [[0, 0], [0, 1]] },
+  { letter: 2, points: [[1, 0], [1, 1]] },
+  { letter: 2, points: [[0, 0.5], [1, 0.5]] },
+];
+const samplePoints = SAMPLE.reduce((n, s) => n + s.points.length, 0);
+
 function Sketch() {
   const strokes = signal<[number, number][][]>([]);
+  const sample = signal(true);
   const point = (e: GestureResponderEvent): [number, number] => [e.locationX, e.locationY];
   return (
     <Card
       icon="gestures"
       title="Sketch"
       subtitle={hint("Touch → draw from JS", "Drag → draw from JS")}
-      right={<Button label="Clear" variant="secondary" disabled={strokes().length === 0} onPress={() => strokes.set([])} />}
+      right={
+        <Button
+          label="Clear"
+          variant="secondary"
+          disabled={!sample() && strokes().length === 0}
+          onPress={() => {
+            sample.set(false);
+            strokes.set([]);
+          }}
+        />
+      }
     >
       <Canvas
         style={{ height: 200 }}
@@ -762,7 +851,7 @@ function Sketch() {
           for (let x = 8; x < width; x += 16) {
             for (let y = 8; y < height; y += 16) cx.fillRect(x - 0.75, y - 0.75, 1.5, 1.5);
           }
-          if (strokes().length === 0) {
+          if (!sample() && strokes().length === 0) {
             cx.font = SANS(14);
             cx.fillStyle = colors.faint;
             cx.textAlign = "center";
@@ -773,6 +862,29 @@ function Sketch() {
           cx.lineWidth = 3;
           cx.lineCap = "round";
           cx.lineJoin = "round";
+          if (sample()) {
+            const w = 50;
+            const h = 72;
+            const gap = 24;
+            const x0 = (width - (3 * w + 2 * gap)) / 2;
+            const y0 = (height - h) / 2;
+            for (const s of SAMPLE) {
+              const at = ([x, y]: [number, number]): [number, number] => [x0 + s.letter * (w + gap) + x * w, y0 + y * h];
+              const pts = s.points.map(at);
+              cx.beginPath();
+              cx.moveTo(pts[0][0], pts[0][1]);
+              // The S is a curve through its points; the rest are straight lines.
+              if (pts.length > 4) {
+                for (let i = 1; i < pts.length - 1; i++) {
+                  cx.quadraticCurveTo(pts[i][0], pts[i][1], (pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2);
+                }
+                cx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+              } else {
+                for (const [x, y] of pts.slice(1)) cx.lineTo(x, y);
+              }
+              cx.stroke();
+            }
+          }
           for (const s of strokes()) {
             cx.beginPath();
             s.forEach(([x, y], i) => (i === 0 ? cx.moveTo(x, y) : cx.lineTo(x, y)));
@@ -780,7 +892,10 @@ function Sketch() {
           }
         }}
       />
-      <Caption label="Strokes" note={`${strokes().length} · ${strokes().reduce((n, s) => n + s.length, 0)} points`} />
+      <Caption
+        label="Strokes"
+        note={`${strokes().length + (sample() ? SAMPLE.length : 0)} · ${strokes().reduce((n, s) => n + s.length, 0) + (sample() ? samplePoints : 0)} points`}
+      />
     </Card>
   );
 }

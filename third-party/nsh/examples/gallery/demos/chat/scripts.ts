@@ -49,7 +49,7 @@ export type Scenario = {
   steps: Step[];
 };
 
-export const photo = "https://picsum.photos/seed/harbor/640/480";
+export const photo = "https://pbs.twimg.com/media/HS6UIKjWcAAIFCz?format=jpg&name=small";
 
 const guide = `## Rendering a long list
 A list only keeps the rows **near the viewport** alive; the rest exist as *data*. Three ideas make it fast:

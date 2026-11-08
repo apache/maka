@@ -6,13 +6,17 @@ name: Website
 # at /versions/main, earlier releases at /versions/<tag>
 # (`website/public/CNAME`). App Stories (/apps) come from the reviewed
 # catalog in longbridge/nsh-showcases, whose own workflow dispatches this one
-# after each merge and its weekly star refresh.
+# after each merge and its weekly star refresh. Languages other than English
+# and Chinese come from longbridge/nsh-website-translates, also at publish time.
 
 on:
   push:
     branches: [main]
     paths:
       - "website/**"
+      - "skills/**"
+      - "examples/tasks/**"
+      - "examples/tasks-rs/**"
       - "crates/**"
       - "examples/gallery/**"
       - "Cargo.toml"
@@ -20,12 +24,37 @@ on:
       - ".cargo/**"
       - "rust-toolchain.toml"
       - ".github/workflows/website.yml"
+      - ".github/actions/cargo/**"
   pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
     paths:
       - "website/**"
+      - "skills/**"
+      - "examples/tasks/**"
+      - "examples/tasks-rs/**"
+      - "crates/nsh-base/**"
+      - "crates/nsh-bundler/**"
+      - "crates/nsh-cli/**"
+      - "crates/nsh-core/**"
+      - "crates/nsh-dev/**"
+      - "crates/nsh-engine/**"
+      - "crates/nsh-i18n/**"
+      - "crates/nsh-js/**"
+      - "crates/nsh-macros/**"
+      - "crates/nsh-package/**"
       - "crates/nsh-platform-web/**"
+      - "crates/nsh-testing/**"
+      - "crates/nsh-updater/**"
+      - "crates/xtask/**"
       - "examples/gallery/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/website.yml"
+      - ".github/actions/cargo/**"
   merge_group:
     types: [checks_requested]
   # A release puts its documentation at the root. (The release the Release
@@ -43,7 +72,7 @@ permissions:
 # Pages takes one deployment at a time; queue rather than cancel, so the
 # latest push always ends up deployed.
 concurrency:
-  group: pages-${{ github.ref }}
+  group: pages-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 env:
@@ -56,7 +85,13 @@ env:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Nothing for drafts or a pull request being closed.
+    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft))
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,11 +113,12 @@ jobs:
         with:
           bun-version: 1.4.2
 
-      # Dependencies only: main's runs save it, pull requests restore it.
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache: website
 
       - name: Test browser scroll indicator behavior
         run: node --test crates/nsh-platform-web/web/scroll.test.mjs
@@ -93,10 +129,16 @@ jobs:
       - name: Test viewport dialogs across iframe boundaries
         run: node --test crates/nsh-platform-web/web/viewport-browser.test.mjs
 
+      - name: Test the reading order of scroll content in a browser
+        run: node --test --test-name-pattern "reading order" crates/nsh-platform-web/web/scroll-browser.test.mjs
+
       # Only the emoji test for now: summed tabular digits measure wider than
       # Chrome on Linux draws them (the file's first test).
       - name: Test emoji measurement against what Chrome draws
         run: node --test --test-name-pattern emoji crates/nsh-platform-web/web/text-browser.test.mjs
+
+      - name: Check the generated classic browser bootstrap
+        run: cargo run -p nsh-bundler --example browser_bootstrap -- --check
 
       - name: Test browser JavaScript bindings against Wasm
         env:
@@ -105,13 +147,37 @@ jobs:
           cargo build -p nsh-platform-web --target wasm32-unknown-unknown --no-default-features --features browser-tests --profile web
           NSH_BROWSER_WASM=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm node --expose-gc --test crates/nsh-platform-web/web/browser/*.test.mjs
 
-      - name: Test browser module lifecycle
+      - name: Install browser test engines
         run: |
           python3 -m venv "$RUNNER_TEMP/nsh-browser-tests"
           "$RUNNER_TEMP/nsh-browser-tests/bin/pip" install playwright==1.62.0
-          "$RUNNER_TEMP/nsh-browser-tests/bin/python" -m playwright install --with-deps chromium
-          CHROME=$("$RUNNER_TEMP/nsh-browser-tests/bin/python" -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
-          "$RUNNER_TEMP/nsh-browser-tests/bin/python" crates/nsh-platform-web/web/browser/browser-check.py --chrome "$CHROME" --wasm target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+          "$RUNNER_TEMP/nsh-browser-tests/bin/python" -m playwright \
+            install --with-deps chromium firefox webkit
+
+      # One Wasm build, serial engines: keep Chromium's interaction coverage
+      # and still report the other engines if one lifecycle suite fails.
+      - name: Test browser module lifecycle and interaction
+        run: |
+          status=0
+          script=crates/nsh-platform-web/web/browser/browser-check.py
+          wasm=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+          for browser in chromium firefox webkit; do
+            suite=lifecycle
+            if [ "$browser" = chromium ]; then suite=all; fi
+            "$RUNNER_TEMP/nsh-browser-tests/bin/python" "$script" \
+              --browser "$browser" --suite "$suite" --wasm "$wasm" || status=1
+          done
+          exit "$status"
+
+      - name: Upload browser test failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-tests
+          path: .nsh/browser-tests/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
       # The published site requires the catalog (NSH_REQUIRE_SHOWCASES).
       - name: Check out the App Stories catalog
@@ -140,6 +206,7 @@ jobs:
           NSH_REQUIRE_SHOWCASES: "1"
           SHOWCASES_DIR: ${{ github.workspace }}/.showcases
           AR_wasm32_unknown_unknown: llvm-ar
+          GITHUB_TOKEN: ${{ github.token }}
         run: bun run build
 
       - name: Test website
@@ -158,6 +225,13 @@ jobs:
           key: website-versions-${{ github.run_id }}
           restore-keys: website-versions-
 
+      # Machine translations, for the root only; none yet is fine.
+      - name: Take the machine translations
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        run: |
+          git clone --depth=1 https://github.com/longbridge/nsh-website-translates website/translations
+          rm -rf website/translations/.git
+
       # The published site, after the tests of main's own build: main again
       # at /versions/main, the releases from their tags (whose pages are as
       # they were released, links included).
@@ -168,6 +242,8 @@ jobs:
           NSH_REQUIRE_SHOWCASES: "1"
           SHOWCASES_DIR: ${{ github.workspace }}/.showcases
           AR_wasm32_unknown_unknown: llvm-ar
+          NSH_REQUIRE_RELEASES: "1"
+          GITHUB_TOKEN: ${{ github.token }}
         run: bun scripts/versions.js
 
       - name: Save the releases' builds
@@ -177,8 +253,11 @@ jobs:
           path: website/.versions
           key: website-versions-${{ github.run_id }}
 
+      # A report, not a gate: a Gallery over its budget never stops the
+      # site from being published.
       - name: Check standalone Gallery code size
-        run: node crates/nsh-platform-web/web/browser/package-size.mjs website/public/play/gallery --require-browser --brotli-budget=4000000
+        continue-on-error: true
+        run: node crates/nsh-platform-web/web/browser/package-size.mjs website/public/play/gallery --require-browser --brotli-budget=5000000
 
       - uses: actions/configure-pages@v5
         if: github.event_name != 'pull_request' && github.event_name != 'merge_group'

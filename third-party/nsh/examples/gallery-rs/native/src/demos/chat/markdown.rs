@@ -8,7 +8,7 @@
 //! highlights it and offers Copy.
 
 use nsh_base::{MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts, text_view};
-use nsh_core::{ListContentStyle, element::StyleRefinement, prelude::*};
+use nsh_core::{element::StyleRefinement, prelude::*};
 
 use super::parts::caret;
 use crate::ui::colors;
@@ -50,10 +50,7 @@ pub(crate) fn markdown(
             TextViewCodeAction::new("copy").with_label("Copy code"),
         ])
         .streaming_caret(when(streaming, caret))
-        .content_style(ListContentStyle {
-            row_gap: px(12.0),
-            ..ListContentStyle::default()
-        })
+        .gap_3()
         .text_size(px(15.0))
         .line_height(px(22.0))
         .text_color(colors::TEXT)

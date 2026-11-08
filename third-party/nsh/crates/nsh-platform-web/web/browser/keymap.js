@@ -7,7 +7,7 @@ export function createKeymap(invoke, reactive, dom, platform, wake, hot) {
     try { const result = invoke(op, args); wake(); return result; }
     catch (error) { throw new TypeError(error.message); }
   };
-  const send = list => call(451, [list.map(e => [e.text, e.id, e.when, e.repeat]), !!platform.appleKeyboard]);
+  const send = list => call(451, [list.map(e => [e.text, e.id, e.when, e.repeat, e.passThrough]), !!platform.appleKeyboard]);
   dom.rootProp("onKeyCommand", id => {
     const entry = entries.find(entry => entry.id === id);
     if (entry) entry.handler({ keystroke: entry.text });
@@ -22,12 +22,12 @@ export function createKeymap(invoke, reactive, dom, platform, wake, hot) {
         pairs = [[String(first), handler]];
       }
       if (options != null && typeof options !== "object") throw new TypeError("keymap.bind: options must be an object");
-      const when = options?.when, repeat = !!options?.repeat;
+      const when = options?.when, repeat = !!options?.repeat, passThrough = !!options?.passThrough;
       if (when !== undefined && when !== "always" && when !== "notEditing") throw new TypeError("keymap.bind: when must be always or notEditing");
       const added = pairs.map(([text, handler]) => {
         if (typeof handler !== "function") throw new TypeError(`keymap.bind: the handler of ${JSON.stringify(text)} is not a function`);
         if (next >= 0xffffffff) throw new RangeError("shortcut IDs exhausted");
-        return { text, handler, id: next++, when, repeat };
+        return { text, handler, id: next++, when, repeat, passThrough };
       });
       const updated = [...entries, ...added];
       send(updated); entries = updated;

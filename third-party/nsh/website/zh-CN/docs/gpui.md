@@ -23,7 +23,6 @@ GPUI 用自己方式绘制的地方，见[差异](#差异)。
 - **文字在引擎线程上排版**，使用 GPUI 的文字系统（应用自己的字体），由 NSH 断行；主线程只绘制字形。
 - **每次提交一次跳转。** 引擎运行在自己的线程上；每次提交是发往 GPUI 主线程的一个闭包，由它通知视图重绘。
 - **输入**来自 GPUI 的鼠标、滚动、按键和输入法事件；命中测试、按压、响应者系统、滚动和文本编辑与 Windows 后端是同一套逻辑。
-- **滚动条**在静止时保持低对比度可见，在滚动或悬停时变亮，方便找到可拖动的滑块。
 
 ## 环境要求
 
@@ -145,7 +144,8 @@ view.load(App::Js(Bundle::source(code)));
 - **Web 视图**是位于 NSH 在该位置所绘制一切内容之上的原生视图。Linux 上需要 X11（见[环境要求](#环境要求)）；在 Xwayland
   下页面一直是黑的（日志中有 "Failed to create GBM buffer"）时，请用 `WEBKIT_DISABLE_DMABUF_RENDERER=1` 运行应用。macOS 和
   Windows 上裁剪祖先不会裁剪它们，加载失败也不会报告 `onError`。不支持 `baseUrl`、`scrollable` 和
-  `allowsBackForwardNavigationGestures`。
+  `allowsBackForwardNavigationGestures`。`incognito` 网页视图保存页面数据的方式与该系统自己的后端相同
+  （见[网站数据](./web-view-and-video.md#网站数据)）。
 - **无障碍**通过 AccessKit 实现：读屏软件在所有平台上都能激活、聚焦、设置值并把元素滚动到可见；自定义操作和上下文菜单操作
   尚未传递。
 

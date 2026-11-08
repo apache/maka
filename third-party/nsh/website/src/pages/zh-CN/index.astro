@@ -3,16 +3,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 import Nav from '../../components/Nav.astro';
 import Home from '../../components/Home.astro';
 import SiteFooter from '../../components/SiteFooter.astro';
+import { homeAlternates, homeCopy, homeLanguages } from '../../lib/home';
 import { url } from '../../lib/site';
+
+const { copy } = homeCopy('zh-CN');
 ---
 
-<BaseLayout
-  lang="zh-CN"
-  title="Native Shell — 一次构建，全平台 Native | Rust 跨平台 UI 框架"
-  description="Native Shell 是 Rust First 的全平台 Native UI 框架：一套代码构建 iOS、Android、macOS、Windows、Linux 和 Web 应用，每个平台都使用系统自己的界面与交互。"
-  alternates={{ en: '/', 'zh-CN': '/zh-CN' }}
->
-  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('')} />
+<BaseLayout lang="zh-CN" title={copy.title} description={copy.description} alternates={homeAlternates()}>
+  <Nav lang="zh-CN" currentPath={Astro.url.pathname} langHref={url('')} languages={homeLanguages()} />
   <Home lang="zh-CN" />
   <SiteFooter lang="zh-CN" />
 </BaseLayout>

@@ -48,7 +48,7 @@ view()
 | `.label(..)` | `accessibilityLabel` | `string` | What screen readers read, instead of the texts inside. |
 | `.hint(..)` | `accessibilityHint` | `string` | What activating the element does, read after a pause. |
 | `.role(..)` | `role` | `AccessibilityRole` | What the element is. |
-| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | Its state: disabled, selected, checked, busy, expanded, pressed, current. `selected` also applies the selected style, `checked` the checked style when true and the indeterminate style when `"mixed"`, `pressed` the pressed style when true. |
+| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | Its state: disabled, selected, checked, busy, expanded, pressed, current, has popup. `selected` also applies the selected style, `checked` the checked style when true and the indeterminate style when `"mixed"`, `pressed` the pressed style when true. |
 | `.accessibility_level(..)` | `accessibilityLevel` | `number` | The level of a heading (1 the top), the depth of a tree item (1 at the top). |
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | The value of a range or textual element. |
 | | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
@@ -134,7 +134,7 @@ view()
 </View>
 ```
 
-The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent> }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time" }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
+The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup? }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step; `hasPopup` marks the trigger of a popup, a menu or a list (ARIA's `aria-haspopup`), whose `expanded` says whether it is open, where an `expanded` element without it is a disclosure that shows its content in place (`Popover`, `Menu`, `HoverCard`, `Select`, `Combobox` and `DatePicker` set it on their triggers). `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
 
 ## Actions
 

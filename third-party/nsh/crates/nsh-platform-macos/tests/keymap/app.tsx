@@ -18,7 +18,7 @@
  */
 
 import { effect, Input as NativeInput, keymap, mount, signal, Text, View, type ViewRef } from "nsh";
-import { Input, type InputRef } from "nsh/base";
+import { Input } from "nsh/base";
 
 function App() {
   const card = signal<ViewRef | null>(null);
@@ -29,17 +29,6 @@ function App() {
   const interrupts = signal(0);
   const nativeText = signal("");
   const nativeCaret = signal(false);
-  const limit = signal<ViewRef | null>(null);
-  let limited: InputRef | null = null;
-  let field: InputRef | null = null;
-  const clip = () =>
-    limited?.replaceRange({
-      start: 0,
-      end: 2,
-      text: "WXYZ",
-      expectedText: "abcdef",
-      expectedSelection: { start: 6, end: 6 },
-    });
   effect(() => {
     const within = vault();
     if (within)
@@ -49,20 +38,7 @@ function App() {
         fallback: true,
       });
   });
-  effect(() => {
-    const within = limit();
-    if (within) return keymap.bind("ctrl+g", clip, { when: "always", within });
-  });
-  const clear = () => {
-    const end = text().length;
-    field?.replaceRange({
-      start: 0,
-      end,
-      text: "",
-      expectedText: text(),
-      expectedSelection: { start: end, end },
-    });
-  };
+  const clear = () => text.set("");
   effect(() => {
     const within = card();
     if (!within) return;
@@ -77,7 +53,7 @@ function App() {
     <View ref={(node) => card.set(node)}>
       <Input
         testID="inside"
-        ref={(node) => { field = node; }}
+        value={text()}
         style={{ height: 40 }}
         onChange={({ value }) => text.set(value)}
       />
@@ -85,14 +61,6 @@ function App() {
     <Input testID="outside" style={{ height: 40 }} />
     <View ref={(node) => vault.set(node)}>
       <Input testID="masked" masked style={{ height: 40 }} />
-    </View>
-    <View ref={(node) => limit.set(node)}>
-      <Input
-        testID="limited"
-        maxLength={6}
-        ref={(node) => { limited = node; }}
-        style={{ height: 40 }}
-      />
     </View>
     <Text>{`escapes: ${escapes()}, moves: ${moves()}`}</Text>
     <Text>{`interrupts: ${interrupts()}`}</Text>

@@ -170,10 +170,12 @@ options as the test gives them: one the target's platform cannot honor makes `op
 | `clipboard` | empty | The text on the clipboard at the start. |
 | `colorScheme` | `"light"` | The system's appearance: `"light"` or `"dark"` (`colorScheme()`, `dark:` classes). |
 | `locale` | `"en-US"` | The device's locale, a BCP 47 tag (`locale()`, `Intl`'s default). |
+| `localeSettings` | the locale's, in UTC | The user's locale settings (`localeSettings()`), the ones it names over the locale's: `languages` (BCP 47 tags, most preferred first; `[locale]`), `timeZone` (an IANA name; `"UTC"`), `hourCycle` (`"h12"`, `"h23"`, `"h11"` or `"h24"`), `firstDayOfWeek` (1 for Monday to 7 for Sunday), `measurementSystem` (`"metric"`, `"us"` or `"uk"`) and `temperatureUnit` (`"celsius"` or `"fahrenheit"`), the last four the locale's region's. A time zone names the zone: local times, `Date`'s and `Intl`'s, stay the machine's, and so does the zone `Intl` names. |
 | `reducedMotion` | `false` | The user asked for less motion (`reduceMotion()`). |
 | `platform` | `"ios"` | The platform the app runs as headless: `"ios"`, `"android"`, or a desktop's, `"macos"`, `"windows"`, `"linux"`, or `"web"` in the desktop idiom (`platform.os`, `ios={{…}}` / `android={{…}}` / `desktop={{…}}` props, keyboard shortcuts). With `--target`, the app runs as the target's platform: a desktop's `platform` on any desktop and the web, always as a desktop (in the browser in the desktop idiom at any width, `platform.os` staying `"web"`), `"ios"` and `"android"` on their own. |
 | `clock` | the system's | A manual clock, whose time moves only as the test moves it: `{}`, or `{ time }` to start at a `Date` (or milliseconds since the Unix epoch). See [Controlling time](#controlling-time). |
 | `host` | none | The embedding app's part, which the test plays: `{ params, handlers }`. See [Playing the host app](#playing-the-host-app). |
+| `url` | none | The link that launched the app: `UrlScheme.on("open")` gets it when the app claims its scheme (`nsh.json` `schemes`), as from the system ([UrlScheme](../modules/nsh.md#urlscheme)). Headless runs only. |
 
 ### Playing the host app
 
@@ -357,7 +359,8 @@ prefixes arrive.
 (JavaScript's classes, groups, anchors and quantifiers, matched in linear time; flags `i`, `m` and `s`). ` >> ` looks
 inside what the part before matched (`id:cart >> role:button[Remove]`), and `nth=<n>` keeps one of the matches, from 0
 (`text:Delete >> nth=1`). A selector finds the views a user would look at first: in the top modal, then on screen,
-and of a navigation stack only the top screen. It matches what the user sees: views with an area, outside `visibility: hidden`, inside the window and
+and of a navigation stack only the top screen; the content of a scroll view or a list comes in the order it is on
+screen, top to bottom (left to right in a horizontal one), as Tab and screen readers go through it. It matches what the user sees: views with an area, outside `visibility: hidden`, inside the window and
 the views that clip them (`overflow: hidden`), or anywhere in the content of a scroll view the user can scroll, which
 scrolling brings in (`opacity` and transforms aside, as in Playwright). A step that acts on a view (`press`, `type`, `clear`, `submit`, `scroll`, `longPress`) needs exactly
 one: a selector matching several fails the step, and the error says how to narrow it.
@@ -376,7 +379,7 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.menu()` | The actions of the context menu the app shows (`Menu.popup`): `label` (a submenu's after its own, `"Share > Mail"`), `disabled`, and `checked` for a checkable item; `null` when none is open. |
 | `await app.chooseMenuItem(label)` | Chooses the open context menu's action, as a click on it does: the app hears `onMenu` (its `onSelect` runs), then the menu closes. Rejects when the item is disabled or missing. |
 | `await app.closeMenu()` | Closes the open context menu with nothing chosen, as Escape does. |
-| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles) and Return or Space presses the view it is on, else the focused input takes a character, Backspace or the return key, else Escape goes back. |
+| `await app.keyboard.press(keys)` | Presses a key with its modifiers, as `keymap` names it (`"mod+k"`, `"shift+/"`, `"escape"`; `mod` is the platform's command key), on a hardware keyboard, on every platform (phones and tablets have one too): the app's shortcut of it hears it (`keymap.bind`, `onKeyCommand`), else on macOS and the web Tab and Shift+Tab move the keyboard focus between the inputs and the views that take presses (`onFocus`, `onBlur`, `focus:` styles) and Return or Space presses the view it is on, and on the web (`platform: "web"`) Shift+F10 asks it for its context menu (`onContextMenu` with `pointerType: null`), else the focused input takes a character, Backspace or the return key, else Escape goes back. |
 | `await app.keyboard.down(keys)` / `up(keys)` | Holds modifier keys (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`, `"meta"`, joined by `+`) down until `up`: the presses, drags and hovers meanwhile carry them, as a Mod-click or a Shift-drag does. Headless and on Linux for now. |
 | `await app.dragAndHold(selector, by)` / `app.drop()` | Drags as `drag` does and keeps the finger down until `drop()`, which lifts it where it is: the steps between look at the screen mid-drag (a drag preview, a drop line). Headless and on Linux for now. |
 | `await app.dropFiles(selector, uris)` | Drops local files (`file:` URLs, as a file manager drags them) on the middle of the view: it, or the nearest view around it listening, hears `onFileDrop`. Desktops, headless and on Linux for now. |
@@ -391,23 +394,31 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.value(selector)` | The text of an input, `null` when none matches. |
 | `app.spanStyle(selector)` | The first matched character’s resolved style, headless and on every `--target`: `color`, optional `backgroundColor`, `fontSize`, `fontWeight`, `italic`, `underline`, and `lineThrough`. Colors are `#rrggbbaa`; sizes are in points. |
 | `app.storage()` | What the app's storage holds now. |
-| `await app.back()` | Goes back as the user does (a header's back button, swiping a sheet down): the innermost stack of the newest modal, else of the screen, pops its top screen (`onDismiss`), or asks it (`onBackRequest`) when it has `preventBack`; without one, the newest modal asks to close (`onRequestClose`). Rejects when there is nothing to go back from. |
+| `await app.back()` | Goes back as the user does (a header's back button, swiping a sheet down): the innermost stack of the newest modal, else of the screen, that is laid out with a size (not in a tab laid out at no size) pops its top screen (`onDismiss`), or asks it (`onBackRequest`) when it has `preventBack`; without one, the newest modal asks to close (`onRequestClose`). Rejects when there is nothing to go back from. |
 | `app.onDialog(handler)` | Answers the dialogs the app shows from now on (`Alert.alert`, action sheets): `handler` gets the dialog (`title`, `message`, `buttons`, `cancelable`, `sheet`) and returns the text of the button to press, or `null` to close it without one. |
 | `app.dialogs()` | The dialogs the app showed, in order. |
-| `app.onPick(handler)` | Answers the picks the app asks for from now on (`Picker.pickImages`): `handler` gets what the pick asks (`multiple`, `limit`, `maxDimension`, `quality`, `format`) and returns the files the user picks (`{ name, type?, data: Uint8Array }`, given to the app as they are), or `null` to cancel. Without a handler, picks are cancelled. Headless runs. |
+| `app.onPick(handler)` | Answers the picks the app asks for from now on (`Picker.pickImages`, `Picker.pickFiles`): `handler` gets what the pick asks (`kind`: `"images"` or `"files"`, `multiple`, `limit`, `maxDimension`, `quality`, `format`, `filters`) and returns the files the user picks (`{ name, type?, data: Uint8Array }`, given to the app as they are), or `null` to cancel. Without a handler, picks are cancelled. Headless runs. |
 | `app.picks()` | The picks the app asked for, in order. |
 | `app.hear(text)` | The user says `text` into the running speech session (`Speech.start`): its `result` reports `text` as the whole transcript so far. Headless runs. |
 | `app.endSpeech(error?)` | Ends the running speech session: with `error` (`"no-speech"`, `"network"`, ...) it fails, else a last final result and `end` come, `no-speech` when nothing was heard. Headless runs. |
 | `app.speechRequests()` | The speech sessions the app started, in order: `lang` (`null` for the user's) and `interim`. |
+| `app.audio()` | What the app asked of the speaker (`Sound`, `AudioPlayer`), in order: `command` (`"load"`, `"play"`, `"stop"`, `"unload"`, `"open"`, `"preload"`, `"resume"`, `"pause"`, `"seek"`, `"set"`, `"close"`), `src`, and `volume`, `rate`, `position` where they apply. Headless runs. |
+| `app.endAudio()` | The players playing reach their end (`end`; those that loop start again). Headless runs. |
 | `app.clipboard()` | The text on the clipboard now, `null` when it holds none. |
 | `app.requests()` | The requests the app made, in order: `method`, `url`, `headers`, `body`. |
 | `await app.host.send(name, data?)` | Sends an event of the host app's to the app (`host.on`), then waits until it is quiet. See [Playing the host app](#playing-the-host-app). |
 | `app.host.calls()`, `app.host.posts()` | The app's calls and posts that `open`'s `host.handlers` got, in order: `name`, `data`. |
 | `app.openedUrls()` | The URLs the app opened (`openUrl`), in order: recorded, never opened. |
+| `await app.openWithUrl(url)` | The system hands the app a link that opens it, as when the user opens one while it runs (`UrlScheme.on("open")`; a link of a scheme the app does not claim is dropped, as on a device), then waits until it is quiet. Headless runs only. |
 | `await app.setViewport(width, height)` | Resizes the viewport, as rotating the device or resizing a window does (`windowSize()`). |
 | `await app.setColorScheme(scheme)` | Switches the system's appearance to `"light"` or `"dark"`, as the user does. |
 | `await app.setLifecycle(state)` | Moves the app to `"background"`, `"inactive"` or `"active"`, as the system does when the user leaves it, switches to another app or window and comes back (`lifecycle()`). Headless runs only. |
-| `await app.screenshot(path?)` | A picture of the app's window as a PNG (a `Uint8Array`), also saved at `path` on this machine when given (relative to the current directory). Only a real platform draws the app: see [On a real platform](#on-a-real-platform). |
+| `await app.setLocaleSettings(settings)` | Changes the locale settings `settings` names (`{ hourCycle: "h23", timeZone: "Asia/Tokyo" }`; also `languages`, `firstDayOfWeek`, `measurementSystem` and `temperatureUnit`, as `open`'s `localeSettings` takes them), as when the user changes the system's or travels; the others stay (`localeSettings()`). Headless runs only. |
+| `await app.screenshot(path?)` | A picture of the app as a `Uint8Array`: PNG of its window on graphical targets, UTF-8 Cell JSON on `tui`, also saved at `path` on this machine when given (relative to the current directory). Only a real platform draws the app: see [On a real platform](#on-a-real-platform). |
+| `app.window(id)` | A window of the app on a desktop, by the id the app gave it (`"main"`: the main window). Headless runs play a desktop's windows: one display, each window opening where it asks to be, focused unless it is a panel or asks not to be. |
+| `app.window(id).state()` | The window's state as the platform reports it to the app (`WindowState`: `mode`, `minimized`, `visible`, `focused`, `bounds`, `contentBounds`, `display`), `null` while it is not open. |
+| `await app.window(id).pressClose()` | Presses the window's close button as the user does: the window reports the press (`onClosePress`, reason `"closeButton"`) and closes when its `closeOnPress` lets it. |
+| `await app.window(id).screenshot(path?)` | A picture of the window's content as a `Uint8Array` (PNG), as `app.screenshot` takes of the main window, also saved at `path` when given. Only a real platform draws the app. |
 
 A step resolves once the app rendered nothing for 100 ms and no native animation runs that ends by itself (2 s at
 most, for apps that render all the time; on a manual clock, also 2 s of the app's time), so what it changed is on
@@ -428,9 +439,10 @@ a test matches the code:
 |---|---|
 | `ERR_NSH_TEST_NOT_FOUND` | Nothing on screen matches the selector, or the open menu has no such item. |
 | `ERR_NSH_TEST_DISABLED` | The view the selector names is disabled (a scroll view the user cannot scroll, a disabled menu item). |
+| `ERR_NSH_TEST_COVERED` | Another view is drawn over the one `press` names and would take a finger there (an overlay over a button, a bar over a row scrolled under it). |
 | `ETIMEDOUT` | `waitFor` or `waitUntil` ran out of time, or the app rendered nothing after `open`. |
 | `ERR_NSH_TEST_NO_BACK` | `back()` found nothing to go back from. |
-| `ERR_NSH_TEST_UNSUPPORTED` | `open` with `--target` was given an option the target's platform cannot honor: `width` or `height` on iOS and Android, a phone's `platform` on a desktop or the web, a desktop's or the other phone's on iOS or Android, `host.handlers`. The message names it. |
+| `ERR_NSH_TEST_UNSUPPORTED` | `open` with `--target` was given an option the target's platform cannot honor: `width` or `height` on iOS and Android, a phone's `platform` on a desktop or the web, a desktop's or the other phone's on iOS or Android, `host.handlers`, `url`. The message names it. |
 
 ```tsx
 await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
@@ -457,8 +469,9 @@ that only a real platform can do:
 - **The app runs under its capabilities**: what its `nsh.json` declares in `capabilities` is enforced as on a device,
   so what it does not declare is refused.
 - **URLs are recorded**: what the app opens is reported opened, and `app.openedUrls()` lists it.
-- **Picks are answered**: with the test's files (`onPick`), else cancelled, so `Picker.pickImages` resolves `[]`.
+- **Picks are answered**: with the test's files (`onPick`), else cancelled, so `Picker.pickImages` and `Picker.pickFiles` resolve `[]`.
 - **Speech is the test's**: `Speech.available()` resolves `true`, a session starts at once and hears what `hear` says.
+- **Sound plays to a fake speaker**: sounds decode as WAV (their length from the header; other bytes fail with `decode`), players play a minute of their source at once and end at `endAudio()`.
 - **Modals show at once**: `onShow` comes when one is presented.
 - **Images are not loaded**: no `onLoad` or `onError` comes, and `Image.getSize` and `Image.prefetch` reject.
 - **What only a real platform answers fails the step**: an image or files on the clipboard.
@@ -523,7 +536,7 @@ A failing check says what it got and what it expected, written as JS would write
 
 ### On a real platform
 
-`nsh test --target macos` (or `linux`, `windows`, `gpui`, `web`, `ios`, `android`) runs the same tests on the platform's development host instead of headless:
+`nsh test --target macos` (or `linux`, `windows`, `gpui`, `tui`, `web`, `ios`, `android`) runs the same tests on the platform's development host instead of headless:
 each `open` starts the app in a window of its own, with a fresh data directory, and the steps act with the platform's
 own input at the views their selectors name, as Playwright does in a browser:
 
@@ -537,7 +550,7 @@ own input at the views their selectors name, as Playwright does in a browser:
   they find the same views;
 - dialogs are the platform's own: `app.dialogs()` reads them, and answering one (`onDialog`, or its cancel button
   when the test says nothing) presses its button;
-- `app.screenshot(path)` takes a picture of the window.
+- `app.screenshot(path)` takes a picture of the window, `app.window(id).screenshot(path)` of another window of the app.
 
 ```sh
 nsh test --target macos                       # the app's tests in macOS windows
@@ -547,6 +560,7 @@ nsh test --target ios                         # in an iOS simulator
 nsh test --target android                     # on the Android device or emulator adb lists first
 nsh test --target gpui                        # in GPUI windows (macOS, Windows, Linux)
 nsh test --target web                         # in a headless Chrome, Edge or Chromium
+nsh test --target tui                         # in an in-memory terminal
 nsh test tests/form.test.tsx --target macos   # one file
 ```
 
@@ -558,19 +572,28 @@ the platform shows moves it a frame (1/60 s), so the app's time passes while it 
 `delay`, take real time. The app's requests come to the test as they do headless: `network` routes answer them,
 a request no route matches fails, and `"live"` lets them through to the host's network; `app.requests()` lists them
 all. Sockets and WebSockets connect on the host's network with `"live"`, and are refused as headless otherwise. `storage` is in the app's storage when it starts, and `app.storage()` reads it from the app. `locale`,
-`reducedMotion` and `safeArea`, when `open` gives them (a default value included), hold whatever the platform reports,
+the locale settings `localeSettings` names, `reducedMotion` and `safeArea`, when `open` gives them (a default value included), hold whatever the platform reports,
 and a `colorScheme` it gives switches the system's appearance (`"light"` too); what it leaves out is the platform's, and the app's clipboard calls are served from the
 test's own clipboard (`clipboard` is its text at first, `app.clipboard()` reads it), so the machine's clipboard stays
 as it was; a text input's own copy and paste use the system's. `host.params` reaches the app, `app.host.send` sends
 events, and the URLs the app opens are recorded for `app.openedUrls()` instead of being opened. `host.handlers` runs
 headless, where the test answers the app's calls. `open` checks its options against the target: `width` and
 `height` on iOS and Android, a `platform` of another kind of device (a phone's on a desktop or the web, a desktop's or
-the other phone's on iOS or Android) and `host.handlers` reject with `ERR_NSH_TEST_UNSUPPORTED`, so a test runs as it
+the other phone's on iOS or Android), `host.handlers` and `url` reject with `ERR_NSH_TEST_UNSUPPORTED`, so a test runs as it
 is written or says what it needs. A desktop's `platform` (`"macos"` for a desktop's mouse and keys) runs on every
 desktop target and the web, as that target's platform and always as a desktop: in the browser the page starts in the
 desktop idiom whatever its width, where without a `platform` (or with `"web"`) it measures its idiom as a browser does
 (a desktop from 600 points wide). An app with Rust crates of its own runs in a development host built with its crates, which NSH
 builds for the platform; a Rust app's host runs its root, so `open(".")` starts it there as it does headless.
+
+`nsh test --target tui` runs the tests against the terminal renderer in an in-memory terminal, suitable for CI.
+Each `open` uses its own surface and data directory. Set its point dimensions with `open(entry, { width, height })`;
+they round up to whole Cells at the app's `nsh.json` `tui.pointsPerCell` scale (8 × 16 points by default).
+`app.screenshot("cells.json")` returns and saves UTF-8 JSON: `format: "nsh-tui-cells"`, `version: 1`, `width`,
+`height`, and `rows[y][x]` containing each Cell's `symbol`, `fg`, `bg`, `underline` and `modifiers`. Colors use `reset`, lowercase
+ratatui color names, `#rrggbb` or `indexed:N`; modifiers are arrays of active style names such as `bold`, `italic`
+and `underlined`. Decode the returned bytes with `new TextDecoder().decode(bytes)` and parse the JSON for Cell
+snapshot assertions.
 
 On the web, the apps run in the development host's page in a headless Chrome, Edge or Chromium: the one installed
 on this machine, or the executable `--browser <PATH>` names (a browser is needed: `nsh test` says where it looked

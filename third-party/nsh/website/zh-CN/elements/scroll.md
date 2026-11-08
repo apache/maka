@@ -44,7 +44,7 @@ scroll().flex_1().child(
 |---|---|---|---|---|
 | `horizontal` | `.horizontal()` | `boolean` | `false` | 横向滚动。 |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
 | `pagingEnabled` | `.paging(..)` | `boolean` | `false` | 停在视口尺寸的整数倍处。 |
 | `snapToInterval` | `.snap_interval(px(..))` | `number` | `0` | 停在该长度的整数倍处（0 表示关闭）。 |

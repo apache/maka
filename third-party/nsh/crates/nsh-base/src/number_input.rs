@@ -48,7 +48,8 @@ pub struct NumberInputProps {
     /// it.
     pub accessibility_label: Prop<Option<SharedString>>,
     /// Both buttons on the right of the field, the increment over the
-    /// decrement, in the `controls` part (`gpui-base`'s `controls_right`);
+    /// decrement (after it, on the field's row, in a terminal), in the
+    /// `controls` part (`gpui-base`'s `controls_right`);
     /// else the decrement before the field and the increment after it.
     /// Read when the input is made.
     #[prop(default)]
@@ -472,13 +473,22 @@ pub fn NumberInput(props: NumberInputProps, cx: Scope<NumberInputEvent>) -> impl
     let prefix = props.prefix.place(|c| c);
     let suffix = props.suffix.place(|c| c);
     if props.controls_right.get_untracked() {
+        // A terminal sets the pair side by side on the field's row, − then
+        // +, as a row reads, where a column of them would be two rows high
+        // and one row is the field.
+        let row = crate::terminal::is_terminal();
+        let (first, second) = match row {
+            true => (Nudge::Down, Nudge::Up),
+            false => (Nudge::Up, Nudge::Down),
+        };
         root.child(prefix).child(text_field).child(suffix).child(
             view()
+                .when(row, |v| v.flex_row())
                 .project_disabled(props.disabled)
                 .app_class(props.controls_class)
                 .inline_style(props.controls_style)
-                .child(button(Nudge::Up))
-                .child(button(Nudge::Down)),
+                .child(button(first))
+                .child(button(second)),
         )
     } else {
         root.child(button(Nudge::Down))

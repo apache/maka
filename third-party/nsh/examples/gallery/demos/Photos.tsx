@@ -3,7 +3,7 @@ import { createAnimatedValue } from "nsh";
 import { platform } from "nsh";
 import logo from "../logo@2x.png";
 import { Icon } from "../icons";
-import { Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, paneWidth, Press, radius, scrollbarTheme, Stat, type Tone, toneColor } from "../ui";
+import { Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, paneWidth, photoNames, photoUrl, Press, radius, scrollbarTheme, Stat, TERMINAL_COLUMN, TERMINAL_ROW, terminal, type Tone, toneColor } from "../ui";
 
 /** The gallery's scroll bar, starting below the compact bar laid over the list's top. */
 const belowBar = {
@@ -40,7 +40,7 @@ function PhotoRow(props: { photo: Photo }) {
     <Press scale={0.985} accessibilityLabel={props.photo.title}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, height: 76 }}>
         <Image
-          src={`https://picsum.photos/seed/${props.photo.id}/112/112`}
+          src={photoUrl(photoNames[props.photo.id % photoNames.length], "360x360")}
           style={{
             width: 56,
             height: 56,
@@ -75,7 +75,7 @@ function PhotoTile(props: { photo: Photo }) {
     <Press scale={0.97} accessibilityLabel={props.photo.title}>
       <View class="hover:bg-card" style={{ padding: 6, gap: 8, borderRadius: radius.card, borderCurve: "continuous", cursor: "pointer" }}>
         <Image
-          src={`https://picsum.photos/seed/${props.photo.id}/480/360`}
+          src={photoUrl(photoNames[props.photo.id % photoNames.length], "small")}
           style={{
             width: "100%",
             aspectRatio: 4 / 3,
@@ -145,17 +145,23 @@ export function Photos() {
         translate: [0, scrollY.interpolate({ inputRange: [-200, 0, 300], outputRange: [0, 0, 150] })],
       }}
     >
+      {/* The terminal frames the card as the gallery's sections are: a
+          filled box there is a band with no border. */}
       <View
-        style={{
-          backgroundColor: colors.surface,
-          borderRadius: radius.card,
-          borderCurve: "continuous",
-          borderWidth: 1,
-          borderColor: colors.border,
-          padding: 16,
-          gap: 12,
-          ...finish.card,
-        }}
+        style={
+          terminal
+            ? { borderWidth: 1, borderColor: colors.border, paddingVertical: TERMINAL_ROW - 1, paddingHorizontal: 2 * TERMINAL_COLUMN - 1 }
+            : {
+                backgroundColor: colors.surface,
+                borderRadius: radius.card,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                borderColor: colors.border,
+                padding: 16,
+                gap: 12,
+                ...finish.card,
+              }
+        }
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <View
@@ -182,7 +188,7 @@ export function Photos() {
         </View>
         <Text style={{ fontSize: 40, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"], letterSpacing: -1 }}>
           {grouped(photos().length)}
-          <Text style={{ fontSize: 15, fontWeight: "500", color: colors.accent }}> photos</Text>
+          <Text style={{ fontSize: 15, fontWeight: "500", color: colors.muted }}> photos</Text>
         </Text>
         <View style={{ flexDirection: "row", borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 10 }}>
           <Stat width="33%" label="Pages" value={String(Math.ceil(photos().length / PAGE))} />
@@ -244,7 +250,9 @@ export function Photos() {
               numColumns={n}
               estimatedItemSize={tile}
               style={{ flex: 1 }}
-              contentStyle={{ padding: 24, gap: 16 }}
+              // Two columns between tiles in the terminal (from 24pt): a
+              // tile's count is not read as the next tile's title.
+              contentStyle={{ padding: 24, rowGap: 16, columnGap: platform.idiom === "terminal" ? 24 : 16 }}
               scrollValue={scrollY}
               refreshing={refreshing()}
               onRefresh={refresh}

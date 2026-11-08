@@ -31,7 +31,7 @@ use crate::{
     geom::Mat4,
     input::KeyEvent,
     render::{DrawCx, rect_f},
-    surface::Surface,
+    surface::{Next, Surface},
     view::{NshView, ViewState},
 };
 
@@ -121,9 +121,15 @@ impl ScrollHost for Host<'_> {
             if !view.attached() {
                 // Removed: nothing draws it; a later move starts again.
                 shared::detached(&host);
-                return false;
+                return Next::Done;
             }
-            shared::frame(&host, now * 1000.0)
+            let now = now * 1000.0;
+            if !shared::frame(&host, now) {
+                return Next::Done;
+            }
+            // `None`: only drawing is left (the indicator's fade, the
+            // refresh spinner), or input it waits for (a touchpad's end).
+            shared::deadline(&host, now).map_or(Next::Frame, |ms| Next::At(ms / 1000.0))
         });
     }
 
@@ -338,16 +344,6 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
 /// content).
 pub(crate) fn drag_begin(surface: &Rc<Surface>, view: &NshView) {
     shared::drag_begin(&Host::new(surface, view));
-}
-
-/// Stops the row's scroll owners before its recycling acknowledgement.
-pub(crate) fn detached(surface: &Rc<Surface>, view: &NshView) {
-    if view.kind() == ViewKind::Scroll {
-        shared::detached(&Host::new(surface, view));
-    }
-    for child in view.child_views() {
-        detached(surface, &child);
-    }
 }
 
 /// The drag moved by `(dx, dy)` points since the last move (content

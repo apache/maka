@@ -28,7 +28,7 @@ use crate::{
     Command, Dialog, EdgeInsets, LayoutAnimation, NodeId, Points, Size,
     canvas::CanvasFont,
     color::Hsla,
-    platform::{Appearance, Idiom, Lifecycle, Locale, Os, Renderer},
+    platform::{Appearance, Idiom, Lifecycle, Locale, LocaleSettings, Os},
     time::Instant,
 };
 
@@ -47,6 +47,14 @@ pub(crate) struct Ambient {
     measure: Option<MeasureFn>,
     /// The app's key-value storage (`nsh/storage`).
     storage: Option<crate::storage::Store>,
+    /// The displays (desktops), as the platform reports them.
+    displays: Option<Signal<Arc<[crate::desktop::Display]>>>,
+    /// Whether the performance monitor measures, as the platform reports
+    /// it.
+    perf_monitor: Option<Signal<bool>>,
+    /// The main window's close presses: how many, and the last one's
+    /// reason ([`crate::element::desktop::WindowRef::on_close_press`]).
+    main_close_press: Option<Signal<(u64, crate::desktop::CloseReason)>>,
 }
 
 impl Ambient {
@@ -63,6 +71,7 @@ struct EnvSignals {
     window: Memo<Size<Points>>,
     safe_area: Memo<EdgeInsets>,
     title_bar: Memo<crate::geometry::Edges<crate::geometry::Points>>,
+    window_state: Memo<Option<crate::desktop::WindowState>>,
     keyboard_height: Memo<Points>,
     keyboard_duration: Memo<f32>,
     dark: Memo<bool>,
@@ -72,6 +81,7 @@ struct EnvSignals {
     rtl: Memo<bool>,
     pixel_ratio: Memo<f32>,
     locale: Memo<Locale>,
+    locale_settings: Memo<LocaleSettings>,
     lifecycle: Memo<Lifecycle>,
     screen_color: Memo<bool>,
 }
@@ -90,6 +100,7 @@ impl EnvSignals {
                 window: part!(window),
                 safe_area: part!(safe_area),
                 title_bar: part!(title_bar),
+                window_state: part!(window_state),
                 keyboard_height: part!(keyboard_height),
                 keyboard_duration: part!(keyboard_duration),
                 dark: part!(dark),
@@ -99,6 +110,7 @@ impl EnvSignals {
                 rtl: part!(rtl),
                 pixel_ratio: part!(pixel_ratio),
                 locale: part!(locale),
+                locale_settings: part!(locale_settings),
                 lifecycle: part!(lifecycle),
                 screen_color: part!(screen_color),
             }
@@ -138,6 +150,44 @@ impl super::Runtime {
                 with_data(|d| d.ambient.env = Some(signals));
             }
         }
+    }
+
+    /// The displays now: what read them runs again.
+    pub(crate) fn set_displays(&self, displays: Arc<[crate::desktop::Display]>) {
+        let _entered = self.enter();
+        let signal = displays_signal();
+        if signal.with_untracked(|d| **d != *displays) {
+            signal.set(displays);
+        }
+    }
+
+    /// Whether the performance monitor measures now: what read it runs
+    /// again.
+    pub(crate) fn set_perf_monitor(&self, enabled: bool) {
+        let _entered = self.enter();
+        let signal = perf_monitor_signal();
+        if signal.get_untracked() != enabled {
+            signal.set(enabled);
+        }
+    }
+
+    /// The user asked to close the main window: what listens hears it.
+    pub(crate) fn main_close_pressed(&self, reason: crate::desktop::CloseReason) {
+        let _entered = self.enter();
+        main_close_press_signal().update(|(count, last)| {
+            *count += 1;
+            *last = reason;
+        });
+    }
+
+    /// `placement` fitted on the displays now (`setPlacement`, a restored
+    /// window's), without subscribing to them.
+    pub(crate) fn fit_window_placement(
+        &self,
+        placement: crate::desktop::WindowPlacement,
+    ) -> crate::desktop::WindowPlacement {
+        let _entered = self.enter();
+        displays_signal().with_untracked(|d| placement.fit_on_displays(d))
     }
 
     /// The design tokens now: what read them runs again.
@@ -180,7 +230,7 @@ fn env<T: Clone + 'static>(part: impl FnOnce(&EnvSignals) -> Memo<T>) -> T {
         .get()
 }
 
-fn executor() -> Rc<Executor> {
+pub(super) fn executor() -> Rc<Executor> {
     with_data(|d| d.ambient.executor.clone()).expect("the core sets the executor")
 }
 
@@ -269,6 +319,23 @@ pub fn locale() -> Locale {
     env(|e| e.locale)
 }
 
+/// The user's locale settings (TS: `localeSettings()`): the preferred
+/// languages, most preferred first (the app shows its text in the first it
+/// has, the others are its fallbacks; an embedding app's own language comes
+/// first), the device's time zone as the system names it
+/// (`Europe/Berlin`), and the regional preferences: 12- or 24-hour time,
+/// the first day of the week, the measurement system and the temperature
+/// unit, each the system's setting, else the region's. Reading it
+/// subscribes, so what shows them follows the user's settings and travels;
+/// a `computed` of one of them changes only with it. `nsh_base`'s
+/// `TimeField` and `DatePicker` take their `HourCycle::H12` where
+/// [`HourCycle::twelve_hour`](crate::platform::HourCycle::twelve_hour),
+/// else `H23`; its `Calendar` and `DatePicker` count their
+/// `first_day_of_week` from 0 for Sunday: pass `number() % 7`.
+pub fn locale_settings() -> LocaleSettings {
+    env(|e| e.locale_settings)
+}
+
 /// Whether the app is in use: in the foreground, visible without the
 /// focus, or in the background (TS: `lifecycle()`). Reading it subscribes,
 /// so an effect pauses work in the background and resumes it after.
@@ -300,24 +367,22 @@ pub fn os_version() -> (u16, u16) {
         .with_untracked(|e| e.os_version)
 }
 
-/// The kind of device (TS: `platform.idiom`, [`Idiom::reported_on`]). A
-/// terminal retains its host device idiom while [`is_desktop`] is false.
+/// The kind of device (TS: `platform.idiom`): [`Idiom::Terminal`] in a
+/// terminal, else [`Idiom::Desktop`] exactly where [`is_desktop`] holds
+/// ([`Idiom::reported_on`]).
 pub fn idiom() -> Idiom {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
         .with_untracked(|e| e.idiom.reported_on(e.os))
 }
 
-/// How the surface presents its UI (TS: `platform.renderer`); it does not change.
-pub fn renderer() -> Renderer {
+/// The size of one Cell of a grid surface (a terminal), in points, as
+/// the core lays out on it ([`Environment::cell`]); `None` on every other
+/// surface. Components that size themselves in whole Cells read it.
+pub fn cell_size() -> Option<Size<Points>> {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
-        .with_untracked(|e| e.renderer)
-}
-
-/// Whether this surface renders in terminal cells (TS: `platform.isTerminal`).
-pub fn is_terminal() -> bool {
-    renderer() == Renderer::Terminal
+        .with_untracked(|e| e.cell)
 }
 
 /// Whether the app runs under Mac Catalyst, in every idiom (TS:
@@ -327,12 +392,14 @@ pub fn is_catalyst() -> bool {
     os().is_catalyst()
 }
 
-/// Whether graphical desktop behavior applies (TS: `platform.desktop`): a
-/// desktop OS with a graphical renderer, or a browser in the desktop idiom.
+/// Whether desktop behavior applies, NSH's one definition of desktop: a
+/// desktop OS (macOS, Windows, Linux), a browser in the desktop idiom or
+/// a terminal (TS: `platform.desktop`, [`Idiom::desktop_on`]); it does not
+/// change.
 pub fn is_desktop() -> bool {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
-        .with_untracked(|e| e.renderer != Renderer::Terminal && e.idiom.desktop_on(e.os))
+        .with_untracked(|e| e.idiom.desktop_on(e.os))
 }
 
 /// The design tokens the app is drawn with (reading them subscribes: new
@@ -556,6 +623,17 @@ pub fn clipboard_files() -> Answer<Vec<String>> {
     answer
 }
 
+/// Registers a font while the app runs (TS: `registerFont`): one it
+/// downloaded or made, as TrueType, OpenType, WOFF or WOFF2 data. Resolves
+/// to its family name, for `font_family`, or why `data` is no font; to
+/// await in a task. Text that names the family is laid out with it from
+/// then on.
+pub fn register_font(data: impl Into<Vec<u8>>) -> Answer<Result<String, String>> {
+    let (answer, action) = super::services::register_font(data.into());
+    act(action);
+    answer
+}
+
 /// Shows the system's open dialog and gives the files (or folders,
 /// [`OpenDialog::folders`](crate::file_dialog::OpenDialog::folders)) the
 /// user picked, to await in a task: `None` when cancelled, the error when
@@ -639,12 +717,98 @@ pub fn pick_images(request: crate::picker::PickRequest) -> Answer<Vec<crate::pic
     answer
 }
 
+/// Shows the system's picker for files of any type (the open dialog on the
+/// desktops, the document picker on iOS and Android, a file input on the web;
+/// TS: `Picker.pickFiles`), to await in a task: the files the user picked,
+/// their bytes as they are; none when cancelled ([`crate::picker`]).
+pub fn pick_files(
+    request: crate::picker::FilePickRequest,
+) -> Answer<Vec<crate::picker::PickedFile>> {
+    let (answer, action) = super::services::pick_files(request);
+    act(action);
+    answer
+}
+
 /// Whether speech can be recognized here (TS: `Speech.available()`): the
 /// platform recognizes speech (macOS, iOS), or the embedding app gave the
 /// core its own recognizer. To await in a task.
 pub fn speech_available() -> Answer<bool> {
     let (answer, slot) = Answer::new();
     act(Action::Speech(super::SpeechAction::Available(slot)));
+    answer
+}
+
+/// Whether the app may show notifications (TS: `Notifications.permission`),
+/// without asking the user. To await in a task.
+pub fn notification_permission() -> Answer<crate::notifications::NotificationPermission> {
+    let (answer, slot) = Answer::new();
+    act(Action::Notification(
+        super::NotificationAction::Permission {
+            ask: false,
+            answer: slot,
+        },
+    ));
+    answer
+}
+
+/// Asks the user to let the app show notifications, once (TS:
+/// `Notifications.requestPermission`), and answers with the permission. To
+/// await in a task.
+pub fn request_notification_permission() -> Answer<crate::notifications::NotificationPermission> {
+    let (answer, slot) = Answer::new();
+    act(Action::Notification(
+        super::NotificationAction::Permission {
+            ask: true,
+            answer: slot,
+        },
+    ));
+    answer
+}
+
+/// Shows `notification` (TS: `Notifications.show`), answering whether the
+/// system took it: not without the permission. To await in a task.
+pub fn show_notification(notification: crate::notifications::Notification) -> Answer<bool> {
+    let (answer, slot) = Answer::new();
+    act(Action::Notification(super::NotificationAction::Show {
+        notification,
+        answer: slot,
+    }));
+    answer
+}
+
+/// Removes the notification called `id`, shown or waiting to show (TS:
+/// `Notifications.close`).
+pub fn close_notification(id: impl Into<String>) {
+    act(Action::Notification(super::NotificationAction::Close(
+        id.into(),
+    )));
+}
+
+/// Shows `count` on the app's icon, 0 clears it (TS: `Notifications.setBadge`).
+pub fn set_badge(count: u32) {
+    act(Action::Notification(super::NotificationAction::SetBadge(
+        count,
+    )));
+}
+
+/// The id of the next notification the user presses (TS:
+/// `Notifications.on("press", ...)`), those that started the app first. To
+/// await in a task.
+pub fn next_notification_press() -> Answer<String> {
+    let (answer, slot) = Answer::new();
+    act(Action::Notification(super::NotificationAction::NextPress(
+        slot,
+    )));
+    answer
+}
+
+/// The next link that opens the app (TS: `UrlScheme.on("open", ...)`): a
+/// URL of a scheme the app claims (`nsh.json` `schemes`), those
+/// that came before anything listened first, the one that launched the app
+/// included ([`crate::url_scheme`]). To await in a task.
+pub fn next_url_scheme_open() -> Answer<String> {
+    let (answer, slot) = Answer::new();
+    act(Action::NextUrlSchemeOpen(slot));
     answer
 }
 
@@ -795,6 +959,11 @@ pub fn fetch(request: impl Into<crate::platform::HttpRequest>) -> super::Fetch {
     let (answer, action) = super::services::fetch(request.into());
     act(action);
     answer
+}
+
+/// Asks for the app to show in `locale` ([`crate::i18n::set_locale`]).
+pub(crate) fn act_locale(locale: Option<crate::platform::Locale>) {
+    act(Action::Locale(locale));
 }
 
 /// Shows the surface in `appearance` whatever the system's (TS:
@@ -1045,7 +1214,7 @@ pub fn animated_value(value: f32) -> super::AnimatedValue {
 
 /// Animated values for a view's opacity and transform, and motions to
 /// play on them (TS: `createMotion`): bind it with
-/// [`super::Element::bind_motion`]. A `Copy` handle the current owner keeps.
+/// [`super::Styled::bind_motion`]. A `Copy` handle the current owner keeps.
 pub fn motion() -> super::Motion {
     super::Motion::new(&executor())
 }
@@ -1075,49 +1244,35 @@ pub struct KeyOptions {
     /// Fires again on the auto-repeats of a held key (default: once until
     /// the key is released).
     pub repeat: bool,
+    /// Lets the key go on after the handler runs, as if nothing were bound
+    /// (default: the platform consumes it). Tab still moves the focus: a
+    /// component closes its popup on Tab and the focus moves on as it
+    /// would ([`crate::keymap::KeyMatch::Notify`]).
+    pub pass_through: bool,
 }
 
 /// Whether shortcuts follow Apple's conventions here (`mod` is Command):
-/// the OS, or for a browser the platform it runs on. Terminals use Control.
+/// the OS, or for a browser the platform it runs on
+/// ([`crate::keymap::apple_keys`]).
 pub fn apple_keys() -> bool {
-    let (os, apple, terminal) = with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+    let (os, apple) = with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
-        .with_untracked(|e| (e.os, e.apple_keyboard, e.uses_terminal_keyboard()));
-    !terminal && crate::keymap::apple_keys(os, apple)
-}
-
-/// The platform's reserved-key convention, for [`crate::keymap::Keystroke::reserved`].
-/// Terminal keyboards use the Linux (Control-based) reservations even on
-/// an Apple OS or when a graphical backend renders their pixels.
-pub fn reserved_key_os() -> Os {
-    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
-        .expect("the core sets the environment")
-        .with_untracked(|e| {
-            if e.uses_terminal_keyboard() {
-                Os::Linux
-            } else {
-                e.os
-            }
-        })
+        .with_untracked(|e| (e.os, e.apple_keyboard));
+    crate::keymap::apple_keys(os, apple)
 }
 
 /// [`apple_keys`] where an engine runs, else `None` (as [`try_os`]).
 pub fn try_apple_keys() -> Option<bool> {
     super::reactive::try_with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .flatten()
-        .map(|env| {
-            env.with_untracked(|e| {
-                !e.uses_terminal_keyboard() && crate::keymap::apple_keys(e.os, e.apple_keyboard)
-            })
-        })
+        .map(|env| env.with_untracked(|e| crate::keymap::apple_keys(e.os, e.apple_keyboard)))
 }
 
 /// Runs `handler` when `keystroke` is pressed while the current owner
 /// lives (TS: `keymap.bind`): `"mod+k"` (`mod` is Command on Apple
-/// graphical platforms, Control in terminals and elsewhere),
-/// `"shift+mod+l"`, `"escape"`, ... (the keystrokes of `nsh/keymap`). The
-/// handler gets the keystroke as written.
-/// Desktop and terminal backends fire them.
+/// platforms, Control elsewhere), `"shift+mod+l"`, `"escape"`, ... (the
+/// keystrokes of `nsh/keymap`). The handler gets the keystroke as written.
+/// Desktop platforms fire them; elsewhere they are kept but no key does.
 ///
 /// # Panics
 ///
@@ -1135,16 +1290,20 @@ pub fn on_key(keystroke: &str, handler: impl Fn(&str) + 'static) {
 /// As [`on_key`].
 #[track_caller]
 pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) + 'static) {
+    let os = os();
     let parsed = crate::keymap::Keystroke::parse_with(keystroke, apple_keys())
         .unwrap_or_else(|e| panic!("on_key: {e}"));
-    if let Some(why) = parsed.reserved(reserved_key_os()) {
+    if let Some(why) = parsed.reserved(os) {
         panic!("on_key: {keystroke:?} cannot be bound: {why}");
     }
     let owner = Owner::current();
     let handler: super::keys::KeyHandler = Rc::new(move |k: &str| owner.run(|| handler(k)));
     let keys = executor().keys.clone();
     let id = keys.borrow_mut().add(
-        |id| crate::keymap::KeyBinding::new(id, parsed, options.when, options.repeat),
+        |id| {
+            crate::keymap::KeyBinding::new(id, parsed, options.when, options.repeat)
+                .passing_through(options.pass_through)
+        },
         keystroke.into(),
         handler,
     );
@@ -1309,10 +1468,25 @@ fn add_watch(target: Rc<dyn Fn() -> Option<NodeId>>, handler: super::watch::Scro
 /// On a keystroke that is not one.
 #[track_caller]
 pub fn key_label(keystroke: &str) -> String {
-    let apple = apple_keys();
-    crate::keymap::Keystroke::parse_with(keystroke, apple)
-        .unwrap_or_else(|e| panic!("key_label: {e}"))
-        .label(os(), apple)
+    let parsed = crate::keymap::Keystroke::parse_with(keystroke, apple_keys())
+        .unwrap_or_else(|e| panic!("key_label: {e}"));
+    keystroke_label(parsed)
+}
+
+/// A parsed keystroke as menus and hints show it here ([`key_label`]):
+/// the keys to press, Ctrl for Command where Ctrl stands in for it
+/// ([`crate::platform::Environment::ctrl_for_command`]).
+pub fn keystroke_label(keystroke: crate::keymap::Keystroke) -> String {
+    let (os, apple, ctrl) = with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| {
+            (
+                e.os,
+                crate::keymap::apple_keys(e.os, e.apple_keyboard),
+                e.ctrl_for_command,
+            )
+        });
+    keystroke.pressed(ctrl).label(os, apple)
 }
 
 /// Listens to the Android back button while the current owner lives (TS:
@@ -1331,6 +1505,61 @@ pub fn on_back_press(f: impl Fn() -> bool + 'static) {
 
 pub(crate) fn title_bar() -> crate::geometry::Edges<crate::geometry::Points> {
     env(|e| e.title_bar)
+}
+
+pub(crate) fn window_state() -> Option<crate::desktop::WindowState> {
+    env(|e| e.window_state)
+}
+
+pub(crate) fn displays() -> Vec<crate::desktop::Display> {
+    displays_signal().with(|d| d.to_vec())
+}
+
+/// The displays' signal, made empty on first use (whatever reads it before
+/// the platform reports displays follows them when it does).
+fn displays_signal() -> Signal<Arc<[crate::desktop::Display]>> {
+    if let Some(signal) = with_data(|d| d.ambient.displays) {
+        return signal;
+    }
+    let signal = Owner::detached().run(|| super::signal(Arc::from(Vec::new())));
+    with_data(|d| d.ambient.displays = Some(signal));
+    signal
+}
+
+/// Whether the platform's performance monitor measures (TS:
+/// `fpsEnabled()`), as the platform reports it: reading it in a binding
+/// subscribes it.
+pub fn fps_enabled() -> bool {
+    perf_monitor_signal().get()
+}
+
+/// Turns the platform's performance monitor on or off (TS:
+/// `setFpsEnabled`): the macOS panel, the other platforms' `nsh::perf`
+/// log lines, as `--fps` and `NSH_FPS=1` do at launch. Platforms without a
+/// monitor ignore it; [`fps_enabled`] follows what the platform did.
+pub fn set_fps_enabled(enabled: bool) {
+    act(super::services::perf_monitor(enabled));
+}
+
+/// The performance monitor's signal, off until the platform reports it.
+fn perf_monitor_signal() -> Signal<bool> {
+    if let Some(signal) = with_data(|d| d.ambient.perf_monitor) {
+        return signal;
+    }
+    let signal = Owner::detached().run(|| super::signal(false));
+    with_data(|d| d.ambient.perf_monitor = Some(signal));
+    signal
+}
+
+/// The main window's close presses, none until the platform reports one.
+pub(crate) fn main_close_press_signal() -> Signal<(u64, crate::desktop::CloseReason)> {
+    if let Some(signal) = with_data(|d| d.ambient.main_close_press) {
+        return signal;
+    }
+    let signal =
+        Owner::detached().run(|| super::signal((0, crate::desktop::CloseReason::default())));
+    with_data(|d| d.ambient.main_close_press = Some(signal));
+    signal
 }
 
 /// The views' menu handlers.

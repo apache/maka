@@ -19,9 +19,6 @@ const zh = lang === 'zh-CN';
 const demos = readdirSync(join(process.cwd(), 'demos'))
   .filter((f) => f.endsWith('.tsx'))
   .map((f) => f.slice(0, -4))
-  // The hero's chat imports its own files (demos/hero-chat/); the
-  // playground compiles one file.
-  .filter((name) => name !== 'home-chat')
   .sort((a, b) => (a === 'counter' ? -1 : b === 'counter' ? 1 : a.localeCompare(b)));
 const player = `${BASE}play/index.html?playground&theme=dark`;
 const t = zh

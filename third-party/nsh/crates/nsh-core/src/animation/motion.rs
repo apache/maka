@@ -136,6 +136,9 @@ pub struct KeyframeTiming {
     pub iterations: Option<u32>,
     /// Which way the iterations play.
     pub direction: PlaybackDirection,
+    /// The highest frame rate it needs, in Hz ([`super::Driver::frame_rate`]);
+    /// `None`: the screen's highest.
+    pub frame_rate: Option<f32>,
 }
 
 impl Default for KeyframeTiming {
@@ -146,6 +149,7 @@ impl Default for KeyframeTiming {
             easing: Easing::EASE,
             iterations: Some(1),
             direction: PlaybackDirection::Normal,
+            frame_rate: None,
         }
     }
 }
@@ -185,6 +189,12 @@ impl KeyframeTiming {
     /// Playing in `direction`.
     pub fn direction(mut self, direction: PlaybackDirection) -> Self {
         self.direction = direction;
+        self
+    }
+
+    /// Needing at most `hz` frames per second.
+    pub fn frame_rate(mut self, hz: f32) -> Self {
+        self.frame_rate = Some(hz);
         self
     }
 }
@@ -271,6 +281,7 @@ fn iteration(
             duration_ms: ms,
             easing,
             delay_ms: 0.0,
+            frame_rate: timing.frame_rate,
         },
     };
     let mut steps = Vec::with_capacity(oriented.len() + 1);
@@ -349,6 +360,7 @@ pub fn keyframes(node: NodeId, frames: &[Keyframe], timing: &KeyframeTiming) -> 
                 duration_ms: 0.0,
                 easing: Easing::Linear,
                 delay_ms: 0.0,
+                frame_rate: timing.frame_rate,
             },
         });
     }
@@ -568,6 +580,7 @@ impl MotionSpec {
                         duration_ms: 0.0,
                         easing: Easing::Linear,
                         delay_ms: 0.0,
+                        frame_rate: self.timing.frame_rate,
                     },
                 });
             } else {

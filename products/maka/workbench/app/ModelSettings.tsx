@@ -141,7 +141,7 @@ export function ModelSettings(props: {
   const title = () =>
     page()?.title() ?? (contributed() ? contributionTitle(contributed()!) : tr('Settings'));
   const action = () => page()?.action?.() ?? null;
-  const terminal = platform.isTerminal;
+  const terminal = platform.idiom === 'terminal';
   const iconButton = {
     ...controlStyle,
     width: 32,
@@ -168,7 +168,7 @@ export function ModelSettings(props: {
         style={{
           width: '100%',
           maxWidth: 880,
-          height: '100%',
+          flex: 1,
           maxHeight: 800,
           minHeight: 0,
           flexDirection: rail() ? 'row' : 'column',

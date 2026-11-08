@@ -1,5 +1,5 @@
-//! The performance monitor ([`crate::AppOptions::fps`], `--fps`): once a
-//! second, one `nsh::perf` line of what the surface's frames and commits
+//! The performance monitor ([`crate::AppOptions::fps`], `--fps`): an
+//! on-screen panel with readings and a frame-cost chart; once a second, one `nsh::perf` line of what the surface's frames and commits
 //! cost, from its [`PerfMonitor`]:
 //!
 //! `fps 120/120 frame 1.21/1.10/2.40/3.90 gap 8.33/8.33/8.40/16.70 over 0% update 0.10/… layout
@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use gtk4::{self as gtk, gdk, prelude::*};
+use gtk4::{self as gtk, cairo, gdk, glib, prelude::*};
 use nsh_core::time::Instant;
 use nsh_engine::perf::{PerfMonitor, PerfSnapshot, ProcessSampler, Stat};
 
@@ -80,6 +80,14 @@ pub(crate) struct Fps {
     /// Batch drains since the last line: their main-thread costs.
     drains: RefCell<Vec<Duration>>,
     logged: Cell<Instant>,
+    hud: RefCell<Option<Hud>>,
+}
+
+impl Drop for Fps {
+    fn drop(&mut self) {
+        self.hud.get_mut().take();
+        MEASURING.set(false);
+    }
 }
 
 impl Fps {
@@ -96,6 +104,7 @@ impl Fps {
             phases: RefCell::default(),
             drains: RefCell::default(),
             logged: Cell::new(Instant::now()),
+            hud: RefCell::default(),
         }
     }
 
@@ -112,6 +121,164 @@ impl Fps {
             .replace(Some(now))
             .map_or(Duration::ZERO, |m| now.duration_since(m))
     }
+}
+
+/// A native diagnostic overlay, matching the macOS monitor. It belongs to
+/// the monitor, never to the app's layout, focus order or pointer targets.
+struct Hud {
+    panel: gtk::DrawingArea,
+    overlay: glib::WeakRef<gtk::Overlay>,
+    timer: Option<glib::SourceId>,
+}
+
+impl Drop for Hud {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            timer.remove();
+        }
+        if let Some(overlay) = self.overlay.upgrade() {
+            overlay.remove_overlay(&self.panel);
+        }
+    }
+}
+
+/// Shows readings and the most recent 120 frame costs. Updating at 2 Hz
+/// keeps the diagnostics readable without asking the app for continuous frames.
+pub(crate) fn show(overlay: &gtk::Overlay, fps: &Rc<Fps>) {
+    let panel = gtk::DrawingArea::new();
+    panel.set_content_width(262);
+    panel.set_content_height(186);
+    panel.set_halign(gtk::Align::End);
+    panel.set_valign(gtk::Align::Start);
+    // Leave the app's title bar and native window controls uncovered.
+    panel.set_margin_top(54);
+    panel.set_margin_end(10);
+    panel.set_can_target(false);
+    panel.set_focusable(false);
+    panel.set_accessible_role(gtk::AccessibleRole::Presentation);
+    let weak = Rc::downgrade(fps);
+    panel.set_draw_func(move |_, cx, width, height| {
+        if let Some(fps) = weak.upgrade() {
+            draw(cx, width as f64, height as f64, &fps.monitor.snapshot());
+        }
+    });
+    overlay.add_overlay(&panel);
+    let weak = Rc::downgrade(fps);
+    let timer = glib::timeout_add_local(Duration::from_millis(500), move || {
+        if let Some(fps) = weak.upgrade() {
+            if let Some(hud) = fps.hud.borrow().as_ref() {
+                // No need to sample or draw a hidden / minimized app.
+                if hud.panel.is_mapped() {
+                    fps.monitor.set_process(fps.sampler.borrow_mut().sample());
+                    hud.panel.queue_draw();
+                }
+            }
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
+    *fps.hud.borrow_mut() = Some(Hud {
+        panel,
+        overlay: overlay.downgrade(),
+        timer: Some(timer),
+    });
+}
+
+fn readings(s: &PerfSnapshot) -> [String; 5] {
+    [
+        format!(
+            "FPS {:3.0} / {:.0} Hz",
+            s.fps,
+            s.refresh_rate.unwrap_or(60.0)
+        ),
+        format!(
+            "Frame {:5.2}  p95 {:5.2} ms",
+            s.frame.mean.as_secs_f64() * 1e3,
+            s.frame.p95.as_secs_f64() * 1e3
+        ),
+        format!(
+            "JS    {:5.2}  Core {:5.2} ms",
+            s.js.mean.as_secs_f64() * 1e3,
+            s.layout.mean.as_secs_f64() * 1e3
+        ),
+        format!(
+            "CPU {}  RSS {}",
+            s.process.cpu.map_or("—".into(), |cpu| format!("{cpu:.0}%")),
+            s.process
+                .memory
+                .map_or("—".into(), |m| format!("{:.1} MB", m as f64 / 1e6))
+        ),
+        format!(
+            "Frame cost · budget {:.1} ms",
+            1000.0 / s.refresh_rate.unwrap_or(60.0)
+        ),
+    ]
+}
+
+fn draw(cx: &cairo::Context, width: f64, height: f64, s: &PerfSnapshot) {
+    // Diagnostic colors deliberately match macOS: a dark panel in either
+    // appearance, with green / amber / red frame costs against the budget.
+    let _ = cx.save();
+    cx.set_source_rgb(0.06, 0.07, 0.08);
+    let radius = 8.0;
+    for (x, y, angle) in [
+        (width - radius, radius, -std::f64::consts::FRAC_PI_2),
+        (width - radius, height - radius, 0.0),
+        (radius, height - radius, std::f64::consts::FRAC_PI_2),
+        (radius, radius, std::f64::consts::PI),
+    ] {
+        cx.arc(x, y, radius, angle, angle + std::f64::consts::FRAC_PI_2);
+    }
+    cx.close_path();
+    let _ = cx.fill();
+    cx.select_font_face(
+        "monospace",
+        cairo::FontSlant::Normal,
+        cairo::FontWeight::Normal,
+    );
+    cx.set_font_size(11.0);
+    cx.set_source_rgb(0.94, 0.95, 0.96);
+    for (i, line) in readings(s).iter().enumerate() {
+        cx.move_to(8.0, 18.0 + i as f64 * 21.0);
+        let _ = cx.show_text(line);
+    }
+    let (x, y, w, h) = (8.0, height - 72.0, width - 16.0, 48.0);
+    cx.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+    cx.rectangle(x, y, w, h);
+    let _ = cx.fill();
+    let budget = 1000.0 / s.refresh_rate.unwrap_or(60.0).max(1.0) as f64;
+    let bar = w / 120.0;
+    let count = s.frames.len().min(120);
+    for (i, frame) in s.frames.iter().skip(s.frames.len() - count).enumerate() {
+        let ms = frame.as_secs_f64() * 1e3;
+        let (r, g, b) = if ms <= budget / 2.0 {
+            (0.30, 0.85, 0.45)
+        } else if ms <= budget {
+            (0.98, 0.75, 0.25)
+        } else {
+            (0.98, 0.35, 0.33)
+        };
+        cx.set_source_rgb(r, g, b);
+        let cost = (ms / (budget * 2.0) * h).clamp(1.0, h);
+        cx.rectangle(
+            x + (120 - count + i) as f64 * bar,
+            y + h - cost,
+            (bar - 0.5).max(0.5),
+            cost,
+        );
+        let _ = cx.fill();
+    }
+    cx.set_source_rgba(1.0, 1.0, 1.0, 0.5);
+    cx.set_line_width(1.0);
+    cx.move_to(x, y + h / 2.0);
+    cx.line_to(x + w, y + h / 2.0);
+    let _ = cx.stroke();
+    cx.set_source_rgb(0.7, 0.72, 0.75);
+    cx.set_font_size(10.0);
+    cx.move_to(x, height - 8.0);
+    let _ = cx.show_text("120 frames · newest →");
+    let _ = cx.restore();
 }
 
 /// Measures `widget`'s frames into `fps` once it has a frame clock. Each
@@ -262,4 +429,75 @@ fn ms(stat: &Stat) -> String {
         ms(stat.p95),
         ms(stat.max)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggling_the_monitor_removes_the_panel_and_timer() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&surface.root));
+            *surface.fps_overlay.borrow_mut() = overlay.downgrade();
+            surface.enable_fps();
+            let fps = surface.fps_for_test();
+            let panel = fps.hud.borrow().as_ref().unwrap().panel.clone();
+            assert!(panel.parent().is_some());
+            assert!(!panel.can_target());
+            assert!(!panel.is_focusable());
+            // Re-enabling keeps a single panel and collector.
+            surface.enable_fps();
+            assert!(Rc::ptr_eq(&fps, &surface.fps_for_test()));
+            let weak = Rc::downgrade(&fps);
+            drop(fps);
+            surface.disable_fps();
+            assert!(weak.upgrade().is_none());
+            assert!(panel.parent().is_none());
+            surface.enable_fps();
+            let next = surface
+                .fps_for_test()
+                .hud
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .panel
+                .clone();
+            assert_ne!(panel, next);
+            surface.disable_fps();
+            assert!(next.parent().is_none());
+        });
+    }
+
+    #[test]
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "PerfSnapshot is non-exhaustive outside nsh-engine"
+    )]
+    fn frame_cost_chart_draws_samples_and_the_budget_line() {
+        let mut snapshot = PerfSnapshot::default();
+        snapshot.refresh_rate = Some(60.0);
+        snapshot.frames = vec![
+            Duration::from_millis(2),
+            Duration::from_millis(12),
+            Duration::from_millis(28),
+        ];
+        let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, 262, 186).unwrap();
+        let cx = cairo::Context::new(&image).unwrap();
+        draw(&cx, 262.0, 186.0, &snapshot);
+        drop(cx);
+        let stride = image.stride() as usize;
+        let pixels = image.data().unwrap();
+        let pixel = |x: usize, y: usize| {
+            let offset = y * stride + x * 4;
+            u32::from_ne_bytes(pixels[offset..offset + 4].try_into().unwrap())
+        };
+        // Samples end at the chart's right edge; this red bar exceeds
+        // the 16.7 ms budget. The line is also visible without any samples.
+        let red = pixel(252, 130);
+        assert!((red >> 16 & 255) > (red >> 8 & 255) * 2);
+        assert_ne!(pixel(20, 138), pixel(20, 128));
+    }
 }

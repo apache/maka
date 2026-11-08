@@ -1,14 +1,16 @@
 import { mount, Scroll, signal, Text, View, type ScrollRef } from "nsh";
 import { Scrollbar, type ScrollbarMode } from "nsh/base";
-import { desktop, Panel, Segmented, size, Split, ui } from "./palette";
+import { desktop, Panel, scrollbarTheme, Segmented, size, Split, ui } from "./palette";
 
 // A list of messages in a card whose own indicator is off, with the app's
-// bar over its right edge, timed as gpui-component's: a 6-point pill in the
-// palette's muted tone that widens to 8 under the pointer (`hover:`) and
-// while dragged (`active:`), fading in over 300 ms and out over 500 ms, 2 s
-// after the last scroll (`motion`); pointing at its hidden thumb in the
-// `hover` mode slides it in. The inspector switches when it shows and
-// follows the offset the list reports.
+// bar over its right edge in the shared look (`scrollbarTheme`, the one the
+// gallery gives every scroll view), timed as gpui-component's: a 6-point
+// pill (3 on a touch screen) in an opaque mix of the muted text into the
+// page, so rows never show through it, that widens to 8 and darkens under
+// the pointer (`hover:`) and while dragged (`active:`), fading in over
+// 300 ms and out over 500 ms, 2 s after the last scroll (`motion`);
+// pointing at its hidden thumb in the `hover` mode slides it in. The
+// inspector switches when it shows and follows the offset the list reports.
 const MESSAGES = Array.from({ length: 60 }, (_, i) => ({
   from: ["Ada", "Grace", "Linus", "Ken", "Barbara"][i % 5],
   text: ["Shipped the build", "Review when you can", "Tests are green", "Moved the meeting", "Draft is ready"][i % 5],
@@ -65,11 +67,10 @@ function App() {
           <Scrollbar
             scroll={inbox}
             mode={mode()}
-            motion={{ idle: 2000, enter: 300, exit: 500, entrance: "fade", thumbHoverEntrance: "slideAndFade" }}
+            motion={scrollbarTheme.motion}
             accessibilityLabel="Messages"
-            class="absolute inset-y-0 right-0 w-4 items-end p-1"
-            thumbClass="w-1.5 rounded-full opacity-60 transition-all duration-300 hover:w-2 hover:opacity-90 active:w-2 active:opacity-100"
-            thumbStyle={{ backgroundColor: ui().muted }}
+            class={scrollbarTheme.vertical?.class ?? undefined}
+            thumbClass={scrollbarTheme.vertical?.thumbClass ?? undefined}
           />
         </View>
       </Split>

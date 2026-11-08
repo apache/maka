@@ -12,7 +12,7 @@ use nsh_base::editor::{
     EditorInlineCompletionRequest, EditorPosition, EditorRange, editor,
 };
 use nsh_core::{
-    Size,
+    PayloadValue, Size,
     element::Root,
     platform::{Idiom, Os},
     prelude::*,
@@ -181,6 +181,121 @@ fn value(text: &str) -> String {
 
 fn typed(app: &mut Headless, text: &str) {
     app.type_text("id:editor", text).unwrap();
+}
+
+/// An input method's composition in the editor's sink: started or changed
+/// (`composing`) with `text`, or ended. The headless driver has no
+/// composition step and does not expose an input's node id, so the event
+/// goes to every node; only the sink listens to it.
+fn compose(app: &mut Headless, composing: bool, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::CompositionChange,
+            EventPayload::Map(vec![
+                ("composing", PayloadValue::Bool(composing)),
+                ("text", PayloadValue::Str(text.to_owned())),
+            ]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+/// The sink's text changed to `text`, as platforms report it while an input
+/// method composes (the uncommitted text in it). Sent to every node, as
+/// [`compose`] is.
+fn sink_text(app: &mut Headless, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::ChangeText,
+            EventPayload::Text {
+                text: text.to_owned(),
+                count: 0,
+            },
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+#[test]
+fn composing_changes_nothing_and_asks_nothing_until_it_commits() {
+    let mut app = start(props("x "));
+    typed(&mut app, "");
+    app.press_key("end").unwrap();
+    // Platforms report what is composed as the sink's text, after saying it
+    // is composed.
+    compose(&mut app, true, "da");
+    sink_text(&mut app, "da");
+    see(&mut app, "da");
+    see(&mut app, &value("x "));
+    assert!(app.shows("Requests 0"));
+    assert!(app.shows("Inline -"));
+    // The commit is reported before the end.
+    sink_text(&mut app, "大");
+    compose(&mut app, false, "");
+    see(&mut app, &value("x 大"));
+    gone(&mut app, "da");
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert!(app.shows("Requests 0"));
+    assert!(app.shows("Inline -"));
+    // One undo step, and later typing goes on after it.
+    app.press_key("mod+z").unwrap();
+    see(&mut app, &value("x "));
+    typed(&mut app, "p");
+    see(&mut app, "Requests 1");
+}
+
+#[test]
+fn a_cancelled_composition_leaves_the_text() {
+    let mut app = start(props("x "));
+    typed(&mut app, "");
+    compose(&mut app, true, "da");
+    sink_text(&mut app, "da");
+    sink_text(&mut app, "");
+    compose(&mut app, false, "");
+    gone(&mut app, "da");
+    see(&mut app, &value("x "));
+    assert!(app.shows("Requests 0"));
+}
+
+#[test]
+fn backspace_inside_a_composition_deletes_nothing_of_the_text() {
+    let mut app = start(props("x "));
+    typed(&mut app, "");
+    compose(&mut app, true, "d");
+    sink_text(&mut app, "d");
+    // Soft keyboards report the key while the sink, for the editor, is empty.
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::KeyPress,
+            EventPayload::Map(vec![("key", PayloadValue::Str("Backspace".to_owned()))]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+    see(&mut app, &value("x "));
+}
+
+#[test]
+fn a_composition_inside_a_row_moves_what_follows_aside() {
+    let mut app = start(props("ab cd"));
+    typed(&mut app, "");
+    app.press_key("right").unwrap();
+    compose(&mut app, true, "da");
+    see(&mut app, "da");
+    see(&mut app, "b cd");
+    see(&mut app, &value("ab cd"));
+}
+
+#[test]
+fn a_composition_closes_the_open_list() {
+    let mut app = start(props(""));
+    typed(&mut app, "pr");
+    see(&mut app, "println");
+    compose(&mut app, true, "da");
+    gone(&mut app, "println");
+    assert!(app.shows("Requests 1"));
 }
 
 #[test]

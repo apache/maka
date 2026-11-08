@@ -24,7 +24,7 @@ use maka_host_runtime::application::host::startup;
 use maka_workbench::bindings::Bindings;
 use nsh_core::{
     Points, Size,
-    platform::{ColorScheme, Environment, Idiom, Renderer},
+    platform::{ColorScheme, Environment, Idiom},
 };
 use nsh_engine::EngineConfig;
 use std::{
@@ -151,9 +151,8 @@ fn configuration(
     EngineConfig {
         viewport,
         environment: Environment {
-            renderer: Renderer::Terminal,
             color_scheme: ColorScheme::Dark,
-            idiom: Idiom::Desktop,
+            idiom: Idiom::Terminal,
             window: viewport,
             ..Default::default()
         },

@@ -34,6 +34,16 @@ use serde_json::{Value, json};
 use std::{sync::atomic::Ordering, time::Duration};
 use support::{EDITOR, Fixture, ReplyGate, wait_view, wait_view_state};
 use uuid::Uuid;
+trait TerminalInputExt {
+    fn handle_event(&mut self, event: Event) -> bool;
+}
+
+impl TerminalInputExt for AppView {
+    fn handle_event(&mut self, event: Event) -> bool {
+        maka_terminal_shell::terminal::handle_event(self, event)
+    }
+}
+
 fn shortcut(view: &mut AppView, key: char) {
     view.handle_event(Event::Key(KeyEvent::new(
         KeyCode::Char(key),
@@ -41,19 +51,40 @@ fn shortcut(view: &mut AppView, key: char) {
     )));
 }
 
+fn select_all_input(view: &mut AppView) {
+    view.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )));
+}
+
 async fn tab_to_label(view: &mut AppView, label: &str) {
     wait_enabled_node(view, label).await;
+    let mut visited = Vec::new();
     for _ in 0..=view.accessibility_snapshot().len() {
-        if view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.focused && node.label == label)
-        {
+        let nodes = view.accessibility_snapshot();
+        if nodes.iter().any(|node| node.focused && node.label == label) {
             return;
         }
+        visited.push(
+            nodes
+                .iter()
+                .find(|node| node.focused)
+                .map(|node| (node.id, node.label.clone())),
+        );
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        support::tick(view);
     }
-    panic!("native Tab did not reach {label:?}");
+    let target: Vec<_> = view
+        .accessibility_snapshot()
+        .into_iter()
+        .filter(|node| node.label == label)
+        .map(|node| (node.id, node.role, node.state, node.frame))
+        .collect();
+    panic!(
+        "native Tab did not reach {label:?}:\nvisited={visited:?}\ntarget={target:?}\n{}",
+        view.snapshot()
+    );
 }
 
 async fn wait_enabled_node(view: &mut AppView, label: &str) {
@@ -67,7 +98,7 @@ async fn wait_enabled_node(view: &mut AppView, label: &str) {
 
 async fn wait_focused_input(view: &mut AppView, label: &str) {
     wait_view_state(view, |view, _| {
-        view.surface().input_context().is_some_and(|input| {
+        view.input_context().is_some_and(|input| {
             view.accessibility_snapshot()
                 .iter()
                 .any(|node| node.id == input.node && node.focused && node.label == label)
@@ -79,7 +110,7 @@ async fn wait_focused_input(view: &mut AppView, label: &str) {
 
 async fn editable(view: &mut AppView, label: &str) {
     wait_view_state(view, |view, _| {
-        view.surface().input_context().is_some_and(|input| {
+        view.input_context().is_some_and(|input| {
             input.editable
                 && view
                     .accessibility_snapshot()
@@ -120,7 +151,7 @@ async fn activate(view: &mut AppView, label: &str) {
 async fn fill(view: &mut AppView, label: &str, value: &str) {
     tab_to_label(view, label).await;
     editable(view, label).await;
-    shortcut(view, 'a');
+    select_all_input(view);
     view.handle_event(Event::Paste(value.into()));
     commit_native_events(view).await;
 }

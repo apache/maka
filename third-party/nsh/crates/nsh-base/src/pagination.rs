@@ -13,6 +13,10 @@
 //!   `renderItem` a page shows its number, an ellipsis `…`, and Previous /
 //!   Next their accessibility labels, else `‹` / `›`, as `Calendar`'s.
 //!   `compact` shows Previous, the children and Next only.
+//! - **In a terminal**: a row of words, Previous, the pages, `…` and Next
+//!   two blank Cells apart, without `itemClass` / `itemStyle` (the app's
+//!   `renderItem` content stays); the painter bands the current page from
+//!   its selected state.
 //! - **Places, not pages**: the row is made once, a place for each item it
 //!   can hold (`visiblePages` + 2), each with a page and an ellipsis view of
 //!   which it shows one; a page change changes what the places show (their
@@ -30,6 +34,8 @@
 use std::ops::Range;
 
 use nsh_core::{AccessibilityCurrent, element::TextPartStyle, prelude::*};
+
+use crate::terminal::is_terminal;
 
 /// The fewest pages a pagination shows (`gpui-base`'s `visible_pages`
 /// minimum).
@@ -327,8 +333,10 @@ fn step(pager: Pager, previous: bool, cx: Scope<PaginationEvent>) -> AnyElement 
         .role(AccessibilityRole::Button)
         .disabled(move || disabled.get())
         .optional_label(label)
-        .app_class(props.item_class)
-        .inline_style(move || props.item_style.get())
+        .when(!is_terminal(), |v| {
+            v.app_class(props.item_class)
+                .inline_style(move || props.item_style.get())
+        })
         .on_focus(move || pager.focus(item, true))
         .on_blur(move || pager.focus(item, false))
         .on_press(move || {
@@ -392,8 +400,10 @@ fn place(pager: Pager, at: usize, cx: Scope<PaginationEvent>) -> Vec<AnyElement>
                 ..AccessibilityState::default()
             }
         })
-        .app_class(props.item_class)
-        .inline_style(move || props.item_style.get())
+        .when(!is_terminal(), |v| {
+            v.app_class(props.item_class)
+                .inline_style(move || props.item_style.get())
+        })
         .style_when(move || !page_shown.get(), |s| s.hidden())
         .element_ref(&me)
         .on_focus(move || pager.focus(Focus::Place(at), true))
@@ -436,8 +446,19 @@ fn place(pager: Pager, at: usize, cx: Scope<PaginationEvent>) -> Vec<AnyElement>
         }
     });
     let ellipsis = view()
-        .app_class(props.item_class)
-        .inline_style(move || props.item_style.get())
+        .when(!is_terminal(), |v| {
+            v.app_class(props.item_class)
+                .inline_style(move || props.item_style.get())
+        })
+        // Its `…` a word of the row in a terminal: a blank Cell on each
+        // side besides the row's gap (what the app draws there is the
+        // app's).
+        .when(is_terminal(), |v| {
+            v.style_when(
+                move || props.render_item.with(Option::is_none),
+                |s| s.px(px(8.0)),
+            )
+        })
         .style_when(move || !ellipsis_shown.get(), |s| s.hidden())
         .child(content(
             pager,
@@ -502,6 +523,10 @@ pub fn Pagination(props: PaginationProps, cx: Scope<PaginationEvent>) -> impl In
         .role(AccessibilityRole::Navigation)
         .optional_label(props.accessibility_label)
         .flex_row()
+        // A terminal's row of words: its controls keep two blank Cells
+        // apart, an ellipsis takes as many from its gap and padding; the
+        // painter bands the current page.
+        .when(is_terminal(), |v| v.gap(px(8.0)))
         .child(step(pager, true, cx))
         .child(pages)
         .child(props.children)

@@ -173,31 +173,6 @@ fn touches<'a>(cx: *mut JsContext) -> &'a Touches {
     unsafe { &(*crate::state::state(cx)).touches }
 }
 
-pub(crate) fn invalid_contacts(
-    cx: *mut JsContext,
-    mut accepts: impl FnMut(NodeId) -> bool,
-    contacts: &mut Vec<u32>,
-) {
-    for (&contact, path) in touches(cx).paths.borrow().iter() {
-        if path.iter().any(|&id| !accepts(id)) {
-            contacts.push(contact);
-        }
-    }
-}
-
-/// Returns whether the last known contact released a native JS scroll block.
-/// This is native bookkeeping: no handler, JS value or pending job is touched.
-pub(crate) fn cancel_touch(cx: *mut JsContext, contact: u32) -> bool {
-    let state = touches(cx);
-    let mut paths = state.paths.borrow_mut();
-    if paths.remove(&contact).is_none() || !paths.is_empty() {
-        return false;
-    }
-    state.responder.set(None);
-    state.gesture.set(PanGesture::default());
-    state.blocks.replace(false)
-}
-
 fn number(v: f64) -> JsValue {
     qjs::JS_NewFloat64(v)
 }
@@ -1038,7 +1013,7 @@ mod tests {
             const pan = PanResponder.create({
                 onStartShouldSetPanResponder: () => true,
                 onPanResponderGrant: () => log.push("grant"),
-                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy} velocity ${g.vx},${g.vy}`),
+                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy}`),
                 onPanResponderRelease: (e, g) => log.push(`release ${g.dx}`),
             });
             spread(inner, { ...pan.panHandlers, onTouchStart: () => log.push("inner bubble") });
@@ -1090,7 +1065,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             log,
-            "outer capture|inner bubble|outer bubble|grant|move 20,5 velocity 875,218.75|release 20"
+            "outer capture|inner bubble|outer bubble|grant|move 20,5|release 20"
         );
         // The grant blocks native scroll views (the default), the release
         // lets go.

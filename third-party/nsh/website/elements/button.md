@@ -9,7 +9,7 @@ demo: el-button
 
 A button is a press target. It owns the behavior: presses, press feedback through the app's state styles, the
 disabled and selected states, keyboard focus, and its role for screen readers. The look is the app's: a `Button` has no colors, sizes, paddings or label of its own, so one component becomes a primary button,
-an icon button, a tab, a toolbar toggle or the row of a list, depending on the styles and children you give it.
+an icon button, a menu's trigger or the row of a list, depending on the styles and children you give it.
 
 ```rust tabs
 use nsh_base::button;
@@ -64,7 +64,7 @@ the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No presses and no press feedback; `disabled:` styles apply and screen readers say it is dimmed. |
-| `selected` | `.selected(..)` | `boolean` | `false` | Selected: a toggle that is on, the current tab. Screen readers say so. The app owns the value and styles it. |
+| `selected` | `.selected(..)` | `boolean` | `false` | Selected: the current item (a folder, a filter) or the trigger of an open menu. Something on or off is a `Toggle`. Screen readers say so. The app owns the value and styles it. |
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style while `selected` and not disabled, as `selected:` classes. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say when the content is not enough, as for an icon. |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | What it is for screen readers when no `nsh/base` component is that control: `"link"` (it opens a URL), ... |
@@ -189,38 +189,42 @@ fn save(saving: Signal<bool>) -> impl IntoElement {
 </Button>
 ```
 
-## A toggle with selected
+## The current item with selected
 
-`selected` makes a button a toggle: a toolbar's bold button, a filter chip, the current tab. The app holds the value,
-flips it in `onPress` and styles the selected state; screen readers announce the button as selected.
+`selected` shows a button as the current one of its kind or as the trigger of what is open: the folder a sidebar
+shows, the active filter, a menu button while its menu is open (Design Guides, "Interaction states"). The app holds
+the value and styles the selected state; screen readers announce the button as selected.
 
 ```rust tabs
-fn bold(on: Signal<bool>) -> impl IntoElement {
+use nsh_base::{button, theme};
+
+fn folder(name: &'static str, current: Signal<&'static str>) -> impl IntoElement {
+    let selected = move || current.get() == name;
     button()
-        .selected(on)
-        .accessibility_label("Bold")
-        .on_press(move || on.update(|on| *on = !*on))
-        .size(px(40.0))
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .selected_style(|s| s.bg(rgb(0xdbeafe)))
-        .child(text("B").font_weight(FontWeight::BOLD))
+        .selected(selected)
+        .on_press(move || current.set(name))
+        .px_3()
+        .py_2()
+        .rounded(move || theme().radius)
+        .selected_style(|s| s.bg(move || theme().accent))
+        .child(text(name))
 }
 ```
 
 ```tsx tabs
 <Button
-  selected={bold()}
-  onPress={() => bold.set(!bold())}
-  accessibilityLabel="Bold"
-  class="size-10 items-center justify-center rounded-md selected:bg-blue-100"
+  selected={folder() === "Inbox"}
+  onPress={() => folder.set("Inbox")}
+  class="rounded-(--radius) px-3 py-2 selected:bg-accent"
 >
-  <Text class="font-bold">B</Text>
+  <Text>Inbox</Text>
 </Button>
 ```
 
-A row of tabs is [`Tabs`](./tabs.md) and an on / off control is [`Switch`](./switch.md), from `nsh/base`: they own the role, the selected state and the keyboard of their kind, which a `Button` with `role="tab"` or `role="switch"` does not.
+Something that is on or off (bold in a toolbar, a favorite, a view option) is a [`Toggle`](./toggle.md): it owns
+the pressed state, and screen readers announce it as a toggle button. A row of tabs is [`Tabs`](./tabs.md) and a
+setting that is on or off is [`Switch`](./switch.md), from `nsh/base`: they own the role, the state and the keyboard
+of their kind, which a `Button` with `role="tab"` or `role="switch"` does not.
 
 ## A small target with hitSlop
 

@@ -171,7 +171,7 @@ mount(App);
 
 ## 打开状态
 
-没有 `open` 时，选择框自己保存打开状态（初始为 `defaultOpen`）。有 `open` 时，状态由应用持有，并在 `onOpenChange({ open, reason })` 中修改它，原因为 `"triggerPress"`（按下触发元素，或它的某个按键）、`"select"`（一次选择）、`"pressOutside"`、`"backdropPress"` 或 `"cancel"`（Escape 或返回）。`onOpen` 和 `onClose` 表示列表已显示和已消失（sheet 在完全进入和完全离开之后），`onCancel` 表示用户没有选择就关闭了它。
+没有 `open` 时，选择框自己保存打开状态（初始为 `defaultOpen`）。有 `open` 时，状态由应用持有，并在 `onOpenChange({ open, reason })` 中修改它，原因为 `"triggerPress"`（按下触发元素，或它的某个按键）、`"select"`（一次选择）、`"pressOutside"`、`"backdropPress"`、`"cancel"`（Escape 或返回）或 `"focus"`（列表打开时用 Tab 或 Shift+Tab 把键盘焦点移走）。`onOpen` 和 `onClose` 表示列表已显示和已消失（sheet 在完全进入和完全离开之后），`onCancel` 表示用户没有选择就关闭了它。
 
 <a id="search"></a>
 
@@ -225,6 +225,7 @@ mount(App);
 | `defaultValue` | `.default_value(..)` | `string` | 无 | 没有 `value` 时的初始值。 |
 | `open` | `.open(..)` | `boolean` | 无 | 是否打开，由应用持有。 |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | 没有 `open` 时，初始是否打开。 |
+| `placeholder` | `.placeholder(..)` | `string` | 无 | 没有选中条目时触发元素显示的文字：终端里没有 `trigger` 时由触发元素显示，屏幕阅读器把它读作触发元素的值。 |
 | `searchable` | `.searchable(..)` | `boolean` | `false` | 条目上方的搜索框按标题筛选条目。 |
 | `searchPlaceholder` | `.search_placeholder(..)` | `string` | 无 | 搜索框的占位文字。 |
 | `searchAccessibilityLabel` | `.search_accessibility_label(..)` | `string` | 无 | 屏幕阅读器对搜索框的称呼：它搜索的是什么。 |
@@ -309,8 +310,9 @@ mount(App);
 | Space | 选中高亮的条目（没有搜索框时）。 |
 | 字母、数字 | 下一个标题以最近一秒内输入内容开头的条目（没有搜索框时）。 |
 | Escape | 不选择，关闭列表。 |
+| Tab、Shift+Tab | 关闭列表（`reason: "focus"`），焦点移到下一个或上一个控件。 |
 
-列表关闭后，键盘焦点回到触发元素，除非一次外部按压把它带到了别处。指针移过的行会被高亮；按键移动到的高亮行会滚动到可见位置。
+列表关闭后，键盘焦点回到触发元素，除非一次外部按压或 Tab 把它带到了别处。指针移过的行会被高亮；按键移动到的高亮行会滚动到可见位置。
 
 <a id="on-each-device"></a>
 
@@ -329,7 +331,7 @@ mount(App);
 
 ## 无障碍
 
-- 触发元素对屏幕阅读器来说是一个组合框（combobox）：它的标签是 `accessibilityLabel`，值是选中条目的标题，并说明列表是否展开。`disabled` 时它显示为不可用。
+- 触发元素对屏幕阅读器来说是一个组合框（combobox）：它的标签是 `accessibilityLabel`，值是选中条目的标题（没有选中时是 `placeholder`），并说明列表是否展开。`disabled` 时它显示为不可用。
 - 清除按钮是一个按钮，名称来自 `clearButtonAccessibilityLabel`；它不是 Tab 的一站。
 - 搜索框是一个文本框，名称来自 `searchAccessibilityLabel`；占位文字是它为空时显示的提示。
 - 列表是一个列表框（listbox），每一行是一个选项（option），以标题命名；选中的选项处于选中状态，禁用的选项显示为不可用。分组标题是标题（header）。

@@ -34,7 +34,7 @@ GALLERY = Path(__file__).resolve().parent.parent
 DEMOS = [
     "Stocks", "AI Chat", "Photos", "Lists", "Scrolling", "Navigation", "Form", "Resizable", "Dock",
     "Gestures", "Physics", "Animations", "Canvas", "Styles", "Tailwind", "Text", "Text View", "Images",
-    "Components", "Overlays", "Menus", "Controls", "Web and video", "System", "Standard APIs", "Storage",
+    "Components", "Overlays", "Menus", "Controls", "WebView", "Video", "System", "Standard APIs", "Storage",
 ]
 
 # One second's `nsh::perf` line: the fields both desktops log, and between
@@ -120,6 +120,9 @@ def main() -> int:
         "}, 3_600_000);\n"
     )
     command = [args.nsh, "-v", "test", str(test), "--target", args.target, "--fps"]
+    if args.target == "macos":
+        # The active app, as the baseline's runs were (`nsh test` runs macOS apps in the background by default).
+        command.append("--foreground")
     print("$", " ".join(command), file=sys.stderr)
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     scenario = None

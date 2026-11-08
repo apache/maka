@@ -155,6 +155,11 @@ entries, then squash merges it. A failing check removes the entry; fix the failu
 
 - Rust through rustup: `rust-toolchain.toml` selects stable and installs the iOS and Android targets. A nightly
   toolchain for `cargo +nightly fmt`.
+- [huacnlee/cargo](https://github.com/huacnlee/cargo), recommended: a drop-in Cargo fork whose Git worktrees share one
+  build directory that stays under a size limit on its own, with nothing to configure. Install it with
+  `curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh` (Windows:
+  `irm https://huacnlee.github.io/cargo/install.ps1 | iex`). It replaces `~/.cargo/bin/cargo`, updates itself, and its
+  README says how to put rustup's back.
 - Xcode, for the iOS, simulator and Mac Catalyst targets.
 - For Linux: the GTK 4 (4.14 or later) development packages (`libgtk-4-dev`, `gtk4`,
   `gtk4-devel`), WebKitGTK 6.0's for web views (`libwebkitgtk-6.0-dev`, `webkitgtk-6.0`,

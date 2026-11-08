@@ -429,7 +429,7 @@ export function ToolCard(props: {
         })}
         trailing={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <If when={!platform.isTerminal && images().length > 0}>
+            <If when={platform.idiom !== 'terminal' && images().length > 0}>
               <ToolImageStrip
                 sessionId={props.sessionId}
                 through={imageThrough}
@@ -498,7 +498,7 @@ export function ToolCard(props: {
         </Text>
       </Disclosure>
       <If when={props.expanded()}>
-        <View style={platform.isTerminal ? { paddingLeft: 16 } : cardStyle()}>
+        <View style={platform.idiom === 'terminal' ? { paddingLeft: 16 } : cardStyle()}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
             onScrollIntent={() => {
@@ -513,7 +513,7 @@ export function ToolCard(props: {
                 props.maxHeight() -
                   controlStyle.minHeight -
                   detailsGap -
-                  (platform.isTerminal ? 0 : cardPadding.top + cardPadding.bottom),
+                  (platform.idiom === 'terminal' ? 0 : cardPadding.top + cardPadding.bottom),
               ),
             }}
             contentStyle={{ gap: 16 }}

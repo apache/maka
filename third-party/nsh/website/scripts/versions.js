@@ -10,7 +10,10 @@
 //
 // A release's built pages are kept in `.versions/` (CI caches it) under the
 // tag and a digest of this checkout's site, and its player under the tag
-// alone: a release is built once, and again only when the site changes.
+// alone: a release is built once, and again only when the site changes. The
+// latest's is also kept under the catalog's commit and a digest of the release
+// notes, since only it has App Stories and the notes, which change apart from
+// releases.
 //
 //   bun scripts/play.js && bun scripts/versions.js     (`bun run build:versions`)
 //
@@ -20,11 +23,13 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetchReleases, releasesDigest } from '../src/lib/releases.js';
 
 const website = fileURLToPath(new URL('..', import.meta.url));
 const root = resolve(website, '..');
 const dist = join(website, 'dist');
 const cache = process.env.NSH_SITE_VERSION_CACHE ?? join(website, '.versions');
+const showcases = process.env.SHOWCASES_DIR ?? resolve(root, '..', 'nsh-showcases');
 
 /** What a release takes from its tag; everything else is this checkout's. */
 const CONTENT = ['docs', 'elements', 'modules', 'zh-CN', 'demos'];
@@ -71,6 +76,29 @@ const siteDigest = (() => {
   for (const file of files) {
     const path = join(root, file);
     if (existsSync(path)) hash.update(file).update(readFileSync(path));
+  }
+  return hash.digest('hex').slice(0, 16);
+})();
+
+// The catalog's commit: a merged app has to reach the root's App Stories.
+const catalog = spawnSync('git', ['-C', showcases, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout?.trim() ?? '';
+if (!catalog && process.env.NSH_REQUIRE_SHOWCASES) {
+  console.error(`[versions] no App Stories catalog commit at ${showcases}`);
+  process.exit(1);
+}
+
+// The release notes: an edited note has to reach the root's page too.
+const notes = releasesDigest(await fetchReleases());
+
+// Machine translations are the root's alone (`src/lib/locales.ts`).
+const translations = (() => {
+  const dir = join(website, 'translations');
+  const hash = createHash('sha256');
+  if (existsSync(dir)) {
+    const files = readdirSync(dir, { recursive: true, withFileTypes: true }).filter((file) => file.isFile());
+    for (const path of files.map((file) => join(file.parentPath, file.name)).sort()) {
+      hash.update(path.slice(dir.length)).update(readFileSync(path));
+    }
   }
   return hash.digest('hex').slice(0, 16);
 })();
@@ -148,13 +176,13 @@ function build(version, copy, out) {
       PUBLIC_SITE_LATEST_VERSION: latest,
       PUBLIC_SITE_VERSIONS: JSON.stringify(versions),
       SITE_OUT_DIR: out,
-      SHOWCASES_DIR: process.env.SHOWCASES_DIR ?? resolve(root, '..', 'nsh-showcases'),
+      SHOWCASES_DIR: showcases,
     },
   });
-  // App Stories are the latest's alone: the catalog changes apart from
-  // releases, so other versions link to the root's.
+  // App Stories and the release notes are the latest's alone: both change
+  // apart from a version's content, so other versions link to the root's.
   if (version !== latest) {
-    for (const dir of ['apps', 'zh-CN/apps']) rmSync(join(out, dir), { recursive: true, force: true });
+    for (const dir of ['apps', 'zh-CN/apps', 'releases', 'zh-CN/releases']) rmSync(join(out, dir), { recursive: true, force: true });
   }
   run('bunx', ['pagefind', '--site', out]);
 }
@@ -165,13 +193,14 @@ const order = [latest, ...versions.map((v) => v.id).filter((id) => id !== latest
 for (const version of order) {
   if (only && !only.includes(version)) continue;
   const out = version === latest ? dist : join(dist, 'versions', version);
-  const cached = join(cache, version, siteDigest);
+  const cached = join(cache, version, version === latest ? `${siteDigest}-${catalog}-${notes}-${translations}` : siteDigest);
   if (version !== 'main' && existsSync(join(cached, 'index.html'))) {
     console.log(`[versions] reusing ${version}`);
     cpSync(cached, out, { recursive: true });
     continue;
   }
   const copy = siteCopy(version);
+  if (version !== latest) rmSync(join(copy, 'translations'), { recursive: true, force: true });
   if (version === 'main') {
     const play = join(website, 'public', 'play');
     if (existsSync(play)) cpSync(play, join(copy, 'public', 'play'), { recursive: true });

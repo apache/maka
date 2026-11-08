@@ -14,6 +14,31 @@ Rust 组件、嵌入 NSH 的原生应用），以及在 `nsh/base` 之上构建�
 本文是一份规范性指南：**必须**表示生命周期、正确性或生态约束；**应该**表示默认架构，偏离时需要有具体理由。精确签名以当前
 源码、参考页面和 `.nsh/types` 中的声明为准。
 
+## 先建立应用的界面基础，再编写页面
+
+新应用在实现功能页面之前，先建立设计标准、Theme Tokens 和应用自己的风格组件。已有应用先找到并复用这些基础。标准与共享
+界面代码保存在应用仓库中；具体内容见[设计指南](./design-guides.md#先建立应用自己的设计系统)。
+
+按以下顺序开发：
+
+1. 明确应用支持的 Desktop、Mobile、Web、TUI 目标，以及各自的输入、导航和密度要求。
+2. 在主题文件（`nsh.json` 的 `"theme"`）中定义语义颜色角色与浅色、深色值，并确定组件使用的字体、间距、圆角和尺寸尺度。
+3. 在 `nsh/base` 之上封装、组合应用自己的风格控件，覆盖可见部件、变体和交互状态。在支持的目标上验证有代表性的组合，再铺开到页面。
+4. 用这一层组合页面。缺少 token 或共享变体时，先在所属层补充，再由页面使用；共享控件的修改应一致地作用于所有使用处。
+
+NSH 提供无样式的 `nsh-base` crate（TSX 中为 `nsh/base`），对应 [`gpui-base`](https://gpui-kit.com/base)；应用或社区组件库拥有对应
+[`gpui-component`](https://gpui-kit.com/component) 的风格层，`nsh-core` 则对应底层的 GPUI。普通界面应该导入应用自己的风格控件，把基础组件的组装与样式
+保留在共享层中。适配各目标平台的外观时，保留基础组件的行为、焦点与无障碍能力。
+
+主题颜色必须通过语义 token 读取：Rust 使用 `theme().primary` 或 `theme().color("warning")`，TSX 使用 `bg-primary`、
+`text-warning` 或 `token("warning")`。十六进制、RGB/RGBA、HSL/HSLA 原始值定义在主题源中，页面与组件的样式中不直接写，
+包括状态样式、渐变和阴影。`bg-blue-500` 这样的色板类以及任意颜色类同样绕过应用的语义角色；应该补充所缺的角色。
+`bg-primary/90` 或 `theme().primary.opacity(0.9)` 这样的 token 透明度保留了颜色的语义来源。用户自选颜色、图片像素、
+颜色选择器的选中值等属于数据，外围控件仍使用主题 token。
+
+完成前，检查新增外观代码中的原始颜色值与色板类、共享组件的使用情况，并在浅色、深色和目标平台上操作各状态。无法验证的平台
+应明确记录，不能用一张截图代替所有目标的验证。
+
 ## 让常见用法自然低成本
 
 **设计原则：框架类型与所有权安排，应让组件的常见用法默认就低成本。** 开发者应能构建、复用界面，而不必在每个调用处手写缓存。
@@ -838,8 +863,8 @@ const liked = signal<Set<number>>(new Set());
 不能假设每个平台支持相同的能力。标题栏和窗口控件、无障碍、剪贴板、触感反馈、滚动物理、字体和时序都可能不同。一个包在每个
 平台上运行（[平台特定代码](./platform-specific.md)）；平台特定的代码放在 NSH 为它准备的位置，并定义回退行为：
 
-- 元素在各平台上都要表达的意思是顶层 prop；平台系统自带的功能放进 `ios={{…}}`、`android={{…}}`、`desktop={{…}}` 或
-  `web={{…}}`（Rust 中是构建器方法），有这个功能的每个平台各放一份，只有当前平台的对象会生效；
+- 元素在各平台上都要表达的意思是顶层 prop；平台系统自带的功能放进 `ios={{…}}`、`android={{…}}`、`macos={{…}}`、
+  `desktop={{…}}` 或 `web={{…}}`（Rust 中是构建器方法），有这个功能的每个平台各放一份，只有当前平台的对象会生效；
 - 移动平台的 API 来自 `nsh/mobile`，桌面的 API 来自 `nsh/desktop`；
 - 按平台设置的样式使用 `ios:`、`android:` 和 `web:` 类名。
 
@@ -864,7 +889,7 @@ const liked = signal<Set<number>>(new Set());
 ### 词汇是 API 的一部分
 
 在各个组件中，同一概念使用同一个词。在给 prop 或事件命名之前，先在 NSH 自己的 API 中寻找这个术语，然后是 GPUI Kit 的
-`gpui-base`、GPUI 和 `gpui-component`，再然后是各平台的控件。原语所显示的内容和全局 API 的名称取自 HTML、DOM 和 CSS
+[`gpui-base`](https://gpui-kit.com/base)、GPUI 和 [`gpui-component`](https://gpui-kit.com/component)，再然后是各平台的控件。原语所显示的内容和全局 API 的名称取自 HTML、DOM 和 CSS
 （`src`、`html`、`placeholder`）。Rust 名称是 `snake_case`，在 TSX 中转换为 `camelCase`（`on_open_change` 即
 `onOpenChange`）；一个词保持一个词（`readonly`、`multiline`）。
 

@@ -445,19 +445,31 @@ impl Theme {
     /// }
     /// ```
     ///
-    /// Lengths are points.
+    /// Lengths are points. What it cannot read, an unknown key or a value of
+    /// a form it does not know, is left out entry by entry and the rest
+    /// applies: a bundle made by a newer NSH keeps its theme on an older
+    /// runtime. Only text that is not JSON is an error.
     pub fn from_json(config: &str) -> Result<Theme, ThemeError> {
+        Self::from_json_lenient(config).map(|(theme, _)| theme)
+    }
+
+    /// [`Theme::from_json`], with what it left out (`unknown key `colours``,
+    /// `color `brand` must be a CSS color`), which the toolchain warns of
+    /// (a newer NSH's, or a typo) and the runtime logs.
+    pub fn from_json_lenient(config: &str) -> Result<(Theme, Vec<String>), ThemeError> {
         let value: serde_json::Value =
             serde_json::from_str(config).map_err(|e| ThemeError(e.to_string()))?;
         let mut theme = Theme::default();
-        theme.extend(&value)?;
-        Ok(theme)
+        let mut ignored = Vec::new();
+        theme.extend(&value, &mut ignored);
+        Ok((theme, ignored))
     }
 
-    fn extend(&mut self, value: &serde_json::Value) -> Result<(), ThemeError> {
+    fn extend(&mut self, value: &serde_json::Value, ignored: &mut Vec<String>) {
         use serde_json::Value;
         let Value::Object(root) = value else {
-            return Err(ThemeError("`tailwind` must be an object".into()));
+            ignored.push("`tailwind` is not an object".into());
+            return;
         };
         let num = |v: &Value, what: &str| -> Result<f32, ThemeError> {
             v.as_f64()
@@ -469,151 +481,149 @@ impl Theme {
                 .and_then(css::color)
                 .ok_or_else(|| ThemeError(format!("{what} must be a CSS color")))
         };
-        let entries = |v: &Value, what: &str| -> Result<Vec<(String, Value)>, ThemeError> {
-            match v {
-                Value::Object(o) => Ok(o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
-                _ => Err(ThemeError(format!("`{what}` must be an object"))),
-            }
-        };
-        for (key, v) in root {
-            match key.as_str() {
-                "spacing" => self.spacing = num(v, "`spacing`")?,
-                "rem" => self.rem = num(v, "`rem`")?,
-                "colors" => {
-                    for (name, c) in entries(v, "colors")? {
-                        match &c {
-                            Value::Object(shades) => {
-                                for (shade, c) in shades {
-                                    let what = format!("color `{name}-{shade}`");
-                                    let key = if shade == "DEFAULT" {
-                                        name.clone()
-                                    } else {
-                                        format!("{name}-{shade}")
-                                    };
-                                    self.colors.insert(key.into(), color(c, &what)?);
-                                }
-                            }
-                            c => {
-                                let parsed = color(c, &format!("color `{name}`"))?;
-                                self.colors.insert(name.into(), parsed);
-                            }
-                        }
-                    }
+        // Applies `f` to each entry of section `what`, leaving out (and
+        // recording) the ones it cannot read.
+        fn each(
+            v: &Value,
+            what: &str,
+            ignored: &mut Vec<String>,
+            f: &mut dyn FnMut(&str, &Value) -> Result<(), ThemeError>,
+        ) {
+            let Value::Object(entries) = v else {
+                ignored.push(format!("`{what}` must be an object"));
+                return;
+            };
+            for (name, v) in entries {
+                if let Err(e) = f(name, v) {
+                    ignored.push(e.0);
                 }
-                "breakpoints" => {
-                    for (name, w) in entries(v, "breakpoints")? {
-                        let w = num(&w, &format!("breakpoint `{name}`"))?;
-                        self.breakpoints.retain(|(n, ..)| **n != *name);
-                        self.breakpoints.push((name.into(), w, false));
-                    }
-                    self.breakpoints.sort_by(|a, b| a.1.total_cmp(&b.1));
-                }
-                "container" => {
-                    for (name, w) in entries(v, "container")? {
-                        let w = num(&w, &format!("container `{name}`"))?;
-                        self.containers.insert(name.into(), w);
-                    }
-                }
-                "fontSize" => {
-                    for (name, size) in entries(v, "fontSize")? {
-                        let what = format!("font size `{name}`");
-                        let entry = match &size {
-                            Value::Array(a) if a.len() == 2 => {
-                                (num(&a[0], &what)?, Some(num(&a[1], &what)?))
-                            }
-                            v => (num(v, &what)?, None),
-                        };
-                        self.text.insert(name.into(), entry);
-                    }
-                }
-                "fontWeight" => {
-                    for (name, w) in entries(v, "fontWeight")? {
-                        let w = num(&w, &format!("font weight `{name}`"))?;
-                        self.weights
-                            .insert(name.into(), w.clamp(1.0, 1000.0) as u16);
-                    }
-                }
-                "fontFamily" => {
-                    for (name, f) in entries(v, "fontFamily")? {
-                        let family = f.as_str().ok_or_else(|| {
-                            ThemeError(format!("font family `{name}` must be a string"))
-                        })?;
-                        self.fonts.insert(name.into(), Some(family.into()));
-                    }
-                }
-                "tracking" => {
-                    for (name, em) in entries(v, "tracking")? {
-                        self.tracking.insert(
-                            name.clone().into(),
-                            num(&em, &format!("tracking `{name}`"))?,
-                        );
-                    }
-                }
-                "leading" => {
-                    for (name, m) in entries(v, "leading")? {
-                        self.leading
-                            .insert(name.clone().into(), num(&m, &format!("leading `{name}`"))?);
-                    }
-                }
-                "radius" => {
-                    for (name, r) in entries(v, "radius")? {
-                        self.radius
-                            .insert(name.clone().into(), num(&r, &format!("radius `{name}`"))?);
-                    }
-                }
-                "shadow" | "insetShadow" | "dropShadow" => {
-                    for (name, s) in entries(v, key)? {
-                        let list = s.as_str().and_then(css::box_shadows).ok_or_else(|| {
-                            ThemeError(format!("{key} `{name}` must be a CSS box-shadow"))
-                        })?;
-                        let target = match key.as_str() {
-                            "shadow" => &mut self.shadows,
-                            "insetShadow" => &mut self.inset_shadows,
-                            _ => &mut self.drop_shadows,
-                        };
-                        target.insert(name.into(), list);
-                    }
-                }
-                "blur" => {
-                    for (name, b) in entries(v, "blur")? {
-                        self.blur
-                            .insert(name.clone().into(), num(&b, &format!("blur `{name}`"))?);
-                    }
-                }
-                "perspective" => {
-                    for (name, p) in entries(v, "perspective")? {
-                        self.perspective.insert(
-                            name.clone().into(),
-                            num(&p, &format!("perspective `{name}`"))?,
-                        );
-                    }
-                }
-                "aspect" => {
-                    for (name, a) in entries(v, "aspect")? {
-                        self.aspect
-                            .insert(name.clone().into(), num(&a, &format!("aspect `{name}`"))?);
-                    }
-                }
-                "ease" => {
-                    for (name, e) in entries(v, "ease")? {
-                        let what = format!("ease `{name}` must be [x1, y1, x2, y2]");
-                        let Value::Array(a) = &e else {
-                            return Err(ThemeError(what));
-                        };
-                        let n: Vec<f32> = a
-                            .iter()
-                            .filter_map(|x| x.as_f64().map(|x| x as f32))
-                            .collect();
-                        let [x1, y1, x2, y2] = n.as_slice() else {
-                            return Err(ThemeError(what));
-                        };
-                        self.ease.insert(name.into(), [*x1, *y1, *x2, *y2]);
-                    }
-                }
-                other => return Err(ThemeError(format!("unknown theme key `{other}`"))),
             }
         }
-        Ok(())
+        for (key, v) in root {
+            match key.as_str() {
+                "spacing" | "rem" => match num(v, &format!("`{key}`")) {
+                    Ok(n) if key == "spacing" => self.spacing = n,
+                    Ok(n) => self.rem = n,
+                    Err(e) => ignored.push(e.0),
+                },
+                "colors" => each(v, "colors", ignored, &mut |name, c| {
+                    match c {
+                        Value::Object(shades) => {
+                            let mut failed = None;
+                            for (shade, c) in shades {
+                                let what = format!("color `{name}-{shade}`");
+                                let key = if shade == "DEFAULT" {
+                                    name.to_owned()
+                                } else {
+                                    format!("{name}-{shade}")
+                                };
+                                match color(c, &what) {
+                                    Ok(c) => {
+                                        self.colors.insert(key.into(), c);
+                                    }
+                                    Err(e) => failed = Some(e),
+                                }
+                            }
+                            return failed.map_or(Ok(()), Err);
+                        }
+                        c => {
+                            let parsed = color(c, &format!("color `{name}`"))?;
+                            self.colors.insert(name.into(), parsed);
+                        }
+                    }
+                    Ok(())
+                }),
+                "breakpoints" => {
+                    each(v, "breakpoints", ignored, &mut |name, w| {
+                        let w = num(w, &format!("breakpoint `{name}`"))?;
+                        self.breakpoints.retain(|(n, ..)| **n != *name);
+                        self.breakpoints.push((name.into(), w, false));
+                        Ok(())
+                    });
+                    self.breakpoints.sort_by(|a, b| a.1.total_cmp(&b.1));
+                }
+                "container" => each(v, "container", ignored, &mut |name, w| {
+                    let w = num(w, &format!("container `{name}`"))?;
+                    self.containers.insert(name.into(), w);
+                    Ok(())
+                }),
+                "fontSize" => each(v, "fontSize", ignored, &mut |name, size| {
+                    let what = format!("font size `{name}`");
+                    let entry = match size {
+                        Value::Array(a) if a.len() == 2 => {
+                            (num(&a[0], &what)?, Some(num(&a[1], &what)?))
+                        }
+                        v => (num(v, &what)?, None),
+                    };
+                    self.text.insert(name.into(), entry);
+                    Ok(())
+                }),
+                "fontWeight" => each(v, "fontWeight", ignored, &mut |name, w| {
+                    let w = num(w, &format!("font weight `{name}`"))?;
+                    self.weights
+                        .insert(name.into(), w.clamp(1.0, 1000.0) as u16);
+                    Ok(())
+                }),
+                "fontFamily" => each(v, "fontFamily", ignored, &mut |name, f| {
+                    let family = f.as_str().ok_or_else(|| {
+                        ThemeError(format!("font family `{name}` must be a string"))
+                    })?;
+                    self.fonts.insert(name.into(), Some(family.into()));
+                    Ok(())
+                }),
+                "tracking" | "leading" | "radius" | "blur" | "perspective" | "aspect" => {
+                    let what = match key.as_str() {
+                        "tracking" => "tracking",
+                        "leading" => "leading",
+                        "radius" => "radius",
+                        "blur" => "blur",
+                        "perspective" => "perspective",
+                        _ => "aspect",
+                    };
+                    each(v, what, ignored, &mut |name, n| {
+                        let n = num(n, &format!("{what} `{name}`"))?;
+                        let target = match what {
+                            "tracking" => &mut self.tracking,
+                            "leading" => &mut self.leading,
+                            "radius" => &mut self.radius,
+                            "blur" => &mut self.blur,
+                            "perspective" => &mut self.perspective,
+                            _ => &mut self.aspect,
+                        };
+                        target.insert(name.into(), n);
+                        Ok(())
+                    })
+                }
+                "shadow" | "insetShadow" | "dropShadow" => each(v, key, ignored, &mut |name, s| {
+                    let list = s.as_str().and_then(css::box_shadows).ok_or_else(|| {
+                        ThemeError(format!("{key} `{name}` must be a CSS box-shadow"))
+                    })?;
+                    let target = match key.as_str() {
+                        "shadow" => &mut self.shadows,
+                        "insetShadow" => &mut self.inset_shadows,
+                        _ => &mut self.drop_shadows,
+                    };
+                    target.insert(name.into(), list);
+                    Ok(())
+                }),
+                "ease" => each(v, "ease", ignored, &mut |name, e| {
+                    let what = || ThemeError(format!("ease `{name}` must be [x1, y1, x2, y2]"));
+                    let Value::Array(a) = e else {
+                        return Err(what());
+                    };
+                    let n: Vec<f32> = a
+                        .iter()
+                        .filter_map(|x| x.as_f64().map(|x| x as f32))
+                        .collect();
+                    let [x1, y1, x2, y2] = n.as_slice() else {
+                        return Err(what());
+                    };
+                    self.ease.insert(name.into(), [*x1, *y1, *x2, *y2]);
+                    Ok(())
+                }),
+                other => ignored.push(format!("unknown key `{other}`")),
+            }
+        }
     }
 
     /// A color by name (`red-500`, `brand`).
@@ -704,7 +714,36 @@ mod tests {
         assert!(t.color("accent").is_some());
         assert_eq!(t.spacing, 8.0);
         assert_eq!(t.breakpoints[0].0.as_ref(), "tablet");
-        assert!(Theme::from_json(r#"{ "colours": {} }"#).is_err());
-        assert!(Theme::from_json(r#"{ "colors": { "x": "nope" } }"#).is_err());
+        assert!(Theme::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn what_it_cannot_read_is_left_out_entry_by_entry() {
+        let (t, ignored) = Theme::from_json_lenient(
+            r##"{ "colours": {}, "spacing": 2, "rem": "big",
+                 "colors": { "x": "nope", "ok": "#000", "brand": { "500": "#7c3aed", "600": 3 } },
+                 "radius": { "card": 14, "pill": "full" }, "ease": "linear", "aspect": 1 }"##,
+        )
+        .unwrap();
+        assert_eq!(t.spacing, 2.0);
+        assert!(t.color("ok").is_some());
+        assert!(t.color("brand-500").is_some());
+        assert!(t.color("x").is_none());
+        assert_eq!(t.radius.get("card"), Some(&14.0));
+        let mut ignored = ignored;
+        ignored.sort();
+        let mut expected = vec![
+            "unknown key `colours`",
+            "`rem` must be a number",
+            "color `x` must be a CSS color",
+            "color `brand-600` must be a CSS color",
+            "radius `pill` must be a number",
+            "`ease` must be an object",
+            "`aspect` must be an object",
+        ];
+        expected.sort();
+        assert_eq!(ignored, expected);
+        let (_, ignored) = Theme::from_json_lenient("[]").unwrap();
+        assert_eq!(ignored, ["`tailwind` is not an object"]);
     }
 }

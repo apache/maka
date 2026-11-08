@@ -29,13 +29,15 @@ const CONNECT: Duration = Duration::from_secs(60);
 /// `--target web` runs them in (else the one found on this machine); `fps`
 /// has the host log its performance monitor's readings; `display` (one-based)
 /// is the display the macOS host opens its windows on (by default a
-/// secondary one when there is one).
+/// secondary one when there is one); `foreground` lets the macOS host's apps
+/// become the active app, which run in the background otherwise.
 pub(crate) fn starter(
     target: Target,
     browser: Option<&Path>,
     work: &Path,
     fps: bool,
     display: Option<usize>,
+    foreground: bool,
 ) -> anyhow::Result<StartHost> {
     if browser.is_some() && target != Target::Web {
         anyhow::bail!("--browser goes with --target web");
@@ -51,6 +53,9 @@ pub(crate) fn starter(
     if display.is_some() && target != Target::Macos {
         anyhow::bail!("--display goes with --target macos");
     }
+    if foreground && target != Target::Macos {
+        anyhow::bail!("--foreground goes with --target macos");
+    }
     match target {
         Target::Web => return crate::test_web::starter(browser),
         Target::Ios => return crate::test_ios::starter(work, fps),
@@ -59,14 +64,17 @@ pub(crate) fn starter(
     }
     if !matches!(
         target,
-        Target::Macos | Target::Linux | Target::Windows | Target::Gpui
+        Target::Macos | Target::Linux | Target::Windows | Target::Gpui | Target::Tui
     ) {
-        anyhow::bail!("nsh test --target takes macos, linux, windows, gpui, web, ios or android");
+        anyhow::bail!(
+            "nsh test --target takes macos, linux, windows, gpui, tui, web, ios or android"
+        );
     }
     // Built (in a checkout) or found once, before the first test.
     let host = crate::runtime::test_host(target.platform())?;
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(target, &host, entry, options, fps, display).map(|h| Box::new(h) as Box<dyn Host>)
+        start(target, &host, entry, options, fps, display, foreground)
+            .map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
 
@@ -76,7 +84,7 @@ pub(crate) fn starter(
 /// page) or they fill a device's screen.
 pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
     use nsh_testing::Platform;
-    // This machine's desktop: the GPUI host's.
+    // This machine's desktop: the GPUI and terminal hosts'.
     let desktop = if cfg!(target_os = "macos") {
         Platform::Macos
     } else if cfg!(windows) {
@@ -92,7 +100,8 @@ pub(crate) fn host_target(target: Target) -> nsh_testing::HostTarget {
         Target::Linux => ("linux", Platform::Linux, true),
         Target::Web => ("web", Platform::Web, true),
         Target::Gpui => ("gpui", desktop, true),
-        Target::Tui => unreachable!("starter rejects terminal test hosts"),
+        // The terminal reports this machine's OS, in the terminal idiom.
+        Target::Tui => ("tui", desktop, true),
     };
     let mut host = nsh_testing::HostTarget::default();
     host.name = name.to_owned();
@@ -143,6 +152,7 @@ fn start(
     options: &HostOptions,
     fps: bool,
     display: Option<usize>,
+    foreground: bool,
 ) -> Result<TestHost, String> {
     let server = serve(entry, options)?;
     let entry = resolve(entry)?;
@@ -158,8 +168,21 @@ fn start(
         .arg("--data-dir")
         .arg(&data)
         .stdin(Stdio::null());
+    if target == Target::Tui {
+        command.arg("--headless");
+        command.arg("--log-file").arg(data.join("host.log"));
+        let config = crate::package::read_config(&entry).map_err(|e| e.to_string())?;
+        if let Some(cells) = config.tui.points_per_cell {
+            crate::run::parse_points_per_cell(&cells)?;
+            command.args(["--points-per-cell", &cells]);
+        }
+    }
     if fps {
         command.arg("--fps");
+    }
+    if target == Target::Windows {
+        // The window and its notifications show the app's name and icon.
+        command.args(crate::windows::host_args(&entry, &dir.join(".nsh")));
     }
     if target == Target::Macos {
         // A window AppKit restored from an earlier run would not be this one.
@@ -173,6 +196,11 @@ fn start(
         // it too: AppKit would shrink the window to the screen, and the
         // app would lay out in less room than the test expects.
         command.arg("--keep-window-size");
+        // Never the active app: the keyboard stays with the app the user
+        // types in, and the agent's input goes to the window directly.
+        if !foreground {
+            command.arg("--background");
+        }
     }
     if target == Target::Gpui && cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some()
     {
@@ -273,13 +301,13 @@ pub(crate) fn serve(entry: &Path, options: &HostOptions) -> Result<DevServer, St
         server.publish_root();
         return Ok(server);
     };
-    let capabilities = built.capabilities_json();
     server.serve_files(
         built
             .assets
             .iter()
-            .map(|asset| (asset.path.clone(), asset.source.clone())),
+            .map(|a| (a.path.clone(), a.source.clone())),
     );
+    let capabilities = built.capabilities_json();
     server.publish(
         built.bytecode,
         built.code,
@@ -287,6 +315,7 @@ pub(crate) fn serve(entry: &Path, options: &HostOptions) -> Result<DevServer, St
         AppInfo {
             capabilities,
             id: crate::package::app_id(entry).ok(),
+            window: crate::package::window_json(entry),
         },
         None,
         built.ui_sets,
@@ -315,5 +344,31 @@ pub(crate) fn indented(text: &str) -> String {
         String::new()
     } else {
         format!(":\n{}", text.trim_end())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--foreground` goes with the macOS host alone: the other targets
+    /// refuse it before anything is built or started.
+    #[test]
+    fn foreground_is_for_the_macos_host_only() {
+        for target in [
+            Target::Linux,
+            Target::Windows,
+            Target::Gpui,
+            Target::Web,
+            Target::Ios,
+            Target::Android,
+        ] {
+            let err = starter(target, None, Path::new("."), false, None, true).err();
+            assert_eq!(
+                err.map(|e| e.to_string()).as_deref(),
+                Some("--foreground goes with --target macos"),
+                "{target:?}"
+            );
+        }
     }
 }

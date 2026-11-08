@@ -80,6 +80,20 @@ pub fn main() -> std::process::ExitCode {
                     options.size = (w.parse().unwrap_or(390), h.parse().unwrap_or(844));
                 }
             }
+            // URL schemes that open the app (nsh.json `schemes`): `nsh run`
+            // registers them for the development host.
+            "--schemes" => {
+                options.schemes = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
+            // A URL the desktop opened the app with: GApplication's `open`
+            // hears it.
+            other if other.contains("://") => {}
             other => log::warn!("unknown argument {other}"),
         }
     }
@@ -88,6 +102,16 @@ pub fn main() -> std::process::ExitCode {
         AppSource::DevServer(format!("ws://127.0.0.1:{DEFAULT_PORT}{WS_PATH}"))
     });
     options.title = "nsh".to_owned();
+    // The desktop starts this host for the app's links: it names the app,
+    // so the running host of the app hears them.
+    if !options.schemes.is_empty() {
+        nsh_platform_linux::set_exec_args(vec![
+            "--app-id".to_owned(),
+            options.app_id.clone(),
+            "--schemes".to_owned(),
+            options.schemes.join(","),
+        ]);
+    }
     if run_app(source, options) == nsh_platform_linux::gtk4::glib::ExitCode::SUCCESS {
         std::process::ExitCode::SUCCESS
     } else {

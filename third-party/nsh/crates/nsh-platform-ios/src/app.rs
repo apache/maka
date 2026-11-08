@@ -6,7 +6,7 @@ use objc2::{
     runtime::AnyObject,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSSet, NSString, NSURL};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIResponder, UIScene, UISceneConfiguration,
     UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIViewController, UIWindow,
@@ -77,7 +77,7 @@ static LAUNCH: Mutex<Option<(AppSource, AppOptions)>> = Mutex::new(None);
 /// Main-thread state of the standalone app.
 struct AppState {
     _window: Retained<UIWindow>,
-    _view: AppView,
+    view: AppView,
 }
 
 thread_local! {
@@ -92,6 +92,17 @@ define_class!(
     unsafe impl NSObjectProtocol for AppDelegate {}
 
     unsafe impl UIApplicationDelegate for AppDelegate {
+        // Before launching finishes, or a press that starts the app is lost.
+        #[unsafe(method(application:willFinishLaunchingWithOptions:))]
+        fn will_finish_launching(
+            &self,
+            _application: &UIApplication,
+            _options: Option<&objc2::runtime::AnyObject>,
+        ) -> bool {
+            crate::notifications::install();
+            true
+        }
+
         #[unsafe(method_id(application:configurationForConnectingSceneSession:options:))]
         fn configuration_for_scene(
             &self,
@@ -124,7 +135,7 @@ define_class!(
             &self,
             scene: &UIScene,
             session: &UISceneSession,
-            _options: &UISceneConnectionOptions,
+            options: &UISceneConnectionOptions,
         ) {
             // SAFETY: reading an immutable UIKit constant.
             if *session.role() != *unsafe { UIWindowSceneSessionRoleApplication } {
@@ -134,6 +145,22 @@ define_class!(
                 return;
             };
             connect(self.mtm(), scene);
+            // The link that launched the app, if one did.
+            // SAFETY: a documented property, a set of `UIOpenURLContext`;
+            // nil when no link launched the app (iOS 27 returns nil, not an
+            // empty set).
+            let contexts: Option<Retained<NSSet<AnyObject>>> =
+                unsafe { msg_send![options, URLContexts] };
+            if let Some(contexts) = contexts {
+                url_schemes(&contexts);
+            }
+        }
+
+        // Links of the schemes the app claims (`CFBundleURLTypes`) while it
+        // runs.
+        #[unsafe(method(scene:openURLContexts:))]
+        fn open_url_contexts(&self, _scene: &UIScene, contexts: &NSSet<AnyObject>) {
+            url_schemes(contexts);
         }
     }
 
@@ -168,6 +195,21 @@ impl RootController {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         // SAFETY: UIViewController's designated initializer.
         unsafe { msg_send![Self::alloc(mtm), init] }
+    }
+}
+
+/// Hands the URLs of `contexts` (`UIOpenURLContext`s) to the app.
+fn url_schemes(contexts: &NSSet<AnyObject>) {
+    for context in contexts.iter() {
+        // SAFETY: `UIOpenURLContext`'s documented `URL` property.
+        let url: Retained<NSURL> = unsafe { msg_send![&*context, URL] };
+        let Some(url) = url.absoluteString() else {
+            continue;
+        };
+        APP.with(|app| match &*app.borrow() {
+            Some(app) => app.view.url_scheme(url.to_string()),
+            None => log::warn!("link dropped: no app runs"),
+        });
     }
 }
 
@@ -216,7 +258,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
     APP.with(|app| {
         *app.borrow_mut() = Some(AppState {
             _window: window,
-            _view: view,
+            view,
         })
     });
 }

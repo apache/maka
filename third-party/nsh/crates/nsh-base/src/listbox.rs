@@ -72,6 +72,7 @@ use rustc_hash::FxHasher;
 use crate::{
     popup::{self, DropdownFrame, OpenChangeReason, Presence},
     select::{SelectEntry, SelectGroup, SelectItem},
+    terminal::{MENU_CHECK, MENU_UNCHECKED, is_terminal},
 };
 
 /// How long typeahead keeps what was typed before it starts again.
@@ -791,7 +792,15 @@ impl Listbox {
                 When::NotEditing
             };
             let bind = |keys: &str, when: When, repeat: bool, f: Rc<dyn Fn()>| {
-                on_key_with(keys, KeyOptions { when, repeat }, move |_| f());
+                on_key_with(
+                    keys,
+                    KeyOptions {
+                        when,
+                        repeat,
+                        ..Default::default()
+                    },
+                    move |_| f(),
+                );
             };
             let moves = [
                 ("up", Move::Previous, when),
@@ -853,12 +862,40 @@ pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn 
                 KeyOptions {
                     when: When::NotEditing,
                     repeat: false,
+                    ..Default::default()
                 },
                 move |key| {
                     if let Some(c) = key.chars().next() {
                         typed(c);
                     }
                 },
+            );
+        }
+    });
+}
+
+/// Binds Tab and Shift+Tab while the list is `open`, wherever the focus
+/// is (the trigger, an input, a search field): `close` closes the list
+/// without taking the focus back, and the key goes on, so the focus moves
+/// to the next or previous control as Tab moves it (ARIA's combobox). The
+/// list would cover where the focus went. A key, not the focus leaving:
+/// on macOS the popup is a window of its own, and a press on it takes the
+/// key window from the trigger's before the press chooses.
+pub(crate) fn bind_tab_out(open: impl Fn() -> bool + 'static, close: Rc<dyn Fn()>) {
+    effect(move || {
+        if !open() {
+            return;
+        }
+        for key in ["tab", "shift+tab"] {
+            let close = close.clone();
+            on_key_with(
+                key,
+                KeyOptions {
+                    when: When::Always,
+                    repeat: false,
+                    pass_through: true,
+                },
+                move |_| close(),
             );
         }
     });
@@ -1001,10 +1038,23 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
         .on_viewable_items_change(move |v: &ViewableItems| lb.viewable(v))
         .element_ref(&lb.list)
     };
+    // A terminal's rows are whole titles, a blank Cell and their mark, one
+    // row each:
+    // the list is as wide as the widest (its rows are made as they come
+    // into view, so they tell no width), and the popup with it.
+    let widest = move || {
+        lb.items.with(|items| {
+            items
+                .iter()
+                .map(|i| measure_text("", &format!("{} {MENU_CHECK}", i.title)))
+                .fold(Points::ZERO, Points::max)
+        })
+    };
     let list = scroll()
         .role(AccessibilityRole::Listbox)
         .flex_shrink(1.0)
         .min_h(px(0.0))
+        .when(is_terminal(), |v| v.min_w(move || Length::from(widest())))
         .app_class(parts.list_class)
         .inline_style(parts.list_style)
         .child(rows);
@@ -1012,8 +1062,15 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
         move || lb.shown.with(|s| s.rows.is_empty()),
         move || parts.empty.place(|e| e),
     );
+    // A terminal draws a rule under the field, as `Command` does: its
+    // border is no Cell there, and the query would run into the first row.
+    let rule = when(
+        move || field.is_some() && lb.searchable.get() && crate::terminal::is_terminal(),
+        crate::terminal::rule_line,
+    );
     let mut content = vec![
         search.into_element(),
+        rule.into_element(),
         list.into_element(),
         empty.into_element(),
     ];
@@ -1051,12 +1108,16 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
         Some(Row::Header { title, first }) => Some((title, first)),
         _ => None,
     });
-    let custom = computed(move || parts.render_group.with(Option::is_some));
+    // A terminal's header is its title, one row (`crate::terminal`).
+    let terminal = is_terminal();
+    let custom = computed(move || !terminal && parts.render_group.with(Option::is_some));
     view()
         .role(AccessibilityRole::Header)
         .focusable(false)
-        .app_class(parts.group_class)
-        .inline_style(parts.group_style)
+        .when(!terminal, |v| {
+            v.app_class(parts.group_class)
+                .inline_style(parts.group_style)
+        })
         .child(dynamic(move || {
             if custom.get() {
                 let content = dynamic(move || {
@@ -1066,7 +1127,14 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
                 });
                 return content;
             }
-            text(move || group.get().map(|(title, _)| title).unwrap_or_default()).into_element()
+            // A terminal's header reads apart from the rows under it:
+            // bold, in the muted foreground.
+            text(move || group.get().map(|(title, _)| title).unwrap_or_default())
+                .when(terminal, |t| {
+                    t.font_weight(FontWeight::BOLD)
+                        .text_color(|| crate::theme::theme().muted_foreground)
+                })
+                .into_element()
         }))
         .into_element()
 }
@@ -1117,7 +1185,11 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
         }
     };
     let (down, tap) = (hooks.clone(), hooks);
-    let custom = computed(move || parts.render_item.with(Option::is_some));
+    // A terminal's row is the item's title after the chosen mark, one
+    // full-width row the terminal marks while highlighted
+    // (`crate::terminal`): neither the app's drawing nor its row style.
+    let terminal = is_terminal();
+    let custom = computed(move || !terminal && parts.render_item.with(Option::is_some));
     view()
         .role(AccessibilityRole::Option)
         .focusable(false)
@@ -1129,8 +1201,10 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
             ..AccessibilityState::default()
         })
         .project_focused(highlighted)
-        .app_class(parts.item_class)
-        .inline_style(move || parts.item_style.get())
+        .when(!terminal, |v| {
+            v.app_class(parts.item_class)
+                .inline_style(move || parts.item_style.get())
+        })
         .element_ref(&me)
         // The pointer highlights a row, as long as no button is down.
         .on_mouse_move(move |e: &MouseEvent| {
@@ -1162,8 +1236,33 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
                     Some(render.render(format!("item:{}", entry.index), entry))
                 });
             }
-            text(move || item.with(|i| i.as_ref().map(|i| i.title.clone()).unwrap_or_default()))
-                .into_element()
+            let title = text(move || {
+                item.with(|i| i.as_ref().map(|i| i.title.clone()).unwrap_or_default())
+            });
+            match terminal {
+                // The title from the row's start, the terminal's check at
+                // its end on the chosen rows, as a menu's checked items:
+                // the highlight is elsewhere once a key moves it. The mark
+                // is a Cell of its own after a blank one, blank itself on
+                // the other rows, so every title starts in one column.
+                true => view()
+                    .flex_row()
+                    .flex_grow(1.0)
+                    .child(title)
+                    .child(
+                        text(move || {
+                            let mark = if selected.get() {
+                                MENU_CHECK
+                            } else {
+                                MENU_UNCHECKED
+                            };
+                            SharedString::from(format!(" {mark}"))
+                        })
+                        .ml(auto()),
+                    )
+                    .into_element(),
+                false => title.into_element(),
+            }
         }))
         // The selected row as the popup opens: a view over it, which the
         // popup lays over the trigger.

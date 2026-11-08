@@ -21,6 +21,9 @@ crypto = ["quickjs-jit-stdlib/crypto"]
 
 [dependencies]
 serde_json.workspace = true
+serde.workspace = true
+# The language data numbers and dates format with (English built in).
+nsh-i18n.workspace = true
 log.workspace = true
 nsh-core.workspace = true
 rustc-hash.workspace = true
@@ -52,4 +55,4 @@ flate2.workspace = true
 zstd.workspace = true
 # The typed API check reads the crate's public API.
 syn = { workspace = true, features = ["visit"] }
-nsh-base.workspace = true
+nsh-base = { workspace = true, features = ["editor", "highlight", "plot", "rich-editor", "term"] }

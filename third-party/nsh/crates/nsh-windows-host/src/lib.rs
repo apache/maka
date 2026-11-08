@@ -15,6 +15,11 @@
 //!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
 //!   directory.
+//! - `--name <name>` names the app in the window's title and its
+//!   notifications; `nsh run` and `nsh test` pass the app's.
+//! - `--icon <file.ico>` is the app's icon: the window's (title bar,
+//!   taskbar) and its notifications'; `nsh run` and `nsh test` make one
+//!   from `nsh.json` `"icon"`.
 //!
 //! Without arguments it connects to the dev server on this machine.
 //!
@@ -31,6 +36,7 @@ pub fn main() -> std::process::ExitCode {
 
     dev::init_logging();
     let mut source = None;
+    let mut name = None;
     // As the release runner runs the app: on its own.
     let mut options = AppOptions {
         limits: Limits::standalone(),
@@ -75,6 +81,8 @@ pub fn main() -> std::process::ExitCode {
                     ));
                 }
             }
+            "--name" => name = args.next().filter(|name| !name.is_empty()),
+            "--icon" => options.icon = args.next().map(PathBuf::from),
             "--window-size" => match args.next().as_deref().and_then(parse_size) {
                 Some(size) => options.size = size,
                 None => log::warn!("--window-size takes <width>x<height> in points, as 390x844"),
@@ -86,8 +94,8 @@ pub fn main() -> std::process::ExitCode {
         use nsh_dev::protocol::{DEFAULT_PORT, WS_PATH};
         AppSource::DevServer(format!("ws://127.0.0.1:{DEFAULT_PORT}{WS_PATH}"))
     });
-    options.title = "nsh".to_owned();
-    run_app(source, options, |_| {})
+    options.title = name.unwrap_or_else(|| "nsh".to_owned());
+    run_app(source, options)
 }
 
 /// `1200x800` → `(1200, 800)` (points; both positive).

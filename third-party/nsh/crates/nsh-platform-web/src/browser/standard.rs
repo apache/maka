@@ -110,7 +110,25 @@ impl HashState {
 }
 impl Standard {
     pub(super) fn call(&self, op: u32, args: &Value) -> Result<Value, PropError> {
+        if op == 902 {
+            let Some(url) = URL.with(|u| u.get()) else {
+                return Err(PropError("url is not linked into this runtime".into()));
+            };
+            return url(args);
+        }
         #[cfg(feature = "std-crypto")]
+        if matches!(op, 900 | 903..=906) {
+            let Some(crypto) = CRYPTO.with(|c| c.get()) else {
+                return Err(PropError("crypto is not linked into this runtime".into()));
+            };
+            return crypto(self, op, args);
+        }
+        self.compress(op, args)
+    }
+
+    /// `crypto`'s hashes and HMACs (`nsh_std_crypto`).
+    #[cfg(feature = "std-crypto")]
+    fn crypto(&self, op: u32, args: &Value) -> Result<Value, PropError> {
         if matches!(op, 903..=905) {
             let id = args.index(0)?.as_number().unwrap_or(0.0) as u32;
             if op == 905 {
@@ -135,17 +153,7 @@ impl Standard {
             return Value::bytes(&hash.finish());
         }
         let name = args.index(0)?.as_string().unwrap_or_default();
-        if op == 902 {
-            let input = args.index(1)?.as_string().unwrap_or_default();
-            return Value::string(&match name.as_str() {
-                "domainToASCII" => url::quirks::domain_to_ascii(&input),
-                "domainToUnicode" => url::quirks::domain_to_unicode(&input),
-                _ => return Err(PropError("unknown URL operation".into())),
-            });
-        }
-        #[cfg(feature = "std-crypto")]
-        if matches!(op, 900 | 906) {
-            #[cfg(feature = "std-crypto")]
+        {
             let key = args.index(1)?.read_bytes();
             let algorithm = name.to_ascii_uppercase().replace('-', "");
             let state = match (op, algorithm.as_str()) {
@@ -217,22 +225,71 @@ impl Standard {
                 .ok_or_else(|| PropError("hash IDs exhausted".into()))?;
             self.next.set(id);
             self.hashes.borrow_mut().insert(id, state);
-            return Ok(Value::number(id.into()));
+            Ok(Value::number(id.into()))
         }
+    }
+
+    /// `zlib`'s operations (`nsh_std_zlib`).
+    fn compress(&self, op: u32, args: &Value) -> Result<Value, PropError> {
         #[cfg(not(feature = "std-zlib"))]
         {
+            let _ = (op, args);
             Err(PropError(
                 "standard operation unavailable in this runtime".into(),
             ))
         }
         #[cfg(feature = "std-zlib")]
         {
+            let name = args.index(0)?.as_string().unwrap_or_default();
             let Some(compress) = ZLIB.with(|z| z.get()) else {
                 return Err(PropError("zlib is not linked into this runtime".into()));
             };
             compress(op, &name, args)
         }
     }
+}
+
+type Url = fn(&Value) -> Result<Value, PropError>;
+
+#[cfg(feature = "std-crypto")]
+type Crypto = fn(&Standard, u32, &Value) -> Result<Value, PropError>;
+
+thread_local! {
+    /// `url`'s operations, once the page asked for them (`nsh_std_url`).
+    static URL: std::cell::Cell<Option<Url>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "std-crypto")]
+thread_local! {
+    /// `crypto`'s operations, once the page asked for them (`nsh_std_crypto`).
+    static CRYPTO: std::cell::Cell<Option<Crypto>> = const { std::cell::Cell::new(None) };
+}
+
+/// Links `url`'s `domainToASCII` and `domainToUnicode` (and IDNA with
+/// them): the page calls it when the app imports `url`, and a runtime
+/// linked for an app that does not drops them.
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn nsh_std_url() {
+    URL.with(|u| u.set(Some(domain)));
+}
+
+fn domain(args: &Value) -> Result<Value, PropError> {
+    let name = args.index(0)?.as_string().unwrap_or_default();
+    let input = args.index(1)?.as_string().unwrap_or_default();
+    Value::string(&match name.as_str() {
+        "domainToASCII" => url::quirks::domain_to_ascii(&input),
+        "domainToUnicode" => url::quirks::domain_to_unicode(&input),
+        _ => return Err(PropError("unknown URL operation".into())),
+    })
+}
+
+/// Links `crypto`'s hashes and HMACs: the page calls it when the app
+/// imports `crypto` or may use its globals, and a runtime linked for an
+/// app that does neither drops them.
+#[cfg(feature = "std-crypto")]
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn nsh_std_crypto() {
+    CRYPTO.with(|c| c.set(Some(Standard::crypto)));
 }
 
 #[cfg(feature = "std-zlib")]

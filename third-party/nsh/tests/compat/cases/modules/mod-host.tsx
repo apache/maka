@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
 // on a platform without a host (the headless runtime's): `available()` is
 // false, a call rejects at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`
 // (messages are for people: an app branches on `code`), and the root's

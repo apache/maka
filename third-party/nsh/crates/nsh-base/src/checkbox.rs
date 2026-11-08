@@ -3,6 +3,8 @@
 
 use nsh_core::{AccessibilityState, Checked, element::Style, prelude::*};
 
+use crate::terminal::{checkbox_mark, is_terminal, mark_view};
+
 /// The props of [`Checkbox`].
 #[derive(Debug, Clone, PartialEq, Props)]
 pub struct CheckboxProps {
@@ -73,12 +75,17 @@ pub enum CheckboxEvent {
 /// each follow the checkbox's state (or `checkedStyle`,
 /// `indeterminateStyle` and `disabledStyle` on the checkbox). `hitSlop`
 /// widens where presses count past its bounds, as a view's does.
+///
+/// In a terminal it shows the terminal's checkbox, `[x]`, `[ ]` or `[-]`
+/// and a space, in place of the indicator, then its children, in a row
+/// ([`crate::terminal`]).
 #[component]
 pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElement {
     let (checked, indeterminate) = (props.checked, props.indeterminate);
     // Indeterminate wins over checked, as `gpui-base`'s `CheckboxState`
     // holds one of the three.
     let shows_checked = move || checked.get() && !indeterminate.get();
+    let terminal = is_terminal();
     view()
         .disabled(props.disabled)
         .role(move || props.role.get().unwrap_or(AccessibilityRole::Checkbox))
@@ -100,14 +107,20 @@ pub fn Checkbox(props: CheckboxProps, cx: Scope<CheckboxEvent>) -> impl IntoElem
             let next = indeterminate.get_untracked() || !checked.get_untracked();
             cx.emit(CheckboxEvent::Change(next))
         })
-        .child(
-            view()
+        .when(terminal, |v| v.flex_row())
+        .child(match terminal {
+            // The terminal's own checkbox, in place of the app's indicator.
+            true => {
+                mark_view(move || checkbox_mark(checked.get(), indeterminate.get())).into_element()
+            }
+            false => view()
                 .project_checked(shows_checked)
                 .project_indeterminate(indeterminate)
                 .project_disabled(props.disabled)
                 .app_class(props.indicator_class)
                 .inline_style(props.indicator_style)
-                .child(props.indicator.place(|mark| mark)),
-        )
-        .child(props.children)
+                .child(props.indicator.place(|mark| mark))
+                .into_element(),
+        })
+        .child(crate::terminal::beside_mark(terminal, props.children))
 }

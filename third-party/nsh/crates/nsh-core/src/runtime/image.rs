@@ -2,13 +2,14 @@
 //! (`nsh-js` makes it the image element's component). A URL the
 //! app's `network` capability does not grant rejects with
 //! `ERR_ACCESS_DENIED` (checked here, in the call, as the core checks the
-//! loads of Rust components' calls).
+//! loads of Rust components' calls). In a terminal, which decodes no
+//! images, both reject at once with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
 
 use crate::{
     ImageScales, ImageSource,
     element::{
         ImageSize, JsError, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, System, TsTypes,
-        module,
+        codes, module,
     },
     geometry::DevicePixels,
 };
@@ -107,14 +108,15 @@ impl Image {
     /// views load and resolves with the imported file's size. Without
     /// dimensions, it falls back to the variant's pixels over its scale.
     /// Rejects when the image cannot load, with `ERR_ACCESS_DENIED` when
-    /// the `network` capability does not grant its URL.
+    /// the `network` capability does not grant its URL and
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` in a terminal.
     pub(crate) async fn get_size(src: ImageUrl, sys: System) -> Result<ImageSize, JsError> {
         let imported_size = src.size;
         let (url, scale) = src.pick();
         granted(&sys, &url)?;
         let size = crate::prelude::image_size(url)
             .await
-            .map_err(JsError::Error)?;
+            .map_err(|e| failed("getSize", e))?;
         if let Some(size) = imported_size {
             return Ok(size);
         }
@@ -128,15 +130,26 @@ impl Image {
     /// Loads the image ahead of showing it: resolves once its bytes are in
     /// memory, rejects with the error when it cannot load
     /// (`ERR_ACCESS_DENIED` when the `network` capability does not grant
-    /// its URL). An imported image with variants loads the variant the
-    /// views load at the screen's pixel ratio.
+    /// its URL, `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` in a terminal). An
+    /// imported image with variants loads the variant the views load at
+    /// the screen's pixel ratio.
     pub(crate) async fn prefetch(src: ImageUrl, sys: System) -> Result<(), JsError> {
         let url = src.pick().0;
         granted(&sys, &url)?;
         crate::prelude::prefetch_image(url)
             .await
-            .map_err(JsError::Error)
+            .map_err(|e| failed("prefetch", e))
     }
+}
+
+/// The rejection of `Image.{call}` for the core's answer `error`: coded
+/// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` where the platform decodes no
+/// images (a terminal, which the core answers at once).
+fn failed(call: &str, error: String) -> JsError {
+    if error == crate::core::NO_IMAGES_IN_A_TERMINAL {
+        return JsError::Error(format!("Image.{call}: {error}")).with_code(codes::UNAVAILABLE);
+    }
+    JsError::Error(error)
 }
 
 /// Whether the app may load the image at `url`: why not when it may not.

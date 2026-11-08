@@ -101,6 +101,9 @@ prop scroll:text:"Feed 9" contentOffset y=240
 # Fully visible items only count as viewable: 0 and 1 of the 100 points,
 # not 2, half shown.
 expect Viewable: 0,1
+# A bottom-aligned list opens at its end: 10 items of 40 in 100.
+prop scroll:text:"Tail 9" contentOffset y=300
+covers [props] alignment
 covers [props] maintainVisibleContentPosition
 covers [props] viewabilityConfig
 covers [events] List.onViewableItemsChange
@@ -190,20 +193,17 @@ tap id:case-props-media-webview
 expect HTML
 # The web view as the platform receives it on iOS.
 prop id:page src https://example.com/start
-noprop id:page html
-noprop id:page baseUrl
 prop id:page injectedJavaScript window.after = 1;
 prop id:page injectedJavaScriptBeforeContentLoaded window.before = 1;
 prop id:page javaScriptEnabled false
 prop id:page userAgent CompatAgent/1
 prop id:page scrollable false
+prop id:page incognito true
 prop id:page ios.allowsBackForwardNavigationGestures true
 # A page of HTML with its base URL when the app switches to it.
 tap id:html
 prop id:page html <p>Hi</p>
 prop id:page baseUrl https://example.com/
-noprop id:page src
-covers [props] src
 covers [props] html
 covers [props] baseUrl
 covers [props] injectedJavaScript
@@ -211,6 +211,7 @@ covers [props] injectedJavaScriptBeforeContentLoaded
 covers [props] javaScriptEnabled
 covers [props] userAgent
 covers [props] scrollable
+covers [props] incognito
 covers [props] ios.allowsBackForwardNavigationGestures
 # props-scroll-behavior
 tap id:case-props-scroll-behavior
@@ -332,6 +333,9 @@ prop id:hint accessibilityHint Opens the settings
 noprop id:plain accessibilityHint
 prop id:state accessibilityState disabled=true checked=mixed expanded=false
 prop id:plain accessibilityState {}
+# A popup's trigger: `hasPopup` beside `expanded` (nsh-compat's values.rs
+# shows `hasPopup` once it reads the field).
+prop id:popup-state accessibilityState expanded=false hasPopup=true
 prop id:value accessibilityValue min=0 max=10 now=4 text=four
 noprop id:plain accessibilityValue
 prop id:hidden accessibilityElementsHidden true

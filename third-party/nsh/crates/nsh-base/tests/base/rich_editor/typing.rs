@@ -63,6 +63,27 @@ fn typing_at_the_end_appends() {
 }
 
 #[test]
+fn typing_the_same_text_after_moving_the_caret_inserts_it() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+    keys(&mut app, &["left"]);
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("aa"))"#));
+}
+
+#[test]
+fn typing_the_same_text_after_backspace_inserts_it() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+    keys(&mut app, &["backspace"]);
+    see(&mut app, &tree("doc(paragraph)"));
+    app.type_text("id:editor", "a").unwrap();
+    see(&mut app, &tree(r#"doc(paragraph("a"))"#));
+}
+
+#[test]
 fn typing_in_the_second_block_leaves_the_first() {
     let mut app = start(paragraphs(&["one", "two"]));
     focus(&mut app);

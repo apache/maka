@@ -28,6 +28,10 @@ use super::{
 /// is in progress).
 const SINK_LIMIT: usize = 256;
 
+/// How long the carets blink on Linux after the last edit, caret move or
+/// focus change: GTK's `gtk-cursor-blink-timeout`.
+const BLINK_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A press being dragged: where it started and what it selects by.
 #[derive(Debug, Clone, Copy)]
 struct Drag {
@@ -57,6 +61,9 @@ struct Sink {
     emptied: Option<String>,
     /// An input method is composing.
     composing: bool,
+    /// What the sink reported while composing: the text takes it when the
+    /// composition ends.
+    held: Option<String>,
 }
 
 /// The editor's controller. Cloned into the closures that need it.
@@ -100,6 +107,9 @@ pub(crate) struct Ed {
     pub(crate) hscroll: ElementRef,
     pub(crate) input: ElementRef,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
+    /// Linux: stops the blinking ten seconds after the last edit, caret
+    /// move or focus change.
+    blink_stop: Rc<RefCell<Option<Spawned<()>>>>,
     /// What language features are built on (`hooks.rs`).
     pub(crate) hooks: super::hooks::Hooks,
     /// The selections moves left, for `undoSelection`.
@@ -128,7 +138,7 @@ impl Ed {
         let font = Font {
             family: font_family(props.font_family.get_untracked()),
             size: props.font_size.get_untracked(),
-            line_height: props.line_height.get_untracked(),
+            line_height: crate::terminal::row_height(props.line_height.get_untracked()),
         };
         let measure = measurer(&font);
         let text = props
@@ -168,6 +178,7 @@ impl Ed {
             hscroll: element_ref(),
             input: element_ref(),
             blink_task: Rc::default(),
+            blink_stop: Rc::default(),
             hooks: super::hooks::Hooks::new(),
             sel_history: Rc::new(RefCell::new(sel_history)),
             expansions: Rc::default(),
@@ -290,9 +301,10 @@ impl Ed {
             let font = Font {
                 family: font_family(ed.props.font_family.get()),
                 size: ed.props.font_size.get(),
-                line_height: ed.props.line_height.get(),
+                line_height: crate::terminal::row_height(ed.props.line_height.get()),
             };
             let mut st = ed.st.borrow_mut();
+            st.display.set_cells(crate::terminal::is_terminal());
             if st.font != font {
                 st.display.set_measure(measurer(&font));
                 st.font = font;
@@ -400,7 +412,12 @@ impl Ed {
                 return;
             }
             let apple = matches!(os(), Os::Ios | Os::MacOs);
-            for binding in keymap::default_bindings(apple) {
+            // Escape is bound below, only while it has carets or a
+            // selection to collapse.
+            for binding in keymap::default_bindings(apple)
+                .into_iter()
+                .filter(|b| b.command != Command::SingleSelection)
+            {
                 let e = ed.clone();
                 let command = binding.command;
                 on_key_with(
@@ -408,6 +425,7 @@ impl Ed {
                     KeyOptions {
                         when: When::Always,
                         repeat: binding.repeat,
+                        ..Default::default()
                     },
                     move |_| e.run(command),
                 );
@@ -423,6 +441,28 @@ impl Ed {
             on_key_with("mod+c", always(false), move |_| e.copy());
             let e = ed.clone();
             on_key_with("mod+x", always(false), move |_| e.cut());
+        });
+        // Escape collapses several carets or a selection to one caret;
+        // with nothing to collapse it is left to the page (a dialog closes,
+        // the focus can leave the editor), so the editor is no trap.
+        let collapsible = {
+            let ed = self.clone();
+            computed(move || {
+                ed.sel_rev.get();
+                let st = ed.st.borrow();
+                let all = st.selections.all();
+                all.len() > 1 || all.iter().any(|s| !s.is_empty())
+            })
+        };
+        let ed = self.clone();
+        effect(move || {
+            if !ed.focused.get() || !collapsible.get() {
+                return;
+            }
+            let e = ed.clone();
+            on_key_with("escape", always(false), move |_| {
+                e.run(Command::SingleSelection)
+            });
         });
     }
 
@@ -703,12 +743,29 @@ impl Ed {
     /// The sink's text changed to `text`: what was typed (or replaced by an
     /// input method, or autocorrected) at the caret.
     pub(crate) fn sink_changed(&self, text: &str) {
+        // Platforms report the uncommitted text (pinyin, kana) as the sink's
+        // while it lasts; the text takes only the commit.
+        if self.sink.borrow().composing {
+            self.sink.borrow_mut().held = Some(text.to_owned());
+            self.sink_value.set(text.to_owned());
+            return;
+        }
+        self.sink_edited(text);
+    }
+
+    /// Applies the sink's `text`: what was deleted and typed since.
+    fn sink_edited(&self, text: &str) {
         let (deleted, inserted) = {
             let mut sink = self.sink.borrow_mut();
             let base = match sink.emptied.take() {
-                // The platform dropped the empty value: the text still
-                // extends what it held.
-                Some(old) if text.starts_with(old.as_str()) => old,
+                // The platform dropped the empty value: the text still extends
+                // what it held. A text equal to what it held was typed again
+                // into the emptied sink: platforms report each edit, so an
+                // edit to the text the platform kept would show. Linux reports
+                // the edits made before it is idle as one: there, the text
+                // deleted and typed again before the empty value arrives reads
+                // the same, and is inserted a second time.
+                Some(old) if text != old && text.starts_with(old.as_str()) => old,
                 Some(_) => String::new(),
                 None => std::mem::take(&mut sink.text),
             };
@@ -752,9 +809,23 @@ impl Ed {
         self.sink_value.set(String::new());
     }
 
-    /// An input method's composition started, changed or ended.
+    /// An input method's composition started, changed or ended: its text
+    /// shows at the caret and the text waits for the commit, which asks for
+    /// no completions (the input method offers its own candidates).
     pub(crate) fn composition(&self, composing: bool, text: &str) {
-        self.sink.borrow_mut().composing = composing;
+        let (started, held) = {
+            let mut sink = self.sink.borrow_mut();
+            let started = composing && !sink.composing;
+            sink.composing = composing;
+            (started, if composing { None } else { sink.held.take() })
+        };
+        if started {
+            self.hide_completions();
+            self.hide_inline_completion();
+        }
+        if let Some(held) = held {
+            self.without_completions(|| self.sink_edited(&held));
+        }
         {
             let mut st = self.st.borrow_mut();
             st.composition = (composing && !text.is_empty()).then(|| text.to_owned());
@@ -765,7 +836,11 @@ impl Ed {
     /// A key the sink reports (soft keyboards: Backspace in an empty
     /// sink, which changes nothing there).
     pub(crate) fn sink_key(&self, key: &str) {
-        if key == "Backspace" && self.sink.borrow().text.is_empty() {
+        // A Backspace in a composition deletes what is composed.
+        let sink = self.sink.borrow();
+        let empty = sink.text.is_empty() && !sink.composing;
+        drop(sink);
+        if key == "Backspace" && empty {
             self.run(Command::Backspace);
         }
     }
@@ -1011,10 +1086,17 @@ impl Ed {
         self.restart_blink();
     }
 
-    /// Shows the carets and blinks them while the editor has the focus.
+    /// Shows the carets and blinks them while the editor has the focus. On
+    /// Linux they stop blinking, shown, after ten seconds with no edit, caret
+    /// move or focus change (GTK's `gtk-cursor-blink-timeout`, as the text
+    /// inputs do): each blink draws a frame, so an editor left focused would
+    /// otherwise wake the app and the GPU twice a second for as long as its
+    /// window stays open.
     fn restart_blink(&self) {
-        if let Some(task) = self.blink_task.borrow_mut().take() {
-            task.cancel();
+        for task in [&self.blink_task, &self.blink_stop] {
+            if let Some(task) = task.borrow_mut().take() {
+                task.cancel();
+            }
         }
         self.blink.set(true);
         if !self.focused.get_untracked() {
@@ -1025,6 +1107,16 @@ impl Ed {
             blink.update(|b| *b = !*b);
         });
         *self.blink_task.borrow_mut() = Some(task);
+        if os() == Os::Linux {
+            let blinking = self.blink_task.clone();
+            let stop = set_timeout(BLINK_TIMEOUT, move || {
+                if let Some(task) = blinking.borrow_mut().take() {
+                    task.cancel();
+                }
+                blink.set(true);
+            });
+            *self.blink_stop.borrow_mut() = Some(stop);
+        }
     }
 
     // The ref's other methods.
@@ -1576,6 +1668,7 @@ fn always(repeat: bool) -> KeyOptions {
     KeyOptions {
         when: When::Always,
         repeat,
+        ..Default::default()
     }
 }
 

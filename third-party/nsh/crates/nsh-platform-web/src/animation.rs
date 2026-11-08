@@ -24,6 +24,10 @@ pub(crate) struct UiAnimation {
     pub(crate) finished: Vec<Finished>,
     /// View id -> bound properties.
     bindings: FxHashMap<u32, Vec<(AnimationProp, NodeId)>>,
+    /// Views' CSS properties written inline that are bound no more (a view
+    /// taken over by an element without them): the next outputs clear them,
+    /// so the view shows its own style again.
+    unbound: Vec<(u32, &'static str)>,
     /// View id -> static transform list, whose animated entries the
     /// bindings replace.
     statics: FxHashMap<u32, Transform>,
@@ -35,6 +39,19 @@ pub(crate) struct UiAnimation {
     /// Scroll view id -> its sticky cells that stick an animated value
     /// further in, with that value's node.
     sticky: FxHashMap<u32, Vec<(u32, NodeId)>>,
+}
+
+/// The CSS property `nsh.js` writes a bound property into (`op_a`), for
+/// those it writes inline.
+fn inline_property(prop: AnimationProp) -> Option<&'static str> {
+    match prop {
+        AnimationProp::Opacity => Some("opacity"),
+        AnimationProp::BackgroundColor => Some("background-color"),
+        AnimationProp::BorderColor => Some("border-color"),
+        AnimationProp::Color => Some("color"),
+        AnimationProp::Transform(_) => Some("transform"),
+        _ => None,
+    }
 }
 
 fn value_css(v: AnimationValue) -> String {
@@ -51,6 +68,19 @@ impl UiAnimation {
         match item {
             MountItem::Animation(op) => self.graph.apply(op.clone(), &mut self.finished),
             MountItem::AnimationBindings { id, bindings } => {
+                let kept = |css| {
+                    bindings
+                        .iter()
+                        .any(|&(p, _)| inline_property(p) == Some(css))
+                };
+                for &(prop, _) in self.bindings.get(id).into_iter().flatten() {
+                    if let Some(css) = inline_property(prop)
+                        && !kept(css)
+                        && !self.unbound.contains(&(*id, css))
+                    {
+                        self.unbound.push((*id, css));
+                    }
+                }
                 if bindings.is_empty() {
                     self.bindings.remove(id);
                 } else {
@@ -119,6 +149,13 @@ impl UiAnimation {
 
     pub(crate) fn animating(&self) -> bool {
         self.graph.is_animating()
+    }
+
+    /// When the graph next has an animation that ends by itself to end
+    /// (seconds, the clock [`UiAnimation::tick`] is given): what the page
+    /// ticks it at while no animation frames come ([`Graph::deadline`]).
+    pub(crate) fn deadline(&self, now: f64) -> Option<f64> {
+        self.graph.deadline(now)
     }
 
     /// Whether the graph runs an animation that ends by itself (not one
@@ -219,8 +256,12 @@ impl UiAnimation {
         }
     }
 
-    /// Every bound property's current value.
-    pub(crate) fn outputs(&self, out: &mut Out) {
+    /// Every bound property's current value, after clearing the ones bound
+    /// no more (`nsh.js` removes an inline property set to "").
+    pub(crate) fn outputs(&mut self, out: &mut Out) {
+        for (view, css) in self.unbound.drain(..) {
+            out.animation(view, css, "");
+        }
         for (&view, bindings) in &self.bindings {
             let mut overrides = [None; MAX_TRANSFORMS];
             let mut transformed = false;

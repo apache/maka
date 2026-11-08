@@ -2,10 +2,24 @@
 //! `desktop`, `paneWidth` and `columnsFor`): wide windows show a sidebar of
 //! the demos and the open one beside it, in columns.
 
-use nsh_core::prelude::*;
+use nsh_core::{element::Idiom, prelude::*};
 
 /// The width of the desktop layout's sidebar.
 pub(crate) const SIDEBAR: f32 = 264.0;
+
+/// The width of the terminal's sidebar: 20 Cells, room for the longest
+/// demo name and group title on their one-Cell gutters.
+const TERMINAL_SIDEBAR: f32 = 160.0;
+
+/// The width of the sidebar on this platform: [`SIDEBAR`], or in a
+/// terminal its narrower one.
+pub(crate) fn sidebar_width() -> f32 {
+    if terminal() {
+        TERMINAL_SIDEBAR
+    } else {
+        SIDEBAR
+    }
+}
 
 /// Whether the gallery takes its desktop layout: a sidebar of the demos
 /// next to the open one, demos in columns, hover states. Desktops take it
@@ -17,10 +31,25 @@ pub(crate) fn desktop() -> bool {
     window().width >= if is_desktop() { px(700.0) } else { px(900.0) }
 }
 
+/// Whether the gallery runs in a terminal (as the TSX gallery's
+/// `terminal`): it leaves out what a terminal program would not show (the
+/// logo, icon tiles, badges), puts on one row what other platforms stack,
+/// and spaces in whole Cells ([`TERMINAL_ROW`], [`TERMINAL_COLUMN`]).
+pub(crate) fn terminal() -> bool {
+    idiom() == Idiom::Terminal
+}
+
+/// One Cell row in points (the default 8 × 16 points per Cell): the
+/// terminal's line height and its unit of vertical space.
+pub(crate) const TERMINAL_ROW: f32 = 16.0;
+
+/// One Cell column in points: the terminal's unit of horizontal space.
+pub(crate) const TERMINAL_COLUMN: f32 = 8.0;
+
 /// The width of the desktop layout's content pane, right of the sidebar.
 /// Reading it in a binding subscribes to the window's size.
 pub(crate) fn pane_width() -> f32 {
-    window().width.0 - SIDEBAR
+    window().width.0 - sidebar_width()
 }
 
 /// How many columns at least `min` pt wide fit in `width` (the content

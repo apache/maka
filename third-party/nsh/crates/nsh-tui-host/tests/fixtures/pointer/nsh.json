@@ -1,0 +1,6 @@
+{
+  "name": "Terminal pointer acceptance",
+  "id": "com.longbridge.nsh.test.pointer",
+  "version": "1.0.0",
+  "theme": "../../../../../examples/nsh-gallery-ui/theme.json"
+}

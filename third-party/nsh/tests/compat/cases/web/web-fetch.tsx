@@ -202,6 +202,11 @@ async function run() {
     const x = await fetch(flag.url);
     return [x.headers.get("content-type"), x.url === flag.url];
   });
+  await check("fetch.assetSpelling", async () => {
+    // The scheme in any case, a query and a fragment: the same file.
+    const x = await fetch(`ASSET:${flag.url.slice("asset:".length)}?v=2#top`);
+    return [x.status, x.url, x.headers.get("content-type"), (await x.bytes()).length];
+  });
   await check("fetch.assetMissing", () => fetch("asset:/images/missing.png"));
   await check("fetch.badScheme", () => fetch("ftp://h.test/x"));
   await check("fetch.badUrl", () => fetch("http://"));

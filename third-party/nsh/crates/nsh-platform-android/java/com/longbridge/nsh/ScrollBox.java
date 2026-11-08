@@ -30,6 +30,16 @@ final class ScrollBox extends FrameLayout implements Node {
     final Mounter mounter;
     final int id;
     final Decor decor = new Decor();
+
+    /** An outer box shadow draws outside the bounds, and compositing the
+     * view at alpha < 1 into the bounds-clipped offscreen buffer would cut
+     * it; such a view reports no overlapping rendering, so the alpha
+     * applies per draw op and the shadow fades with the content. */
+    @Override
+    public boolean hasOverlappingRendering() {
+        return !decor.hasOuterShadows();
+    }
+
     /** The events it listens to, kinds below 64 ({@link Mounter#wants} has all). */
     long events;
     boolean horizontal;
@@ -579,11 +589,6 @@ final class ScrollBox extends FrameLayout implements Node {
             if (animated) ((HorizontalScrollView) scroller).smoothScrollTo(x, y);
             else scroller.scrollTo(x, y);
         }
-    }
-
-    /** A retirement must cancel this view's deferred input completion. */
-    void cancelPendingScroll() {
-        removeCallbacks(settled);
     }
 
     /** Scrolling came to rest (no API for it: no change for a moment). */

@@ -8,6 +8,7 @@ use std::{rc::Rc, time::Duration};
 
 use nsh_core::prelude::*;
 
+use super::spacex;
 use crate::ui::{
     Badge, Button, ButtonVariant, Finish, Finished, IconName, Stat, Tone, bind_refresh, colors,
     columns_for, desktop, icon, pane_width, radius,
@@ -82,7 +83,7 @@ fn row(photo: Memo<Option<Photo>>) -> impl IntoElement {
                 .h(px(76.0))
                 .child(
                     image(field(|p| {
-                        format!("https://picsum.photos/seed/{}/112/112", p.id)
+                        spacex::url(spacex::ALL[p.id % spacex::ALL.len()], "360x360")
                     }))
                     .size(px(56.0))
                     .rounded(px(radius::INSET))
@@ -160,7 +161,7 @@ fn tile(photo: Memo<Option<Photo>>) -> impl IntoElement {
                 .hover(|s| s.bg(colors::SURFACE))
                 .child(
                     image(field(|p| {
-                        format!("https://picsum.photos/seed/{}/480/360", p.id)
+                        spacex::url(spacex::ALL[p.id % spacex::ALL.len()], "small")
                     }))
                     .w_full()
                     .aspect_ratio(4.0 / 3.0)

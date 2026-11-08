@@ -75,13 +75,44 @@ impl HttpResponse {
 /// not grant the host).
 #[must_use = "a request does nothing unless awaited"]
 #[derive(Debug)]
-pub struct Fetch(pub(crate) Answer<Result<HttpResponse, String>>);
+pub struct Fetch(pub(crate) Answer<Result<HttpResponse, FetchFailure>>);
+
+impl Fetch {
+    /// The response, or why there is none with a refusal kept apart from a
+    /// failure: what the runtime's module functions reject with, a refusal
+    /// as `ERR_ACCESS_DENIED` (`registerFont`).
+    pub(crate) async fn detailed(self) -> Result<HttpResponse, FetchFailure> {
+        self.0.await
+    }
+}
 
 impl Future for Fetch {
     type Output = Result<HttpResponse, String>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx)
+        Pin::new(&mut self.0)
+            .poll(cx)
+            .map(|response| response.map_err(FetchFailure::into_message))
+    }
+}
+
+/// Why a task's request has no response ([`Fetch::detailed`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FetchFailure {
+    /// The network failed (no response, or the body broke off): why.
+    Failed(String),
+    /// The app's capabilities do not grant `url`, the request's or a
+    /// redirect's (the engine checks every hop): why, and that URL
+    /// ([`Core::fetch_refused`](crate::Core::fetch_refused)).
+    Refused { message: String, url: String },
+}
+
+impl FetchFailure {
+    /// Why, for people.
+    fn into_message(self) -> String {
+        match self {
+            Self::Failed(message) | Self::Refused { message, .. } => message,
+        }
     }
 }
 
@@ -94,6 +125,11 @@ pub(crate) fn fetch(request: HttpRequest) -> (Fetch, Action) {
 /// The screen reader reads `message`.
 pub(crate) fn announce(message: String) -> Action {
     Action::Command(ROOT_ID, Command::Announce(message))
+}
+
+/// Turns the performance monitor on or off.
+pub(crate) fn perf_monitor(enabled: bool) -> Action {
+    Action::Command(ROOT_ID, Command::PerfMonitor(enabled))
 }
 
 /// Puts `text` on the system clipboard.
@@ -146,12 +182,26 @@ pub(crate) fn clipboard_files() -> (Answer<Vec<String>>, Action) {
     (answer, Action::ReadClipboard(ClipboardRead::Files(slot)))
 }
 
+/// Registers the font in `data`.
+pub(crate) fn register_font(data: Vec<u8>) -> (Answer<Result<String, String>>, Action) {
+    let (answer, slot) = Answer::new();
+    (answer, Action::RegisterFont(data, slot))
+}
+
 /// The images the user picks in the system's picker (none when cancelled).
 pub(crate) fn pick_images(
     request: crate::picker::PickRequest,
 ) -> (Answer<Vec<crate::picker::PickedFile>>, Action) {
     let (answer, slot) = Answer::new();
     (answer, Action::PickImages(request, slot))
+}
+
+/// The files the user picks in the system's picker (none when cancelled).
+pub(crate) fn pick_files(
+    request: crate::picker::FilePickRequest,
+) -> (Answer<Vec<crate::picker::PickedFile>>, Action) {
+    let (answer, slot) = Answer::new();
+    (answer, Action::PickFiles(request, slot))
 }
 
 /// Calls function `name` of the embedding app with `args` (`nsh/host`).

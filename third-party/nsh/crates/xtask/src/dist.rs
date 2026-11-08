@@ -9,7 +9,6 @@
 //! dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        development host, packaged app runner
 //! dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  development host, packaged app runner
 //! dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                   development host (GPUI; apps embed it, never package it)
-//! dist/nsh/runtime/tui/{nsh-tui-host,nsh-tui-app}[.exe]       terminal host, packaged app runner
 //! dist/nsh/runtime/android/{release,dev}/                      classes.dex, lib/<abi>/libnsh.so (stripped),
 //!                                                              symbols/<abi>/libnsh.so (with symbols)
 //! dist/nsh/runtime/web/{nsh-browser.wasm,nsh-dev.wasm,nsh.js,browser/}  the web runtimes (published apps' to link from, the dev host's)
@@ -29,9 +28,15 @@
 //! everywhere: it needs a clang that targets wasm32 and `llvm-ar`
 //! (`docs/dev/web.md`).
 
-use std::{env, fs, path::Path, process::Command};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    fs,
+    path::Path,
+    process::Command,
+};
 
-use anyhow::Context as _;
+use anyhow::{Context as _, bail};
 
 use crate::{android, term};
 
@@ -87,6 +92,13 @@ pub(crate) fn dist() -> anyhow::Result<()> {
             let mut args = vec!["build", "--release", "-p", package];
             if !webkit {
                 args.push("--no-default-features");
+                // Without web views only: the release runner keeps the rest.
+                if package == "nsh-linux-app" {
+                    args.extend([
+                        "--features",
+                        "js,shader,editor,highlight,math,plot,rich-editor,zlib,crypto",
+                    ]);
+                }
             }
             cargo(&args, what)?;
             copy(
@@ -108,24 +120,19 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         }
     }
 
-    // Terminal runtimes use this machine's console and carry no GUI host.
-    for (package, what) in [
-        ("nsh-tui-host", "the terminal development host"),
-        ("nsh-tui-app", "the terminal release runner"),
-    ] {
-        cargo(&["build", "--release", "-p", package], what)?;
-        copy(
-            &release.join("release").join(exe(package)),
-            &out.join("runtime/tui").join(exe(package)),
-        )?;
-    }
-
     // GPUI is the backend for embedding in GPUI apps: its development
     // host only, no release runner.
     if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         let package = "nsh-gpui-host";
         // The GPUI backend is a workspace of its own (`crates/gpui`), built
-        // into the same `target/`.
+        // into the same `target/`; huacnlee/cargo ignores `--target-dir`
+        // and puts it in the GPUI workspace's own `target/`. The host is
+        // taken from whichever of the two the build wrote.
+        let built = [release.clone(), root.join("crates/gpui/target")]
+            .map(|dir| dir.join("release").join(exe(package)));
+        for file in &built {
+            remove(file)?;
+        }
         cargo(
             &[
                 "build",
@@ -139,64 +146,40 @@ pub(crate) fn dist() -> anyhow::Result<()> {
             ],
             "the development host for GPUI",
         )?;
-        copy(
-            &release.join("release").join(exe(package)),
-            &out.join("runtime/gpui").join(exe(package)),
-        )?;
+        let host = built
+            .iter()
+            .find(|file| file.exists())
+            .context("the GPUI build wrote no development host")?;
+        copy(host, &out.join("runtime/gpui").join(exe(package)))?;
     }
 
     // The web runtimes, the same files on every machine, all running TSX on
     // the browser's JavaScript engine: the linkable one `nsh package` links
     // each published app's from (only what the app uses), and the
     // development host's (hot updates, `nsh test --target web`). They build
-    // to the same file, copied in turn.
-    for (features, file) in [
-        (
-            &["--no-default-features", "--features", "browser,linkable"][..],
-            "nsh-browser.wasm",
-        ),
-        (
-            &["--no-default-features", "--features", "dev"][..],
-            "nsh-dev.wasm",
-        ),
-    ] {
-        let mut web = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-        web.current_dir(&root)
-            .args(["build", "--profile", "web", "-p", "nsh-platform-web"])
-            .args(features)
-            .args(["--target", "wasm32-unknown-unknown"]);
-        if env::var_os("AR_wasm32_unknown_unknown").is_none() && env::var_os("AR").is_none() {
-            web.env("AR_wasm32_unknown_unknown", "llvm-ar");
-        }
-        term::cargo(&mut web, "the web runtime")?;
-        copy(
-            &release.join("wasm32-unknown-unknown/web/nsh_platform_web.wasm"),
-            &out.join("runtime/web").join(file),
-        )?;
-    }
-    copy(
-        &root.join("crates/nsh-platform-web/web/nsh.js"),
-        &out.join("runtime/web/nsh.js"),
-    )?;
-    // The syntaxes the web runtime leaves out and fetches when it first
-    // highlights code: two-face's dump, as this workspace resolves it.
-    copy(
-        &package_dir(&root, "two-face")?.join("generated/syntaxes-fancy-newlines.bin"),
-        &out.join("runtime/web/nsh-syntaxes.bin"),
-    )?;
-
-    for entry in fs::read_dir(root.join("crates/nsh-platform-web/web/browser"))? {
-        let entry = entry?;
-        if entry
-            .path()
-            .extension()
-            .is_some_and(|ext| ext == "js" || ext == "txt")
-        {
-            copy(
-                &entry.path(),
-                &out.join("runtime/web/browser").join(entry.file_name()),
-            )?;
-        }
+    // to the same file, copied in turn. They need a C compiler that can
+    // actually target wasm32: without one the distribution is made without
+    // them, as with the Android runtimes without an SDK. The compiler is
+    // the one the build will use, which docs/dev/web.md lets a macOS
+    // developer set to an LLVM toolchain outside PATH.
+    // An explicitly configured compiler is a promise that the web runtimes
+    // are wanted: on a release runner a broken one must fail the build
+    // rather than quietly ship an archive with no `runtime/web`.
+    let configured = ["CC_wasm32_unknown_unknown", "CC"]
+        .iter()
+        .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()));
+    let compiler = wasm_cc(|key| env::var_os(key));
+    let compiles = wasm_compiles(&compiler, |command| {
+        command.status().is_ok_and(|status| status.success())
+    });
+    let web = web_runtimes_plan(configured, compiles, &compiler)?;
+    if web {
+        web_runtimes(&root, &out, &release)?;
+    } else {
+        term::warn(
+            "no working wasm32 C compiler (set CC_wasm32_unknown_unknown): \
+             the distribution has no web runtime",
+        );
     }
 
     // Android runtimes. Windows machines often have no Android SDK: the
@@ -242,6 +225,119 @@ pub(crate) fn dist() -> anyhow::Result<()> {
         fs::remove_dir_all(out.join("work"))?;
     }
     term::note(out.strip_prefix(&root).unwrap_or(&out).display());
+    Ok(())
+}
+
+/// The C compiler a wasm32 build uses: the documented per-target override,
+/// then `CC`, then the `clang` the build defaults to (`docs/dev/web.md`).
+fn wasm_cc(get: impl Fn(&str) -> Option<OsString>) -> OsString {
+    for key in ["CC_wasm32_unknown_unknown", "CC"] {
+        if let Some(value) = get(key)
+            && !value.is_empty()
+        {
+            return value;
+        }
+    }
+    OsString::from("clang")
+}
+
+/// Whether to build the web runtimes. A developer who explicitly configured
+/// a wasm32 compiler expects them: a broken toolchain must fail the release
+/// rather than quietly ship an archive with no `runtime/web`. With nothing
+/// configured, a machine without a wasm32 clang still gets a usable (web-less)
+/// distribution, as before.
+fn web_runtimes_plan(configured: bool, compiles: bool, compiler: &OsStr) -> anyhow::Result<bool> {
+    if compiles {
+        return Ok(true);
+    }
+    if configured {
+        bail!(
+            "the configured wasm32 C compiler ({}) cannot compile for wasm32: \
+             refusing to build a distribution without web runtimes",
+            compiler.to_string_lossy()
+        );
+    }
+    Ok(false)
+}
+
+/// Whether `compiler` can actually produce a wasm32 object. `clang
+/// --version` is not an answer: Apple's clang has no WebAssembly target, and
+/// a process that starts but exits nonzero still has an `Ok` status.
+fn wasm_compiles(compiler: &OsStr, run: impl Fn(&mut Command) -> bool) -> bool {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = env::temp_dir().join(format!(
+        "nsh-wasm-probe-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    if fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let source = dir.join("probe.c");
+    let object = dir.join("probe.o");
+    let ok = fs::write(&source, "int nsh_wasm_probe(void) { return 0; }\n").is_ok()
+        && run(Command::new(compiler)
+            .args(["--target=wasm32-unknown-unknown", "-c"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&object)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()));
+    let _ = fs::remove_dir_all(&dir);
+    ok
+}
+
+/// The web runtimes: the linkable one and the development host's, the same
+/// build linked from in turn, with the scripts and syntaxes they fetch.
+fn web_runtimes(root: &Path, out: &Path, release: &Path) -> anyhow::Result<()> {
+    for (features, file) in [
+        (
+            &["--no-default-features", "--features", "browser,linkable"][..],
+            "nsh-browser.wasm",
+        ),
+        (
+            &["--no-default-features", "--features", "dev"][..],
+            "nsh-dev.wasm",
+        ),
+    ] {
+        let mut web = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        web.current_dir(root)
+            .args(["build", "--profile", "web", "-p", "nsh-platform-web"])
+            .args(features)
+            .args(["--target", "wasm32-unknown-unknown"]);
+        if env::var_os("AR_wasm32_unknown_unknown").is_none() && env::var_os("AR").is_none() {
+            web.env("AR_wasm32_unknown_unknown", "llvm-ar");
+        }
+        term::cargo(&mut web, "the web runtime")?;
+        copy(
+            &release.join("wasm32-unknown-unknown/web/nsh_platform_web.wasm"),
+            &out.join("runtime/web").join(file),
+        )?;
+    }
+    copy(
+        &root.join("crates/nsh-platform-web/web/nsh.js"),
+        &out.join("runtime/web/nsh.js"),
+    )?;
+    // The syntaxes the web runtime leaves out and fetches when it first
+    // highlights code: two-face's dump, as this workspace resolves it.
+    copy(
+        &package_dir(root, "two-face")?.join("generated/syntaxes-fancy-newlines.bin"),
+        &out.join("runtime/web/nsh-syntaxes.bin"),
+    )?;
+
+    for entry in fs::read_dir(root.join("crates/nsh-platform-web/web/browser"))? {
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|ext| ext == "js" || ext == "txt")
+        {
+            copy(
+                &entry.path(),
+                &out.join("runtime/web/browser").join(entry.file_name()),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -422,6 +518,17 @@ fn package_dir(root: &Path, name: &str) -> anyhow::Result<std::path::PathBuf> {
         .to_path_buf())
 }
 
+/// Removes `file` if it is there, so that a build that writes it again
+/// shows where it went.
+pub(crate) fn remove(file: &Path) -> anyhow::Result<()> {
+    match fs::remove_file(file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("remove {}", file.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn copy(from: &Path, to: &Path) -> anyhow::Result<()> {
     if let Some(dir) = to.parent() {
         fs::create_dir_all(dir)?;
@@ -432,9 +539,13 @@ pub(crate) fn copy(from: &Path, to: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::Read as _};
+    use std::{
+        ffi::{OsStr, OsString},
+        fs,
+        io::Read as _,
+    };
 
-    use super::{AAR_KEEP_RULES, make_aar};
+    use super::{AAR_KEEP_RULES, make_aar, wasm_cc, wasm_compiles, web_runtimes_plan};
 
     #[test]
     fn an_aar_carries_the_rules_that_keep_the_runtime() {
@@ -455,5 +566,58 @@ mod tests {
         assert_eq!(rules, AAR_KEEP_RULES);
         assert!(rules.contains("-keep class com.longbridge.nsh.** { *; }"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_configured_wasm_compiler_is_probed_not_a_bare_clang() {
+        // docs/dev/web.md: a macOS developer points this at an LLVM clang
+        // outside PATH. Looking for `clang` on PATH instead would skip the
+        // web runtimes even though the build has a working toolchain.
+        let compiler = wasm_cc(|key| {
+            (key == "CC_wasm32_unknown_unknown").then(|| OsString::from("/opt/llvm/bin/clang"))
+        });
+        assert_eq!(compiler, OsString::from("/opt/llvm/bin/clang"));
+        assert!(wasm_compiles(&compiler, |command| {
+            assert_eq!(command.get_program(), OsStr::new("/opt/llvm/bin/clang"));
+            true
+        }));
+        assert_eq!(
+            wasm_cc(|key| (key == "CC").then(|| OsString::from("cc"))),
+            OsString::from("cc")
+        );
+        assert_eq!(wasm_cc(|_| None), OsString::from("clang"));
+    }
+
+    #[test]
+    fn a_compiler_without_wasm32_is_not_enough() {
+        // `clang --version` would have passed: the probe must require an
+        // actual successful wasm32 compile.
+        assert!(!wasm_compiles(OsStr::new("clang"), |_| false));
+        assert!(wasm_compiles(OsStr::new("clang"), |_| true));
+    }
+
+    #[test]
+    fn a_compiler_that_cannot_run_is_not_enough() {
+        // The old guard's `.is_ok()` also accepted a process that never
+        // started, or started and exited nonzero.
+        let missing = std::env::temp_dir().join("nsh-no-such-clang");
+        assert!(!wasm_compiles(missing.as_os_str(), |command| {
+            command.status().is_ok_and(|status| status.success())
+        }));
+    }
+
+    #[test]
+    fn an_explicit_compiler_failure_fails_the_distribution() {
+        let cc = OsStr::new("/opt/llvm/bin/clang");
+        assert!(web_runtimes_plan(false, true, cc).unwrap());
+        assert!(web_runtimes_plan(true, true, cc).unwrap());
+        // Nothing configured: a machine with no wasm32 clang still gets a
+        // distribution, just without the web runtimes.
+        assert!(!web_runtimes_plan(false, false, cc).unwrap());
+        // release.yml always sets CC_wasm32_unknown_unknown: a broken
+        // toolchain there must not quietly ship an archive with no
+        // runtime/web.
+        let error = web_runtimes_plan(true, false, cc).unwrap_err().to_string();
+        assert!(error.contains("/opt/llvm/bin/clang"), "{error}");
     }
 }

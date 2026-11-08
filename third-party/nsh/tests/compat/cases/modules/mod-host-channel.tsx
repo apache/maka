@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
 // on the headless runtime, which runs the app without an embedding app: the
 // launch parameters are empty, a listener is added and removed, a post goes
 // nowhere and a call rejects at once, with the `code`

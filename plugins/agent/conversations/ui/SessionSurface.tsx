@@ -278,7 +278,7 @@ export function createConversationUi(
   };
   cleanup(() => replacePending(null));
   const recentWorkspaces = signal<RecentWorkspace[]>([]);
-  const recentKnown = signal(platform.isTerminal || !!side);
+  const recentKnown = signal(platform.idiom === 'terminal' || !!side);
   const workspaceReady = signal(false);
   const workspaceError = createText();
   const recentOpen = signal(false);
@@ -295,7 +295,7 @@ export function createConversationUi(
     return write;
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
-    if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
+    if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
     void setRecentWorkspace(path, true).catch(report);
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
@@ -448,7 +448,7 @@ export function createConversationUi(
   };
   effect(() => {
     const workspace = pendingWorkspace();
-    if (!platform.isTerminal && !side && workspace)
+    if (platform.idiom !== 'terminal' && !side && workspace)
       untracked(() => {
         void checkWorkspace();
       });
@@ -748,7 +748,7 @@ export function createConversationUi(
     remember = true,
   ) => {
     if (!alive || selected() !== expectedSessionId) return;
-    if (!platform.isTerminal) {
+    if (platform.idiom !== 'terminal') {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
       let recentWorkspace = workspace;
       let label =
@@ -2375,7 +2375,9 @@ export function createConversationUi(
                         backgroundColor: C.card,
                         // A card of its own on the desktop: square corners
                         // flush on the composer's rounded top read as notches.
-                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
+                        ...(platform.idiom === 'terminal'
+                          ? {}
+                          : { borderRadius: 8, marginBottom: 8 }),
                       }}
                       contentStyle={{
                         paddingHorizontal: 16,
@@ -2510,7 +2512,7 @@ export function createConversationUi(
                 sessionId: selected(),
               })}
               workspacePicker={
-                platform.isTerminal || side ? undefined : (
+                platform.idiom === 'terminal' || side ? undefined : (
                   <RecentWorkspaces
                     path={() =>
                       selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
@@ -2598,7 +2600,7 @@ export function createConversationUi(
                     >
                       <View
                         style={
-                          platform.isTerminal
+                          platform.idiom === 'terminal'
                             ? { backgroundColor: C.background }
                             : // The panel's inset keeps the header on the window controls' center line.
                               { backgroundColor: C.chrome, paddingTop: PANEL_INSET }

@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use super::{
     clear_document::clear_document,
     code_block::{CodeBlockOptions, code_block_keymap, fence_language},
+    core_keymap::core_keymap as core_bindings,
     extension::{Extension, GlobalAttributes},
     helpers::{set_hard_break, update_attribute},
     history::{HistoryOptions, history as history_plugin, redo, undo},
@@ -472,7 +473,7 @@ pub fn mark_paste_rules(schema: &Schema, name: &str) -> Vec<PasteRule> {
 /// `clearDocument` plugin.
 pub fn core_keymap() -> Extension {
     Extension::new("keymap")
-        .with_core_keyboard_shortcuts()
+        .add_keyboard_shortcuts(|_| core_bindings())
         .add_plugins(|_| vec![clear_document()])
 }
 

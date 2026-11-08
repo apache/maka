@@ -3,6 +3,7 @@
 // `id:case-<case>` (a one-point view over the corner, out of the layout);
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
+import CoreRegisterFont from "./core-register-font";
 import CoreTheme from "./core-theme";
 import LayoutBox from "./layout-box";
 import LayoutDirection from "./layout-direction";
@@ -12,6 +13,7 @@ import LayoutTailwind from "./layout-tailwind";
 import LayoutSticky from "./layout-sticky";
 
 const cases: Record<string, () => JSX.Element> = {
+  "core-register-font": CoreRegisterFont,
   "core-theme": CoreTheme,
   "layout-box": LayoutBox,
   "layout-direction": LayoutDirection,

@@ -193,9 +193,9 @@ const terminalOpen = signal(true);
   renderPanel={(panel) => <Editor file={panel.id} />}
 />
 
-<Button selected={terminalOpen()} onPress={() => area.toggleDock("bottom")} class="px-3 py-1.5 selected:bg-muted">
+<Toggle pressed={terminalOpen()} onChange={() => area.toggleDock("bottom")} class="px-3 py-1.5 aria-pressed:bg-muted">
   <Text>Terminal</Text>
-</Button>
+</Toggle>
 ```
 
 <a id="zoom"></a>

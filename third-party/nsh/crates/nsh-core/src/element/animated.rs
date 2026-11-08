@@ -618,6 +618,9 @@ pub struct Spring {
     /// The velocity it starts with (per second); `None` keeps the current
     /// one.
     pub velocity: Option<f32>,
+    /// The highest frame rate it needs, in Hz (TS's `frameRate`); `None`:
+    /// the screen's highest ([`Driver::frame_rate`]).
+    pub frame_rate: Option<f32>,
 }
 
 impl Default for Spring {
@@ -627,6 +630,7 @@ impl Default for Spring {
             damping: 26.0,
             mass: 1.0,
             velocity: None,
+            frame_rate: None,
         }
     }
 }
@@ -641,6 +645,9 @@ pub struct Timing {
     pub easing: Easing,
     /// How long it waits before it starts, in milliseconds.
     pub delay_ms: f32,
+    /// The highest frame rate it needs, in Hz (TS's `frameRate`); `None`:
+    /// the screen's highest ([`Driver::frame_rate`]).
+    pub frame_rate: Option<f32>,
 }
 
 impl Timing {
@@ -650,7 +657,14 @@ impl Timing {
             duration_ms,
             easing,
             delay_ms: 0.0,
+            frame_rate: None,
         }
+    }
+
+    /// Needing at most `hz` frames per second (a slow fade: 30).
+    pub const fn frame_rate(mut self, hz: f32) -> Self {
+        self.frame_rate = Some(hz);
+        self
     }
 
     fn driver(self, to: f32) -> Driver {
@@ -659,6 +673,7 @@ impl Timing {
             duration_ms: self.duration_ms,
             easing: self.easing,
             delay_ms: self.delay_ms,
+            frame_rate: self.frame_rate,
         }
     }
 }
@@ -670,6 +685,12 @@ impl Default for Timing {
 }
 
 impl Spring {
+    /// Needing at most `hz` frames per second (a small, slow spring: 60).
+    pub const fn frame_rate(mut self, hz: f32) -> Self {
+        self.frame_rate = Some(hz);
+        self
+    }
+
     fn driver(self, to: f32) -> Driver {
         Driver::Spring {
             to,
@@ -677,6 +698,7 @@ impl Spring {
             damping: self.damping,
             mass: self.mass,
             velocity: self.velocity,
+            frame_rate: self.frame_rate,
         }
     }
 }
@@ -707,6 +729,7 @@ pub fn sample_decay(from: f32, velocity: f32, deceleration: f32, fps: f32) -> Ve
             deceleration,
             clamp: None,
             bounce: 0.0,
+            frame_rate: None,
         },
         from,
         fps,
@@ -729,6 +752,7 @@ pub fn sample_decay_within(
             deceleration,
             clamp: Some((min, max)),
             bounce,
+            frame_rate: None,
         },
         from,
         fps,
@@ -857,6 +881,7 @@ impl AnimatedValue {
             deceleration,
             clamp: None,
             bounce: 0.0,
+            frame_rate: None,
         })
     }
 
@@ -874,6 +899,7 @@ impl AnimatedValue {
             deceleration,
             clamp: Some((min, max)),
             bounce,
+            frame_rate: None,
         })
     }
 
@@ -1061,6 +1087,7 @@ impl Animation {
                 deceleration,
                 clamp: None,
                 bounce: 0.0,
+                frame_rate: None,
             },
         )
     }
@@ -1081,6 +1108,7 @@ impl Animation {
                 deceleration,
                 clamp: Some((min, max)),
                 bounce,
+                frame_rate: None,
             },
         )
     }
@@ -1377,11 +1405,13 @@ impl Motion {
 }
 
 /// A timing a component's prop takes (TS `{ duration?: number; easing?:
-/// Easing; delay?: number }`): the options of `AnimatedValue.timing` in
-/// `nsh/animated`, with its defaults (300 ms, ease in-out, no delay).
+/// Easing; delay?: number; frameRate?: number }`): the options of
+/// `AnimatedValue.timing` in `nsh/animated`, with its defaults (300 ms,
+/// ease in-out, no delay, the screen's highest rate).
 impl super::JsValue for Timing {
     fn ts_type(_types: &mut super::TsTypes) -> String {
-        "{ duration?: number; easing?: import(\"nsh\").Easing; delay?: number }".into()
+        "{ duration?: number; easing?: import(\"nsh\").Easing; delay?: number; frameRate?: number }"
+            .into()
     }
 
     fn from_js(value: super::JsIn<'_>) -> Result<Self, super::PropError> {
@@ -1398,6 +1428,7 @@ impl super::JsValue for Timing {
                 .and_then(|e| crate::js::animation::easing(&JsonInput(Some(e))))
                 .unwrap_or(default.easing),
             delay_ms: num("delay").unwrap_or(default.delay_ms).max(0.0),
+            frame_rate: crate::style::frame_rate(num("frameRate")),
         })
     }
 
@@ -1405,17 +1436,21 @@ impl super::JsValue for Timing {
         &self,
         host: &'a dyn super::JsHost,
     ) -> Result<super::JsOwned<'a>, super::PropError> {
-        let json = serde_json::json!({ "duration": self.duration_ms, "delay": self.delay_ms });
+        let mut json = serde_json::json!({ "duration": self.duration_ms, "delay": self.delay_ms });
+        if let Some(hz) = self.frame_rate {
+            json["frameRate"] = hz.into();
+        }
         Ok(super::JsOwned::new(host, host.json(&json)?))
     }
 }
 
 /// A spring a component's prop takes (TS `{ stiffness?: number; damping?:
-/// number; mass?: number; velocity?: number }`): the options of
-/// `AnimatedValue.spring` in `nsh/animated`, with its defaults.
+/// number; mass?: number; velocity?: number; frameRate?: number }`): the
+/// options of `AnimatedValue.spring` in `nsh/animated`, with its defaults.
 impl super::JsValue for Spring {
     fn ts_type(_types: &mut super::TsTypes) -> String {
-        "{ stiffness?: number; damping?: number; mass?: number; velocity?: number }".into()
+        "{ stiffness?: number; damping?: number; mass?: number; velocity?: number; frameRate?: number }"
+            .into()
     }
 
     fn from_js(value: super::JsIn<'_>) -> Result<Self, super::PropError> {
@@ -1430,6 +1465,7 @@ impl super::JsValue for Spring {
             damping: num("damping").unwrap_or(default.damping),
             mass: num("mass").unwrap_or(default.mass),
             velocity: num("velocity"),
+            frame_rate: crate::style::frame_rate(num("frameRate")),
         })
     }
 
@@ -1437,11 +1473,14 @@ impl super::JsValue for Spring {
         &self,
         host: &'a dyn super::JsHost,
     ) -> Result<super::JsOwned<'a>, super::PropError> {
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "stiffness": self.stiffness,
             "damping": self.damping,
             "mass": self.mass,
         });
+        if let Some(hz) = self.frame_rate {
+            json["frameRate"] = hz.into();
+        }
         Ok(super::JsOwned::new(host, host.json(&json)?))
     }
 }

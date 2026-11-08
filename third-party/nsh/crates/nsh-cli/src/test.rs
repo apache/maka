@@ -66,6 +66,7 @@ pub(crate) fn test(
     browser: Option<&Path>,
     web_host: Option<PathBuf>,
     display: Option<usize>,
+    foreground: bool,
 ) -> anyhow::Result<()> {
     let app_dir = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
     let work_dir = app_dir.join(".nsh/test");
@@ -116,6 +117,9 @@ pub(crate) fn test(
     if display.is_some() && target != Some(crate::run::Target::Macos) {
         bail!("--display goes with --target macos");
     }
+    if foreground && target != Some(crate::run::Target::Macos) {
+        bail!("--foreground goes with --target macos");
+    }
     if web_host.is_some() && target.is_some() {
         bail!(
             "--web-host goes with headless runs: --target web takes nsh.json's web.host, the other targets have no page host"
@@ -146,7 +150,9 @@ pub(crate) fn test(
     }
     let host = target
         .filter(|_| !files.is_empty())
-        .map(|target| crate::test_host::starter(target, browser, &work_dir, fps, display))
+        .map(|target| {
+            crate::test_host::starter(target, browser, &work_dir, fps, display, foreground)
+        })
         .transpose()?;
     // What `open` checks its options against on that host.
     let host_target = target

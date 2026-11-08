@@ -144,8 +144,9 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       style={{
         width: '100%',
         maxWidth: 680,
-        height: Math.min(560, windowSize().height - 32),
-        maxHeight: '100%',
+        flex: 1,
+        minHeight: 0,
+        maxHeight: Math.min(560, windowSize().height - 32),
         backgroundColor: C.surface,
         borderWidth: 1,
         borderColor: C.line,

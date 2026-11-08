@@ -67,3 +67,6 @@ next.forEach((p) => Image.prefetch(p.url).catch(() => {})); // the <Image> repor
 
 > [!NOTE]
 > When your app declares `capabilities` in `nsh.json`, `getSize` and `prefetch` of remote URLs must be allowed under `network`, like `fetch`. A URL outside them is never requested: the promise rejects with an `Error` whose `code` is `"ERR_ACCESS_DENIED"`, `permission` `"network"` and `resource` the URL. See [Sandbox and capabilities](../docs/sandbox-and-capabilities.md).
+
+> [!NOTE]
+> A terminal shows text, so in a terminal app `getSize` and `prefetch` settle at once: the promise rejects with an `Error` whose `code` is `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`.

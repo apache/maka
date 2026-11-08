@@ -15,7 +15,13 @@ A menu is a list of actions its trigger opens. One structure serves every device
   sheet in place of the menu's, with a row of yours leading back.
 
 Choosing an item, a press outside, Escape, the Android back button and VoiceOver's escape gesture close it. `ContextMenu` is the same menu opened
-by the secondary button (a right click) at the pointer, or by a finger held on its trigger on touch screens.
+by the secondary button (a right click) at the pointer, by a finger held on its trigger on touch screens, or below its
+trigger by the keyboard in the browser and on Linux, and by screen readers on macOS and Windows.
+
+Return, Space or Down on the focused trigger opens the menu with the keyboard focus on its first enabled item, and Up
+with it on its last; the arrow keys then move between the items. A press opens it with no item focused.
+On the desktops and in a terminal, Right, Return or Space on a `Submenu`'s item opens it with the keyboard focus on
+its first enabled item; Left on one of its items, or Escape, closes it and puts the focus back on its item.
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, submenu};
@@ -116,6 +122,12 @@ import { ContextMenu, MenuItem } from "nsh/base";
 On the desktops the secondary button opens it where the pointer is. On touch screens a finger held on the trigger
 opens it as a sheet; the trigger's own presses and the scroll views around it keep working, and moving the finger
 cancels the hold.
+
+Keyboard and screen reader users open it too. In the browser and on Linux, Shift+F10 and the Menu key on the focused trigger open
+it. On macOS, VoiceOver's "show menu" action (VO-Shift-M) opens it, and on Windows, a screen reader's "show context
+menu" action through UI Automation does. These openings place the menu below the trigger, starting at its start edge, with the keyboard focus on
+its first enabled item, as WAI-ARIA describes for context menus. Make the trigger `focusable` so the keyboard reaches
+it. A view's own `onContextMenu` tells these openings apart by `pointerType`, which is `null` for them.
 
 ## Checkable items
 
@@ -235,6 +247,27 @@ Without `open`, a menu keeps its own state (from `defaultOpen` for `Menu`). With
 it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOutside"`, `"backdropPress"`, `"cancel"`,
 `"contextMenu"` or `"longPress"`.
 
+A `Submenu` keeps its own state, and reports each opening and closing the user asks for in `onOpenChange({ open,
+reason })`: `"hover"` (its item hovered, or another item of its menu), `"triggerPress"` (its item pressed, or Right,
+Return or Space on it), `"cancel"` (Left, Escape, back or its `back` row), or the menu's reason when the whole menu
+closes (`"select"`, `"pressOutside"`, ...). Its items are made as it opens, so an app can start loading them there the
+first time and show them as they arrive. When the app closes the menu itself, nothing is reported.
+
+```tsx
+const recent = signal<string[] | null>(null);
+
+<Submenu
+  trigger={<Text>Open Recent</Text>}
+  onOpenChange={({ open }) => {
+    if (open && recent() === null) loadRecent().then((names) => recent.set(names));
+  }}
+>
+  <Each of={recent() ?? []}>
+    {(name) => <MenuItem onSelect={() => openFile(name())}><Text>{name()}</Text></MenuItem>}
+  </Each>
+</Submenu>
+```
+
 ## Props
 
 ### Menu
@@ -261,7 +294,7 @@ it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOut
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `disabled` | `.disabled(..)` | `boolean` | `false` | The secondary button and held fingers do nothing. |
+| `disabled` | `.disabled(..)` | `boolean` | `false` | Nothing opens it: not the secondary button, held fingers, the keyboard or a screen reader. |
 | `offset` | `.offset(..)` | `number` | `0` | Desktops: the gap between the pointer and the popup. |
 | `margin` | `.margin(..)` | `number` | `0` | Desktops: the distance it keeps from the edges of the safe area. |
 
@@ -301,6 +334,7 @@ it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOut
 | `onPosition` (`Menu`, `ContextMenu`) | `.on_position(\|e\| ..)` | Desktops: the popup was placed: `placement` (the side it went on), `bounds`, `available`. |
 | `onCancel` (`Menu`, `ContextMenu`) | `.on_cancel(\|\| ..)` | The user tried to close it without choosing (Escape or back, a press outside or on the backdrop). |
 | `onSelect` (`MenuItem`) | `.on_select(\|\| ..)` | The item was chosen; a checkable item asks for its other value. |
+| `onOpenChange` (`Submenu`) | `.on_open_change(\|e\| ..)` | It opened or closed as the user asked, with why. |
 
 ## Accessibility
 

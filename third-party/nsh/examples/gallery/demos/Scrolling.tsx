@@ -34,40 +34,41 @@ function Api(props: { names: string }) {
 
 const options = <T extends string>(values: readonly T[]) => values.map((value) => ({ value, label: value }));
 
-/** A dot matrix with a low-alpha area and a dashed reference line: a page's backdrop. */
+/** A soft wave along a page's lower part, its fill fading downward: a page's backdrop. */
 function Backdrop(props: { tone: Tone; seed: number }) {
   return (
     <Canvas
       style={{ pointerEvents: "none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
       draw={(cx, { width, height }) => {
         const color = toneColor(props.tone);
-        cx.fillStyle = colors.border;
-        for (let x = 10; x < width; x += 12) for (let y = 10; y < height; y += 12) cx.fillRect(x, y, 1.5, 1.5);
-        // A wave, filled faintly below.
         const points: [number, number][] = [];
         for (let i = 0; i <= 24; i++) {
           const x = (i / 24) * width;
-          const y = height * (0.62 - 0.18 * Math.sin(i * 0.5 + props.seed) - 0.06 * Math.sin(i * 1.3 + props.seed * 2));
+          const y = height * (0.74 - 0.11 * Math.sin(i * 0.5 + props.seed) - 0.035 * Math.sin(i * 1.3 + props.seed * 2));
           points.push([x, y]);
         }
+        const wave = () => {
+          cx.moveTo(points[0][0], points[0][1]);
+          for (let i = 1; i < points.length - 1; i++) {
+            cx.quadraticCurveTo(points[i][0], points[i][1], (points[i][0] + points[i + 1][0]) / 2, (points[i][1] + points[i + 1][1]) / 2);
+          }
+          cx.lineTo(points[24][0], points[24][1]);
+        };
         cx.beginPath();
-        cx.moveTo(0, height);
-        for (const [x, y] of points) cx.lineTo(x, y);
+        wave();
         cx.lineTo(width, height);
+        cx.lineTo(0, height);
         cx.closePath();
-        cx.fillStyle = toneTint(props.tone);
+        const fade = cx.createLinearGradient(0, height * 0.55, 0, height);
+        fade.addColorStop(0, alpha(color, 0.26));
+        fade.addColorStop(1, alpha(color, 0));
+        cx.fillStyle = fade;
         cx.fill();
         cx.beginPath();
-        points.forEach(([x, y], i) => (i ? cx.lineTo(x, y) : cx.moveTo(x, y)));
+        wave();
         cx.strokeStyle = color;
-        cx.lineWidth = 1.5;
-        cx.stroke();
-        cx.setLineDash([3, 4]);
-        cx.strokeStyle = colors.faint;
-        cx.lineWidth = 1;
-        cx.beginPath();
-        cx.moveTo(0, height * 0.5);
-        cx.lineTo(width, height * 0.5);
+        cx.lineWidth = 1.75;
+        cx.lineJoin = "round";
         cx.stroke();
       }}
     />
@@ -131,7 +132,7 @@ function Pager() {
       </Scroll>
       <View style={{ flexDirection: "row", alignItems: "center" }}>
         <View style={{ flexDirection: "row", gap: step - 8 }}>
-          <Each of={pages}>{() => <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.raised }} />}</Each>
+          <Each of={pages}>{() => <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.border }} />}</Each>
           <View
             style={{
               position: "absolute",
@@ -154,6 +155,9 @@ function Pager() {
 function Cards() {
   const card = 220;
   const gap = 12;
+  // A terminal's card is as tall as its rows (its padding and two lines):
+  // the list as tall, with no blank rows under it.
+  const height = platform.idiom === "terminal" ? 64 : 128;
   const oneStep = signal(false);
   const align = signal<"start" | "center" | "end">("center");
   return (
@@ -168,7 +172,7 @@ function Cards() {
           decelerationRate="fast"
           disableIntervalMomentum={oneStep()}
           scrollbar={false}
-          style={{ height: 128 }}
+          style={{ height }}
           contentStyle={{ gap, paddingHorizontal: 14 }}
         >
           {(i) => {
@@ -177,10 +181,11 @@ function Cards() {
               <View
                 style={{
                   width: card,
-                  height: 128,
-                  borderRadius: 18,
+                  height,
+                  borderRadius: radius.control + 4,
                   borderCurve: "continuous",
                   backgroundColor: colors.raised,
+                  backgroundImage: `linear-gradient(145deg, ${alpha(toneColor(tone()), 0.2)} 0%, ${alpha(toneColor(tone()), 0)} 62%)`,
                   ...finish.raised,
                   borderWidth: 1,
                   borderColor: colors.border,
@@ -189,10 +194,9 @@ function Cards() {
                   overflow: "hidden",
                 }}
               >
-                <View style={{ position: "absolute", top: 0, left: 0, bottom: 0, width: 3, backgroundColor: toneColor(tone()) }} />
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <Text style={{ flex: 1, fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] }}>at {i() * (card + gap)} pt</Text>
-                  <Badge label={tone()} tone={tone()} />
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: toneColor(tone()) }} />
+                  <Text style={{ flex: 1, fontSize: 13, color: colors.muted, fontVariant: ["tabular-nums"] }}>at {i() * (card + gap)} pt</Text>
                 </View>
                 <Text style={{ fontSize: 24, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
                   Card {i() + 1}
@@ -251,7 +255,7 @@ function Events() {
             {(i) => (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12, height: 32, paddingHorizontal: 12 }}>
                 <Text style={{ width: 24, fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"], textAlign: "right" }}>{i()}</Text>
-                <View style={{ height: 4, borderRadius: 2, width: `${20 + ((i() * 37) % 70)}%`, backgroundColor: colors.raised }} />
+                <View style={{ height: 6, borderRadius: 3, width: `${20 + ((i() * 37) % 70)}%`, backgroundColor: colors.border }} />
               </View>
             )}
           </Each>
@@ -289,6 +293,10 @@ function Zoom() {
   const scale = signal(1);
   const bounces = signal(true);
   const tiles = Array.from({ length: 24 }, (_, i) => i);
+  // Tiles fill the box: six to a row where they fit, four on a phone.
+  const box = signal(windowSize().width - 72);
+  const columns = () => (box() >= 420 ? 6 : 4);
+  const tileWidth = () => Math.floor((box() - 14 - 6 * (columns() - 1)) / columns());
   return (
     <View style={{ gap: 12 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-end" }}>
@@ -305,34 +313,33 @@ function Zoom() {
         bouncesZoom={bounces()}
         centerContent
         scrollEventThrottle={50}
+        onLayout={({ bounds }) => box.set(bounds.size.width)}
         onScroll={(e) => scale.set(e.zoomScale)}
       >
         <View style={{ flexDirection: "row", flexWrap: "wrap", padding: 6, gap: 6 }}>
           <Each of={tiles}>
             {(tile) => {
               const i = tile();
-              const tone = tones[(i * 7) % tones.length];
+              // One hue in steps, as a heat map, so the zoom has one thing to read.
+              const heat = 0.5 + 0.5 * Math.sin(i * 1.9 + Math.cos(i * 0.7) * 2);
               return (
                 <View
                   style={{
-                    width: 74,
+                    width: tileWidth(),
                     height: 50,
-                    borderRadius: 10,
+                    borderRadius: 8,
                     borderCurve: "continuous",
-                    backgroundColor: toneTint(tone),
-                    borderWidth: 1,
-                    borderColor: colors.border,
-                    padding: 6,
-                    justifyContent: "space-between",
+                    backgroundColor: alpha(colors.accent, 0.05 + 0.24 * heat),
+                    padding: 8,
+                    justifyContent: "flex-end",
                   }}
                   onPress={() => {
                     // The tile's middle, in the content's (unzoomed) points.
-                    const x = 6 + (i % 4) * 80 + 37;
-                    const y = 6 + Math.floor(i / 4) * 56 + 25;
+                    const x = 6 + (i % columns()) * (tileWidth() + 6) + tileWidth() / 2;
+                    const y = 6 + Math.floor(i / columns()) * 56 + 25;
                     scroll?.zoomTo({ scale: scale() < 2.5 ? 3 : 1, x, y });
                   }}
                 >
-                  <View style={{ width: 12, height: 3, borderRadius: 1.5, backgroundColor: toneColor(tone) }} />
                   <Text style={{ color: colors.text, fontSize: 11, fontVariant: ["tabular-nums"] }}>Tile {i + 1}</Text>
                 </View>
               );
@@ -345,7 +352,7 @@ function Zoom() {
           <Button label="0.5×" variant="secondary" onPress={() => scroll?.zoomTo({ scale: 0.5 })} />
         </View>
         <View style={{ flex: 1 }}>
-          <Button label="1×" onPress={() => scroll?.zoomTo({ scale: 1 })} />
+          <Button label="1×" variant="secondary" onPress={() => scroll?.zoomTo({ scale: 1 })} />
         </View>
         <View style={{ flex: 1 }}>
           <Button label="2×" variant="secondary" onPress={() => scroll?.zoomTo({ scale: 2 })} />

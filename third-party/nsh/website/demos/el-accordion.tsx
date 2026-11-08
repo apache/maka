@@ -1,15 +1,17 @@
 import { mount, signal, Text, View } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
-import { desktop, focusRing, hoverFill, Icon, Log, Panel, Segmented, size, Split, ui } from "./palette";
+import { desktop, Log, Panel, Segmented, Split, ui, controlSize, listRow, RowLabel, sectionSurface, DisclosureChevron, disclosurePanel, disclosureTriggerLook } from "./palette";
 
 // An FAQ: each item a heading whose trigger (a button that says whether it
 // is expanded) opens its answer. The app owns which items are open
 // (`value`) and sets what `onChange` reports; one at a time, or several
 // with `multiple`. The panels spring open and shut (`reveal`) and the
 // items below move with them; the chevron turns with `group-aria-expanded:`.
-// The pointer's hover and the keyboard's focus ring come from the palette;
-// the reveal and the chevron stay still with reduced motion.
-const pad = desktop ? "px-3" : "px-4";
+// Each trigger is a shared row (`listRow`, through `disclosureTriggerLook`:
+// the hover fill reaching past the content, the keyboard's focus ring, a
+// press that dims, dimmed while disabled), its chevron and panel the shared
+// ones (`DisclosureChevron`, `disclosurePanel`); the reveal and the chevron
+// stay still with reduced motion.
 
 const FAQ: { value: string; question: string; answer: string; disabled?: boolean }[] = [
   { value: "shipping", question: "How long does shipping take?", answer: "Orders leave the warehouse within a day and arrive in two to five working days." },
@@ -58,27 +60,20 @@ function App() {
             open.set(value);
             events.set([`[${value.join(", ")}]`, ...events()].slice(0, 4));
           }}
-          style={{ ...ui().card, borderRadius: 16, overflow: "hidden" }}
+          style={sectionSurface({ padded: true })}
         >
           {FAQ.map((item, i) => (
             <AccordionItem value={item.value} disabled={item.disabled}>
-              <View style={{ height: i === 0 ? 0 : 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} />
+              <View style={{ height: i === 0 ? 0 : 1, backgroundColor: ui().line }} />
               <AccordionHeader>
-                <AccordionTrigger
-                  hoverStyle={item.disabled ? undefined : hoverFill()}
-                  focusStyle={focusRing()}
-                  class={`group flex-row items-center gap-3 ${pad} active:opacity-70 disabled:opacity-40`}
-                  style={{ minHeight: size.row + 8 }}
-                >
-                  <Text style={{ flex: 1, fontSize: size.label, fontWeight: "500", color: ui().text }}>{item.question}</Text>
-                  <View class="transition-transform duration-200 motion-reduce:transition-none group-aria-expanded:rotate-180">
-                    <Icon name="chevron-down" size={14} tint={ui().muted} />
-                  </View>
+                <AccordionTrigger {...disclosureTriggerLook({ first: true, disabled: item.disabled })}>
+                  <RowLabel label={item.question} />
+                  <DisclosureChevron accordion />
                 </AccordionTrigger>
               </AccordionHeader>
               <AccordionPanel reveal accessibilityLabel={item.question}>
-                <View class={`${pad} pb-3`}>
-                  <Text style={{ fontSize: size.label, lineHeight: size.label * 1.45, color: ui().muted }}>{item.answer}</Text>
+                <View style={disclosurePanel()}>
+                  <Text style={{ fontSize: controlSize.label, lineHeight: Math.round(controlSize.label * 1.45), color: ui().muted }}>{item.answer}</Text>
                 </View>
               </AccordionPanel>
             </AccordionItem>

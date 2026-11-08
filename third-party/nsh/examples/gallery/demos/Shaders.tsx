@@ -2,7 +2,7 @@ import { Animated, cleanup, createAnimatedValue, Easing, Image, ScreenEffect, Sh
 import { Dialog, NavPage } from "nsh/base";
 import logo from "../logo-dark.svg";
 import { nav } from "../nav";
-import { Button, Caption, Card, colors, DemoPage, header, isDark, mono, PageHeader, Press, Toggle } from "../ui";
+import { Button, Caption, Card, colors, DemoPage, header, isDark, mono, PageHeader, photoUrl, Press, Toggle } from "../ui";
 
 // Every demo below is a WGSL `shade(uv)` function: the core checks it,
 // the platform renders it on the GPU under the view's children, clipped to
@@ -387,24 +387,15 @@ fn shade(uv: vec2f) -> vec4f {
   return vec4f(ink * vignette, c.a);
 }`;
 
-/** The tiles' colors: light, and a deeper shade for dark mode, where the
- * light ones glare beside the page's dark cards. White text reads on both. */
-const TINTS = {
-  violet: ["#7c3aed", "#5b21b6"],
-  rose: ["#f43f5e", "#be123c"],
-  blue: ["#2563eb", "#1e40af"],
-  teal: ["#0f766e", "#115e59"],
-} as const;
-
-/** Colorful content for the effect and the transition to draw. */
-function Tile(props: { title: string; note: string; tint: keyof typeof TINTS }) {
+/** A photo with its title and note on a scrim, for a shader to draw. */
+function Tile(props: { title: string; note: string; photo: string }) {
   return (
-    <View style={{ flex: 1, borderRadius: 14, padding: 16, justifyContent: "space-between", backgroundColor: TINTS[props.tint][isDark() ? 1 : 0] }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Image src={logo} style={{ width: 26, height: 26 }} />
-        <Text style={{ color: "#ffffff", fontSize: 15, fontWeight: "700" }}>{props.title}</Text>
+    <View style={{ flex: 1, borderRadius: 14, overflow: "hidden", backgroundColor: "#10131a" }}>
+      <Image src={props.photo} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, objectFit: "cover" }} />
+      <View style={{ flex: 1, padding: 16, justifyContent: "flex-end", gap: 2, backgroundImage: "linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,0.72) 100%)" }}>
+        <Text style={{ color: "#ffffff", fontSize: 17, fontWeight: "600" }}>{props.title}</Text>
+        <Text style={{ color: "#ffffff", fontSize: 13, opacity: 0.82 }}>{props.note}</Text>
       </View>
-      <Text style={{ color: "#ffffff", fontSize: 13, opacity: 0.8 }}>{props.note}</Text>
     </View>
   );
 }
@@ -416,11 +407,11 @@ function Effect() {
     <Card icon="canvas" title="Shader effect" subtitle="Children drawn through a shader">
       <View style={{ gap: 10 }}>
         <ShaderEffect source={PIXELATE} progress={progress} style={{ height: 160 }} {...drag((x) => progress.set(x))}>
-          <Tile title="Pixelated" note="sample_content reads what the children draw" tint="violet" />
+          <Tile title="Pixelated" note="sample_content reads what the children draw" photo={photoUrl("arc")} />
         </ShaderEffect>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          <Button flex={1} label="Pixelate" onPress={() => to(1)} />
-          <Button flex={1} label="Sharpen" onPress={() => to(0)} />
+          <Button flex={1} label="Pixelate" variant="secondary" onPress={() => to(1)} />
+          <Button flex={1} label="Sharpen" variant="secondary" onPress={() => to(0)} />
         </View>
         <Caption label="Drag across it to set nsh.progress; the buttons animate it." />
       </View>
@@ -429,9 +420,9 @@ function Effect() {
 }
 
 const SLIDES = [
-  { title: "Morning", note: "A wipe from the top left", tint: "rose" },
-  { title: "Noon", note: "sample_from: what showed", tint: "blue" },
-  { title: "Night", note: "sample_to: what shows now", tint: "teal" },
+  { title: "Morning", note: "A wipe from the top left", photo: photoUrl("sunrise") },
+  { title: "Noon", note: "sample_from: what showed", photo: photoUrl("day") },
+  { title: "Night", note: "sample_to: what shows now", photo: photoUrl("rollout") },
 ] as const;
 
 function Transition() {
@@ -441,9 +432,9 @@ function Transition() {
     <Card icon="layers" title="Shader transition" subtitle="A change drawn through a shader">
       <View style={{ gap: 10 }}>
         <ShaderTransition source={WIPE} value={index()} duration={700} style={{ height: 160 }}>
-          <Tile title={slide().title} note={slide().note} tint={slide().tint} />
+          <Tile title={slide().title} note={slide().note} photo={slide().photo} />
         </ShaderTransition>
-        <Button label="Next" onPress={() => index.set((index() + 1) % SLIDES.length)} />
+        <Button label="Next" variant="secondary" onPress={() => index.set((index() + 1) % SLIDES.length)} />
         <Caption label="Each change wipes from the old picture to the new one." />
       </View>
     </Card>
@@ -467,7 +458,7 @@ function IrisPage() {
   return (
     <NavPage title="Iris" {...header} transitionShader={{ source: IRIS, duration: 600 }} header={<PageHeader title="Iris" />}>
       <View style={{ flex: 1, padding: 24, gap: 16, backgroundColor: colors.background }}>
-        <Tile title="Iris" note="This page came, and goes, through transitionShader" tint="blue" />
+        <Tile title="Iris" note="This page came, and goes, through transitionShader" photo={photoUrl("moon")} />
         <Button label="Leave the page" onPress={() => nav.pop()} />
       </View>
     </NavPage>
@@ -487,7 +478,7 @@ function Pages() {
         <Dialog open={open()} transitionShader={{ source: IRIS, duration: 600 }} onOpenChange={({ open: o }) => !o && open.set(false)} style={{ flex: 1 }}>
           <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", padding: 24 }}>
             <View style={{ width: 300, height: 200, gap: 12 }}>
-              <Tile title="Dialog" note="Presented through the iris" tint="teal" />
+              <Tile title="Dialog" note="Presented through the iris" photo={photoUrl("liftoff")} />
               <Button label="Close" onPress={() => open.set(false)} />
             </View>
           </View>

@@ -772,6 +772,16 @@ fn with_nothing_selected_the_focus_shows_on_the_first_row() {
 }
 
 #[test]
+fn with_nothing_selected_right_acts_on_the_row_the_focus_shows_on() {
+    let mut app = start(props());
+    enter(&mut app);
+    // The focus shows on `src`, expanded: Right goes to its first child
+    // at once, as it would with `src` selected.
+    key(&mut app, "right");
+    see(&mut app, "selected:src/lib.rs");
+}
+
+#[test]
 fn the_screen_readers_focus_follows_the_keys() {
     let mut app = start_with(props(), true);
     enter(&mut app);

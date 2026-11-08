@@ -1,7 +1,11 @@
 import { token } from "nsh";
 import { alpha, colors, finish } from "./theme";
+import { sectionSurface } from "./look/surface";
 
-/** The shared palette and finishes under the documentation demos' role names. */
+/** The shared palette and finishes under the documentation demos' role
+ * names. `card` (and its old name `row`) is a section's flat surface,
+ * `sectionSurface()`'s, its corners included; `inset` is the colors of a
+ * well, without corners (`insetSurface()` is a well with its corners). */
 export const ui = () => ({
   page: colors.background,
   text: colors.text,
@@ -18,8 +22,9 @@ export const ui = () => ({
   warn: colors.warn,
   danger: colors.danger,
   violet: token("violet"),
-  card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, ...finish.card },
-  row: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, ...finish.card },
+  // Its fill spelled out as well, so demos reading `ui().card.backgroundColor` get a color.
+  card: { ...sectionSurface(), backgroundColor: colors.surface },
+  row: { ...sectionSurface(), backgroundColor: colors.surface },
   inset: { backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.line, ...finish.inset },
   raised: { backgroundColor: colors.raised, borderWidth: 1, borderColor: colors.border, ...finish.raised },
   primary: { backgroundColor: colors.light, borderWidth: 1, ...finish.light },

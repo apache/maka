@@ -18,7 +18,7 @@
  */
 
 import { effect, keymap, platform } from 'nsh';
-import { Window } from 'nsh/desktop';
+import { currentWindow, isAvailable } from 'nsh/desktop';
 import type { ComposerEditor } from '../../../../products/maka/workbench/app/ComposerEditor';
 import type {
   ComposerSession,
@@ -51,6 +51,7 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
   composing(): boolean;
   dismiss(): void;
 }) {
+  const win = isAvailable && platform.idiom !== 'terminal' ? currentWindow() : null;
   let focused: Owner | null = null;
   let dropped: { target: Target<Owner>; text: string } | null = null;
   const capture = (owner: Owner | null): Target<Owner> | null => {
@@ -139,11 +140,11 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
     const target = capture(owner);
     if (!target) return;
     options.dismiss();
-    if (platform.isTerminal) {
+    if (platform.idiom === 'terminal') {
       paths(target, event.uris);
       return;
     }
-    Window.orderFront();
+    win?.focus();
     paths(target, event.uris, (text) => {
       if (!unchanged(target)) {
         insert(target, text);

@@ -109,6 +109,9 @@ pub(crate) struct Composition {
     layers: RefCell<Vec<Layer>>,
     /// The root's visuals as last arranged, bottom to top.
     order: RefCell<Vec<IDCompositionVisual2>>,
+    /// A transparent window's swap chain, below everything else
+    /// ([`Composition::set_base`]).
+    base: RefCell<Option<IDCompositionVisual2>>,
 }
 
 /// What nsh draws above a web view: a composition swap chain the size of
@@ -143,6 +146,7 @@ impl Composition {
                 root,
                 layers: RefCell::default(),
                 order: RefCell::default(),
+                base: RefCell::default(),
             }))
         }
     }
@@ -176,7 +180,7 @@ impl Composition {
             layer.swap = None;
         }
         if layer.swap.is_none() {
-            let swap = composition_swap_chain(gfx, size)?;
+            let swap = composition_swap_chain(gfx, size, DXGI_SWAP_CHAIN_FLAG(0))?;
             // SAFETY: plain calls on live objects of this thread.
             unsafe { layer.visual.SetContent(&swap)? };
             layer.swap = Some(swap);
@@ -223,8 +227,8 @@ impl Composition {
     pub(crate) fn present(&self, used: usize) -> Result<()> {
         for layer in self.layers.borrow().iter().take(used) {
             if let Some(swap) = &layer.swap {
-                // Not synchronized: the window's own swap chain waits for
-                // the vertical blank once for all of them.
+                // Not synchronized: the window's own swap chain paces the
+                // frames of all of them (`gfx::SwapChain::ready`).
                 // SAFETY: a COM call on a live swap chain.
                 unsafe { swap.Present(0, DXGI_PRESENT(0)).ok()? };
             }
@@ -271,7 +275,12 @@ impl Composition {
         unsafe {
             if !same {
                 let _ = self.root.RemoveAllVisuals();
+                let base = self.base.borrow();
                 let mut below: Option<&IDCompositionVisual> = None;
+                if let Some(base) = &*base {
+                    let _ = self.root.AddVisual(base, true, None);
+                    below = Some(base);
+                }
                 for visual in &order {
                     // Above the one added before it: with no reference,
                     // `insertAbove` puts a visual below all its siblings.
@@ -286,6 +295,35 @@ impl Composition {
         }
     }
 
+    /// Shows `swap` (a transparent window's own swap chain, made again
+    /// after a device loss) at the bottom of the tree, below the web views
+    /// and their layers.
+    pub(crate) fn set_base(&self, swap: &IDXGISwapChain1) -> Result<()> {
+        let mut base = self.base.borrow_mut();
+        // SAFETY: plain calls on the live device and tree, on its thread.
+        unsafe {
+            let visual = match &*base {
+                Some(v) => v.clone(),
+                None => {
+                    let v = self.device.CreateVisual()?;
+                    // With no reference, `insertAbove` puts it below all
+                    // its siblings.
+                    self.root.AddVisual(&v, true, None)?;
+                    *base = Some(v.clone());
+                    v
+                }
+            };
+            visual.SetContent(swap)?;
+            self.device.Commit()
+        }
+    }
+
+    /// A swap chain is shown at the bottom ([`Composition::set_base`]).
+    #[cfg(test)]
+    pub(crate) fn has_base(&self) -> bool {
+        self.base.borrow().is_some()
+    }
+
     /// Drops what lives on the lost device (the layers' swap chains).
     pub(crate) fn device_lost(&self) {
         for layer in self.layers.borrow_mut().iter_mut() {
@@ -297,8 +335,14 @@ impl Composition {
     }
 }
 
-/// A swap chain for composition of `size` pixels, premultiplied.
-fn composition_swap_chain(gfx: &Gfx, size: (u32, u32)) -> Result<IDXGISwapChain1> {
+/// A swap chain for composition of `size` pixels, premultiplied, made with
+/// `flags` (a window's base: [`gfx::SWAP_CHAIN_FLAGS`], paced; a layer's:
+/// none, presented with the base).
+pub(crate) fn composition_swap_chain(
+    gfx: &Gfx,
+    size: (u32, u32),
+    flags: DXGI_SWAP_CHAIN_FLAG,
+) -> Result<IDXGISwapChain1> {
     // SAFETY: plain factory creation.
     let factory: IDXGIFactory2 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
     let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -315,7 +359,7 @@ fn composition_swap_chain(gfx: &Gfx, size: (u32, u32)) -> Result<IDXGISwapChain1
         Scaling: DXGI_SCALING_STRETCH,
         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
         AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-        Flags: 0,
+        Flags: flags.0 as u32,
     };
     // SAFETY: a valid description on the live device.
     unsafe { factory.CreateSwapChainForComposition(&gfx.d3d, &desc, None) }

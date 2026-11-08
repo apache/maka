@@ -215,6 +215,7 @@ describe('ASF source release verification', () => {
         '### Source archive non-text inventory\n\n- `fixtures/*.png`: test-generated source images.\n',
       'fixtures/source.png': Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
       'fixtures/prepare.Dockerfile': 'FROM scratch\n',
+      'fixtures/memory.c': 'int main(void) { return 0; }\n',
       'fixtures/nsh.h': 'void nsh_init(void);\n',
       'fixtures/text.hlsl': 'float4 main() : SV_Target { return float4(1, 1, 1, 1); }\n',
       'fixtures/View.java': 'final class View {}\n',

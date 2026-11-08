@@ -150,7 +150,11 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
               accessibilityLabel={tr('Workspace files')}
               style={{ flex: 1, minHeight: 32 }}
               empty={<DirectoryStatus model={model} />}
-              footer={model.entries().length ? <DirectoryStatus model={model} /> : undefined}
+              footer={() => (
+                <If when={model.entries().length > 0}>
+                  <DirectoryStatus model={model} />
+                </If>
+              )}
             >
               {(entry) => (
                 <Button

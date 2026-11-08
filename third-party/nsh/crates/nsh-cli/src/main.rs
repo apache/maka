@@ -4,6 +4,7 @@
 //! hosts and runners built for it.
 
 mod android;
+mod apple;
 mod bindgen;
 mod build;
 mod cdp;
@@ -14,6 +15,8 @@ mod entry;
 mod init;
 mod logger;
 mod package;
+mod play;
+mod publish_ios;
 mod run;
 mod runtime;
 mod rust_app;
@@ -23,8 +26,8 @@ mod test_android;
 mod test_host;
 mod test_ios;
 mod test_web;
-mod tui;
 mod ui;
+mod updater;
 mod web;
 mod windows;
 
@@ -165,7 +168,8 @@ enum Command {
         junit: Option<PathBuf>,
         /// Run the apps the tests open on this platform's development host
         /// instead of headless: the steps act with the platform's own input
-        /// (macos, linux, windows, gpui, web, ios and android; web runs them
+        /// (macos, linux, windows, gpui, tui, web, ios and android; tui uses
+        /// an in-memory terminal; web runs them
         /// in a headless Chrome, Edge or Chromium, ios in a simulator,
         /// android on the first device adb lists).
         #[arg(long, value_enum)]
@@ -187,6 +191,12 @@ enum Command {
         /// the primary one when there is no other.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         display: Option<u32>,
+        /// With `--target macos`: lets the apps become the active app, as
+        /// they would run for a user. By default they run in the
+        /// background: their windows show but never take the keyboard from
+        /// the app in use, and the tests' input goes to them directly.
+        #[arg(long)]
+        foreground: bool,
     },
     /// Type check an app with TypeScript's native compiler (TypeScript 7,
     /// downloaded once from the npm registry; no Node needed); an app with
@@ -210,9 +220,11 @@ enum Command {
         /// whose `App.tsx` is the entry.
         #[arg(default_value = ".")]
         entry: PathBuf,
-        /// Dev server port (replaces the previous NSH development session).
-        #[arg(long, default_value_t = nsh_dev::protocol::DEFAULT_PORT)]
-        port: u16,
+        /// Dev server port (replaces the previous NSH development session on
+        /// it). Default: the port this app had last, else the first free one
+        /// from 8790; with --server-only, 8790.
+        #[arg(long)]
+        port: Option<u16>,
         /// Minify and strip debug info.
         #[arg(long)]
         release: bool,
@@ -240,15 +252,17 @@ enum Command {
     Package(Box<PackageArgs>),
     /// Run an app in a development host with hot reload. Defaults to
     /// AppKit on macOS, GTK on Linux and Win32 on Windows; select mobile
-    /// hosts, Mac Catalyst, GPUI, a browser or the terminal with --target.
+    /// hosts, Mac Catalyst, GPUI, a terminal or a browser with --target.
     Run {
         /// The entry module, or the app's directory (default: the current one),
         /// whose `App.tsx` is the entry.
         #[arg(default_value = ".")]
         entry: PathBuf,
-        /// Dev server port (replaces the previous NSH development session).
-        #[arg(long, default_value_t = nsh_dev::protocol::DEFAULT_PORT)]
-        port: u16,
+        /// Dev server port (replaces the previous NSH development session on
+        /// it). Default: the port this app had last, else the first free one
+        /// from 8790; with --server-only, 8790.
+        #[arg(long)]
+        port: Option<u16>,
         /// Minify and strip debug info.
         #[arg(long)]
         release: bool,
@@ -266,7 +280,8 @@ enum Command {
         /// Show the performance monitor over the app: frame rate, frame and
         /// commit costs, CPU, GPU, memory (`--target macos`, which also logs
         /// its readings once a second; `--target linux`, `windows` and `ios`
-        /// log them).
+        /// log them). On `tui`, show FPS/idle, frame p95, apply/draw/flush
+        /// times, bytes and changed Cells; C-h p toggles the line.
         #[arg(long)]
         fps: bool,
         /// Where to run.
@@ -276,6 +291,9 @@ enum Command {
         /// the newest iPhone.
         #[arg(long)]
         device: Option<String>,
+        /// Points per terminal Cell, overriding nsh.json tui.pointsPerCell (default: 8x16).
+        #[arg(long, value_name = "WIDTHxHEIGHT", value_parser = run::parse_points_per_cell)]
+        points_per_cell: Option<String>,
         /// The app's name in the host (the menu bar, the window title;
         /// `nsh.json`'s name by default; `--target macos` only).
         #[arg(long)]
@@ -297,6 +315,37 @@ enum Command {
         /// Path and name of the key files, e.g. `keys/root`.
         name: PathBuf,
     },
+    /// Write an app's update manifest (`latest.json`, signed with `--key`)
+    /// from the archives `nsh package` made for each platform; publish them
+    /// together.
+    UpdateManifest {
+        /// The archives named `<name>-<version>-<os>-<arch>.<ext>`.
+        #[arg(required_unless_present_any = ["package", "links"])]
+        archives: Vec<PathBuf>,
+        /// A signed package of the app's code (`nsh publish`'s `.nshpkg`),
+        /// which apps trusting its root (`updater.packages.roots`) run
+        /// without a new app.
+        #[arg(long)]
+        package: Option<PathBuf>,
+        /// The app's directory or entry, whose `nsh.json` has the id and version.
+        #[arg(long, default_value = ".")]
+        entry: PathBuf,
+        /// The secret key (`nsh keygen`'s `.secret`) of the app's `updater.publicKey`.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// A text file with what changed.
+        #[arg(long)]
+        notes: Option<PathBuf>,
+        /// Where iOS or Android users get it: `ios=<url>`, `android=<url>` (repeatable).
+        #[arg(long = "link")]
+        links: Vec<String>,
+        /// Prefix of the archives' URLs (default: next to the manifest).
+        #[arg(long)]
+        base_url: Option<String>,
+        /// The directory the manifest is written to.
+        #[arg(short, long, default_value = ".")]
+        out: PathBuf,
+    },
     /// Certify a release key with a root key, for some app ids and a time
     /// window; packages carry the certificate.
     Certify {
@@ -316,22 +365,26 @@ enum Command {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Build an app in release mode and sign it into a package (`.nshpkg`)
+    /// Upload to a store, or build and sign a package (`.nshpkg`)
     /// for apps that embed nsh to verify and run. Metadata comes from
     /// `nsh.json` next to the entry, overridden by the flags below. Given a
     /// package instead of an app, signs it again with this key: only its
-    /// certificate, signing time and signature change.
+    /// certificate, signing time and signature change. `nsh publish ios` / `nsh publish android`
+    /// uploads to a store instead.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     Publish {
+        #[command(subcommand)]
+        store: Option<PublishStore>,
         /// The entry module, the app's directory (default: the current one),
         /// whose `App.tsx` is the entry, or a package (`.nshpkg`) to sign again.
         #[arg(default_value = ".")]
         entry: PathBuf,
         /// The release key's secret key (`.secret`).
-        #[arg(long)]
-        key: PathBuf,
+        #[arg(long, required = true)]
+        key: Option<PathBuf>,
         /// Its certificate (`nsh certify`).
-        #[arg(long)]
-        cert: PathBuf,
+        #[arg(long, required = true)]
+        cert: Option<PathBuf>,
         /// The package to write (default: `.nsh/out/<id>-<build>.nshpkg`); a
         /// package signed again may name the one read.
         #[arg(short, long)]
@@ -406,6 +459,33 @@ enum Command {
     },
 }
 
+/// The stores `nsh publish` uploads to.
+#[derive(Subcommand, Clone)]
+enum PublishStore {
+    /// Upload an App Store-signed IPA to App Store Connect for TestFlight.
+    Ios(publish_ios::Args),
+    /// Upload an Android App Bundle (`.aab`) to Google Play's internal
+    /// testing track, with a service account's JSON key.
+    Android {
+        /// The bundle (`.aab`) to upload.
+        bundle: PathBuf,
+        /// The app's directory or entry, whose `nsh.json` `id` is the
+        /// package name.
+        #[arg(long, default_value = ".")]
+        entry: PathBuf,
+        /// The package name on Google Play (default: `nsh.json` `id`).
+        #[arg(long)]
+        package: Option<String>,
+        /// The service account's JSON key; keep it out of the repository.
+        #[arg(long, env = "NSH_PLAY_CREDENTIALS", hide_env_values = true)]
+        credentials: Option<PathBuf>,
+        /// Release as a draft, which Play requires until the app's first
+        /// release is made in Play Console.
+        #[arg(long)]
+        draft: bool,
+    },
+}
+
 /// Arguments of `nsh package`.
 #[derive(Args, Clone)]
 struct PackageArgs {
@@ -453,11 +533,21 @@ struct PackageArgs {
     /// arm64-v8a and armeabi-v7a; with --run also the device's).
     #[arg(long, value_delimiter = ',', value_parser = crate::android::ABIS)]
     abi: Vec<String>,
+    /// Android: what to write, an APK (installed directly) or an Android
+    /// App Bundle (`aab`, uploaded to Google Play).
+    #[arg(long, value_enum, default_value_t)]
+    format: crate::android::Format,
     /// Install and launch the app in the simulator or on the Android device
     /// afterwards (Linux, macOS, Windows: launch it; web: serve it on this
     /// machine at the address it prints).
     #[arg(long)]
     run: bool,
+    /// Web: the http(s) URL the site's files are served from, a CDN
+    /// (`https://cdn.example.com/app/`), as the page names them; `index.html`
+    /// stays at the page's address. Default: next to the page, named
+    /// relatively, so the site runs from any directory.
+    #[arg(long, value_name = "URL", conflicts_with = "run")]
+    asset_url: Option<String>,
 }
 
 impl Command {
@@ -473,6 +563,7 @@ impl Command {
             Command::Package(args) => Some(&mut args.entry),
             Command::Init { .. }
             | Command::Keygen { .. }
+            | Command::UpdateManifest { .. }
             | Command::Certify { .. }
             | Command::Verify { .. }
             | Command::Symbolicate { .. }
@@ -520,11 +611,27 @@ fn no_limits_for_rust(
 }
 
 fn run(mut command: Command) -> anyhow::Result<()> {
+    if let Command::Publish {
+        store: Some(store), ..
+    } = command
+    {
+        return match store {
+            PublishStore::Ios(args) => publish_ios::publish(&args),
+            PublishStore::Android {
+                bundle,
+                entry,
+                package,
+                credentials,
+                draft,
+            } => play::publish(&bundle, &entry, package, credentials, draft),
+        };
+    }
     // A package given to `nsh publish` has no app to resolve or build.
     if let Command::Publish {
+        store: _,
         entry,
-        key,
-        cert,
+        key: Some(key),
+        cert: Some(cert),
         out,
         id,
         version,
@@ -564,8 +671,25 @@ fn run(mut command: Command) -> anyhow::Result<()> {
     }
     // Own the port across builds and restarts, until every host and forwarding
     // rule from this command has been cleaned up.
-    let _port = match &command {
-        Command::Run { port, .. } | Command::Dev { port, .. } => dev_port::Session::acquire(*port)?,
+    let _port = match &mut command {
+        Command::Dev {
+            entry,
+            port,
+            server_only: true,
+            ..
+        } => {
+            // Apps embedding the SDK keep a server's address in their code.
+            let port = port.get_or_insert(nsh_dev::protocol::DEFAULT_PORT);
+            dev_port::Session::acquire(*port, entry)?
+        }
+        Command::Run { entry, port, .. } | Command::Dev { entry, port, .. } => match port {
+            Some(port) => dev_port::Session::acquire(*port, entry)?,
+            None => {
+                let (session, free) = dev_port::Session::acquire_free(entry)?;
+                *port = Some(free);
+                session
+            }
+        },
         _ => None,
     };
     // A Rust app (`nsh.json` "root") has no bundle: it is built, checked,
@@ -683,6 +807,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             browser,
             web_host,
             display,
+            foreground,
         } => test::test(
             &path,
             &entry,
@@ -694,6 +819,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             browser.as_deref(),
             web_host,
             display.map(|n| n as usize),
+            foreground,
         ),
         Command::Dev {
             entry,
@@ -705,19 +831,27 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             server_only,
         } => {
             no_limits_for_rust(&entry, limits)?;
+            // `--server-only` serves hosts started elsewhere, on other
+            // machines too; a host `nsh dev` starts is on the network only
+            // as `nsh run` starts it.
+            let listen = dev::Listen {
+                port: port.unwrap_or_default(),
+                network: server_only || target.uses_network(),
+            };
             if server_only {
-                let session = dev::DevSession::start(&entry, port, release, limits)?;
+                let session = dev::DevSession::start(&entry, listen, release, limits)?;
                 session.print_urls();
                 session.watch(|| Ok(false))
             } else {
                 run::run(
                     &entry,
-                    port,
+                    listen,
                     release,
                     run::HostFlags {
                         limits,
                         trace: false,
                         fps: false,
+                        points_per_cell: None,
                     },
                     target,
                     device.as_deref(),
@@ -741,7 +875,9 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 key_alias,
                 keystore_password,
                 abi,
+                format,
                 run,
+                asset_url,
             } = *args;
             let mut config = package::read_config(&entry)?;
             config.name = name.or(config.name);
@@ -764,7 +900,9 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                     )
                 }),
                 abis: &abi,
+                format,
                 run,
+                asset_url: asset_url.as_deref(),
             })
         }
         Command::Run {
@@ -779,13 +917,22 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             name,
             size,
             display,
+            points_per_cell,
         } => {
             no_limits_for_rust(&entry, limits)?;
             run::run(
                 &entry,
-                port,
+                dev::Listen {
+                    port: port.unwrap_or_default(),
+                    network: target.uses_network(),
+                },
                 release,
-                run::HostFlags { limits, trace, fps },
+                run::HostFlags {
+                    limits,
+                    trace,
+                    fps,
+                    points_per_cell,
+                },
                 target,
                 device.as_deref(),
                 run::HostWindow {
@@ -796,6 +943,25 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             )
         }
         Command::Keygen { name } => sign::keygen(&name),
+        Command::UpdateManifest {
+            archives,
+            package,
+            entry,
+            key,
+            notes,
+            links,
+            base_url,
+            out,
+        } => updater::manifest(updater::ManifestOptions {
+            archives: &archives,
+            package: package.as_deref(),
+            entry: &entry,
+            key: key.as_deref(),
+            notes: notes.as_deref(),
+            links: &links,
+            base_url: base_url.as_deref(),
+            out: &out,
+        }),
         Command::Certify {
             root,
             key,
@@ -804,6 +970,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             out,
         } => sign::certify_key(&root, &key, &apps, days, &out),
         Command::Publish {
+            store: _,
             entry,
             key,
             cert,
@@ -820,6 +987,9 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             config.version = version.or(config.version);
             config.build = build.or(config.build);
             config.min_runtime = min_runtime.or(config.min_runtime);
+            let (Some(key), Some(cert)) = (key, cert) else {
+                anyhow::bail!("nsh publish needs --key and --cert");
+            };
             sign::publish(sign::PublishOptions {
                 entry: &entry,
                 key: &key,
@@ -853,6 +1023,59 @@ mod command_tests {
 
     use super::{Cli, Command, run::Target};
 
+    #[test]
+    fn publish_ios_and_package_signing_have_separate_arguments() {
+        let cli = Cli::try_parse_from([
+            "nsh",
+            "publish",
+            "ios",
+            "app.ipa",
+            "--app-id",
+            "123",
+            "--issuer-id",
+            "issuer",
+            "--key-id",
+            "KEY123",
+            "--private-key",
+            "key.p8",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Publish {
+                store: Some(super::PublishStore::Ios(_)),
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["nsh", "publish"]).is_err());
+        for entry in [".", "./ios", "app.nshpkg"] {
+            let cli = Cli::try_parse_from([
+                "nsh",
+                "publish",
+                entry,
+                "--key",
+                "key.secret",
+                "--cert",
+                "key.cert",
+            ])
+            .unwrap();
+            assert!(matches!(cli.command, Command::Publish { store: None, .. }));
+        }
+        assert!(
+            Cli::try_parse_from([
+                "nsh",
+                "publish",
+                "ios",
+                "app.ipa",
+                "--key",
+                "key.secret",
+                "--cert",
+                "key.cert"
+            ])
+            .is_err()
+        );
+    }
+
     /// Signing a package again changes no contents, so a flag that shapes a
     /// build is refused rather than ignored, before any file is read.
     #[test]
@@ -870,6 +1093,20 @@ mod command_tests {
             let error = super::run(Cli::try_parse_from(line).unwrap().command).unwrap_err();
             assert!(error.to_string().starts_with(flag), "{flag}: {error}");
         }
+    }
+
+    /// `nsh publish android` is a store upload and needs no signing key;
+    /// `nsh publish` of an app still does.
+    #[test]
+    fn publish_android_is_a_store_upload() {
+        let cli = Cli::try_parse_from(["nsh", "publish", "android", "app.aab", "--draft"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Publish { store: Some(super::PublishStore::Android { bundle, draft: true, .. }), .. }
+                if bundle == std::path::Path::new("app.aab")
+        ));
+        assert!(Cli::try_parse_from(["nsh", "publish", "."]).is_err());
+        assert!(Cli::try_parse_from(["nsh", "publish", "android", "a.aab", "--key", "k"]).is_err());
     }
 
     #[test]

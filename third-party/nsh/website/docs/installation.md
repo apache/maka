@@ -67,7 +67,7 @@ The archives (`nsh-macos-arm64.tar.gz`, `nsh-linux-x86_64.tar.gz`, `nsh-windows-
 
 ## For apps written in Rust
 
-Install Rust through [rustup](https://rustup.rs). `nsh` builds a Rust app's runner for each target with Cargo, from your crate and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on:
+Install Rust through [rustup](https://rustup.rs). [huacnlee/cargo](#building-from-a-checkout) is recommended for development. `nsh` builds a Rust app's runner for each target with Cargo, from your crate and NSH's crates on crates.io at the CLI's version, so add the Rust targets of the platforms you run on:
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi   # iOS simulator, devices, Mac Catalyst
@@ -105,6 +105,17 @@ nsh --version
 
 The distribution is made with `cargo xtask dist` in a checkout (below). The `nsh` binary it contains is built for that machine. On a Mac with Xcode it includes the iOS and macOS runtimes (Apple Silicon); on Linux it includes the Linux runtime instead, built for that machine; on Windows the Windows runtime, with `bin\nsh.exe`. Each also includes the [GPUI](./gpui.md) development host, built for that machine. All include the Android runtime (on Windows only when the Android SDK is found).
 
+## Installing the nightly build
+
+Every night that `main` changes, it is built and published as the [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly), with the same archives as a release. On macOS and Linux, install it with the install script:
+
+```sh
+curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
+nsh -V # nsh 0.1.1 (abcdef0)
+```
+
+It installs to `~/.nsh` as a release does, and running it again updates to the latest nightly; the plain command goes back to the latest release. `-V` shows the revision of `main` it was built from. Apps written in Rust build their runner with NSH's crates on crates.io at the CLI's version, which is the last release's; for those apps, use a release or the source.
+
 ## Installing the latest source
 
 On macOS and Linux, install the latest `main` with Git, Rust and the platform build dependencies below:
@@ -119,6 +130,12 @@ The installer keeps the checkout in `~/.nsh/source`, builds the release CLI and 
 ## Building from a checkout
 
 You need Rust through [rustup](https://rustup.rs). The repository's `rust-toolchain.toml` selects the stable toolchain and installs the iOS and Android targets on first use.
+
+For development we recommend [huacnlee/cargo](https://github.com/huacnlee/cargo), a drop-in Cargo fork: your Git worktrees share one build directory that stays under a size limit on its own, with nothing to configure. It replaces `~/.cargo/bin/cargo`, keeps `rust-toolchain.toml` and `cargo +nightly` working, and updates itself; its README says how to put rustup's back.
+
+```sh
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows: irm https://huacnlee.github.io/cargo/install.ps1 | iex
+```
 
 ```sh
 git clone https://github.com/longbridge/nsh.git
@@ -187,7 +204,7 @@ See [macOS](./macos.md).
 
 - **GTK 4.14** or later, with their development packages and clang to build the runtime: `libgtk-4-dev clang` (Debian, Ubuntu 24.04 or later), `gtk4 clang` (Arch), `gtk4-devel clang` (Fedora).
 - **WebKitGTK 6.0** (2.40 or later) for web views: `libwebkitgtk-6.0-dev` (Debian, Ubuntu), `webkitgtk-6.0` (Arch), `webkitgtk6.0-devel` (Fedora) to build the runtime; apps then need it where they run. Without it, `cargo xtask dist` builds the runtime with placeholders for web views.
-- **GStreamer** plugins for the video formats apps play.
+- **GStreamer** 1.14 or later, for video and sound: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` (Debian, Ubuntu), `gstreamer gst-plugins-base` (Arch), `gstreamer1-devel gstreamer1-plugins-base-devel` (Fedora) to build the runtime, and the plug-ins for the video and audio formats apps play.
 
 See [Linux](./linux.md).
 

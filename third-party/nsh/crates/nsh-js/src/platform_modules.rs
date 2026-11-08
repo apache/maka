@@ -496,7 +496,7 @@ pub(crate) const WEBVIEW_EXPORTS: &[Item] = &[(
         webview
     }),
     Ts::value(
-        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)`, `postMessage(data)` and `sendInput(input)`;\n`WebView.inputAvailable()` says whether `sendInput` works here.",
+        "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)`, `postMessage(data)`, `sendInput(input)` and\n`load({ src, headers })`;\n`WebView.inputAvailable()` says whether `sendInput` works here.",
         "((props: WebViewProps) => JSX.Element) & WebViewModule",
     ),
 )];

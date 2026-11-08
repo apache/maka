@@ -32,7 +32,6 @@ final class ModalHost {
     /** The content reaches under the status bar (else it starts below). */
     private boolean translucent;
     private boolean closing;
-    private Runnable pendingShow;
     /**
      * Ends the presentation or dismissal through the shader that runs (or
      * waits for its layout to start) at once: the dialog settles where it
@@ -44,7 +43,6 @@ final class ModalHost {
         this.mounter = mounter;
         this.id = id;
         root = new Box(context, mounter, id);
-        mounter.observeFocus(root);
         container = new Container(context);
         container.content.addView(root);
         mirror(mounter.rtl);
@@ -80,15 +78,17 @@ final class ModalHost {
 
     /** The shown dialog's window (its decor view), or null. */
     View window() {
-        Window window = shown() && dialog.isShowing() ? dialog.getWindow() : null;
+        Window window = dialogWindow();
         return window == null ? null : window.getDecorView();
     }
 
+    /** The shown dialog's window, or null. */
+    Window dialogWindow() {
+        return shown() && dialog.isShowing() ? dialog.getWindow() : null;
+    }
+
     void show() {
-        if (dialog != null && !closing) {
-            dialog.show();
-            return;
-        }
+        if (dialog != null && !closing) return;
         // A dismissal through the shader still running ends first: its
         // window goes and `onDismiss` goes out before this one comes.
         finishChange();
@@ -126,7 +126,6 @@ final class ModalHost {
         dialog.show();
         matchSystemBars(window);
         Runnable animateIn = () -> {
-            pendingShow = null;
             if (animation == 2) {
                 mounter.event(id, Native.SHOW);
                 return;
@@ -144,7 +143,6 @@ final class ModalHost {
         };
         if (shaderIn(dialog, animateIn)) return;
         container.setAlpha(animation == 1 ? 0 : 1);
-        pendingShow = animateIn;
         container.post(animateIn);
     }
 
@@ -205,19 +203,6 @@ final class ModalHost {
         };
         container.getViewTreeObserver().addOnPreDrawListener(pending[0]);
         return true;
-    }
-
-    /** Retire this root without leaving its window eligible for input. */
-    void park() {
-        finishChange();
-        if (pendingShow != null) container.removeCallbacks(pendingShow);
-        pendingShow = null;
-        container.animate().setListener(null);
-        container.animate().cancel();
-        closing = false;
-        container.setAlpha(1);
-        container.setTranslationY(0);
-        if (dialog != null) dialog.hide();
     }
 
     /**
@@ -345,12 +330,6 @@ final class ModalHost {
                 }
             };
             addView(content);
-        }
-
-        @Override
-        public void onWindowFocusChanged(boolean focused) {
-            super.onWindowFocusChanged(focused);
-            mounter.publishFocusPath();
         }
 
         @Override

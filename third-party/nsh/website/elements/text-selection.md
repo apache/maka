@@ -88,18 +88,91 @@ import { TextView } from "nsh/base";
 </Scroll>
 ```
 
+## Reading the selection
+
+`onSelectionChange` on a selectable view (`.on_text_selection_change(..)` in Rust) hears the selected text each
+time the selection changes: `{ text, start }`, what Copy would take and where it starts in the view's whole text, and `""` once nothing is selected (a press elsewhere,
+Escape, another view selecting). It reports only changes. In a selectable view inside another, the outer view
+reports, as it holds the one selection. A `selectable` [`TextView`](./text-view.md) reports its own the same way
+(`onSelectionChange`, `.on_selection_change(..)`). A chat uses it to quote the part of a reply the reader selected:
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    view()
+        .selectable(true)
+        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
+        .child(nsh_base::text_view().markdown(markdown))
+}
+```
+
+```tsx tabs
+import { signal, View } from "nsh";
+import { TextView } from "nsh/base";
+
+const quote = signal("");
+
+<View selectable onSelectionChange={({ text }) => quote.set(text)}>
+  <TextView markdown={reply} />
+</View>
+```
+
+### As Markdown or HTML
+
+A `selectable` `TextView`'s ref reads its selection when the app asks: `selectedText({ format })` gives the selected
+text (`"plain"`, the default, what Copy takes), or the selected part of the document as `"markdown"` or `"html"`,
+rebuilt from the nodes it covers, so the marks, links, list items and code blocks around it are kept (a list keeps its
+numbers, a table row keeps the table's header). With all of it selected it gives the source as written, when the
+document came in that format. `""` when nothing is selected. In Rust it is `TextViewApi::selected_text` with
+`TextSelectionOptions::format(TextSelectionFormat::Markdown)`.
+
+```rust tabs
+use nsh_base::{TextSelectionFormat, TextSelectionOptions, TextView, TextViewApi, text_view};
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    let doc = component_ref::<TextView>();
+    text_view()
+        .markdown(markdown)
+        .selectable(true)
+        .component_ref(&doc)
+        .on_selection_change(move |_| {
+            if let Some(api) = doc.api::<TextViewApi>() {
+                let options = TextSelectionOptions::format(TextSelectionFormat::Markdown);
+                quote.set(api.selected_text(Some(options)));
+            }
+        })
+}
+```
+
+```tsx tabs
+import { signal } from "nsh";
+import { TextView, type TextViewRef } from "nsh/base";
+
+let doc: TextViewRef | undefined;
+const quote = signal("");
+
+<TextView
+  ref={(r) => (doc = r)}
+  selectable
+  markdown={reply}
+  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
+/>
+```
+
+It reads the selection the view holds: in a `selectable` view inside another, the outer view holds it, and the inner
+`TextView`'s ref gives `""`.
+
+An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selection in its text (`{ start, end }`).
+
 ## How a selection is made
 
 | Platform | How a selection is made |
 |---|---|
 | macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the view, Ctrl / Cmd+C copies, Escape or a press outside clears. |
-| Terminal | Drag across text nodes and lines; Shift+click extends the selection. Dragging beyond a Scroll edge scrolls while held. Ctrl+A selects the area, Ctrl+C or Ctrl+Insert copies, Escape clears a nonempty selection, and a press outside clears it. |
 | iOS, Android | A long press selects a word; the platform's handles extend it, and its edit menu has Copy and Select All. |
 | Web | The browser's own selection, with its gestures, menu and shortcuts. |
-
-On terminal surfaces, a retained background selection receives keys only in the active input scope. A modal or
-focused popup suspends that keyboard ownership; closing it makes the selection available again. Copy uses the
-same [host clipboard services and OSC 52 output](../docs/tui.md#keyboard-and-mouse) as other clipboard writes.
 
 ## What it selects
 
@@ -111,6 +184,9 @@ same [host clipboard services and OSC 52 output](../docs/tui.md#keyboard-and-mou
 - **Single texts**: a text with `userSelect: "text"` in no selectable view selects on its own, as
   [Text](./text.md#props) describes.
 - **The look** is the platform's highlight in each text's `selectionColor` (`selection:text-*`).
+- **A line in several texts**: a Rust component that lays one line out as several texts (a soft-wrapped line of
+  code) marks the later parts with `.continues_text(true)`; a copy then gives the line whole, with no line break where
+  it was cut, and a triple click selects all of its parts. [`DiffView`](./diff-view.md) does this for its wrapped lines.
 - **Lists**: in a virtualized [List](./list.md), a selection covers the rows that are mounted; rows recycled out of
   view leave it.
 

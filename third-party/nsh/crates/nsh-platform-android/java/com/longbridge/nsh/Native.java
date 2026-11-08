@@ -71,17 +71,20 @@ final class Native {
     static final int PRESS_OUTSIDE = 59;
     static final int CANCEL = 60;
     static final int POSITION = 61;
-    static final int SCROLL_INTENT = 62;
-    static final int HOST = 63;
-    static final int PICK = 64;
-    static final int LOAD_MORE_AT_START = 65;
-    static final int OPEN_URL = 66;
-    static final int CARET_MOVE = 67;
-    static final int PASTE = 68;
-    static final int SCREEN_COLOR = 69;
-    static final int FILE_REQUEST = 70;
-    static final int SPEECH = 71;
-    static final int DOWNLOAD = 72;
+    static final int HOST = 62;
+    static final int PICK = 63;
+    static final int LOAD_MORE_AT_START = 64;
+    static final int OPEN_URL = 65;
+    static final int CARET_MOVE = 66;
+    static final int PASTE = 67;
+    static final int SCREEN_COLOR = 68;
+    static final int FILE_REQUEST = 69;
+    static final int SPEECH = 70;
+    static final int DOWNLOAD = 71;
+    static final int NOTIFICATION = 72;
+    static final int URL_SCHEME = 73;
+    static final int AUDIO = 74;
+    static final int WINDOW = 75;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -137,6 +140,9 @@ final class Native {
      */
     static native String setThemeOverrides(long handle, String json);
 
+    /** Registers a font file; returns an error, or null. */
+    static native String registerFont(long handle, byte[] data);
+
     /** Whether the running app's web views may navigate to {@code url}. */
     static native boolean allowsWebview(long handle, String url);
 
@@ -154,7 +160,7 @@ final class Native {
     static native byte[] imageBytes(long handle, String uri);
 
     /** {@code capabilities}: the app's declaration (JSON), {@code app}: its {@code app.json} ({@code id}); null for none. */
-    static native void load(long handle, byte[] code, boolean bytecode, String sourceMap, String capabilities, String app);
+    static native void load(long handle, byte[] code, boolean bytecode, String sourceMap, String capabilities, String app, String updater);
 
     static native boolean connectDevServer(long handle, String url);
 
@@ -218,8 +224,13 @@ final class Native {
      * values: safe area top, right, bottom, left, keyboard height, keyboard
      * animation duration (s), font scale, 1 if the language is right to left.
      * locale: the default locale's language tag (`Intl`'s default).
+     * timeZone: the system's time zone's ID (`Europe/Berlin`).
+     * languages: the preferred languages' tags, most preferred first, comma-separated.
+     * regional: the system's format locale's tag, with Android 14's regional
+     * preferences as its Unicode extension (`en-US-u-fw-mon-mu-celsius`).
      */
-    static native void environment(long handle, float[] values, boolean dark, String locale);
+    static native void environment(long handle, float[] values, boolean dark, String locale, String timeZone,
+            String languages, String regional);
 
     static native void event(long handle, int id, int kind, String text, int count, float x, float y);
 
@@ -262,12 +273,6 @@ final class Native {
 
     /** Applies the animation items of batches up to {@code seq}; returns bound values. */
     static native float[] afterBatch(long handle, long seq);
-
-    /** Actual native focus, innermost node first. */
-    static native void focusPath(long handle, int[] path);
-
-    /** The UI consumed this batch's retirement request, preserving any focused cell. */
-    static native void retireListCell(long handle, long seq, int id, long request, boolean retired, int[] path);
 
     static native float[] tick(long handle, long frameNanos);
 
@@ -312,14 +317,14 @@ final class Native {
      */
     static native float[] scroll(long handle, int id, float x, float y, int applied);
 
-    /** Keeps the virtual list rows holding views {@code ids} rendered wherever they scroll (a selection's ends); none lets go. */
-    static native void keepRendered(long handle, int[] ids);
-
     /**
      * How far a multiline input's text scrolled ({@code y}), the size of that
      * text and of the input's viewport, in points; sent while a built-in bar
      * replaces its scroll indicator.
      */
+    /** Keeps the virtual list rows holding views {@code ids} rendered wherever they scroll (a selection's ends); none lets go. */
+    static native void keepRendered(long handle, int[] ids);
+
     static native void inputScroll(long handle, int id, float y, float contentWidth, float contentHeight,
                                    float width, float height);
 

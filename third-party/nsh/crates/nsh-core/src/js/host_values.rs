@@ -7,8 +7,9 @@ use std::sync::Arc;
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
     AccessibilityCurrent, AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill,
-    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp,
-    Prop, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
+    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop,
+    MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop, ScrollProp,
+    StatusBarSetting, StatusBarStyle, Viewability,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
@@ -93,44 +94,6 @@ impl HostValue for ListContentStyle {
     }
 }
 
-impl HostValue for crate::input_tokens::InputTokenRule {
-    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
-        let pattern = input.field("pattern")?.as_string()?;
-        let style = input.field("style");
-        let color = |name| style.as_ref().and_then(|s| s.field(name));
-        let radius = style
-            .as_ref()
-            .and_then(|s| number(s, "borderRadius"))
-            .unwrap_or(0.0);
-        if !radius.is_finite() || radius < 0.0 {
-            return None;
-        }
-        Self::new(
-            &pattern,
-            crate::input_tokens::InputTokenStyle {
-                color: color("color").and_then(|v| crate::Color::decode(&v, cx)),
-                background_color: color("backgroundColor")
-                    .and_then(|v| crate::Color::decode(&v, cx)),
-                border_radius: Points(radius),
-            },
-            input
-                .field("atomic")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        )
-        .map_err(|error| log::warn!(target: "js", "input tokens: {error}"))
-        .ok()
-    }
-
-    fn ts_type(types: &mut TsTypes) -> String {
-        types.declare("InputTokenRule", |_| {
-            "/** Native input token rule. Rust regex syntax; a named `token` capture is required. */\n\
-             export interface InputTokenRule {\n  pattern: string;\n  atomic?: boolean;\n  style?: { color?: ColorValue; backgroundColor?: ColorValue; borderRadius?: number };\n}"
-                .into()
-        })
-    }
-}
-
 /// Resolve the list's existing shorthand/axis/side precedence at either
 /// native JS boundary. Both decoders use this one content layout shape.
 fn list_content<E>(n: impl Fn(&str) -> Result<Option<Points>, E>) -> Result<ListContentStyle, E> {
@@ -179,6 +142,34 @@ impl JsValue for ListContentStyle {
             host.set_field(object.get().raw(), key, value.to_js(host)?.into_raw())?;
         }
         Ok(object)
+    }
+}
+
+/// `macos={{ backdrop }}`: `{ material, blending, state }`, each field
+/// falling back to its default when left out or unknown.
+impl HostValue for MacOsBackdrop {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        Some(MacOsBackdrop {
+            material: field::<MacOsBackdropMaterial, _>(input, "material", cx).unwrap_or_default(),
+            blending: field::<MacOsBackdropBlending, _>(input, "blending", cx).unwrap_or_default(),
+            state: field::<MacOsBackdropState, _>(input, "state", cx).unwrap_or_default(),
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let material = <MacOsBackdropMaterial as HostValue>::ts_type(types);
+        let blending = <MacOsBackdropBlending as HostValue>::ts_type(types);
+        let state = <MacOsBackdropState as HostValue>::ts_type(types);
+        types.declare("MacOsBackdrop", |_| {
+            format!(
+                "/** The material a view draws with on macOS (`macos={{{{ backdrop }}}}`). */\n\
+                 export interface MacOsBackdrop {{\n  material?: {material};\n  \
+                 blending?: {blending};\n  state?: {state};\n}}"
+            )
+        })
     }
 }
 
@@ -265,6 +256,7 @@ impl HostValue for AccessibilityState {
             busy: flag("busy"),
             expanded: input.field("expanded").and_then(|v| v.as_bool()),
             pressed: tristate("pressed"),
+            has_popup: flag("hasPopup"),
             // `false` and unknown words are no current item, as ARIA has it.
             current: match current.as_ref().and_then(|c| c.as_bool()) {
                 Some(true) => Some(AccessibilityCurrent::True),
@@ -290,7 +282,9 @@ impl HostValue for AccessibilityState {
              /** A toggle button that is on or off (ARIA's `aria-pressed`). */\n  \
              pressed?: boolean | \"mixed\";\n  \
              /** The current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. */\n  \
-             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n}"
+             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n  \
+             /** Opens a popup, a menu or a list (ARIA's `aria-haspopup`); `expanded` says whether it is open. */\n  \
+             hasPopup?: boolean;\n}"
                 .into()
         })
     }
@@ -602,13 +596,6 @@ pub(crate) fn overlay_anchor<I: HostInput>(input: &I, _: &mut HostCx) -> Option<
         _ => bounds().map_or(OverlayAnchor::None, OverlayAnchor::Bounds),
     };
     Some(OverlayProp::Anchor(anchor))
-}
-
-/// `hintDelay`: milliseconds before a native hint is shown.
-pub(crate) fn hint_delay<I: HostInput>(input: &I, _: &mut HostCx) -> Option<OverlayProp> {
-    let millis = input.as_number().filter(|n| n.is_finite())?;
-    let delay = std::time::Duration::try_from_secs_f64(millis.max(0.0) / 1000.0).ok()?;
-    Some(OverlayProp::Hint(Some(delay)))
 }
 
 /// `tooltip`: a string, an element (a node JS made), or nothing.

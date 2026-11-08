@@ -1,11 +1,14 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
-import { HoverCard, type OpenChangeReason } from "nsh/base";
-import { desktop, focusRing, Inspector, Log, PopIn, type PopupSide, Segmented, Stage, tint, ui, wide } from "./palette";
+import { Button, HoverCard, type OpenChangeReason } from "nsh/base";
+import { avatarIdentity, buttonLabel, buttonLook, type ButtonKind, desktop, focusRing, Icon, Inspector, Log, PopIn, popoverLook, type PopupSide, Segmented, Stage, tint, ui, wide } from "./palette";
 
 type Placement = PopupSide;
 
-/** A card's surface, the look the app gives it; `PopIn` brings it in from the trigger's side. */
-const surface = (width: number) => ({ ...ui().card, width, borderRadius: 12, padding: 14, gap: 10 });
+/** A card's surface, the look the app gives it (`popoverLook`); `PopIn` brings it in from the trigger's side. */
+const surface = (width: number) => popoverLook({ width });
+
+/** Ada's identity colors, as her avatar's initials take them. */
+const ada = () => avatarIdentity("Ada Lovelace");
 
 /** The popup's box fades on its way out (its ending class, kept while the transition runs). */
 const exit = { popupClass: "transition-opacity duration-150 ease-in motion-reduce:transition-none", popupEndingClass: "opacity-0" };
@@ -16,6 +19,8 @@ function App() {
   const placement = signal<Placement>("bottom");
   const events = signal<string[]>([]);
   const following = signal(false);
+  // The card's action: the accent fill to follow, a quiet raised button once following.
+  const followKind = (): ButtonKind => (following() ? "secondary" : "accent");
   const price = signal(227.52);
   let timer: ReturnType<typeof setInterval> | undefined;
   const log = (name: string) => ({ open, reason }: { open: boolean; reason: OpenChangeReason }) =>
@@ -35,8 +40,8 @@ function App() {
     }>
       <PopIn side={placement()} style={surface(260)}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: tint(ui().accent, 0.18), alignItems: "center", justifyContent: "center" }}>
-            <Text style={{ fontSize: 15, fontWeight: "600", color: ui().accent }}>AL</Text>
+          <View style={{ width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: ada().border, backgroundColor: ada().background, alignItems: "center", justifyContent: "center" }}>
+            <Text style={{ fontSize: 15, fontWeight: "600", color: ada().foreground }}>AL</Text>
           </View>
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={{ fontSize: 15, fontWeight: "600", color: ui().text }}>Ada Lovelace</Text>
@@ -44,12 +49,9 @@ function App() {
           </View>
         </View>
         <Text style={{ fontSize: 13, lineHeight: 18, color: ui().text }}>Writes the first programs for the Analytical Engine.</Text>
-        <View
-          onPress={() => following.set(!following())}
-          style={{ height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center", ...(following() ? ui().raised : ui().accentFill), transitionProperty: "background-color", transitionDuration: 150 }}
-        >
-          <Text style={{ fontSize: 13, fontWeight: "500", color: following() ? ui().text : ui().onAccent }}>{following() ? "Following" : "Follow"}</Text>
-        </View>
+        <Button onPress={() => following.set(!following())} {...buttonLook(followKind)}>
+          <Text style={buttonLabel(followKind)}>{following() ? "Following" : "Follow"}</Text>
+        </Button>
       </PopIn>
     </HoverCard>
   );
@@ -61,10 +63,18 @@ function App() {
         <Text style={{ fontSize: 15, color: ui().accent }}>Taffy</Text>
       </View>
     }>
-      <PopIn side={placement()} style={{ ...surface(280), padding: 0, gap: 0, overflow: "hidden" }}>
-        <View style={{ height: 64, backgroundImage: "linear-gradient(135deg, #3b82f6, #8b5cf6)" }} />
-        <View style={{ padding: 12, gap: 4 }}>
-          <Text style={{ fontSize: 11, color: ui().faint }}>github.com</Text>
+      <PopIn side={placement()} style={surface(280)}>
+        {/* The site's mark on a raised tile and its domain, then the page. */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <View style={{ ...ui().raised, width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
+            <Icon name="code" size={16} tint={ui().text} />
+          </View>
+          <View style={{ flex: 1, gap: 1 }}>
+            <Text style={{ fontSize: 12, fontWeight: "500", color: ui().text }}>github.com</Text>
+            <Text style={{ fontSize: 11.5, color: ui().faint }}>DioxusLabs/taffy</Text>
+          </View>
+        </View>
+        <View style={{ gap: 4 }}>
           <Text style={{ fontSize: 14, fontWeight: "600", color: ui().text }}>taffy: flexbox, grid and block layout</Text>
           <Text style={{ fontSize: 12, color: ui().muted }}>A high-performance UI layout library written in Rust.</Text>
         </View>

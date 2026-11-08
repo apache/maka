@@ -1,0 +1,15 @@
+{
+  "name": "API Desktop",
+  "id": "com.example.api-desktop",
+  "capabilities": {
+    "windows": {
+      "kinds": [
+        "normal",
+        "dialog",
+        "panel",
+        "popup"
+      ],
+      "max": 3
+    }
+  }
+}

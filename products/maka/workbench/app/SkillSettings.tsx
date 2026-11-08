@@ -206,7 +206,7 @@ function Detail(props: { owner: SkillSettingsOwner }) {
                       {
                         fontFamily: 'monospace',
                         fontSize: 13,
-                        lineHeight: platform.isTerminal ? 16 : 20,
+                        lineHeight: platform.idiom === 'terminal' ? 16 : 20,
                         color: C.text,
                       },
                       { userSelect: 'text' },

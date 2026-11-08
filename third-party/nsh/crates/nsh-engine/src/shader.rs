@@ -48,62 +48,12 @@ use nsh_core::{
 };
 use rustc_hash::FxHashMap;
 
-/// The largest side of a frame, in pixels.
-pub const MAX_SIDE: u32 = 4096;
+pub use crate::shader_frame::{Frame, MAX_SIDE, PixelFormat};
 
-/// The pixels a backend shows: 8 bits per channel, premultiplied alpha.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PixelFormat {
-    /// Red, green, blue, alpha (GDK's `R8G8B8A8_PREMULTIPLIED`, Core
-    /// Graphics' premultiplied last, Android's `ARGB_8888`).
-    #[default]
-    Rgba,
-    /// Blue, green, red, alpha (Direct2D's, GPUI's).
-    Bgra,
-}
-
-impl PixelFormat {
-    fn texture(self) -> wgpu::TextureFormat {
-        match self {
-            PixelFormat::Rgba => wgpu::TextureFormat::Rgba8Unorm,
-            PixelFormat::Bgra => wgpu::TextureFormat::Bgra8Unorm,
-        }
-    }
-}
-
-/// A rendered frame: `height` rows of `width` pixels, `stride` bytes apart.
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct Frame {
-    /// The pixels, row by row.
-    pub pixels: Vec<u8>,
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// Bytes from one row to the next (at least `width * 4`).
-    pub stride: u32,
-    /// Counts the frames shown: a new value is a new picture.
-    pub serial: u64,
-}
-
-impl Frame {
-    /// The rows, without their padding.
-    pub fn rows(&self) -> impl Iterator<Item = &[u8]> {
-        let row = self.width as usize * 4;
-        self.pixels
-            .chunks(self.stride.max(1) as usize)
-            .take(self.height as usize)
-            .map(move |r| &r[..row.min(r.len())])
-    }
-
-    /// The pixels with no padding between rows (`width * 4` bytes apart).
-    pub fn tight(&self) -> Cow<'_, [u8]> {
-        if self.stride == self.width * 4 {
-            Cow::Borrowed(&self.pixels)
-        } else {
-            Cow::Owned(self.rows().flatten().copied().collect())
-        }
+fn texture_format(format: PixelFormat) -> wgpu::TextureFormat {
+    match format {
+        PixelFormat::Rgba => wgpu::TextureFormat::Rgba8Unorm,
+        PixelFormat::Bgra => wgpu::TextureFormat::Bgra8Unorm,
     }
 }
 
@@ -271,7 +221,7 @@ impl Renderer {
                     entry_point: Some("nsh_fragment"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: self.format.texture(),
+                        format: texture_format(self.format),
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -315,7 +265,7 @@ fn picture_descriptor(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: format.texture(),
+        format: texture_format(format),
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     }
@@ -876,12 +826,8 @@ impl ShaderView {
             if r.state.load(Ordering::Acquire) != state::MAPPED {
                 continue;
             }
-            // wgpu 30 reports a range it cannot map; the frame then keeps
-            // the pixels it has.
-            if i == newest
-                && r.serial > self.frame.serial
-                && let Ok(data) = r.buffer.slice(..).get_mapped_range()
-            {
+            if i == newest && r.serial > self.frame.serial {
+                let data = r.buffer.slice(..).get_mapped_range();
                 self.frame.pixels.clear();
                 self.frame.pixels.extend_from_slice(&data);
                 drop(data);
@@ -909,7 +855,7 @@ fn target(renderer: &Renderer, width: u32, height: u32) -> Target {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: renderer.format.texture(),
+        format: texture_format(renderer.format),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });

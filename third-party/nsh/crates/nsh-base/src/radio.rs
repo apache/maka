@@ -4,7 +4,10 @@
 
 use nsh_core::{AccessibilityState, Checked, element::Style, prelude::*};
 
-use crate::roving::{Pattern, Roving, member};
+use crate::{
+    roving::{Pattern, Roving, member},
+    terminal::{is_terminal, mark_view, radio_mark},
+};
 
 /// What a [`Radio`] finds of its [`RadioGroup`] through context.
 #[derive(Clone)]
@@ -65,9 +68,15 @@ pub enum RadioEvent {
 /// past its bounds, as a view's does. In a [`RadioGroup`], it is a stop of
 /// the keyboard focus only while it is the radio Tab enters the group at
 /// (see [`RadioGroup`]).
+///
+/// In a terminal it shows the terminal's radio, `(•)` or `( )` and a
+/// space, before its children, in a row ([`crate::terminal`]); an app that
+/// draws a dot of its own among its children leaves it out there
+/// (`platform.idiom === "terminal"`).
 #[component]
 pub fn Radio(props: RadioProps, cx: Scope<RadioEvent>) -> impl IntoElement {
     let checked = props.checked;
+    let terminal = is_terminal();
     let node = element_ref();
     let set = use_context::<RadioGroupContext>().map(|RadioGroupContext(set)| {
         set.register(node, checked, props.disabled, move || {
@@ -98,7 +107,12 @@ pub fn Radio(props: RadioProps, cx: Scope<RadioEvent>) -> impl IntoElement {
                 cx.emit(RadioEvent::Change(true));
             }
         })
-        .child(props.children)
+        // The terminal's own radio, before the app's content, in a row.
+        .when(terminal, |v| {
+            v.flex_row()
+                .child(mark_view(move || radio_mark(checked.get())))
+        })
+        .child(crate::terminal::beside_mark(terminal, props.children))
 }
 
 /// The props of [`RadioGroup`].

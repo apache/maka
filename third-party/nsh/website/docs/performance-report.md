@@ -83,22 +83,133 @@ than a refresh (6.9 ms). Images' GIF and WebP play at their own frame rates (abo
 
 ### Memory
 
-At rest, 3 s after start (release runners, a 480 × 640 window). *Private* is the memory the process alone owns (USS);
-*resident* adds the shared libraries' pages (GTK, the GPU driver), which every GTK app on the machine shares:
+At rest, 8 s after the window was sized to 480 × 640 points: release builds on the machine of the investigation below
+(Intel i7-13700KF, NVIDIA RTX 3060 Ti, GTK 4.24.1, Wayland at 1.6×), the three apps one after another in one batch,
+in **MiB**. *Private dirty* is what the process wrote and alone holds, the measure closest to macOS's footprint and
+Windows' private working set; *USS* adds its private clean pages, mostly the executable's own code (about 16 MiB for
+the Rust app, 20 MiB for the TSX app with QuickJS); *PSS* adds its share of the shared libraries' pages; *RSS* counts
+them whole, mostly GTK's and the GPU driver's, which every GTK app maps:
 
 <div class="data-table">
 
-| App | Renderer | Private (USS) | Resident (RSS) |
-|---|---|---|---|
-| Rust app (`nsh init --template rust`) | GL (`ngl`) | ~49 MB | ~142 MB |
-| Rust app | Cairo (`GSK_RENDERER=cairo`) | ~28 MB | ~95 MB |
-| TSX counter (`examples/counter`) | GL | ~79 MB | ~166 MB |
-| GTK 4 window with one label, for reference | Vulkan / Cairo | ~62 / ~40 MB | ~132 / ~109 MB |
+| App | Renderer | Private dirty | USS | PSS | RSS | Over the GTK window |
+|---|---|---|---|---|---|---|
+| GTK 4 window with one label, for reference | GL (`ngl`) | 36.7 | 37.0 | 48.8 | 129.4 | |
+| Rust app (`nsh init --template rust`) | GL | 41.6 | 57.4 | 69.2 | 150.3 | +4.9 |
+| TSX app (`nsh init --template ts`) | GL | 45.4 | 65.9 | 78.6 | 162.9 | +8.7 |
+| GTK 4 window with one label | Cairo (`GSK_RENDERER=cairo`) | 15.2 | 15.3 | 24.7 | 81.8 | |
+| Rust app | Cairo | 19.1 | 34.4 | 43.9 | 101.5 | +3.9 |
+| TSX app | Cairo | 24.3 | 44.2 | 54.5 | 115.4 | +9.1 |
 
 </div>
 
-Revisiting a page adds no memory; the first visit to a page grows the process by what it caches on purpose (decoded
-images, bounded at 128 MB) and the libraries it loads on first use (WebKitGTK for web views).
+*Over the GTK window* compares private dirty memory: what NSH adds to a bare GTK window, its engine, layout, renderer
+and modules, and for TSX QuickJS with the app's code. The rest of each figure is GTK's and the driver's. With GL, one of
+the two launches of the GTK window and of the Rust app held about 60 MiB more (99.4 and 98.6 MiB private dirty); the bare
+GTK window does it too, so it is the driver's, and the table gives the other launch. The samples are in
+[the record](https://github.com/longbridge/nsh/blob/main/docs/benchmarks/linux-memory-baseline-2026-11-05.json).
+
+#### Linux startup memory investigation (2026-11-05)
+
+A separate run on revision `e4cc287dd`: Intel i7-13700KF, 31 GiB RAM, NVIDIA RTX 3060 Ti GDDR6X
+(driver 615.78.08), GTK 4.24.1, Hyprland/Wayland at 1.6×. These are **MiB** (1,048,576 bytes).
+Each row spans two fresh processes, sampled 8 s after the window was floated and resized to 480 × 640 points.
+The record also contains the 3 s samples. Filesystem and driver caches stayed in place between launches.
+The release runner uses the workspace's fat LTO and one codegen unit; the CLI/build processes are excluded.
+Minimal TSX mounts one `Text`; the TSX template is `nsh init --template ts`; gallery starts on its phone-layout
+index with a dedicated app id and fresh storage. All three use bytecode bundles built with `--release`.
+
+| App / renderer | RSS (MiB) | PSS (MiB) | USS (MiB) |
+|---|---|---|---|
+| GTK label / GL | 129.2–129.4 | 48.8–49.1 | 37.0–37.2 |
+| GTK label / Cairo | 81.5–81.5 | 24.7–24.7 | 15.3–15.3 |
+| Minimal TSX / GL | 161.8–162.1 | 78.2–78.5 | 65.5–65.8 |
+| Minimal TSX / Cairo | 114.2–114.9 | 54.1–54.6 | 43.7–44.2 |
+| TSX template / GL | 164.4–164.5 | 80.4–80.5 | 67.6–67.7 |
+| TSX template / Cairo | 115.6–115.9 | 54.9–55.4 | 44.4–44.9 |
+| Gallery index / GL | 256.5–257.4 | 162.9–163.9 | 147.3–148.3 |
+| Gallery index / Cairo | 207.4–207.8 | 141.6–141.9 | 128.7–129.0 |
+
+RSS counts resident pages; PSS apportions pages shared with other processes; USS sums `Private_Clean` and
+`Private_Dirty`. These are separate measures: macOS footprint and Windows private working set have their own
+accounting rules. The numbers here cover the runner process; GPU-only allocations, the compositor and WebKit child
+processes are separate. A resident snapshot also differs from a startup peak.
+
+#### Smaller runtime configurations
+
+The js-only runner is built with `--no-default-features --features js`. It retains the basic UI and QuickJS,
+with optional shader, editor, highlighting, math, plot, rich-editor, compression, crypto and WebView features
+selected by the full runner replaced by their off-feature behavior. Use it for apps whose imports and behavior fit
+that feature set. The complete gallery exercises those optional features and uses the full runner.
+
+| Configuration | RSS (MiB) | PSS (MiB) | USS (MiB) |
+|---|---|---|---|
+| Minimal TSX, js-only / GL | 145.7–211.4 | 65.4–124.2 | 53.5–110.8 |
+| Minimal TSX, js-only / Cairo | 96.9–97.2 | 40.1–40.1 | 30.6–30.6 |
+| TSX template, js-only / Cairo | 97.6–97.6 | 40.2–40.3 | 30.6–30.8 |
+| Minimal TSX, js-only / Cairo + GDK_DISABLE | 96.8–97.3 | 39.4–39.8 | 30.2–30.7 |
+
+Cairo reduces the minimal app's RSS from about 162 to 114 MiB with the full runner. The js-only Cairo runner
+measures about 97 MiB RSS and 31 MiB USS. These configurations remain above **50 MB RSS** (50,000,000 bytes,
+47.7 MiB); reporting their USS separately preserves that target's meaning. Cairo's memory result is a static-screen
+measurement; use the animated and scrolling scenarios above to evaluate its CPU/frame-time tradeoff.
+`GDK_DISABLE=gl,vulkan,dmabuf` adds essentially no saving on this host for the js-only Cairo app. GTK describes
+these switches as debugging controls ([GTK environment variables](https://docs.gtk.org/gtk4/running.html)).
+
+Launch variation matters. The full minimal app with an unset `GSK_RENDERER` measured 164–229 MiB RSS; the
+js-only app with explicit GL measured 146–211 MiB. Both endpoints were still present at 8 s in different launches.
+The table keeps those ranges in the raw record rather than treating the lowest launch as a guaranteed baseline.
+With a 1200 × 800 window, the full gallery's desktop layout opens its initial Text demo and measured
+307–337 MiB RSS, 189–219 MiB USS. Window size and the mounted page belong in every comparison.
+
+#### What the experiments establish
+
+- Renderer choice and runtime features reduce the measured starting cost. Linked binary size alone does not
+  establish resident memory savings: compare the process measurements above.
+- Gallery bundles include about 1.3 MiB of bytecode and a 4 MiB source map. A split build produced a 77 KiB entry
+  and 53 chunks, but the Linux release runner failed to resolve the shared `ui.js` module. Every split reading is
+  excluded: a failed application is not a valid low-memory result. A working native split flow must supply static
+  chunks and load dynamic chunks, then pass navigation tests before it can establish a memory improvement.
+- The engine reads an adjacent `bundle.js.map` at startup (`Bundle::read_trusted`). On-demand symbolication is an
+  optimization candidate. The exploratory no-map runs changed restored gallery state or launch overrides, so they
+  establish no controlled saving and are excluded from these tables.
+- Image decode costs belong to the framework/app pipeline too. Compare source sizes, target pixel dimensions,
+  cache entries and their CPU/GPU copies when testing image-heavy pages; the image budget is a ceiling, not a
+  preallocation. The desktop default is RAM / 16, capped at 256 MiB, with entries leased by visible views retained.
+
+#### Reproduce
+
+Run on an interactive Linux desktop. Keep scratch files under the checkout's `target/` and test temporary
+files outside the checkout. Capture the GPU/driver, GTK version, window size, scale, appearance, app id and page
+alongside the measurements. `--size` below uses Hyprland's Lua dispatchers; on another compositor, size the window
+there and omit that option. Give gallery a fresh dedicated app id in the benchmark copy of `app.json` so its saved
+page remains separate from everyday use.
+
+```sh
+mkdir -p target/agents/memory "$HOME/.cache/nsh-test-tmp"
+export TMPDIR="$HOME/.cache/nsh-test-tmp"
+cargo build --release -p nsh-cli -p nsh-linux-app
+cp target/release/nsh-linux-app target/agents/memory/runner-full
+
+target/release/nsh init target/agents/memory/hello --template ts
+target/release/nsh build target/agents/memory/hello --release --out target/agents/memory/hello-bundle
+target/release/nsh build examples/gallery --release --out target/agents/memory/gallery-bundle
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/hello-bundle --out target/agents/memory/hello.json --size 480x640 -- target/agents/memory/runner-full
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/gallery-bundle --out target/agents/memory/gallery.json --size 480x640 -- target/agents/memory/runner-full
+
+cargo build --release -p nsh-linux-app --no-default-features --features js
+cp target/release/nsh-linux-app target/agents/memory/runner-lean
+python3 examples/gallery/tools/memory.py --bundle target/agents/memory/hello-bundle --out target/agents/memory/hello-lean.json --size 480x640 -- target/agents/memory/runner-lean
+
+cc -O2 examples/gallery/tools/memory-gtk.c -o target/agents/memory/gtk $(pkg-config --cflags --libs gtk4)
+python3 examples/gallery/tools/memory.py --out target/agents/memory/gtk.json --size 480x640 -- target/agents/memory/gtk
+```
+
+The script defaults to three processes per renderer, at 3 and 10 s; this investigation used `--repeats 2
+--seconds 3,8`. It writes totals, per-mapping residency and window metadata, and rejects early exits and logged
+JS startup errors. [The recorded readings](https://github.com/longbridge/nsh/blob/main/docs/benchmarks/linux-memory-2026-11-05.json) retain the
+individual samples, selected file mappings and excluded experiments.
+
 
 ### App size
 

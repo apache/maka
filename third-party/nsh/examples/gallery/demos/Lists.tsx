@@ -1,22 +1,23 @@
 import { cleanup, computed, effect, List, type ListRef, Scroll, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
 import { Animated, type AnimatedNode, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
-import { platform } from "nsh";
 import { Tab, Tabs, Input } from "nsh/base";
+import { platform } from "nsh";
 import { keyboardFrame, safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
-import { alpha, Appear, Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, hint, IconTile, Meter, mono, Press, radius, RoundButton, Section, Segmented, tabPress, type Tone, toneColor, toneTint } from "../ui";
+import { alpha, Appear, Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, hint, IconTile, Meter, mono, Press, radius, RoundButton, Section, Segmented, tabPress, terminal, TERMINAL_COLUMN, TERMINAL_GAP, TERMINAL_ROW, type Tone, toneColor, toneTint } from "../ui";
 
 const tones: Tone[] = ["accent", "info", "warn", "up", "danger", "neutral"];
 
-/** A small pill action for list headers (36 pt, 44 pt with its hit slop). */
+/** A small pill action for list headers (36 pt, 44 pt with its hit slop; a
+ * row of text in the terminal). */
 function Action(props: { label: string; icon?: IconName; onPress: () => void }) {
   return (
     <Press onPress={props.onPress} accessibilityLabel={props.label} hitSlop={4}>
       <View
         style={{
-          height: 36,
-          paddingHorizontal: 14,
+          height: terminal ? TERMINAL_ROW : 36,
+          paddingHorizontal: terminal ? TERMINAL_COLUMN : 14,
           borderRadius: 18,
           flexDirection: "row",
           alignItems: "center",
@@ -27,7 +28,7 @@ function Action(props: { label: string; icon?: IconName; onPress: () => void }) 
           ...finish.raised,
         }}
       >
-        {props.icon ? <Icon name={props.icon} size={14} tint={colors.text} /> : null}
+        {props.icon && !terminal ? <Icon name={props.icon} size={14} tint={colors.text} /> : null}
         <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{props.label}</Text>
       </View>
     </Press>
@@ -42,14 +43,17 @@ function Grid() {
   const last = signal(-1);
   let list!: ListRef;
   const wide = desktop();
-  const grid = (columns: number) => (
+  // Changed in place when a resize fits more or fewer: the list keeps its
+  // scroll and its items.
+  const columns = wide ? computed(() => columnsFor(130, 10, undefined, 12)) : () => 3;
+  return (
     <List
       ref={list}
       each={items}
-      numColumns={columns}
+      numColumns={columns()}
       estimatedItemSize={110}
       style={{ flex: 1 }}
-      contentStyle={wide ? { padding: 24, gap: 12 } : { padding: 16, gap: 8 }}
+      contentStyle={terminal ? { paddingHorizontal: TERMINAL_COLUMN, paddingBottom: TERMINAL_ROW, gap: TERMINAL_ROW } : wide ? { padding: 24, gap: 12 } : { padding: 16, gap: 8 }}
       viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
       onViewableItemsChange={({ viewableItems }) => {
         first.set(viewableItems.length ? viewableItems[0].index : -1);
@@ -57,20 +61,21 @@ function Grid() {
       }}
       header={
         <View
-          style={{
-            backgroundColor: colors.surface,
-            borderRadius: radius.card,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            borderColor: colors.border,
-            padding: 16,
-            gap: 12,
-            marginBottom: 4,
-            ...finish.card,
-          }}
+          style={[
+            {
+              backgroundColor: colors.surface,
+              borderRadius: radius.card,
+              borderCurve: "continuous",
+              borderWidth: 1,
+              borderColor: colors.border,
+              ...finish.card,
+            },
+            // The terminal's border takes a row and a column on each side: the rest of them is padding.
+            terminal ? { paddingVertical: TERMINAL_ROW - 1, paddingHorizontal: 2 * TERMINAL_COLUMN - 1 } : { padding: 16, gap: 12, marginBottom: 4 },
+          ]}
         >
           <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
-            <View style={{ flex: 1, gap: 2 }}>
+            <View style={{ flex: 1, gap: terminal ? 0 : 2 }}>
               <Text style={{ fontSize: 13, color: colors.muted }}>Viewable items (at least half shown)</Text>
               <Text style={{ fontSize: 30, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"], letterSpacing: -0.5 }}>
                 {first() < 0 ? "—" : `${first()}–${last()}`}
@@ -79,10 +84,10 @@ function Grid() {
                 </Text>
               </Text>
             </View>
-            <Text style={{ fontSize: 13, color: colors.faint, paddingBottom: 6 }}>{`90 items, ${columns} columns`}</Text>
+            <Text style={{ fontSize: 13, color: colors.faint, paddingBottom: terminal ? 0 : 6 }}>{`90 items, ${columns()} columns`}</Text>
           </View>
           <Meter value={last() < 0 ? 0 : (last() + 1) / items.length} />
-          <View style={{ flexDirection: "row", gap: 8 }}>
+          <View style={{ flexDirection: "row", gap: 8, marginTop: terminal ? TERMINAL_ROW : 0 }}>
             <Action label="Jump to 60" icon="arrow-down" onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })} />
             <Action label="End" onPress={() => list.scrollToEnd()} />
           </View>
@@ -102,11 +107,11 @@ function Grid() {
             borderColor: item().id === 60 ? toneColor("accent") : colors.border,
             backgroundColor: colors.raised,
             ...finish.raised,
-            padding: 12,
+            ...(terminal ? { paddingVertical: TERMINAL_ROW - 1, paddingHorizontal: 2 * TERMINAL_COLUMN - 1 } : { padding: 12 }),
             justifyContent: "space-between",
           }}
         >
-          <View style={{ width: 18, height: 4, borderRadius: 2, backgroundColor: toneColor(item().tone) }} />
+          <View style={{ width: 18, height: 4, borderRadius: 2, backgroundColor: toneColor(item().tone), opacity: terminal ? 0 : 1 }} />
           <View>
             <Text style={{ fontSize: 22, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>{item().id}</Text>
             <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{item().height} pt</Text>
@@ -115,10 +120,6 @@ function Grid() {
       )}
     </List>
   );
-  if (!wide) return grid(3);
-  // Rebuilt when the number of columns changes.
-  const columns = computed(() => columnsFor(130, 10, undefined, 12));
-  return <View style={{ flex: 1 }}>{(() => grid(columns()))()}</View>;
 }
 
 const people = [
@@ -165,12 +166,12 @@ function Contacts() {
               <View
                 onPress={() => {}}
                 activeStyle={{ backgroundColor: colors.raised }}
-                style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingLeft: 16, height: 60 }}
+                style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_GAP : 12, paddingLeft: terminal ? TERMINAL_COLUMN : 16, height: terminal ? TERMINAL_ROW : 60 }}
               >
                 <View
                   style={{
-                    width: 38,
-                    height: 38,
+                    width: terminal ? 2 * TERMINAL_COLUMN : 38,
+                    height: terminal ? TERMINAL_ROW : 38,
                     borderRadius: 19,
                     backgroundColor: toneTint(person().tone),
                     alignItems: "center",
@@ -182,21 +183,23 @@ function Contacts() {
                     {person().last[0]}
                   </Text>
                 </View>
+                {/* Name and note on one row in the terminal, which keeps no rules between rows. */}
                 <View
                   style={{
                     flex: 1,
                     alignSelf: "stretch",
                     justifyContent: "center",
-                    gap: 2,
-                    paddingRight: 16,
-                    borderBottomWidth: person().end ? 0 : 1,
+                    gap: terminal ? TERMINAL_GAP : 2,
+                    paddingRight: terminal ? TERMINAL_COLUMN : 16,
+                    ...(terminal ? { flexDirection: "row", alignItems: "center", justifyContent: "flex-start" } : {}),
+                    borderBottomWidth: person().end || terminal ? 0 : 1,
                     borderBottomColor: colors.line,
                   }}
                 >
-                  <Text style={{ fontSize: 15, color: colors.text }}>
+                  <Text style={{ width: terminal ? 20 * TERMINAL_COLUMN : undefined, fontSize: 15, color: colors.text }}>
                     {person().first} <Text style={{ fontWeight: "600" }}>{person().last}</Text>
                   </Text>
-                  <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
+                  <Text style={{ numberOfLines: 1, flexShrink: 1, fontSize: 13, color: colors.muted }}>
                     {person().note}
                   </Text>
                 </View>
@@ -207,12 +210,12 @@ function Contacts() {
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                height: 34,
-                paddingHorizontal: 16,
+                height: terminal ? TERMINAL_ROW : 34,
+                paddingHorizontal: terminal ? TERMINAL_COLUMN : 16,
                 gap: 10,
                 // Opaque: rows scroll under it while it sticks.
                 backgroundColor: colors.background,
-                borderBottomWidth: 1,
+                borderBottomWidth: terminal ? 0 : 1,
                 borderBottomColor: colors.border,
               }}
             >
@@ -776,7 +779,15 @@ export function Lists() {
   const tab = signal<ListTab>("grid");
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <View style={desktop() ? { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 4, width: "100%", maxWidth: 600 } : { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 }}>
+      <View
+        style={
+          terminal
+            ? { paddingHorizontal: TERMINAL_COLUMN, paddingVertical: TERMINAL_ROW, width: "100%", maxWidth: 600 }
+            : desktop()
+              ? { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 4, width: "100%", maxWidth: 600 }
+              : { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 }
+        }
+      >
         <Segmented options={tabs} value={tab()} onChange={(v) => tab.set(v)} />
       </View>
       {(() => {

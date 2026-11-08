@@ -41,7 +41,9 @@ For code an app downloads (first-party updates, third-party mini apps): `nsh_pac
   in `VerifiedPackage::ignored` and logged by `Bundle::from_package`. Incompatible changes bump the format version.
   Certificates and revocation lists still refuse unknown fields.
 - **Verification** (`TrustStore::verify`): the certificate's root signature, the release key not revoked, the package
-  signature, the app id and the signing time against the certificate, the minimum runtime, the file table tiling the
+  signature, the app id as one path segment (`check_app_id`: no `/`, `\`, `:` or NUL, not `.` or `..`, since it names
+  directories under the assets root and the data directory; `build` and `resign` refuse it too) and with the signing time
+  against the certificate, the minimum runtime, the file table tiling the
   data exactly, each file's hash, the package hash not revoked, and the build not older than the highest accepted for
   that app (`accept` records it; rollback protection). Revocation lists (`nsh revoke`, signed by a root) only replace
   an older list (sequence numbers), so an old list cannot be replayed. The state (newest list, accepted builds)
@@ -64,6 +66,9 @@ For code an app downloads (first-party updates, third-party mini apps): `nsh_pac
   `accept_package`. A refused package throws; the running app stays. To try a package on a simulator / emulator: `nsh-ios-host --package <file> --root <root.pub>`, or
   `DevActivity` with the `package` (path on the device) and `root` (base64) extras; their trust state persists in
   the temporary / cache directory, so older builds are refused there too.
-- Not done yet: delivering packages (an update server, OTA); the app decides where packages come from.
+- **OTA updates of packaged apps' own code** (`nsh_engine::updates`, `docs/dev/updater.md` "OTA updates"): a packaged
+  app whose `nsh.json` trusts roots (`"updater": { "packages": { "roots" } }`) downloads packages of its own code
+  from its update source (`nsh/updater`'s `checkForPackage` / `downloadPackage`), and its launcher runs the newest
+  verified one on trial, accepting it once healthy. Embedding apps still decide where their packages come from.
 
 The format, the trust model and the key handling are documented in `crates/nsh-package/src/lib.rs`.

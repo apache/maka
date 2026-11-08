@@ -60,6 +60,7 @@ use gtk4::{self as gtk, gdk, glib, glib::translate::ToGlibPtr, graphene, prelude
 use nsh_core::{
     Command, Cursor, EventKind, EventPayload, GestureValues, MouseButton, NodeId, PayloadValue,
     PointerEvents, ROOT_ID, TouchEvent, TouchPhase, TouchPoint, ViewKind,
+    desktop::{ResizeEdge, WindowControl},
     geometry::{Points, point},
     input::{
         self, Candidate, Gate, Grab, GrabOptions, HitArea, Link, PAN_SLOP, PRESS_SLOP, Pinch,
@@ -72,8 +73,16 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{surface::Surface, view::NshView};
 
-/// The GTK keyboard owner followed by its NSH ancestors in this surface.
-pub(crate) fn focus_path(surface: &Surface, mut focus: Option<gtk::Widget>) -> Vec<NodeId> {
+/// The GTK keyboard owner followed by its NSH ancestors in `root`.
+pub(crate) fn focus_path(
+    surface: &Surface,
+    root: &NshView,
+    mut focus: Option<gtk::Widget>,
+) -> Vec<NodeId> {
+    let root_widget = root.upcast_ref::<gtk::Widget>();
+    if focus.as_ref().is_none_or(|f| f == root_widget) {
+        return Vec::new();
+    }
     let mut path = Vec::new();
     while let Some(widget) = focus {
         if let Some(view) = widget.downcast_ref::<NshView>() {
@@ -82,7 +91,10 @@ pub(crate) fn focus_path(surface: &Surface, mut focus: Option<gtk::Widget>) -> V
                 return Vec::new();
             }
         }
-        if &widget == surface.root.upcast_ref::<gtk::Widget>() {
+        if &widget == root_widget {
+            if root != &surface.root {
+                path.push(ROOT_ID);
+            }
             return path;
         }
         focus = widget.parent();
@@ -120,9 +132,26 @@ enum Key {
     Touch(usize),
 }
 
+/// A background press tied to the native view where it began.
+struct WindowPress {
+    event: gdk::Event,
+    x: f32,
+    y: f32,
+    view: NshView,
+}
+
 /// Pointer state of one surface.
 #[derive(Default)]
 pub(crate) struct Input {
+    /// A draggable background press waiting to become a click or native drag.
+    window_press: RefCell<Option<WindowPress>>,
+    /// The root view of the window the event being handled happened in:
+    /// a window of the app's own (`Window.open`), or `None` for the
+    /// surface's root.
+    window_root: RefCell<Option<NshView>>,
+    /// A primary press on a view marked `windowControl`: its button acts
+    /// when the press is released over the same view.
+    control_press: RefCell<Option<(NshView, WindowControl)>>,
     /// The pointers that are down.
     pointers: RefCell<Vec<Pointer>>,
     /// Two fingers pinching / rotating on the touchscreen.
@@ -233,12 +262,28 @@ struct Wheel {
 
 /// Installs the event controllers on the surface's root view.
 pub(crate) fn install(surface: &Rc<Surface>) {
-    let root = &surface.root;
+    install_on(surface, &surface.root.clone(), None);
+}
+
+/// Handles the pointer events of `root`: the surface's root, or (`window`)
+/// the root view of a window of the app's own.
+pub(crate) fn install_on(surface: &Rc<Surface>, root: &NshView, window: Option<&NshView>) {
     let legacy = gtk::EventControllerLegacy::new();
     legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(surface);
+    let window = window.map(|w| w.downgrade());
     legacy.connect_event(move |_, event| match weak.upgrade() {
-        Some(surface) => handle(&surface, event),
+        Some(surface) => {
+            if surface.testing() && real_pointer(event.event_type()) {
+                // Under `nsh test --target linux` the agent's pointer
+                // (`simulate`) is the only one: the user's, moving over the
+                // window or resting on it, never changes what a test hovers
+                // or presses, and hosted widgets do not see it either.
+                return glib::Propagation::Stop;
+            }
+            *surface.input.window_root.borrow_mut() = window.as_ref().and_then(|w| w.upgrade());
+            handle(&surface, event)
+        }
         None => glib::Propagation::Proceed,
     });
     root.add_controller(legacy);
@@ -247,7 +292,8 @@ pub(crate) fn install(surface: &Rc<Surface>) {
     let motion = gtk::EventControllerMotion::new();
     let weak = Rc::downgrade(surface);
     motion.connect_leave(move |_| {
-        if let Some(surface) = weak.upgrade() {
+        // The real pointer leaving says nothing of the agent's.
+        if let Some(surface) = weak.upgrade().filter(|s| !s.testing()) {
             // Where the mouse was last: GTK's leave carries no position.
             let (x, y) = surface.input.last.get().unwrap_or_default();
             set_hovered(&surface, Vec::new(), x, y);
@@ -256,10 +302,34 @@ pub(crate) fn install(surface: &Rc<Surface>) {
     root.add_controller(motion);
 }
 
+/// Whether events of type `ty` come from a real pointing device (mouse,
+/// touchpad, touchscreen), which a test ignores ([`Surface::testing`]).
+fn real_pointer(ty: gdk::EventType) -> bool {
+    use gdk::EventType as T;
+    matches!(
+        ty,
+        T::ButtonPress
+            | T::ButtonRelease
+            | T::MotionNotify
+            | T::EnterNotify
+            | T::LeaveNotify
+            | T::TouchBegin
+            | T::TouchUpdate
+            | T::TouchEnd
+            | T::TouchCancel
+            | T::Scroll
+            | T::TouchpadSwipe
+            | T::TouchpadPinch
+            | T::TouchpadHold
+    )
+}
+
 /// The app stopped: forgets its pointers, hovered views and gestures.
 pub(crate) fn reset(surface: &Surface) {
     crate::file_drop::reset(surface);
     let input = &surface.input;
+    input.window_press.borrow_mut().take();
+    input.control_press.borrow_mut().take();
     input.pointers.borrow_mut().clear();
     input.two.borrow_mut().take();
     input.pinch.borrow_mut().take();
@@ -273,145 +343,6 @@ pub(crate) fn reset(surface: &Surface) {
     input.button.set(None);
     input.gestures.borrow_mut().clear();
     input.js_block.set(false);
-}
-
-/// Ends a retiring row's input before its node ids can be reused.
-pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
-    let inside = |view: &NshView| {
-        let mut current = Some(view.clone());
-        while let Some(view) = current {
-            if view == *cell {
-                return true;
-            }
-            current = view.parent_view();
-        }
-        false
-    };
-    let input = &surface.input;
-    let mut ids = FxHashSet::default();
-    let mut pending = vec![cell.clone()];
-    while let Some(view) = pending.pop() {
-        ids.insert(view.id());
-        crate::file_drop::invalidate(surface, view.id());
-        pending.extend(view.child_views());
-    }
-    let keys: Vec<_> = input
-        .pointers
-        .borrow()
-        .iter()
-        .filter(|p| {
-            inside(&p.target)
-                || p.press
-                    .as_ref()
-                    .is_some_and(|press| inside(&press.view) || ids.contains(&press.node))
-                || p.candidates.iter().any(|(view, _)| inside(view))
-                || p.pressed.iter().any(&inside)
-                || p.pinch.as_ref().is_some_and(&inside)
-                || p.gate.as_ref().is_some_and(|gate| ids.contains(&gate.id()))
-                || (p.reporting && p.path.iter().any(|id| ids.contains(id)))
-                || match &p.mode {
-                    Mode::Pan(view) | Mode::Scroll(view, _) | Mode::Thumb(view, _) => inside(view),
-                    Mode::TwoFinger => input
-                        .two
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|two| inside(&two.transform.view)),
-                    Mode::Idle | Mode::Free => false,
-                }
-        })
-        .map(|p| p.key)
-        .collect();
-    for key in keys {
-        let Some(mut p) = take(surface, key) else {
-            continue;
-        };
-        let active = match &p.mode {
-            Mode::Pan(view) | Mode::Scroll(view, _) | Mode::Thumb(view, _) => Some(view.clone()),
-            Mode::TwoFinger => input
-                .two
-                .borrow()
-                .as_ref()
-                .map(|two| two.transform.view.clone()),
-            Mode::Idle | Mode::Free => None,
-        };
-        if let Some(owner) = active.filter(|owner| !inside(owner)) {
-            // The surrounding scroll/pan already owns this gesture. The
-            // original row may disappear without stopping that live owner.
-            if p.reporting {
-                report(surface, TouchPhase::Cancel, &p, None);
-                p.reporting = false;
-            }
-            cancel_press(surface, &mut p);
-            release_pressed(surface, &mut p);
-            p.target = owner;
-            p.path.clear();
-            p.candidates.clear();
-            p.gate = None;
-            p.pinch = None;
-            put(surface, p);
-        } else {
-            if let Mode::Pan(view) = &p.mode {
-                pan_end(surface, view, &p, false);
-                p.mode = Mode::Free;
-            }
-            finish(surface, p, true);
-        }
-    }
-    if input
-        .two
-        .borrow()
-        .as_ref()
-        .is_some_and(|two| inside(&two.transform.view))
-    {
-        end_two_finger(surface);
-    }
-    let pinch = {
-        let mut pinch = input.pinch.borrow_mut();
-        if pinch.as_ref().is_some_and(|t| inside(&t.view)) {
-            pinch.take()
-        } else {
-            None
-        }
-    };
-    if let Some(transform) = pinch {
-        transform_end(surface, &transform);
-    }
-    let zoom = {
-        let mut zoom = input.zoom.borrow_mut();
-        if zoom.as_ref().is_some_and(|(t, _)| inside(&t.view)) {
-            zoom.take()
-        } else {
-            None
-        }
-    };
-    if let Some((transform, _)) = zoom {
-        transform_end(surface, &transform);
-    }
-    if input
-        .wheel
-        .borrow()
-        .as_ref()
-        .is_some_and(|wheel| inside(&wheel.view))
-    {
-        input.wheel.borrow_mut().take();
-    }
-    if input
-        .latch
-        .borrow()
-        .as_ref()
-        .is_some_and(|(view, _, _)| inside(view))
-    {
-        input.latch.borrow_mut().take();
-    }
-    let hovered = input
-        .hovered
-        .borrow()
-        .iter()
-        .filter(|view| !inside(view))
-        .cloned()
-        .collect();
-    let (x, y) = input.last.get().unwrap_or_default();
-    set_hovered(surface, hovered, x, y);
 }
 
 /// `TrackStates`.
@@ -613,6 +544,31 @@ fn set_cursor(view: &NshView, over_link: bool) {
     }
 }
 
+/// The root view events are picked in: the window's the event being
+/// handled happened in.
+/// Simulated input goes to the window whose root view is `root` (`None`:
+/// the surface's), as a real event in it would.
+#[cfg(feature = "dev")]
+pub(crate) fn set_event_root(surface: &Surface, root: Option<NshView>) {
+    *surface.input.window_root.borrow_mut() = root;
+}
+
+/// The window the event being handled happened in.
+pub(crate) fn event_window(surface: &Surface) -> Option<gtk::Window> {
+    event_root(surface).root().and_downcast::<gtk::Window>()
+}
+
+/// The root view of the window the event being handled (or the last one)
+/// happened in.
+pub(crate) fn event_root(surface: &Surface) -> NshView {
+    surface
+        .input
+        .window_root
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| surface.root.clone())
+}
+
 // --- GDK events ---------------------------------------------------------------------
 
 fn handle(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
@@ -644,25 +600,24 @@ fn shields_page(surface: &Surface, event: &gdk::Event) -> bool {
         | gdk::ModifierType::BUTTON2_MASK
         | gdk::ModifierType::BUTTON3_MASK;
     let point = match event.event_type() {
-        T::ButtonPress | T::TouchBegin => root_point(&surface.root, event),
+        T::ButtonPress | T::TouchBegin => root_point(&event_root(surface), event),
         // Drags that started in the page stay with it.
         T::MotionNotify if !event.modifier_state().intersects(buttons) => {
-            root_point(&surface.root, event)
+            root_point(&event_root(surface), event)
         }
-        T::Scroll => root_point(&surface.root, event).or_else(|| surface.input.last.get()),
+        T::Scroll => root_point(&event_root(surface), event).or_else(|| surface.input.last.get()),
         _ => None,
     };
     let Some((x, y)) = point else {
         return false;
     };
-    let Some(page) = surface
-        .root
+    let Some(page) = event_root(surface)
         .pick(x as f64, y as f64, gtk::PickFlags::DEFAULT)
         .and_then(|target| crate::native::page_of(&target))
     else {
         return false;
     };
-    let shown = pick(&surface.root, x, y)
+    let shown = pick(&event_root(surface), x, y)
         .and_then(|hit| hit.native)
         .is_some_and(|native| native == page || native.is_ancestor(&page));
     !shown
@@ -683,6 +638,7 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
         | T::TouchpadPinch
         | T::TouchpadHold => {}
         T::GrabBroken => {
+            surface.input.window_press.borrow_mut().take();
             cancel_all(surface);
             release_buttons(surface);
             return glib::Propagation::Proceed;
@@ -695,7 +651,7 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
     }
     // Scroll and touchpad gesture events carry no position in GTK 4: they
     // happen where the pointer is.
-    let point = match root_point(&surface.root, event) {
+    let point = match root_point(&event_root(surface), event) {
         Some(p) => {
             surface.input.last.set(Some(p));
             Some(p)
@@ -717,14 +673,37 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
         // Touchscreens report touches; pointer events emulated from them
         // would press twice.
         T::ButtonPress | T::ButtonRelease | T::MotionNotify if event.is_pointer_emulated() => {}
-        // On a view that drags the window: the window's, not the app's.
+        // Window menus and double clicks keep their native handling.
         T::ButtonPress if crate::chrome::press(surface, event, x, y) => {
-            // The compositor moves the window or shows its menu and keeps
-            // the release: the button is not the app's to report as held.
+            // Native window actions may keep the release.
             release_buttons(surface);
             return glib::Propagation::Stop;
         }
+        // A frameless window's resize edge: the window manager resizes it.
+        T::ButtonPress
+            if button() == Some(gdk::BUTTON_PRIMARY) && window_resize(surface, x, y).is_some() =>
+        {
+            if let (Some(edge), Some(window)) =
+                (window_resize(surface, x, y), event_window(surface))
+            {
+                crate::window::begin_resize(surface, &window, event, edge);
+            }
+            release_buttons(surface);
+            return glib::Propagation::Stop;
+        }
+        T::ButtonPress if button() == Some(gdk::BUTTON_PRIMARY) && window_drag(surface, x, y) => {
+            up(surface, Key::Mouse, x, y, time, true);
+            *surface.input.window_press.borrow_mut() =
+                pick(&event_root(surface), x, y).map(|hit| WindowPress {
+                    event: event.clone(),
+                    x,
+                    y,
+                    view: hit.view,
+                });
+            return glib::Propagation::Stop;
+        }
         T::ButtonPress if button() == Some(gdk::BUTTON_PRIMARY) => {
+            *surface.input.control_press.borrow_mut() = window_control(surface, x, y);
             down(surface, Key::Mouse, x, y, time, event.modifier_state())
         }
         T::ButtonPress
@@ -734,9 +713,57 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
             return glib::Propagation::Stop;
         }
         T::ButtonRelease if button() == Some(gdk::BUTTON_PRIMARY) => {
-            up(surface, Key::Mouse, x, y, time, false)
+            let pending = surface.input.window_press.borrow_mut().take();
+            if let Some(press) = pending {
+                let same_view = pick(&event_root(surface), press.x, press.y)
+                    .is_some_and(|hit| hit.view == press.view);
+                if !same_view || !window_drag(surface, press.x, press.y) {
+                    return glib::Propagation::Stop;
+                }
+                down(
+                    surface,
+                    Key::Mouse,
+                    press.x,
+                    press.y,
+                    press.event.time() as f64,
+                    press.event.modifier_state(),
+                );
+                up(surface, Key::Mouse, x, y, time, false);
+                return glib::Propagation::Stop;
+            }
+            up(surface, Key::Mouse, x, y, time, false);
+            // An app-drawn window button acts as the system's.
+            let pressed = surface.input.control_press.borrow_mut().take();
+            if let Some((view, control)) = pressed
+                && window_control(surface, x, y).is_some_and(|(v, _)| v == view)
+                && let Some(window) = event_window(surface)
+            {
+                // Not inside the event's handling: closing may destroy the
+                // window.
+                let weak = Rc::downgrade(surface);
+                glib::idle_add_local_once(move || {
+                    if let Some(surface) = weak.upgrade() {
+                        crate::window::control(&surface, &window, control);
+                    }
+                });
+            }
         }
         T::MotionNotify => {
+            let pending = surface.input.window_press.borrow_mut().take();
+            if let Some(press) = pending {
+                if surface.root.drag_check_threshold(
+                    press.x as i32,
+                    press.y as i32,
+                    x as i32,
+                    y as i32,
+                ) {
+                    crate::chrome::begin_move(surface, &press.event);
+                    release_buttons(surface);
+                } else {
+                    *surface.input.window_press.borrow_mut() = Some(press);
+                }
+                return glib::Propagation::Stop;
+            }
             let state = event.modifier_state();
             surface.input.last_state.set(Some(state));
             // `onMouseEnter` / `onMouseLeave` first (`motion` hovers), as
@@ -794,7 +821,7 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
 /// the click is taken). Text fields are GTK's widgets, which show their
 /// own menu.
 fn context_menu(surface: &Surface, x: f32, y: f32, state: gdk::ModifierType) -> bool {
-    let Some(hit) = pick(&surface.root, x, y) else {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
         return false;
     };
     for v in chain(&hit.view) {
@@ -808,11 +835,12 @@ fn context_menu(surface: &Surface, x: f32, y: f32, state: gdk::ModifierType) -> 
         };
         if listens {
             let (location_x, location_y) = local(surface, &v, x, y);
-            let event = nsh_core::ContextMenuEvent {
-                position: point(Points(location_x), Points(location_y)),
-                page_position: point(Points(x), Points(y)),
-                modifiers: modifiers(state),
-            };
+            let event = nsh_core::ContextMenuEvent::new(
+                point(Points(location_x), Points(location_y)),
+                point(Points(x), Points(y)),
+                modifiers(state),
+                Some(nsh_core::PointerType::Mouse),
+            );
             surface.event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
             return true;
         }
@@ -944,6 +972,15 @@ pub(crate) fn hold(keys: gdk::ModifierType, down: bool) {
 pub(crate) fn simulate(surface: &Rc<Surface>, action: Simulated) {
     let time = glib::monotonic_time() as f64 / 1000.0;
     let held = HELD.with(std::cell::Cell::get);
+    // Where the agent's pointer is, as real events record theirs
+    // (a key scroll under it, a leave).
+    let (Simulated::Down(x, y)
+    | Simulated::Up(x, y)
+    | Simulated::Move(x, y)
+    | Simulated::Wheel(x, y, ..)
+    | Simulated::Hover(x, y)
+    | Simulated::ContextMenu(x, y)) = action;
+    surface.input.last.set(Some((x, y)));
     match action {
         Simulated::Down(x, y) => {
             // Simulated drags carry no state: the button held is recorded.
@@ -955,7 +992,7 @@ pub(crate) fn simulate(surface: &Rc<Surface>, action: Simulated) {
             up(surface, Key::Mouse, x, y, time, false);
             // GTK never sees simulated input: a release on a hosted widget
             // (a text field) focuses it, as a real click would.
-            if let Some(native) = pick(&surface.root, x, y).and_then(|hit| hit.native) {
+            if let Some(native) = pick(&event_root(surface), x, y).and_then(|hit| hit.native) {
                 focus_native(&native);
             }
         }
@@ -983,9 +1020,17 @@ pub(crate) fn simulate(surface: &Rc<Surface>, action: Simulated) {
     }
 }
 
-/// Focuses `widget` or the first focusable widget inside it.
+/// Focuses `widget` or the first focusable widget inside it. A text
+/// field keeps its selection and caret, as a click into it does: its
+/// `grab_focus` selects all its text (`gtk-entry-select-on-focus`), which
+/// the keys typed next would replace.
 #[cfg(feature = "dev")]
 fn focus_native(widget: &gtk::Widget) {
+    if let Some(text) = text_inside(widget)
+        && text.grab_focus_without_selecting()
+    {
+        return;
+    }
     if widget.grab_focus() {
         return;
     }
@@ -999,6 +1044,22 @@ fn focus_native(widget: &gtk::Widget) {
     }
 }
 
+/// `widget` if it is a `GtkText`, else the first inside it.
+#[cfg(feature = "dev")]
+fn text_inside(widget: &gtk::Widget) -> Option<gtk::Text> {
+    if let Some(text) = widget.downcast_ref::<gtk::Text>() {
+        return Some(text.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if let Some(text) = text_inside(&c) {
+            return Some(text);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
 // --- Hit testing --------------------------------------------------------------------
 
 /// Where the pointer last was (root coordinates).
@@ -1010,7 +1071,7 @@ pub(crate) fn last_pointer(surface: &Surface) -> Option<(f32, f32)> {
 /// that sets `windowDrag` says so, unless a text field, a hosted widget or
 /// a view with press or touch handlers is nearer.
 pub(crate) fn window_drag(surface: &Surface, x: f32, y: f32) -> bool {
-    let Some(hit) = pick(&surface.root, x, y) else {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
         return false;
     };
     if hit.native.is_some() {
@@ -1026,6 +1087,47 @@ pub(crate) fn window_drag(surface: &Surface, x: f32, y: f32) -> bool {
         }
     }
     false
+}
+
+/// The view marked `windowControl` pressing `(x, y)` (root coordinates)
+/// presses, and its button: the nearest view that sets it, unless a text
+/// field or a hosted widget is nearer.
+fn window_control(surface: &Surface, x: f32, y: f32) -> Option<(NshView, WindowControl)> {
+    let hit = pick(&event_root(surface), x, y)?;
+    if hit.native.is_some() {
+        return None;
+    }
+    for view in chain(&hit.view) {
+        let s = view.state();
+        if let Some(control) = s.props.window_control {
+            drop(s);
+            return Some((view, control));
+        }
+        if s.kind == ViewKind::Input {
+            return None;
+        }
+    }
+    None
+}
+
+/// The edge pressing `(x, y)` (root coordinates) resizes the window by:
+/// the nearest view that sets `windowResize`, unless a text field, a
+/// hosted widget or a view with press or touch handlers is nearer.
+fn window_resize(surface: &Surface, x: f32, y: f32) -> Option<ResizeEdge> {
+    let hit = pick(&event_root(surface), x, y)?;
+    if hit.native.is_some() {
+        return None;
+    }
+    for view in chain(&hit.view) {
+        let s = view.state();
+        if let Some(edge) = s.props.window_resize {
+            return Some(edge);
+        }
+        if s.kind == ViewKind::Input || has_press(s.events) || s.events.contains(EventKind::Touch) {
+            return None;
+        }
+    }
+    None
 }
 
 /// What is under a point.
@@ -1124,7 +1226,7 @@ fn chain(view: &NshView) -> Vec<NshView> {
 /// pointer while the mouse at `(x, y)` (root coordinates) is on one, its
 /// own cursor elsewhere.
 fn link_cursor(surface: &Surface, x: f32, y: f32) {
-    let Some(hit) = pick(&surface.root, x, y) else {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
         return;
     };
     let view = &hit.view;
@@ -1143,8 +1245,7 @@ fn link_cursor(surface: &Surface, x: f32, y: f32) {
 }
 
 fn local(surface: &Surface, view: &NshView, x: f32, y: f32) -> (f32, f32) {
-    surface
-        .root
+    event_root(surface)
         .compute_point(view, &graphene::Point::new(x, y))
         .map_or((x, y), |p| (p.x(), p.y()))
 }
@@ -1177,7 +1278,7 @@ fn down(surface: &Rc<Surface>, key: Key, x: f32, y: f32, time: f64, modifiers: g
     if let Some(stale) = take(surface, key) {
         finish(surface, stale, true);
     }
-    let Some(hit) = pick(&surface.root, x, y) else {
+    let Some(hit) = pick(&event_root(surface), x, y) else {
         return;
     };
     let input = &surface.input;
@@ -1648,7 +1749,7 @@ fn cancel_press(surface: &Rc<Surface>, p: &mut Pointer) {
 }
 
 /// The modifier keys of GDK's `state`.
-fn modifiers(state: gdk::ModifierType) -> nsh_core::keymap::Modifiers {
+pub(crate) fn modifiers(state: gdk::ModifierType) -> nsh_core::keymap::Modifiers {
     nsh_core::keymap::Modifiers {
         ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
         alt: state.contains(gdk::ModifierType::ALT_MASK),
@@ -1897,7 +1998,7 @@ fn end_two_finger(surface: &Rc<Surface>) {
 fn touchpad_pinch(surface: &Rc<Surface>, event: &gdk::TouchpadEvent, x: f32, y: f32) -> bool {
     match event.gesture_phase() {
         gdk::TouchpadGesturePhase::Begin => {
-            let Some(hit) = pick(&surface.root, x, y) else {
+            let Some(hit) = pick(&event_root(surface), x, y) else {
                 return false;
             };
             let view = chain(&hit.view).into_iter().find(|v| {
@@ -1944,7 +2045,7 @@ fn wheel_zoom(surface: &Rc<Surface>, x: f32, y: f32, dy: f32) -> bool {
     let mut t = match current {
         Some((t, _)) => t,
         None => {
-            let Some(hit) = pick(&surface.root, x, y) else {
+            let Some(hit) = pick(&event_root(surface), x, y) else {
                 return false;
             };
             let view = chain(&hit.view).into_iter().find(|v| {
@@ -1986,7 +2087,7 @@ fn wheel_zoom(surface: &Rc<Surface>, x: f32, y: f32, dy: f32) -> bool {
 /// `onMouseEnter` / `onMouseLeave` along the views under it.
 fn hover(surface: &Rc<Surface>, x: f32, y: f32) {
     let input = &surface.input;
-    let views = pick(&surface.root, x, y)
+    let views = pick(&event_root(surface), x, y)
         .map(|hit| chain(&hit.view))
         .unwrap_or_default();
     // Reveal only the scroll thumb under the pointer, including in nested scroll views.
@@ -2211,7 +2312,7 @@ fn scrolls_itself(widget: &gtk::Widget) -> bool {
 /// around it, as in browsers; horizontal views take vertical wheels only
 /// where nothing around scrolls vertically.
 fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<NshView> {
-    let hit = pick(&surface.root, x, y)?;
+    let hit = pick(&event_root(surface), x, y)?;
     if hit.native.as_ref().is_some_and(scrolls_itself) {
         return None;
     }
@@ -2349,7 +2450,7 @@ fn touchpad_hold(surface: &Rc<Surface>, phase: gdk::TouchpadGesturePhase, x: f32
         if input.wheel.borrow().is_some() {
             return false;
         }
-        let Some(hit) = pick(&surface.root, x, y) else {
+        let Some(hit) = pick(&event_root(surface), x, y) else {
             return false;
         };
         let scroll = chain(&hit.view)
@@ -2376,7 +2477,7 @@ fn touchpad_hold(surface: &Rc<Surface>, phase: gdk::TouchpadGesturePhase, x: f32
 
 /// The closest file-drop listener under the pointer, within its modal root.
 pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshView> {
-    let mut view = pick(&surface.root, x, y)?.view;
+    let mut view = pick(&event_root(surface), x, y)?.view;
     loop {
         if view.state().events.contains(EventKind::FileDrop) {
             return Some(view);
@@ -2391,6 +2492,25 @@ pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshV
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tests_ignore_the_real_pointer_only() {
+        use gdk::EventType as T;
+        for ty in [
+            T::MotionNotify,
+            T::ButtonPress,
+            T::ButtonRelease,
+            T::Scroll,
+            T::TouchBegin,
+            T::LeaveNotify,
+        ] {
+            assert!(real_pointer(ty), "{ty:?}");
+        }
+        // Keys and grabs still reach the app.
+        for ty in [T::KeyPress, T::KeyRelease, T::GrabBroken, T::FocusChange] {
+            assert!(!real_pointer(ty), "{ty:?}");
+        }
+    }
 
     #[test]
     fn cursors() {

@@ -166,5 +166,11 @@
       "file": "scripts/rust/licenses/declared-mpl-2.0.txt",
       "source": "https://github.com/servo/dwrote-rs/blob/5bbe910f7156213cdbaca4e1addfe85ea8b421ef/Cargo.toml ; https://www.mozilla.org/media/MPL/2.0/index.txt"
     }
+  ],
+  "hexf-parse@0.2.1": [
+    {
+      "file": "scripts/rust/licenses/declared-cc0-1.0.txt",
+      "source": "https://github.com/lifthrasiir/hexf/blob/4225763d744183d720f575ae96d04161b4d08ea0/parse/Cargo.toml ; https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt"
+    }
   ]
 }

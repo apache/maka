@@ -1,0 +1,10 @@
+{
+  "name": "macOS Host Input",
+  "id": "com.example.macos-host-input",
+  "capabilities": {
+    "webview": {
+      "hosts": [],
+      "input": true
+    }
+  }
+}

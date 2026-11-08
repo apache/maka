@@ -116,7 +116,7 @@ function draw(cx: CanvasRenderingContext2D, el: LucideElement) {
 }
 
 export function Icon(props: { name: keyof typeof icons; color: string; size?: number }) {
-  if (platform.isTerminal)
+  if (platform.idiom === 'terminal')
     return (
       <Text
         accessibilityElementsHidden

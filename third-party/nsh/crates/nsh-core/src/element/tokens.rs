@@ -10,7 +10,7 @@
 //! every token as they name a theme variable (`bg-muted`, `bg-up/30`,
 //! `rounded-(--radius)`, `font-(family-name:--font-mono)`;
 //! `tailwind/theme.rs`), TS reads them with `nsh`'s `token()`, and Rust
-//! components with [`super::tokens()`].
+//! components with [`super::tokens`].
 
 use std::sync::Arc;
 
@@ -45,8 +45,10 @@ pub enum Token {
 }
 
 /// Makes the tokens of a theme file's content (`Some`), or the defaults
-/// (`None`): how a UI set reads the app's theme ([`super::Registry::tokens_from`]).
-pub type TokenSource = fn(Option<&str>) -> Result<Tokens, String>;
+/// (`None`), with what of the file it left out (a value it cannot read):
+/// how a UI set reads the app's theme ([`super::Registry::tokens_from`]).
+/// `Err`: the content is no theme file at all.
+pub type TokenSource = fn(Option<&str>) -> Result<(Tokens, Vec<String>), String>;
 
 /// The tokens a surface is drawn with once the app's theme file reaches its
 /// root ([`crate::Core::theme_tokens`]). The entry hands the theme to the
@@ -72,11 +74,27 @@ impl ThemeTokens {
     /// reads themes, or `json` is not one (the core reports it when the
     /// theme reaches it).
     pub fn of(&self, json: &str) -> Option<Tokens> {
-        let app = (self.source?)(Some(json)).ok()?;
-        Some(match &self.host {
+        let (app, _) = (self.source?)(Some(json)).ok()?;
+        Some(self.under_host(app))
+    }
+
+    /// [`ThemeTokens::of`] for a theme file that must be read whole (`nsh`'s
+    /// `setTheme`): `Err` names each value it cannot read, `; `-separated.
+    /// `None`: no UI set reads themes.
+    pub fn checked(&self, json: &str) -> Option<Result<Tokens, String>> {
+        Some(match (self.source?)(Some(json)) {
+            Ok((app, left_out)) if left_out.is_empty() => Ok(self.under_host(app)),
+            Ok((_, left_out)) => Err(left_out.join("; ")),
+            Err(e) => Err(e),
+        })
+    }
+
+    /// `app` under the embedding app's tokens.
+    fn under_host(&self, app: Tokens) -> Tokens {
+        match &self.host {
             Some(host) => host.over(&app),
             None => app,
-        })
+        }
     }
 }
 

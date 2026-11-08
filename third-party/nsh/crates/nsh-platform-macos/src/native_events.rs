@@ -21,32 +21,26 @@
 //! events posted to the app as the system posts them, keys, and pictures
 //! of the window, shared by embedded and development hosts.
 
-#[cfg(feature = "dev")]
-use std::rc::Rc;
-
+#[cfg(feature = "terminal")]
 use objc2::{MainThreadMarker, rc::Retained};
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+use objc2_app_kit::NSEventModifierFlags;
+#[cfg(feature = "terminal")]
+use objc2_app_kit::{NSEvent, NSEventType, NSWindow};
+#[cfg(feature = "terminal")]
 use objc2_core_foundation::CGFloat;
+#[cfg(feature = "terminal")]
 use objc2_foundation::NSPoint;
-#[cfg(feature = "dev")]
-use objc2_foundation::NSString;
-
-#[cfg(feature = "dev")]
-use crate::surface::Surface;
 
 /// A point of the content view (points from its top left) in window
 /// coordinates (from its bottom left).
+#[cfg(feature = "terminal")]
 pub(crate) fn to_window(window: &NSWindow, x: f64, y: f64) -> NSPoint {
     let height = window.contentView().map_or(0.0, |v| v.frame().size.height);
     NSPoint::new(x as CGFloat, height - y as CGFloat)
 }
 
-#[cfg(feature = "dev")]
-pub(crate) fn mouse(window: &NSWindow, kind: NSEventType, x: f64, y: f64, clicks: isize) {
-    mouse_with(window, kind, x, y, clicks, NSEventModifierFlags::empty());
-}
-
 /// A mouse event of `window` at `(x, y)` (content points).
+#[cfg(feature = "terminal")]
 pub(crate) fn mouse_event(
     window: &NSWindow,
     kind: NSEventType,
@@ -68,25 +62,8 @@ pub(crate) fn mouse_event(
     )
 }
 
-#[cfg(feature = "dev")]
-pub(crate) fn mouse_with(
-    window: &NSWindow,
-    kind: NSEventType,
-    x: f64,
-    y: f64,
-    clicks: isize,
-    mods: NSEventModifierFlags,
-) {
-    if let Some(event) = mouse_event(window, kind, x, y, clicks, mods) {
-        // Through the event queue, as real clicks come: the event becomes
-        // `NSApp.currentEvent` while it is handled (responders look at it).
-        // The run loop handles it before the next step's timer.
-        objc2_app_kit::NSApplication::sharedApplication(MainThreadMarker::from(window))
-            .postEvent_atStart(&event, false);
-    }
-}
-
 /// Seconds since the system started, as event timestamps are.
+#[cfg(feature = "terminal")]
 pub(crate) fn timestamp() -> f64 {
     objc2_foundation::NSProcessInfo::processInfo().systemUptime()
 }
@@ -95,6 +72,7 @@ pub(crate) fn timestamp() -> f64 {
 /// `CGScrollPhase`), or lines of a mouse wheel (`None`), in a
 /// `CGMomentumScrollPhase` (`0`: none), stamped `at` (seconds since the
 /// system started).
+#[cfg(feature = "terminal")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wheel_with(
     window: &NSWindow,
@@ -179,139 +157,6 @@ fn wheel_event(
     }
     CGEvent::set_timestamp(Some(&event), (at * 1e9) as u64);
     Some(event)
-}
-
-#[cfg(feature = "dev")]
-pub(crate) fn type_text(surface: &Rc<Surface>, window: &NSWindow, text: &str) {
-    for c in text.chars() {
-        let s = c.to_string();
-        key_event(surface, window, &s, 0, NSEventModifierFlags::empty());
-    }
-}
-
-/// One modifier's flag.
-#[cfg(feature = "dev")]
-pub(crate) fn modifier(name: &str) -> Option<NSEventModifierFlags> {
-    Some(match name {
-        "cmd" => NSEventModifierFlags::Command,
-        "shift" => NSEventModifierFlags::Shift,
-        "alt" => NSEventModifierFlags::Option,
-        "ctrl" => NSEventModifierFlags::Control,
-        _ => return None,
-    })
-}
-
-#[cfg(feature = "dev")]
-pub(crate) fn key(surface: &Rc<Surface>, window: &NSWindow, name: &str) {
-    let mut flags = NSEventModifierFlags::empty();
-    let mut name = name;
-    // `cmd++` is Command and `+`.
-    while let Some((m, rest)) = name.split_once('+').filter(|(_, r)| !r.is_empty()) {
-        let Some(flag) = modifier(m) else { break };
-        flags |= flag;
-        name = rest;
-    }
-    // (characters, virtual key code)
-    let (chars, code): (String, u16) = match name {
-        "Return" => ("\r".into(), 36),
-        "Escape" => ("\u{1b}".into(), 53),
-        // Shift+Tab types a backtab, which is what field editors read.
-        "Tab" if flags.contains(NSEventModifierFlags::Shift) => ("\u{19}".into(), 48),
-        "Tab" => ("\t".into(), 48),
-        "BackSpace" => ("\u{7f}".into(), 51),
-        "space" => (" ".into(), 49),
-        "Up" => ("\u{f700}".into(), 126),
-        "Down" => ("\u{f701}".into(), 125),
-        "Left" => ("\u{f702}".into(), 123),
-        "Right" => ("\u{f703}".into(), 124),
-        "Page_Up" => ("\u{f72c}".into(), 116),
-        "Page_Down" => ("\u{f72d}".into(), 121),
-        "Home" => ("\u{f729}".into(), 115),
-        "End" => ("\u{f72b}".into(), 119),
-        "Delete" => ("\u{f728}".into(), 117),
-        "Insert" => ("\u{f727}".into(), 114),
-        "Clear" => ("\u{f739}".into(), 71),
-        // F1 to F20 (`F5`).
-        f if f.len() > 1
-            && f.starts_with('F')
-            && let Some(n) = f[1..].parse::<u16>().ok().filter(|n| (1..=20).contains(n)) =>
-        {
-            const CODES: [u16; 20] = [
-                122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79,
-                80, 90,
-            ];
-            let c = char::from_u32(0xf703 + u32::from(n)).unwrap_or('\0');
-            (c.to_string(), CODES[usize::from(n - 1)])
-        }
-        // Shift types the shifted character, which menus' key
-        // equivalents match (`cmd+shift+z` is Redo's `Z`). A character's
-        // key is the US layout's, as a real event's would be.
-        other => {
-            if other.chars().count() != 1 {
-                log::warn!("unsupported synthesized AppKit key: {other}");
-                return;
-            }
-            let mut chars = other.chars();
-            let code = match (chars.next(), chars.next()) {
-                (Some(c), None) => {
-                    crate::input::us_typing_key(c).map_or(crate::input::NO_KEY, |(code, _)| code)
-                }
-                _ => crate::input::NO_KEY,
-            };
-            if flags.contains(NSEventModifierFlags::Shift) {
-                let mut one = other.chars();
-                let typed = match (one.next(), one.next()) {
-                    (Some(c), None) => nsh_core::keymap::shifted(c).to_string(),
-                    _ => other.to_uppercase(),
-                };
-                (typed, code)
-            } else {
-                (other.into(), code)
-            }
-        }
-    };
-    key_event(surface, window, &chars, code, flags);
-}
-
-#[cfg(feature = "dev")]
-pub(crate) fn key_event(
-    surface: &Rc<Surface>,
-    window: &NSWindow,
-    chars: &str,
-    code: u16,
-    flags: NSEventModifierFlags,
-) {
-    let s = NSString::from_str(chars);
-    for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
-        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            kind,
-            NSPoint::new(0.0, 0.0),
-            flags,
-            timestamp(),
-            window.windowNumber(),
-            None,
-            &s,
-            &s,
-            false,
-            code,
-        );
-        let Some(event) = event else { continue };
-        // Key equivalents (menus) and key monitors (`nsh/keymap`) are the
-        // application's, which hands the key to its key window.
-        if kind == NSEventType::KeyDown && crate::text_input::hold_nsevent(surface, &event) {
-            continue;
-        }
-        if window.isKeyWindow() || flags.contains(NSEventModifierFlags::Command) {
-            objc2_app_kit::NSApplication::sharedApplication(MainThreadMarker::from(window))
-                .sendEvent(&event);
-        } else if kind == NSEventType::KeyDown && crate::keymap::fires(surface, &event) {
-            // The app's key monitor never sees a window's own events: it
-            // gets the key first, as it would in the key window (the test
-            // window often is not one, its app left in the background).
-        } else {
-            window.sendEvent(&event);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -126,7 +126,7 @@ function PressableSheet() {
       <Sheet
         open={sheet()}
         onOpenChange={({ open }) => sheet.set(open)}
-        backdropStyle={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+        backdropClass="bg-scrim"
         popupStyle={{
           gap: 16,
           padding: 20,
@@ -192,11 +192,17 @@ function PressFeedback() {
           <Badge label={disabled() ? "Off" : "On"} tone={disabled() ? "neutral" : "up"} />
         </Tile>
       </View>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: platform.idiom === "terminal" ? 24 : 12 }}>
         <View style={{ flex: 1 }}>
           <Caption label="Last pressed" note={last()} />
         </View>
-        <Toggle value={disabled()} onChange={(v) => disabled.set(v)} label="Disable the third tile" />
+        {/* The terminal's switch is a glyph: its label beside it says what it turns on. */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <If when={platform.idiom === "terminal"}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Disable</Text>
+          </If>
+          <Toggle value={disabled()} onChange={(v) => disabled.set(v)} label="Disable the third tile" />
+        </View>
       </View>
     </Card>
   );
@@ -206,7 +212,7 @@ function Accessory() {
   const text = signal("");
   let input: InputRef | undefined;
   return (
-    <Card icon="text" title="Input accessory" subtitle="A bar over the iOS keyboard" right={<Badge label="nsh/mobile" />}>
+    <Card icon="text" title="Input accessory" subtitle="A bar over the iOS keyboard" right={<Badge label="nsh/ios" />}>
       <Field
         ref={(node) => (input = node)}
         value={text()}
@@ -283,7 +289,17 @@ function ModalOptions() {
       icon="system"
       title="Dialog options"
       subtitle="statusBarTranslucent, orientations"
-      right={<Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />}
+      right={
+          // The terminal's switch is a glyph: its label beside it says what it turns on.
+          platform.idiom === "terminal" ? (
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Text style={{ fontSize: 12, color: colors.muted }}>Translucent</Text>
+              <Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />
+            </View>
+          ) : (
+            <Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />
+          )
+        }
     >
       <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>
         Android: translucent content reaches under the status bar. iOS: this dialog allows portrait and landscape.
@@ -332,7 +348,7 @@ function PlatformInfo() {
     ["platform.os", platform.os],
     ["platform.version", platform.version],
     ["platform.idiom / desktop / catalyst", `${platform.idiom} / ${platform.desktop} / ${platform.catalyst}`],
-    ["platform.select", platform.select({ ios: "ios branch", android: "android branch" }) ?? ""],
+    ["platform.select", platform.select({ ios: "ios branch", android: "android branch", default: "default branch" }) ?? ""],
     ["pixelRatio()", String(pixelRatio())],
     ["10.3 on whole pixels", String(Math.round(10.3 * pixelRatio()) / pixelRatio())],
     ["screenReaderEnabled()", String(screenReaderEnabled())],

@@ -45,7 +45,7 @@ use std::{
 
 use gtk4::{self as gtk, gdk, gio, glib, graphene, prelude::*};
 use nsh_core::{
-    AttributedText, NodeId, TextLayout,
+    AttributedText, EventKind, EventPayload, NodeId, PayloadValue, TextLayout,
     geometry::{Bounds, Point, Points},
     selection::{
         KeptRows, SelectionModel, SelectionTexts, autoscroll_step, reading_order, reorder,
@@ -82,6 +82,8 @@ struct Area {
     dirty: bool,
     /// Its keys and focus controllers.
     controllers: [gtk::EventController; 2],
+    /// The selected text last reported to its `onSelectionChange`.
+    reported: String,
 }
 
 /// The mouse pressed in an area.
@@ -122,6 +124,8 @@ struct Item {
     layout: TextLayout,
     /// The content box, in the area's coordinates.
     frame: Bounds<Points>,
+    /// Whether it continues the text before it (`ViewProps::continues_text`).
+    continues: bool,
 }
 
 impl SelectionTexts for Texts {
@@ -141,6 +145,10 @@ impl SelectionTexts for Texts {
         // The text view's node: the selection follows it when texts come
         // or go before it.
         u64::from(self.items[i].view.id())
+    }
+
+    fn continues(&self, i: usize) -> bool {
+        self.items[i].continues
     }
 
     fn offset_at(&self, i: usize, point: Point<Points>) -> u32 {
@@ -175,6 +183,7 @@ fn collect(area: &NshView) -> Texts {
                     text: drawn.text.clone(),
                     layout: drawn.layout.clone(),
                     frame: Bounds::new(at, drawn.content.size),
+                    continues: s.props.continues_text,
                 });
             }
         }
@@ -381,6 +390,7 @@ impl Area {
             kept: KeptRows::default(),
             dirty: true,
             controllers: [keys.upcast(), focus.upcast()],
+            reported: String::new(),
         }
     }
 
@@ -770,6 +780,37 @@ fn apply(surface: &Surface, id: NodeId, area: &NshView, texts: &Texts) {
         area.set_focusable(true);
         area.grab_focus();
     }
+    report(surface, id, area, texts);
+}
+
+/// Reports area `id`'s selected text to its `onSelectionChange` when it
+/// changed (no borrows held: the handler may run a batch).
+fn report(surface: &Surface, id: NodeId, area: &NshView, texts: &Texts) {
+    if !area.state().events.contains(EventKind::SelectionChange) {
+        return;
+    }
+    let (text, start) = {
+        let mut areas = surface.selection.areas.borrow_mut();
+        let Some(a) = areas.get_mut(&id) else { return };
+        let (text, start) = if a.model.is_empty() {
+            (String::new(), 0)
+        } else {
+            (a.model.text(texts), a.model.start_offset(texts))
+        };
+        if text == a.reported {
+            return;
+        }
+        a.reported.clone_from(&text);
+        (text, start)
+    };
+    surface.event(
+        id,
+        EventKind::SelectionChange,
+        EventPayload::Map(vec![
+            ("text", PayloadValue::Str(text)),
+            ("start", PayloadValue::Number(f64::from(start))),
+        ]),
+    );
 }
 
 /// Takes the highlight off the texts of `old` that are not in `keep`.

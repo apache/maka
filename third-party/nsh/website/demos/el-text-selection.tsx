@@ -2,7 +2,7 @@ import { mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { TextView } from "nsh/base";
 import { platform } from "nsh";
-import { field, ui } from "./palette";
+import { field, ui, sectionSurface } from "./palette";
 
 const NOTES = "- Sync runs **in the background**\n- Conflicts merge *per field*";
 
@@ -18,7 +18,7 @@ function App() {
             : "Long press a word, then drag the handles across the texts: one selection runs across them. Copy is in the menu."}
         </Text>
 
-        <View selectable style={{ ...ui().card, borderRadius: 16, padding: 16, gap: 10 }}>
+        <View selectable style={{ ...sectionSurface({ padded: true }), gap: 10 }}>
           <Text style={{ fontSize: 17, fontWeight: "600", color: ui().text }}>Release notes</Text>
           <Text style={{ color: ui().text, lineHeight: 22 }}>Version 2.4 moves the app to offline sync.</Text>
           <TextView markdown={NOTES} />
@@ -36,7 +36,7 @@ function App() {
           value={pasted()}
           onChange={({ value }) => pasted.set(value)}
           placeholder="Paste here"
-          {...field({ style: { height: 110 } })}
+          {...field({ multiline: true, style: { height: 110 } })}
         />
         <Text style={{ fontSize: 12, color: ui().muted, fontVariant: ["tabular-nums"] }}>
           {pasted().length} characters, {pasted() ? pasted().split("\n").length : 0} lines

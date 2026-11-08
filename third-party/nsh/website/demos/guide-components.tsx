@@ -1,6 +1,6 @@
 import { type InputRef, type JSX, mount, Scroll, signal, split, Text, View } from "nsh";
 import { Input, type InputProps } from "nsh/base";
-import { button, buttonText, desktop, field, tint, ui, wide } from "./palette";
+import { button, buttonText, desktop, field, tint, ui, wide, sectionSurface } from "./palette";
 
 /** A component: a function of its props, run once. */
 function Badge(props: { label: string; color?: string }) {
@@ -15,7 +15,7 @@ function Badge(props: { label: string; color?: string }) {
 function Card(props: { title: string; children?: JSX.Element }) {
   return (
     <View
-      style={{ ...ui().card, borderRadius: 16, padding: 14, gap: 10 }}
+      style={{ ...sectionSurface({ padded: true }), gap: 10 }}
     >
       <Text style={{ fontSize: 13, fontWeight: "600", color: ui().muted }}>{props.title}</Text>
       {props.children}

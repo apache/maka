@@ -43,7 +43,7 @@ export function MermaidView(props: { source(): string }) {
       styles={{ codeBlockCode: { ...codeTextStyle, color: C.text } }}
     />
   );
-  if (platform.isTerminal) return code();
+  if (platform.idiom === 'terminal') return code();
 
   const width = signal(0);
   const state = signal<Presentation>({ kind: 'loading' });

@@ -11,7 +11,15 @@ repository.workspace = true
 workspace = true
 
 [features]
-default = ["highlight"]
+default = ["editor", "highlight", "plot", "rich-editor", "term"]
+# `Editor` and `DiffView`, which draws with the Editor's text measure.
+editor = ["dep:ropey", "dep:imara-diff"]
+# `RichEditor` and its schema, session and plugin classes.
+rich-editor = []
+# `Terminal` and its emulator on `vte` (pure Rust, no C).
+term = ["dep:vte"]
+# The charts: `nsh/base/plot`.
+plot = []
 # Built-in syntax highlighting of `TextView`'s code blocks (syntect).
 highlight = ["dep:syntect", "dep:two-face"]
 # `TextView`'s formulas typeset natively (RaTeX), with the KaTeX fonts
@@ -30,10 +38,11 @@ markdown.workspace = true
 html5ever.workspace = true
 markup5ever_rcdom.workspace = true
 regex.workspace = true
-ropey.workspace = true
+ropey = { workspace = true, optional = true }
 unicode-segmentation.workspace = true
-imara-diff.workspace = true
+imara-diff = { workspace = true, optional = true }
 unicode-width.workspace = true
+vte = { workspace = true, optional = true }
 log.workspace = true
 syntect = { workspace = true, optional = true }
 ratex-parser = { workspace = true, optional = true }
@@ -59,3 +68,8 @@ nsh-core = { workspace = true, features = ["declarations"] }
 # before nsh-js is on crates.io.
 nsh-engine = { path = "../nsh-engine", default-features = false }
 nsh-testing = { path = "../nsh-testing", default-features = false }
+
+[[test]]
+name = "base"
+path = "tests/base/main.rs"
+required-features = ["editor", "plot", "rich-editor"]

@@ -1,6 +1,6 @@
 ---
 title: Fonts
-description: The system font and generic families, fallback lists, shipping .ttf, .otf, .woff and .woff2 files from a Rust crate's assets or TSX imports, families with several weights and italics, and fonts in typed styles and Tailwind classes.
+description: The system font and generic families, fallback lists, shipping .ttf, .otf, .woff and .woff2 files from a Rust crate's assets or TSX imports, registering fonts while the app runs, families with several weights and italics, and fonts in typed styles and Tailwind classes.
 order: 37
 group: ui
 ---
@@ -66,6 +66,34 @@ text("Brand 品牌").font_family("Brand, 'Noto Sans SC', sans-serif")
 ```
 
 Each platform keeps the list's order with its own font machinery: a cascade list on iOS and macOS, a font fallback on Windows (one per paragraph: its first style's list), a Pango family list on Linux, the browser's on the web, GPUI's fallbacks. On Android, text is set in the first family it has; when that one is a font the app registers, the registered fonts after it in the list are its fallbacks (Android 10 and later).
+
+## Registering a font while the app runs
+
+A font that is not known when the app ships (one a user picks from a catalog, one a server sends with a document, one the app makes) is registered while the app runs: `register_font(data)` in Rust, `registerFont(source)` in TSX. It takes TrueType, OpenType, WOFF or WOFF2 data (in TSX a `Uint8Array`, or the URL of the file: one of the app's, `asset:/...`, or one on the network, read as `fetch` reads it, so the `network` capability applies) and resolves to the font's family name (in TSX as `{ family }`). Text that names the family is laid out with it from then on, and text shown before the font arrived is laid out again:
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let family = signal(String::new());
+spawn(async move {
+    let Ok(response) = fetch("https://fonts.example.com/Brand.woff2").await else { return };
+    if let Ok(name) = register_font(response.body).await {
+        family.set(name);
+    }
+});
+text("Branded").font_family(move || family.get())
+```
+
+```tsx tabs
+import { registerFont, signal, Text } from "nsh";
+
+const family = signal("");
+registerFont("https://fonts.example.com/Brand.woff2").then((font) => family.set(font.family));
+
+<Text style={{ fontFamily: family() }}>Branded</Text>
+```
+
+`registerFont` rejects with an `Error` when the URL does not load or the data is no font, its `code` `"ERR_ACCESS_DENIED"` when the `network` capability does not grant the URL or a redirect of it; Rust's `register_font` resolves to the reason. Registering the same font again is harmless. Like an imported font, a registered one is the app's alone and is not installed on the device.
 
 ## Weights and italics
 
@@ -140,6 +168,10 @@ import "./fonts/Inter-Bold.ttf";
 ```
 
 An arbitrary family works without a theme entry: `font-[Pacifico]`. Weight classes (`font-light`, `font-semibold`, `font-bold`, ...) select faces as `fontWeight` does. Text styles on a view pass down to the texts inside it, so `.font_family(INTER.family)` on a view, or `<View class="font-body">`, sets the family for a whole screen.
+
+## Fonts the embedding app registers
+
+An embedding app can register the same files itself, once, for every bundle it loads: `NshView.registerFont` on Android and `NshAppView.registerFont` on iOS take the file's bytes. The app then sets `fontFamily` to the family name in the file (the name an import of that file would evaluate to) and does not import it, so the file is not packed into each bundle. A font registered before a load is in that app's first frame.
 
 ## A default font for the app
 

@@ -24,6 +24,8 @@ final class Effects {
     float[] shadows = new float[0];
     int[] shadowColors = new int[0];
     Decor.Gradient[] gradients = new Decor.Gradient[0];
+    /** `maskImage`, top layer first. */
+    Decor.Gradient[] masks = new Decor.Gradient[0];
     Filters filters, backdrop;
     int blend;
     float outlineWidth, outlineOffset;
@@ -60,19 +62,11 @@ final class Effects {
         }
     }
 
-    static Effects read(ByteBuffer b, float density) {
-        Effects e = new Effects();
-        int shadows = b.getInt();
-        e.shadows = new float[shadows * 5];
-        e.shadowColors = new int[shadows];
-        for (int i = 0; i < shadows; i++) {
-            for (int k = 0; k < 4; k++) e.shadows[i * 5 + k] = b.getFloat() * density;
-            e.shadowColors[i] = b.getInt();
-            e.shadows[i * 5 + 4] = b.getInt() != 0 ? 1 : 0;
-        }
-        int gradients = b.getInt();
-        e.gradients = new Decor.Gradient[gradients];
-        for (int i = 0; i < gradients; i++) {
+    /** A list of gradients (`encode.rs` `gradients`). */
+    private static Decor.Gradient[] gradients(ByteBuffer b, float density) {
+        int count = b.getInt();
+        Decor.Gradient[] list = new Decor.Gradient[count];
+        for (int i = 0; i < count; i++) {
             Decor.Gradient g = new Decor.Gradient();
             g.kind = b.getInt();
             switch (g.kind) {
@@ -115,8 +109,23 @@ final class Effects {
                     }
                 }
             }
-            e.gradients[i] = g;
+            list[i] = g;
         }
+        return list;
+    }
+
+    static Effects read(ByteBuffer b, float density) {
+        Effects e = new Effects();
+        int shadows = b.getInt();
+        e.shadows = new float[shadows * 5];
+        e.shadowColors = new int[shadows];
+        for (int i = 0; i < shadows; i++) {
+            for (int k = 0; k < 4; k++) e.shadows[i * 5 + k] = b.getFloat() * density;
+            e.shadowColors[i] = b.getInt();
+            e.shadows[i * 5 + 4] = b.getInt() != 0 ? 1 : 0;
+        }
+        e.gradients = gradients(b, density);
+        e.masks = gradients(b, density);
         e.filters = filters(b, density);
         e.backdrop = filters(b, density);
         e.blend = b.getInt();

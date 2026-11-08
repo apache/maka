@@ -536,9 +536,7 @@ fn run(
                 return Ok(());
             }
             if let Some(text) = platform.take_clipboard_write() {
-                let bytes = nsh_platform_tui::ServiceOutput::Clipboard(text)
-                    .terminal_sequence(presentation.tmux)
-                    .into_bytes();
+                let bytes = super::super::output::osc52(&text, presentation.tmux).into_bytes();
                 presentation
                     .state
                     .lock()
@@ -768,7 +766,7 @@ mod fallback_tests {
             roots: roots.clone(),
             changes,
         });
-        config.viewport = nsh_platform_tui::CellMetrics::default().viewport(80, 24);
+        config.viewport = crate::terminal::cell_viewport(80, 24);
         let (native_jobs, mut jobs) = tokio::sync::mpsc::unbounded_channel();
         let presentation = Presentation {
             native_jobs: Some(native_jobs),
