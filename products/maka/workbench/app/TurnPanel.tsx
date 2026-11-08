@@ -208,19 +208,6 @@ export function TurnSummary(props: {
                 preview={props.images!.preview}
               />
             </If>
-            <If when={running()}>
-              <View
-                style={{
-                  width: 20,
-                  height: 20,
-                  marginRight: 8,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <LoadingIndicator label={label()} />
-              </View>
-            </If>
           </View>
         }
       >
