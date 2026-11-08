@@ -822,6 +822,8 @@ impl Owner {
                 reason: Rejection::ToolsUnavailable,
             });
         }
+        let mut backend = input.backend;
+        self.use_bot_model(scope, &mut backend).await;
         let id = self.operation_id(operation);
         let admission = self.runs.session(&id).await;
         if admission.state().await.closing {
@@ -962,7 +964,7 @@ impl Owner {
                         .identity
                         .agent()
                         .map(|source| source.session_id.clone()),
-                    backend: input.backend,
+                    backend,
                     compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,

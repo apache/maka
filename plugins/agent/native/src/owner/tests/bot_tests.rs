@@ -1236,6 +1236,18 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
             },
         )
         .await;
+        selection::edit(&f, |changes| {
+            changes
+                .enabled_model_ids
+                .as_mut()
+                .unwrap()
+                .push("worker-requested-model".into());
+        })
+        .await;
+        let admitted = f.selection().await;
+        let mut requested = admitted.clone();
+        requested.model_id = "worker-requested-model".into();
+        let requested_backend = model_backend(&requested);
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
         let ordinary = f.create("The user's own conversation").await;
         f.send(&bot).await.unwrap();
@@ -1246,7 +1258,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionCreate",
-            json!({"title":"Worker","labels":[],"workspace":{"kind":"session","sessionId":bot}}),
+            json!({"title":"Worker","labels":[],"backend":requested_backend,"workspace":{"kind":"session","sessionId":bot}}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1258,6 +1270,10 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         };
         assert_eq!(created["session"]["parentSessionId"], bot.as_str(), "{created}");
         let worker = created["session"]["id"].as_str().unwrap().to_owned();
+        let expected_backend = serde_json::to_value(model_backend(&admitted)).unwrap();
+        assert_eq!(created["session"]["backend"], expected_backend);
+        let observed = f.query("observe", json!({"sessionId":worker})).await.unwrap();
+        assert_eq!(observed["session"]["backend"], expected_backend);
         // Omitted tools follow the ordinary rule: nothing narrows the worker, and
         // it does not become a Bot.
         assert!(created["session"]["tools"].is_null(), "{created}");
@@ -1299,7 +1315,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","backend":model_backend(&f.selection().await)}),
+            json!({"sessionId":worker,"message":"Do the task","backend":requested_backend}),
         )
         .await;
         let mut worker_socket = None;
@@ -1312,6 +1328,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
                 bot_socket = Some(socket);
             } else {
                 assert!(sent["messages"].to_string().contains("Do the task"));
+                assert_eq!(sent["model"], admitted.model_id);
                 worker_socket = Some(socket);
             }
         }
@@ -1339,6 +1356,23 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
             _ = listener.accept() => panic!("Agent-created conversations must never dispatch predictions"),
         };
         assert_eq!(prediction["suggestion"], Value::Null);
+
+        let followup = f.mutation(
+            2, "send", json!({"sessionId":worker,"message":"Continue directly"}), Uuid::new_v4(),
+        ).await.unwrap();
+        assert_eq!(followup["kind"], "started", "{followup}");
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        assert_eq!(sent["model"], admitted.model_id);
+        assert!(sent["messages"].to_string().contains("Continue directly"));
+
+        let changed = f.mutation(
+            2, "selectBackend", json!({"sessionId":worker,"backend":requested_backend}), Uuid::new_v4(),
+        ).await.unwrap();
+        assert_eq!(changed["kind"], "committed", "{changed}");
+        assert_eq!(changed["session"]["backend"], serde_json::to_value(&requested_backend).unwrap());
+        response(&mut socket).await;
+        idle(&f, &worker).await;
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
