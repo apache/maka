@@ -192,6 +192,8 @@ function RowLine() {
 export type SettingsRowProps = {
   label: string;
   description?: string;
+  /** Short context on the label's line, muted and truncated before the label is. */
+  note?: string;
   /** Something that needs action, in `warning`. */
   status?: string;
   leading?: JSX.Element;
@@ -210,17 +212,38 @@ export function SettingsRow(props: SettingsRowProps) {
     <>
       {props.leading}
       <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
-        <Text
-          style={[
-            {
-              ...labelStyle,
-              color: props.tone === 'danger' ? C.danger : props.tone === 'muted' ? C.muted : C.text,
-            },
-            { numberOfLines: 1, textOverflow: 'ellipsis' },
-          ]}
-        >
-          {props.label}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <Text
+            style={[
+              {
+                ...labelStyle,
+                flexShrink: 1,
+                minWidth: 0,
+                color:
+                  props.tone === 'danger' ? C.danger : props.tone === 'muted' ? C.muted : C.text,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
+            {props.label}
+          </Text>
+          <If when={props.note}>
+            <Text
+              style={[
+                {
+                  fontSize: 12,
+                  lineHeight: labelStyle.lineHeight,
+                  color: C.muted,
+                  flex: 1,
+                  minWidth: 0,
+                },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
+              ]}
+            >
+              {props.note}
+            </Text>
+          </If>
+        </View>
         <If when={props.description}>
           <Text style={{ ...captionTextStyle, color: C.muted }}>{props.description}</Text>
         </If>

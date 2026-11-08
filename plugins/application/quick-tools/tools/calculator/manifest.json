@@ -3,7 +3,7 @@
   "id": "maka.calculator",
   "name": "计算器与换算",
   "version": "1.1.0",
-  "description": "计算器与换算",
+  "description": "计算表达式和单位换算，一键复制结果",
   "permissions": ["clipboard.write"],
   "commands": [
     {
@@ -23,7 +23,7 @@
   "locales": {
     "en": {
       "name": "Calculator & Conversions",
-      "description": "Calculator & Conversions",
+      "description": "Evaluate expressions and convert units, then copy the result",
       "commands": {
         "open": {
           "name": "Calculator & Conversions",
@@ -36,7 +36,7 @@
     },
     "zh-CN": {
       "name": "计算器与换算",
-      "description": "计算器与换算",
+      "description": "计算表达式和单位换算，一键复制结果",
       "commands": {
         "open": {
           "name": "计算器与换算",

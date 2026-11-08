@@ -3,7 +3,7 @@
   "id": "maka.clipboard",
   "name": "剪贴板历史",
   "version": "1.1.0",
-  "description": "剪贴板历史",
+  "description": "回看复制过的文本和图片，再次复制或粘贴",
   "permissions": ["clipboard.read", "clipboard.write", "clipboard.watch", "paste"],
   "commands": [
     {
@@ -23,7 +23,7 @@
   "locales": {
     "en": {
       "name": "Clipboard History",
-      "description": "Clipboard History",
+      "description": "Browse copied text and images, then copy or paste them again",
       "commands": {
         "open": {
           "name": "Clipboard History",
@@ -36,7 +36,7 @@
     },
     "zh-CN": {
       "name": "剪贴板历史",
-      "description": "剪贴板历史",
+      "description": "回看复制过的文本和图片，再次复制或粘贴",
       "commands": {
         "open": {
           "name": "剪贴板历史",

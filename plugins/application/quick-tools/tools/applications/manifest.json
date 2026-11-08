@@ -3,7 +3,7 @@
   "id": "maka.applications",
   "name": "应用启动器",
   "version": "1.1.0",
-  "description": "应用启动器",
+  "description": "搜索并打开本机应用，或在 Finder 中显示",
   "permissions": ["applications.list", "system.open", "system.reveal"],
   "commands": [
     {
@@ -23,7 +23,7 @@
   "locales": {
     "en": {
       "name": "Applications",
-      "description": "Applications",
+      "description": "Search and open installed apps, or reveal them in Finder",
       "commands": {
         "open": {
           "name": "Applications",
@@ -36,7 +36,7 @@
     },
     "zh-CN": {
       "name": "应用启动器",
-      "description": "应用启动器",
+      "description": "搜索并打开本机应用，或在 Finder 中显示",
       "commands": {
         "open": {
           "name": "应用启动器",

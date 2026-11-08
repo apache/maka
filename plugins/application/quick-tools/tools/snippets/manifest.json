@@ -3,7 +3,7 @@
   "id": "maka.snippets",
   "name": "文本片段",
   "version": "1.1.0",
-  "description": "文本片段",
+  "description": "保存常用文本，随时复制或粘贴",
   "permissions": ["clipboard.write", "paste", "text.transliterate"],
   "commands": [
     {
@@ -23,7 +23,7 @@
   "locales": {
     "en": {
       "name": "Snippets",
-      "description": "Snippets",
+      "description": "Save frequently used text to copy or paste anytime",
       "commands": {
         "open": {
           "name": "Snippets",
@@ -36,7 +36,7 @@
     },
     "zh-CN": {
       "name": "文本片段",
-      "description": "文本片段",
+      "description": "保存常用文本，随时复制或粘贴",
       "commands": {
         "open": {
           "name": "文本片段",
